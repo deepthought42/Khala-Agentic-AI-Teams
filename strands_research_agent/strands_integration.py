@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
 from .agent import ResearchAgent
-from .llm import LLMClient, OllamaLLMClient
+from .llm import LLMClient
 from .models import ResearchBriefInput, ResearchAgentOutput
 
 
@@ -13,24 +13,35 @@ def create_research_agent(llm_client: LLMClient) -> ResearchAgent:
 
     The caller is responsible for providing an `LLMClient` implementation that
     adapts the host system's model API.
+
+    Preconditions:
+        - llm_client is not None.
+    Postconditions:
+        - Returns a ResearchAgent instance configured with the given llm_client.
     """
-    llm_client = OllamaLLMClient(  # uses http://127.0.0.1:11434 by default
-        model="llama3.1",          # or any other Ollama model name you have
-    )
+    assert llm_client is not None, "llm_client is required"
     return ResearchAgent(llm_client=llm_client)
 
 
 def get_agent_spec() -> Dict[str, Any]:
     """
-    Return a simple spec describing how to call this agent.
+    Return a spec describing how to call this agent.
 
-    A Strands host can import this function and introspect:
-    - `name`: human-friendly identifier
-    - `input_model` / `output_model`: Pydantic models
-    - `handler`: callable accepting an input model instance and returning an output model
+    A Strands host can use:
+        - name: human-friendly identifier
+        - description: short description of the agent
+        - input_model / output_model: Pydantic models (ResearchBriefInput, ResearchAgentOutput)
+        - handler_factory: callable(llm_client, payload) -> ResearchAgentOutput
+
+    Preconditions:
+        - None (no arguments).
+    Postconditions:
+        - Returns a dict with keys "name", "description", "input_model", "output_model", "handler_factory".
+        - handler_factory(llm_client, payload) expects payload to validate as ResearchBriefInput
+          and returns ResearchAgentOutput.
     """
 
-    def handler(llm_client: LLMClient, payload: Dict[str, Any]) -> ResearchAgentOutput:
+    def handler_factory(llm_client: LLMClient, payload: Dict[str, Any]) -> ResearchAgentOutput:
         agent = create_research_agent(llm_client)
         brief = ResearchBriefInput.model_validate(payload)
         return agent.run(brief)
@@ -40,6 +51,6 @@ def get_agent_spec() -> Dict[str, Any]:
         "description": "Performs web research based on a short content brief and returns structured references.",
         "input_model": ResearchBriefInput,
         "output_model": ResearchAgentOutput,
-        "handler_factory": handler,
+        "handler_factory": handler_factory,
     }
 

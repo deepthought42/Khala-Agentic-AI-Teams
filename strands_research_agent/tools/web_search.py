@@ -53,7 +53,15 @@ class TavilyWebSearch:
         recency_preference:
             Passed through to Tavily `search_depth` / `topic` / `time_range`
             as a simple hint. This adapter keeps things basic.
+
+        Preconditions:
+            - max_results >= 1.
+            - recency_preference is None or one of the supported values (e.g. "latest_12_months", "no_preference").
+        Postconditions:
+            - Returns a list of CandidateResult of length at most max_results.
+            - Raises WebSearchError on API or network failure.
         """
+        assert max_results >= 1, "max_results must be at least 1"
         payload = {
             "api_key": self.api_key,
             "query": query.query_text,

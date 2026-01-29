@@ -25,6 +25,12 @@ class LLMClient(ABC):
         - adding any system messages
         - choosing the underlying model
         - parsing the model output as JSON and returning it
+
+        Preconditions:
+            - prompt is a non-empty string.
+            - 0.0 <= temperature <= 2.0 (implementation-defined range).
+        Postconditions:
+            - Returns a (possibly empty) dict; never None.
         """
 
 
@@ -37,6 +43,10 @@ class DummyLLMClient(LLMClient):
     """
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
+        """
+        Preconditions: prompt non-empty; 0.0 <= temperature <= 2.0.
+        Postconditions: Returns dict; never None. Heuristic outputs for testing only.
+        """
         # This is intentionally simplistic and only for demonstration/testing.
         lowered = prompt.lower()
         if "core_topics" in lowered and "angle" in lowered and "constraints" in lowered:
@@ -90,7 +100,15 @@ class OllamaLLMClient(LLMClient):
         :param model: Name of the Ollama model to use (e.g. 'llama3.1').
         :param base_url: Base URL of the Ollama server.
         :param timeout: Request timeout in seconds.
+
+        Preconditions:
+            - model is a non-empty string.
+            - timeout > 0.
+            - base_url is a non-empty string.
         """
+        assert model, "model name is required"
+        assert timeout > 0, "timeout must be positive"
+        assert base_url, "base_url is required"
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -101,6 +119,11 @@ class OllamaLLMClient(LLMClient):
 
         Ollama models may wrap JSON in prose or code fences. This helper
         attempts to robustly pull out the first JSON object.
+
+        Preconditions:
+            - text contains at least one parseable JSON object (or raises ValueError).
+        Postconditions:
+            - Returns a dict; or raises ValueError if no JSON could be parsed.
         """
         # Strip typical markdown code fences if present
         fenced_match = re.search(r"```(?:json)?(.*)```", text, flags=re.DOTALL | re.IGNORECASE)
@@ -125,6 +148,9 @@ class OllamaLLMClient(LLMClient):
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         """
         Call the Ollama chat completions API and return a parsed JSON dict.
+
+        Preconditions: prompt non-empty; 0.0 <= temperature <= 2.0.
+        Postconditions: Returns dict; never None. Raises on API or parse failure.
         """
         system_message = (
             "You are a strict JSON generator used by an automated research agent. "

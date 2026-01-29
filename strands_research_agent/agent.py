@@ -40,6 +40,16 @@ class ResearchAgent:
         web_fetcher: SimpleWebFetcher | None = None,
         max_fetch_documents: int = 20,
     ) -> None:
+        """
+        Preconditions:
+            - llm_client is not None.
+            - max_fetch_documents >= 1.
+        Invariants (after construction):
+            - self.llm is not None.
+            - self.max_fetch_documents >= 1.
+        """
+        assert llm_client is not None, "llm_client is required"
+        assert max_fetch_documents >= 1, "max_fetch_documents must be at least 1"
         self.llm = llm_client
         self.web_search = web_search or TavilyWebSearch()
         self.web_fetcher = web_fetcher or SimpleWebFetcher()
@@ -48,7 +58,15 @@ class ResearchAgent:
     # Public API ---------------------------------------------------------
 
     def run(self, brief_input: ResearchBriefInput) -> ResearchAgentOutput:
-        """Execute the full research workflow and return structured output."""
+        """
+        Execute the full research workflow and return structured output.
+
+        Preconditions:
+            - brief_input is a valid ResearchBriefInput (e.g. from model_validate).
+        Postconditions:
+            - Returns ResearchAgentOutput with query_plan (list), references (list,
+              length <= brief_input.max_results), notes (str or None).
+        """
         normalized = self._parse_brief(brief_input)
         queries = self._generate_queries(brief_input, normalized)
         candidates = self._run_searches(queries, brief_input)
@@ -62,6 +80,10 @@ class ResearchAgent:
     # Steps --------------------------------------------------------------
 
     def _parse_brief(self, brief_input: ResearchBriefInput) -> dict:
+        """
+        Preconditions: brief_input is a valid ResearchBriefInput.
+        Postconditions: Returns a dict with keys core_topics, angle, constraints.
+        """
         prompt = BRIEF_PARSING_PROMPT + "\n\n" + f"Brief: {brief_input.brief}\n"
         if brief_input.audience:
             prompt += f"Audience: {brief_input.audience}\n"
@@ -77,6 +99,10 @@ class ResearchAgent:
         }
 
     def _generate_queries(self, brief_input: ResearchBriefInput, normalized: dict) -> List[SearchQuery]:
+        """
+        Preconditions: brief_input valid; normalized has core_topics, angle, constraints.
+        Postconditions: Returns non-empty list of SearchQuery (fallback to brief if needed).
+        """
         prompt = QUERY_GENERATION_PROMPT.format(
             core_topics=normalized.get("core_topics"),
             angle=normalized.get("angle"),
@@ -110,6 +136,10 @@ class ResearchAgent:
         queries: List[SearchQuery],
         brief_input: ResearchBriefInput,
     ) -> List[CandidateResult]:
+        """
+        Preconditions: queries non-empty; brief_input valid.
+        Postconditions: Returns list of CandidateResult, deduplicated by URL.
+        """
         seen_urls = set()
         candidates: List[CandidateResult] = []
 
@@ -133,6 +163,10 @@ class ResearchAgent:
         candidates: List[CandidateResult],
         brief_input: ResearchBriefInput,
     ) -> List[SourceDocument]:
+        """
+        Preconditions: candidates and brief_input valid.
+        Postconditions: Returns list of SourceDocument (best-effort; fetch failures skipped).
+        """
         documents: List[SourceDocument] = []
         # Cap total documents to avoid excessive latency/cost.
         max_docs = min(self.max_fetch_documents, len(candidates))
@@ -155,7 +189,8 @@ class ResearchAgent:
         """
         Use the LLM to produce a relevance score and type for each document.
 
-        Returns a list of (document, relevance_score, type_label) sorted by score.
+        Preconditions: documents and brief_input valid.
+        Postconditions: Returns list of (document, relevance_score, type_label) sorted by score descending.
         """
         scored: List[Tuple[SourceDocument, float, str]] = []
 
@@ -182,6 +217,10 @@ class ResearchAgent:
         scored_docs: List[Tuple[SourceDocument, float, str]],
         brief_input: ResearchBriefInput,
     ) -> List[ResearchReference]:
+        """
+        Preconditions: scored_docs and brief_input valid.
+        Postconditions: Returns list of ResearchReference, length <= brief_input.max_results.
+        """
         references: List[ResearchReference] = []
 
         for doc, score, type_label in scored_docs[: brief_input.max_results]:
@@ -223,6 +262,10 @@ class ResearchAgent:
         brief_input: ResearchBriefInput,
         references: List[ResearchReference],
     ) -> str | None:
+        """
+        Preconditions: brief_input and references valid.
+        Postconditions: Returns overview string or None if references empty.
+        """
         if not references:
             return None
 

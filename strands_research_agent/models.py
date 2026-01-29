@@ -7,7 +7,12 @@ from pydantic import BaseModel, HttpUrl, Field
 
 
 class ResearchBriefInput(BaseModel):
-    """Top-level input to the research agent."""
+    """
+    Top-level input to the research agent.
+
+    Invariants: max_results in [1, 50]; per_query_limit in [1, 20];
+    recency_preference in ("latest_12_months", "no_preference") or None.
+    """
 
     brief: str = Field(..., description="Short free-text description of the content need.")
     audience: Optional[str] = Field(
@@ -78,7 +83,11 @@ class SourceDocument(BaseModel):
 
 
 class ResearchReference(BaseModel):
-    """Normalized reference returned by the agent."""
+    """
+    Normalized reference returned by the agent.
+
+    Invariants: relevance_score in [0.0, 1.0] when present.
+    """
 
     title: str
     url: HttpUrl
@@ -102,7 +111,11 @@ class ResearchReference(BaseModel):
 
 
 class ResearchAgentOutput(BaseModel):
-    """Top-level structured result from the agent."""
+    """
+    Top-level structured result from the agent.
+
+    Invariants: query_plan and references are lists; len(references) <= input max_results.
+    """
 
     query_plan: List[SearchQuery]
     references: List[ResearchReference]
