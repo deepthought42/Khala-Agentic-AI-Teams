@@ -21,10 +21,18 @@ class SimpleWebFetcher:
     """
 
     def __init__(self, *, timeout: float = 15.0, user_agent: Optional[str] = None) -> None:
+        """
+        Preconditions: timeout > 0.
+        """
+        assert timeout > 0, "timeout must be positive"
         self.timeout = timeout
         self.user_agent = user_agent or "StrandsResearchAgent/1.0"
 
     def fetch(self, url: HttpUrl) -> SourceDocument:
+        """
+        Preconditions: url is a valid HttpUrl.
+        Postconditions: Returns SourceDocument with url equal to input; or raises WebFetchError on failure.
+        """
         headers = {
             "User-Agent": self.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
