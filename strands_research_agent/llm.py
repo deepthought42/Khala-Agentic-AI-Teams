@@ -74,6 +74,23 @@ class DummyLLMClient(LLMClient):
                 "key_points": ["Point 1", "Point 2"],
                 "is_promotional": False,
             }
+        # Blog review prompt (title choices + outline)
+        if "title_choices" in lowered and "probability_of_success" in lowered:
+            return {
+                "title_choices": [
+                    {"title": "Example title 1: Why This Matters Now", "probability_of_success": 0.85},
+                    {"title": "Example title 2: The Complete Guide", "probability_of_success": 0.78},
+                    {"title": "Example title 3: What Experts Get Wrong", "probability_of_success": 0.72},
+                    {"title": "Example title 4: 5 Key Takeaways", "probability_of_success": 0.68},
+                    {"title": "Example title 5: A Practical Approach", "probability_of_success": 0.65},
+                    {"title": "Example title 6: Beyond the Basics", "probability_of_success": 0.62},
+                    {"title": "Example title 7: How to Get Started", "probability_of_success": 0.60},
+                    {"title": "Example title 8: The Future of X", "probability_of_success": 0.58},
+                    {"title": "Example title 9: Lessons Learned", "probability_of_success": 0.55},
+                    {"title": "Example title 10: Deep Dive", "probability_of_success": 0.52},
+                ],
+                "outline": "# Blog Outline (Dummy)\n\n## 1. Introduction\n- Hook from research; key stat or question.\n- State what the reader will learn.\n\n## 2. Main Section A\n- Key point from source 1.\n- Supporting detail.\n\n## 3. Main Section B\n- Key point from source 2.\n- Example or quote.\n\n## 4. Conclusion\n- Recap and CTA.",
+            }
         # Final synthesis prompt
         return {
             "analysis": "High-level synthesis is not available in DummyLLMClient.",
