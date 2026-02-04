@@ -97,6 +97,44 @@ Each agent lives in its own folder with its supporting code and resources.
 - `blog_draft_agent/models.py` – DraftInput, DraftOutput.
 - `blog_draft_agent/prompts.py` – Prompt for draft generation. Use `docs/brandon_kindred_brand_and_writing_style_guide.md` as the style guide.
 
+## API
+
+A FastAPI server exposes the research-and-review pipeline as an HTTP endpoint.
+
+**Start the server:**
+
+```bash
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+# or
+python3 agent_implementations/run_api_server.py
+```
+
+**POST `/research-and-review`** – Run research and review agents.
+
+Request body:
+
+```json
+{
+  "brief": "LLM observability best practices for large enterprises",
+  "title_concept": "Why CTOs need it",
+  "audience": {
+    "skill_level": "expert",
+    "profession": "CTO",
+    "hobbies": ["AI", "DevOps"]
+  },
+  "tone_or_purpose": "technical deep-dive",
+  "max_results": 20
+}
+```
+
+`audience` can be an object (skill_level, profession, hobbies, other) or a free-text string. `title_concept` and `audience` are optional.
+
+Response: `title_choices`, `outline`, `compiled_document`, `notes`.
+
+**GET `/health`** – Health check.
+
+Interactive docs: http://localhost:8000/docs
+
 ## License
 
 This repository is provided as an example implementation for building Strands-style research agents.
