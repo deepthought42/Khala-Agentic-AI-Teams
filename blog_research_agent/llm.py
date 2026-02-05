@@ -93,6 +93,20 @@ class DummyLLMClient(LLMClient):
             return {
                 "draft": "# Example Draft (Dummy)\n\nThis is a placeholder draft. Use a real LLM to generate the full post.\n\n## Introduction\n\nHook and stakes would go here.\n\n## Main content\n\nSections from the outline, using the research document.\n\n## Wrap up\n\nRecap and one practical next step.",
             }
+        # Copy editor prompt (draft + style guide -> feedback)
+        if "feedback_items" in lowered and ("summary" in lowered or "copy editor" in lowered):
+            return {
+                "summary": "Dummy copy edit: The draft was not evaluated. Use a real LLM for professional feedback.",
+                "feedback_items": [
+                    {
+                        "category": "style",
+                        "severity": "consider",
+                        "location": "opening",
+                        "issue": "Example feedback item for testing.",
+                        "suggestion": "Replace with real LLM output.",
+                    },
+                ],
+            }
         # Similar topics prompt
         if "similar_topics" in lowered and "similarity_score" in lowered:
             return {
