@@ -53,6 +53,10 @@ class CopyEditorInput(BaseModel):
         None,
         description="Desired tone or purpose (for context).",
     )
+    human_feedback: Optional[str] = Field(
+        None,
+        description="Author's explicit feedback or requested changes (e.g. from rejection). Incorporate into review.",
+    )
 
 
 class CopyEditorOutput(BaseModel):

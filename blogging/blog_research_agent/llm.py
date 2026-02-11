@@ -112,6 +112,26 @@ class DummyLLMClient(LLMClient):
                     },
                 ],
             }
+        # Publication agent: rejection follow-up (feedback -> ready_to_revise, questions)
+        if "ready_to_revise" in lowered and "feedback_collected" in lowered:
+            return {
+                "ready_to_revise": True,
+                "questions": [],
+                "feedback_summary": "Dummy: author feedback collected for revision.",
+            }
+        # Publication agent: convert human feedback to editor feedback items
+        if "author's collected feedback" in lowered and "feedback_items" in lowered:
+            return {
+                "feedback_items": [
+                    {
+                        "category": "voice",
+                        "severity": "must_fix",
+                        "location": None,
+                        "issue": "Dummy: apply author feedback.",
+                        "suggestion": "Address the author's requested changes.",
+                    },
+                ],
+            }
         # Similar topics prompt
         if "similar_topics" in lowered and "similarity_score" in lowered:
             return {
@@ -164,30 +184,51 @@ class OllamaLLMClient(LLMClient):
         """
         Extract and parse a JSON object from the model's text response.
 
-        Ollama models may wrap JSON in prose or code fences. This helper
-        attempts to robustly pull out the first JSON object.
+        Ollama models may wrap JSON in prose or code fences. For draft/revise
+        responses, the model may use ---DRAFT--- so the markdown is not inside
+        JSON (avoiding escaping issues). This helper tries multiple strategies.
 
         Preconditions:
-            - text contains at least one parseable JSON object (or raises ValueError).
+            - text contains at least one parseable JSON object or ---DRAFT--- (or raises ValueError).
         Postconditions:
             - Returns a dict; or raises ValueError if no JSON could be parsed.
         """
+        # Delimiter format: draft/revise agents ask for {"draft": 0}\n---DRAFT---\n<markdown>.
+        # This avoids JSON escaping of long markdown. Try this first when present.
+        if "---DRAFT---" in text:
+            parts = text.split("---DRAFT---", 1)
+            if len(parts) == 2 and parts[1].strip():
+                return {"draft": parts[1].strip()}
+
         # Strip typical markdown code fences if present
         fenced_match = re.search(r"```(?:json)?(.*)```", text, flags=re.DOTALL | re.IGNORECASE)
         if fenced_match:
             text = fenced_match.group(1).strip()
 
-        # Try direct JSON parse first
+        # Try direct JSON parse
         try:
             return json.loads(text)
         except Exception:
             pass
 
-        # Fallback: take the first {...} block
+        # Fallback: take the first {...} block (greedy; may include trailing content in DOTALL)
         obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if obj_match:
             candidate = obj_match.group(0)
-            return json.loads(candidate)
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+
+        # Draft fallback: model may have returned invalid JSON with markdown inside.
+        # Only use when the response looks like a draft (contains "draft") so we don't
+        # mis-treat other agents' output (e.g. review outline starting with #).
+        if "draft" in text.lower():
+            markdown_start = re.search(r"(?:^|\n)\s*#\s*.+", text)
+            if markdown_start:
+                draft_content = text[markdown_start.start() :].strip()
+                if len(draft_content) >= 20:
+                    return {"draft": draft_content}
 
         # As a last resort, raise a clear error so callers can handle it.
         raise ValueError(f"Could not parse JSON from Ollama response: {text!r}")

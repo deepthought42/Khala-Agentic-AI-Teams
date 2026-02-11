@@ -16,6 +16,11 @@ from .prompts import DRAFT_SYSTEM_REMINDER, MINIMAL_STYLE_REMINDER, REVISE_DRAFT
 
 logger = logging.getLogger(__name__)
 
+# Default style guide path (Brandon Kindred brand and writing guide) relative to project root
+_DEFAULT_STYLE_GUIDE_PATH = (
+    Path(__file__).resolve().parent.parent / "docs" / "brandon_kindred_brand_and_writing_style_guide.md"
+)
+
 
 def _load_style_guide(path: str | Path) -> str:
     """Load style guide text from a file. Raises OSError if file cannot be read."""
@@ -40,7 +45,10 @@ class BlogDraftAgent:
         """
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
-        self.default_style_guide_path = Path(default_style_guide_path) if default_style_guide_path else None
+        if default_style_guide_path is not None:
+            self.default_style_guide_path = Path(default_style_guide_path)
+        else:
+            self.default_style_guide_path = _DEFAULT_STYLE_GUIDE_PATH if _DEFAULT_STYLE_GUIDE_PATH.exists() else None
 
     def run(self, draft_input: DraftInput) -> DraftOutput:
         """
@@ -101,7 +109,7 @@ class BlogDraftAgent:
             prompt_parts.append(f"Tone/Purpose: {draft_input.tone_or_purpose}")
         prompt_parts.append("")
         prompt_parts.append("---")
-        prompt_parts.append("Return JSON with a single key \"draft\" whose value is the full blog post in Markdown.")
+        prompt_parts.append('Use this format: first line {"draft": 0}, then ---DRAFT---, then the full blog post in Markdown.')
         prompt = "\n".join(prompt_parts)
 
         data = self.llm.complete_json(prompt, temperature=0.3)
@@ -197,7 +205,7 @@ class BlogDraftAgent:
         prompt_parts.extend([
             "",
             "---",
-            "Return JSON with a single key \"draft\" whose value is the full revised blog post in Markdown.",
+            'Use this format: first line {"draft": 0}, then ---DRAFT---, then the full revised blog post in Markdown.',
         ])
         prompt = "\n".join(prompt_parts)
 

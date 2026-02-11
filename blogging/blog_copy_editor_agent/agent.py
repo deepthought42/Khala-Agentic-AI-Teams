@@ -16,6 +16,11 @@ from .prompts import COPY_EDITOR_PROMPT, MINIMAL_STYLE_CHECKLIST
 
 logger = logging.getLogger(__name__)
 
+# Default style guide path (Brandon Kindred brand and writing guide) relative to project root
+_DEFAULT_STYLE_GUIDE_PATH = (
+    Path(__file__).resolve().parent.parent / "docs" / "brandon_kindred_brand_and_writing_style_guide.md"
+)
+
 
 def _load_style_guide(path: str | Path) -> str:
     """Load style guide text from a file. Raises OSError if file cannot be read."""
@@ -40,7 +45,10 @@ class BlogCopyEditorAgent:
         """
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
-        self.default_style_guide_path = Path(default_style_guide_path) if default_style_guide_path else None
+        if default_style_guide_path is not None:
+            self.default_style_guide_path = Path(default_style_guide_path)
+        else:
+            self.default_style_guide_path = _DEFAULT_STYLE_GUIDE_PATH if _DEFAULT_STYLE_GUIDE_PATH.exists() else None
 
     def run(self, copy_editor_input: CopyEditorInput) -> CopyEditorOutput:
         """
@@ -86,6 +94,10 @@ class BlogCopyEditorAgent:
             context_parts.append(f"Audience: {copy_editor_input.audience}")
         if copy_editor_input.tone_or_purpose:
             context_parts.append(f"Tone/Purpose: {copy_editor_input.tone_or_purpose}")
+        if copy_editor_input.human_feedback:
+            context_parts.append("")
+            context_parts.append("**AUTHOR'S REQUESTED CHANGES (must address these):**")
+            context_parts.append(copy_editor_input.human_feedback.strip())
         if context_parts:
             context_parts.append("")
 
