@@ -69,10 +69,16 @@ class QAExpertAgent:
         if readme_content and "\\n" in readme_content:
             readme_content = readme_content.replace("\\n", "\n")
 
-        logger.info("QA: done, %s bugs found, integration_tests=%s chars", len(bugs), len(integration_tests))
+        has_fixes = bool(fixed_code and fixed_code.strip() != (input_data.code or "").strip())
+        critical_bugs = [b for b in bugs if b.severity in ("critical", "high")]
+        approved = len(critical_bugs) == 0 or has_fixes
+
+        logger.info("QA: done, %s bugs found, approved=%s, changes_pushed=%s", len(bugs), approved, has_fixes)
         return QAOutput(
             bugs_found=bugs,
             fixed_code=fixed_code,
+            approved=approved,
+            changes_pushed=has_fixes,
             integration_tests=integration_tests,
             unit_tests=unit_tests,
             test_plan=data.get("test_plan", ""),

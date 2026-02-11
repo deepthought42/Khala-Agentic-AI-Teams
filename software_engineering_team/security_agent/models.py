@@ -32,6 +32,14 @@ class SecurityOutput(BaseModel):
 
     vulnerabilities: List[SecurityVulnerability] = Field(default_factory=list)
     fixed_code: str = Field(default="", description="Code with security fixes applied")
+    approved: bool = Field(
+        default=True,
+        description="True when code passes review (no critical vulnerabilities or fixes applied). Merge when approved.",
+    )
+    changes_pushed: bool = Field(
+        default=False,
+        description="True when fixed_code was pushed to the feature branch (differs from input).",
+    )
     summary: str = ""
     remediations: List[dict] = Field(default_factory=list)
     suggested_commit_message: str = Field(

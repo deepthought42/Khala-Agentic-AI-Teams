@@ -1,15 +1,17 @@
 """
 FastAPI application for the software engineering team.
 
-Exposes an endpoint that accepts a local git repo path. The repo must contain
-initial_spec.md at the root with the full project specification.
+Async API: POST /run-team returns job_id, GET /run-team/{job_id} polls status.
+Tech Lead orchestrator runs in background.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -20,17 +22,8 @@ _team_dir = Path(__file__).resolve().parent.parent
 if str(_team_dir) not in sys.path:
     sys.path.insert(0, str(_team_dir))
 
-from shared.llm import DummyLLMClient, OllamaLLMClient
-from shared.models import ProductRequirements, TaskType
-from shared.git_utils import ensure_development_branch
-from spec_parser import load_spec_from_repo, parse_spec_heuristic, parse_spec_with_llm, validate_repo_path
-from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
-from tech_lead_agent import TechLeadAgent, TechLeadInput
-from devops_agent import DevOpsExpertAgent, DevOpsInput
-from security_agent import CybersecurityExpertAgent, SecurityInput
-from backend_agent import BackendExpertAgent, BackendInput
-from frontend_agent import FrontendExpertAgent, FrontendInput
-from qa_agent import QAExpertAgent, QAInput
+from spec_parser import validate_repo_path
+from shared.job_store import JOB_STATUS_FAILED, JOB_STATUS_PENDING, create_job, get_job, update_job
 
 from shared.logging_config import setup_logging
 
@@ -39,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Software Engineering Team API",
-    description="Runs the software engineering team (Architecture, Tech Lead, DevOps, Security, Backend, Frontend, QA) "
-    "on a git repo. The repo must contain initial_spec.md at the root with the full project specification.",
-    version="0.1.0",
+    description="Async API: POST /run-team with repo_path returns job_id. "
+    "GET /run-team/{job_id} polls status. Tech Lead orchestrates the full pipeline.",
+    version="0.2.0",
 )
 
 
@@ -52,231 +45,100 @@ class RunTeamRequest(BaseModel):
         ...,
         description="Local filesystem path to the git repository. Must contain initial_spec.md at the root.",
     )
-    use_llm_for_spec: bool = Field(
-        True,
-        description="Use LLM to parse initial_spec.md into structured requirements. If False, uses heuristic parsing.",
-    )
-
-
-class TaskResult(BaseModel):
-    """Result of a single task execution."""
-
-    task_id: str
-    assignee: str
-    summary: str
 
 
 class RunTeamResponse(BaseModel):
-    """Response from the run-team endpoint."""
+    """Response from POST /run-team."""
 
-    repo_path: str = Field(..., description="Resolved path to the repo.")
-    requirements_title: str = Field(..., description="Parsed project title from spec.")
-    architecture_overview: str = Field(default="", description="Architecture overview from Architecture Expert.")
-    task_ids: List[str] = Field(default_factory=list, description="Task IDs in execution order.")
-    task_results: List[TaskResult] = Field(default_factory=list)
-    status: str = Field(default="completed", description="Pipeline status.")
-    git_branch_setup: str = Field(
-        default="",
-        description="Result of ensuring development branch exists (e.g. 'Created branch development from main').",
-    )
+    job_id: str = Field(..., description="Job ID for polling status.")
+    status: str = Field(default="running", description="Initial status.")
+    message: str = Field(default="Orchestrator started. Poll GET /run-team/{job_id} for status.")
 
 
-# Shared LLM and agents (lazy init)
-_llm_client: Optional[OllamaLLMClient] = None
-_use_dummy: bool = True
+class JobStatusResponse(BaseModel):
+    """Response from GET /run-team/{job_id}."""
+
+    job_id: str = Field(..., description="Job ID.")
+    status: str = Field(..., description="pending, running, completed, failed.")
+    repo_path: Optional[str] = Field(None, description="Path to the repo.")
+    requirements_title: Optional[str] = Field(None, description="Parsed project title.")
+    architecture_overview: Optional[str] = Field(None, description="Architecture overview.")
+    current_task: Optional[str] = Field(None, description="Current task being executed.")
+    task_results: list = Field(default_factory=list, description="Completed task results.")
+    task_ids: list = Field(default_factory=list, description="Task IDs in execution order.")
+    progress: Optional[int] = Field(None, description="Progress percentage.")
+    error: Optional[str] = Field(None, description="Error message if failed.")
 
 
-def _get_llm():
-    """Lazily initialize and return the LLM client."""
-    global _llm_client, _use_dummy
-    if _llm_client is None:
-        _llm_client = DummyLLMClient() if _use_dummy else OllamaLLMClient(model="deepseek-r1", timeout=1800.0)
-    return _llm_client
-
-
-def _set_use_dummy(use_dummy: bool) -> None:
-    """Set whether to use DummyLLMClient. Call before first request."""
-    global _use_dummy, _llm_client
-    _use_dummy = use_dummy
-    _llm_client = None  # Reset so next request gets fresh client
+def _run_orchestrator_background(job_id: str, repo_path: str) -> None:
+    """Run orchestrator in background thread."""
+    try:
+        from orchestrator import run_orchestrator
+        run_orchestrator(job_id, repo_path)
+    except Exception as e:
+        logger.exception("Orchestrator failed")
+        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
 
 
 @app.post(
     "/run-team",
     response_model=RunTeamResponse,
-    summary="Run software engineering team on a git repo",
-    description="Validates the repo path, reads initial_spec.md, parses it into requirements, "
-    "and runs the full team pipeline (Architecture → Tech Lead → specialists).",
+    summary="Start software engineering team",
+    description="Validates repo, creates job, starts Tech Lead orchestrator in background. "
+    "Returns job_id immediately. Poll GET /run-team/{job_id} for status.",
 )
 def run_team(request: RunTeamRequest) -> RunTeamResponse:
     """
-    Run the software engineering team on a git repository.
+    Start the software engineering team on a git repository.
 
     The repo must:
     - Exist and be a valid directory
     - Be a git repository (.git present)
     - Contain initial_spec.md at the root with the full project specification
     """
-    # Validate repo path
     try:
         repo_path = validate_repo_path(request.repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    # Ensure development branch exists (branching strategy: all work on development branch)
-    git_branch_msg = ""
-    try:
-        created, msg = ensure_development_branch(repo_path)
-        git_branch_msg = msg
-    except Exception as e:
-        logger.warning("Git branch setup failed (non-fatal): %s", e)
-        git_branch_msg = f"Git setup skipped: {e}"
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(repo_path))
 
-    # Load and parse spec
-    try:
-        spec_content = load_spec_from_repo(repo_path)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    thread = threading.Thread(target=_run_orchestrator_background, args=(job_id, str(repo_path)))
+    thread.daemon = True
+    thread.start()
 
-    llm = _get_llm()
-    if request.use_llm_for_spec:
-        try:
-            requirements = parse_spec_with_llm(spec_content, llm)
-        except Exception as e:
-            logger.warning("LLM spec parse failed, falling back to heuristic: %s", e)
-            requirements = parse_spec_heuristic(spec_content)
-    else:
-        requirements = parse_spec_heuristic(spec_content)
+    return RunTeamResponse(
+        job_id=job_id,
+        status="running",
+        message=f"Orchestrator started. Poll GET /run-team/{job_id} for status.",
+    )
 
-    # Run pipeline
-    try:
-        arch_agent = ArchitectureExpertAgent(llm_client=llm)
-        arch_input = ArchitectureInput(
-            requirements=requirements,
-            technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
-        )
-        arch_output = arch_agent.run(arch_input)
-        architecture = arch_output.architecture
 
-        tech_lead = TechLeadAgent(llm_client=llm)
-        tech_lead_output = tech_lead.run(TechLeadInput(
-            requirements=requirements,
-            architecture=architecture,
-            repo_path=str(repo_path),
-            spec_content=spec_content,
-        ))
-        assignment = tech_lead_output.assignment
+@app.get(
+    "/run-team/{job_id}",
+    response_model=JobStatusResponse,
+    summary="Get job status",
+    description="Poll this endpoint for job progress and results.",
+)
+def get_job_status(job_id: str) -> JobStatusResponse:
+    """Get the status of a run-team job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-        agent_map = {
-            "devops": DevOpsExpertAgent(llm),
-            "security": CybersecurityExpertAgent(llm),
-            "backend": BackendExpertAgent(llm),
-            "frontend": FrontendExpertAgent(llm),
-            "qa": QAExpertAgent(llm),
-        }
-
-        task_results: List[TaskResult] = []
-        artifacts: dict = {}  # Accumulate code: backend_code, frontend_code, security_fixed_code
-        logger.info("Pipeline: Architecture done, Tech Lead assigned %s tasks", len(assignment.tasks))
-
-        for task_id in assignment.execution_order:
-            task = next((t for t in assignment.tasks if t.id == task_id), None)
-            if not task:
-                continue
-
-            logger.info("Pipeline: Task %s (%s) -> %s", task.id, task.type.value, task.assignee)
-
-            # Git setup is executed by the platform, not an agent
-            if task.type == TaskType.GIT_SETUP:
-                _, msg = ensure_development_branch(repo_path)
-                task_results.append(TaskResult(task_id=task.id, assignee=task.assignee, summary=msg))
-                continue
-
-            if task.assignee not in agent_map:
-                continue
-
-            agent = agent_map[task.assignee]
-            summary = ""
-
-            if task.assignee == "devops":
-                result = agent.run(
-                    DevOpsInput(
-                        task_description=task.description,
-                        requirements=task.requirements,
-                        architecture=architecture,
-                    )
-                )
-                summary = result.summary or "Done"
-            elif task.assignee == "backend":
-                result = agent.run(
-                    BackendInput(
-                        task_description=task.description,
-                        requirements=task.requirements,
-                        architecture=architecture,
-                        language="python",
-                    )
-                )
-                summary = result.summary or "Done"
-                artifacts["backend_code"] = result.code or ""
-                if result.files:
-                    artifacts["backend_files"] = result.files
-            elif task.assignee == "frontend":
-                result = agent.run(
-                    FrontendInput(
-                        task_description=task.description,
-                        requirements=task.requirements,
-                        architecture=architecture,
-                    )
-                )
-                summary = result.summary or "Done"
-                artifacts["frontend_code"] = result.code or ""
-                if result.files:
-                    artifacts["frontend_files"] = result.files
-            elif task.assignee == "security":
-                # Security reviews code produced by backend and/or frontend
-                code_to_review = "\n\n---BACKEND---\n\n" + artifacts.get("backend_code", "")
-                code_to_review += "\n\n---FRONTEND---\n\n" + artifacts.get("frontend_code", "")
-                code_to_review = code_to_review.strip() or "# No code yet (placeholder)"
-                result = agent.run(
-                    SecurityInput(
-                        code=code_to_review,
-                        language="python",
-                        task_description=task.description,
-                        architecture=architecture,
-                    )
-                )
-                summary = result.summary or "Done"
-                artifacts["security_fixed_code"] = result.fixed_code or code_to_review
-            elif task.assignee == "qa":
-                # QA tests code (prefer security-reviewed code if available)
-                code_to_test = artifacts.get("security_fixed_code") or artifacts.get("backend_code", "") or artifacts.get("frontend_code", "")
-                if not code_to_test.strip():
-                    code_to_test = "# No code to test (placeholder)"
-                result = agent.run(
-                    QAInput(
-                        code=code_to_test,
-                        language="python",
-                        task_description=task.description,
-                        architecture=architecture,
-                    )
-                )
-                summary = result.summary or "Done"
-
-            task_results.append(TaskResult(task_id=task.id, assignee=task.assignee, summary=summary))
-
-        return RunTeamResponse(
-            repo_path=str(repo_path),
-            requirements_title=requirements.title,
-            architecture_overview=architecture.overview,
-            task_ids=assignment.execution_order,
-            task_results=task_results,
-            status="completed",
-            git_branch_setup=git_branch_msg,
-        )
-
-    except Exception as e:
-        logger.exception("Team pipeline failed")
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}") from e
+    return JobStatusResponse(
+        job_id=job_id,
+        status=data.get("status", JOB_STATUS_PENDING),
+        repo_path=data.get("repo_path"),
+        requirements_title=data.get("requirements_title"),
+        architecture_overview=data.get("architecture_overview"),
+        current_task=data.get("current_task"),
+        task_results=data.get("task_results", []),
+        task_ids=data.get("execution_order", []),
+        progress=data.get("progress"),
+        error=data.get("error"),
+    )
 
 
 @app.get("/health")

@@ -32,6 +32,14 @@ class QAOutput(BaseModel):
 
     bugs_found: List[BugReport] = Field(default_factory=list)
     fixed_code: str = Field(default="", description="Code with bug fixes applied")
+    approved: bool = Field(
+        default=True,
+        description="True when code passes review (no critical bugs or fixes applied). Merge when approved.",
+    )
+    changes_pushed: bool = Field(
+        default=False,
+        description="True when fixed_code was pushed to the feature branch (differs from input).",
+    )
     integration_tests: str = Field(default="", description="Integration test code")
     unit_tests: str = Field(default="", description="Unit tests for 85%+ coverage")
     test_plan: str = ""

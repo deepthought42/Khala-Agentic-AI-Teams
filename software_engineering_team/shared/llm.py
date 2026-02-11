@@ -39,8 +39,15 @@ class DummyLLMClient(LLMClient):
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         lowered = prompt.lower()
-        # Tech Lead prompt asks for tasks + execution_order; Architecture asks for components
-        if ("execution_order" in lowered or "task_assignments" in lowered or "dependencies" in lowered) and "tasks" in lowered:
+        # Architecture prompt is more specific (architecture_document); check before Tech Lead
+        if "architecture_document" in lowered and "components" in lowered and "overview" in lowered:
+            return {
+                "overview": "API backend + WebApp frontend (Dummy architecture).",
+                "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
+                "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
+            }
+        # Tech Lead prompt asks for tasks + execution_order
+        if ("execution_order" in lowered or "task_assignments" in lowered) and "tasks" in lowered:
             return {
                 "tasks": [
                     {"id": "t1", "type": "git_setup", "description": "Ensure development branch exists", "assignee": "devops", "requirements": "Create development branch from main if missing", "dependencies": []},
@@ -54,12 +61,6 @@ class DummyLLMClient(LLMClient):
                 "rationale": "Full build plan: git setup, devops, implementation, then security review of code, then QA.",
                 "summary": "Complete build plan with 6 tasks. Security runs after backend/frontend. QA runs after security.",
             }
-        if "architecture" in lowered and "components" in lowered and "architecture_document" in lowered:
-            return {
-                "overview": "API backend + WebApp frontend (Dummy architecture).",
-                "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
-                "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
-            }
         if "security" in lowered and "vulnerabilities" in lowered:
             return {
                 "vulnerabilities": [],
@@ -68,9 +69,27 @@ class DummyLLMClient(LLMClient):
             }
         if "devops" in lowered or "pipeline" in lowered:
             return {
-                "pipeline_yaml": "# Dummy pipeline",
+                "pipeline_yaml": "# Dummy pipeline\nname: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo build",
                 "iac_content": "# Dummy IaC",
+                "dockerfile": "FROM python:3.11-slim\nWORKDIR /app\nCOPY . .\nCMD [\"python\", \"-m\", \"http.server\"]",
                 "suggested_commit_message": "ci: add pipeline configuration",
+            }
+        if "backend" in lowered and "language" in lowered and ("code" in lowered or "files" in lowered):
+            return {
+                "code": "# Dummy backend API\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get(\"/\")\ndef root():\n    return {\"status\": \"ok\"}\n",
+                "language": "python",
+                "summary": "Dummy backend implementation",
+                "files": {"main.py": "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get(\"/\")\ndef root():\n    return {\"status\": \"ok\"}\n"},
+                "tests": "# Dummy tests\ndef test_root():\n    assert True\n",
+                "suggested_commit_message": "feat(api): add backend API",
+            }
+        if "frontend" in lowered and "angular" in lowered and "component" in lowered:
+            return {
+                "code": "import { Component } from '@angular/core';\n\n@Component({ selector: 'app-root', template: '<p>Dummy</p>' })\nexport class AppComponent {}\n",
+                "summary": "Dummy frontend implementation",
+                "files": {"app.component.ts": "import { Component } from '@angular/core';\n\n@Component({ selector: 'app-root', template: '<p>Dummy</p>' })\nexport class AppComponent {}\n"},
+                "components": ["AppComponent"],
+                "suggested_commit_message": "feat(ui): add frontend component",
             }
         if "integration_test" in lowered or "readme_content" in lowered or ("bugs_found" in lowered and "test_plan" in lowered):
             return {

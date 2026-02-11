@@ -27,6 +27,9 @@ class TaskStatus(str, Enum):
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    READY_FOR_REVIEW = "ready_for_review"
+    APPROVED = "approved"
+    MERGED = "merged"
     COMPLETED = "completed"
     BLOCKED = "blocked"
     FAILED = "failed"
@@ -89,6 +92,10 @@ class Task(BaseModel):
     requirements: str = ""
     dependencies: List[str] = Field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
+    feature_branch_name: Optional[str] = Field(
+        None,
+        description="Feature branch for this task, e.g. feature/t1-backend-auth",
+    )
     output: Optional[str] = None
     artifacts: Dict[str, str] = Field(default_factory=dict)
 
