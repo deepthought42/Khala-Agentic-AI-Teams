@@ -39,17 +39,22 @@ class DummyLLMClient(LLMClient):
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         lowered = prompt.lower()
-        if "architecture" in lowered and "components" in lowered:
-            return {
-                "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
-                "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
-            }
-        if "task_assignments" in lowered or "tasks" in lowered:
+        # Tech Lead prompt asks for tasks + execution_order; Architecture asks for components
+        if ("execution_order" in lowered or "task_assignments" in lowered) and "tasks" in lowered:
             return {
                 "tasks": [
                     {"id": "t1", "type": "backend", "description": "Implement API", "assignee": "backend"},
                     {"id": "t2", "type": "frontend", "description": "Implement UI", "assignee": "frontend"},
                 ],
+                "execution_order": ["t1", "t2"],
+                "rationale": "Dummy plan",
+                "summary": "Dummy task assignment",
+            }
+        if "architecture" in lowered and "components" in lowered and "architecture_document" in lowered:
+            return {
+                "overview": "API backend + WebApp frontend (Dummy architecture).",
+                "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
+                "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
             }
         if "security" in lowered and "vulnerabilities" in lowered:
             return {

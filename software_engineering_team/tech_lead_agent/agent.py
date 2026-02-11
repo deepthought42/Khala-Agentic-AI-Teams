@@ -27,6 +27,7 @@ class TechLeadAgent:
 
     def run(self, input_data: TechLeadInput) -> TechLeadOutput:
         """Plan and assign tasks to the team."""
+        logger.info("Tech Lead: planning tasks for %s", input_data.requirements.title)
         reqs = input_data.requirements
         arch = input_data.architecture
 
@@ -83,6 +84,7 @@ class TechLeadAgent:
             rationale=data.get("rationale", ""),
         )
 
+        logger.info("Tech Lead: assigned %s tasks in order %s", len(tasks), assignment.execution_order)
         return TechLeadOutput(
             assignment=assignment,
             summary=data.get("summary", ""),

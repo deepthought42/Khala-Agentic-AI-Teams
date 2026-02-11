@@ -22,6 +22,7 @@ def parse_spec_with_llm(spec_content: str, llm_client) -> ProductRequirements:
     """
     Use LLM to extract structured ProductRequirements from spec content.
     """
+    logger.info("Parsing spec with LLM (%s chars)", len(spec_content))
     prompt = """Parse the following software project specification into a structured format.
 
 Return a single JSON object with:
@@ -43,7 +44,7 @@ Specification:
         data["acceptance_criteria"] = []
     if not isinstance(data.get("constraints"), list):
         data["constraints"] = []
-    return ProductRequirements(
+    reqs = ProductRequirements(
         title=data.get("title") or "Software Project",
         description=data.get("description") or spec_content[:2000],
         acceptance_criteria=data["acceptance_criteria"],
@@ -51,6 +52,8 @@ Specification:
         priority=data.get("priority") or "medium",
         metadata={"parsed_from": "initial_spec.md"},
     )
+    logger.info("Parsed spec: title=%s, %s acceptance criteria", reqs.title, len(reqs.acceptance_criteria))
+    return reqs
 
 
 def parse_spec_heuristic(spec_content: str) -> ProductRequirements:

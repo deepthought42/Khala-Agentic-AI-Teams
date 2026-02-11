@@ -25,6 +25,7 @@ class QAExpertAgent:
 
     def run(self, input_data: QAInput) -> QAOutput:
         """Review code, fix bugs, and produce integration tests."""
+        logger.info("QA: reviewing %s chars of code", len(input_data.code or ""))
         context_parts = [
             f"**Language:** {input_data.language}",
             f"**Code to review:**",
@@ -68,6 +69,7 @@ class QAExpertAgent:
         if readme_content and "\\n" in readme_content:
             readme_content = readme_content.replace("\\n", "\n")
 
+        logger.info("QA: done, %s bugs found, integration_tests=%s chars", len(bugs), len(integration_tests))
         return QAOutput(
             bugs_found=bugs,
             fixed_code=fixed_code,

@@ -1,0 +1,72 @@
+"""
+Shared logging configuration for software engineering team agents.
+
+Use this to get consistent, readable logs when running agents or the API.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+
+LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+LOG_DATE_FORMAT = "%H:%M:%S"
+
+# Agent logger names (enable DEBUG for verbose step-by-step visibility)
+AGENT_LOGGERS = [
+    "architecture_agent.agent",
+    "tech_lead_agent.agent",
+    "backend_agent.agent",
+    "frontend_agent.agent",
+    "devops_agent.agent",
+    "security_agent.agent",
+    "qa_agent.agent",
+    "spec_parser",
+    "api.main",
+]
+
+
+def setup_logging(
+    level: int = logging.INFO,
+    *,
+    agent_level: Optional[int] = None,
+    log_file: Optional[Path] = None,
+    verbose: bool = False,
+) -> None:
+    """
+    Configure logging for the software engineering team.
+
+    Args:
+        level: Root log level (default INFO).
+        agent_level: Override level for agent loggers. If None, uses `level`.
+        log_file: Optional path to write logs to a file.
+        verbose: If True, set agent loggers to DEBUG for step-by-step visibility.
+    """
+    agent_level = agent_level or (logging.DEBUG if verbose else level)
+
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove existing handlers to avoid duplicates when called multiple times
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    console = logging.StreamHandler(sys.stderr)
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    if log_file:
+        log_file = Path(log_file)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+
+    for name in AGENT_LOGGERS:
+        logger = logging.getLogger(name)
+        logger.setLevel(agent_level)

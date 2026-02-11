@@ -24,6 +24,7 @@ class FrontendExpertAgent:
 
     def run(self, input_data: FrontendInput) -> FrontendOutput:
         """Implement frontend functionality in Angular."""
+        logger.info("Frontend: implementing task '%s'", input_data.task_description[:60] + ("..." if len(input_data.task_description) > 60 else ""))
         context_parts = [
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
@@ -47,9 +48,11 @@ class FrontendExpertAgent:
         if code and "\\n" in code:
             code = code.replace("\\n", "\n")
 
+        summary = data.get("summary", "")
+        logger.info("Frontend: done, code=%s chars, summary=%s chars", len(code), len(summary))
         return FrontendOutput(
             code=code,
-            summary=data.get("summary", ""),
+            summary=summary,
             files=data.get("files", {}),
             components=data.get("components", []),
             suggested_commit_message=data.get("suggested_commit_message", ""),

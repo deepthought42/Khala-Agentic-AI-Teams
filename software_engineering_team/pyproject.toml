@@ -19,6 +19,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Show logs during tests: -v shows INFO, or use: pytest --log-cli-level=INFO
+addopts = "-v"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [

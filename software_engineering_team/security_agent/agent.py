@@ -25,6 +25,7 @@ class CybersecurityExpertAgent:
 
     def run(self, input_data: SecurityInput) -> SecurityOutput:
         """Review code for security issues and produce fixed code."""
+        logger.info("Security: reviewing %s chars of code", len(input_data.code or ""))
         context_parts = [
             f"**Language:** {input_data.language}",
             f"**Code to review:**",
@@ -59,6 +60,7 @@ class CybersecurityExpertAgent:
         if fixed_code and "\\n" in fixed_code:
             fixed_code = fixed_code.replace("\\n", "\n")
 
+        logger.info("Security: done, %s vulnerabilities found", len(vulnerabilities))
         return SecurityOutput(
             vulnerabilities=vulnerabilities,
             fixed_code=fixed_code,

@@ -24,6 +24,7 @@ class DevOpsExpertAgent:
 
     def run(self, input_data: DevOpsInput) -> DevOpsOutput:
         """Create or extend CI/CD, IaC, and Docker configurations."""
+        logger.info("DevOps: starting task '%s'", input_data.task_description[:60] + ("..." if len(input_data.task_description) > 60 else ""))
         context_parts = [
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
@@ -43,12 +44,14 @@ class DevOpsExpertAgent:
         prompt = DEVOPS_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         data = self.llm.complete_json(prompt, temperature=0.2)
 
+        summary = data.get("summary", "")
+        logger.info("DevOps: done, summary=%s chars", len(summary))
         return DevOpsOutput(
             pipeline_yaml=data.get("pipeline_yaml", ""),
             iac_content=data.get("iac_content", ""),
             dockerfile=data.get("dockerfile", ""),
             docker_compose=data.get("docker_compose", ""),
-            summary=data.get("summary", ""),
+            summary=summary,
             artifacts=data.get("artifacts", {}),
             suggested_commit_message=data.get("suggested_commit_message", ""),
         )

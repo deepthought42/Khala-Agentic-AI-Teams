@@ -32,7 +32,9 @@ from backend_agent import BackendExpertAgent, BackendInput
 from frontend_agent import FrontendExpertAgent, FrontendInput
 from qa_agent import QAExpertAgent, QAInput
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+from shared.logging_config import setup_logging
+
+setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -169,10 +171,13 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
         }
 
         task_results: List[TaskResult] = []
+        logger.info("Pipeline: Architecture done, Tech Lead assigned %s tasks", len(assignment.tasks))
         for task_id in assignment.execution_order:
             task = next((t for t in assignment.tasks if t.id == task_id), None)
             if not task:
                 continue
+
+            logger.info("Pipeline: Task %s (%s) -> %s", task.id, task.type.value, task.assignee)
 
             # Git setup is executed by the platform, not an agent
             if task.type == TaskType.GIT_SETUP:

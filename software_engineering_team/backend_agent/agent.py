@@ -25,6 +25,7 @@ class BackendExpertAgent:
 
     def run(self, input_data: BackendInput) -> BackendOutput:
         """Implement backend functionality."""
+        logger.info("Backend: implementing task '%s'", input_data.task_description[:60] + ("..." if len(input_data.task_description) > 60 else ""))
         context_parts = [
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
@@ -52,10 +53,12 @@ class BackendExpertAgent:
         if tests and "\\n" in tests:
             tests = tests.replace("\\n", "\n")
 
+        summary = data.get("summary", "")
+        logger.info("Backend: done, code=%s chars, summary=%s chars", len(code), len(summary))
         return BackendOutput(
             code=code,
             language=data.get("language", input_data.language),
-            summary=data.get("summary", ""),
+            summary=summary,
             files=data.get("files", {}),
             tests=tests,
             suggested_commit_message=data.get("suggested_commit_message", ""),

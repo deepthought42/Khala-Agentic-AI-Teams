@@ -28,6 +28,7 @@ class ArchitectureExpertAgent:
 
     def run(self, input_data: ArchitectureInput) -> ArchitectureOutput:
         """Design system architecture from requirements."""
+        logger.info("Architecture Expert: starting design for %s", input_data.requirements.title)
         reqs = input_data.requirements
         context_parts = [
             f"**Product Title:** {reqs.title}",
@@ -69,6 +70,7 @@ class ArchitectureExpertAgent:
             decisions=data.get("decisions", []),
         )
 
+        logger.info("Architecture Expert: done, %s components", len(architecture.components))
         return ArchitectureOutput(
             architecture=architecture,
             summary=data.get("summary", ""),
