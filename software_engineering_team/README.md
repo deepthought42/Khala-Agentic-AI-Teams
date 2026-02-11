@@ -6,7 +6,7 @@ A multi-agent system that simulates a real software engineering team with a mix 
 
 | Agent | Role | Expertise |
 |-------|------|------------|
-| **Tech Lead** | Staff-level engineer | Bridges product management and engineering; plans and orchestrates task distribution |
+| **Tech Lead** | Staff-level orchestrator | Uses initial_spec to generate full build plan; distributes work by dependency (Security only after code exists); tracks progress |
 | **Architecture Expert** | System designer | Designs system architecture from requirements; output used by all other agents |
 | **DevOps Expert** | Infrastructure specialist | CI/CD pipelines, IaC (Terraform, etc.), Docker, networking |
 | **Cybersecurity Expert** | Security specialist | Reviews code for security flaws; remediates vulnerabilities |
@@ -31,10 +31,14 @@ All agents enforce these rules for produced code:
 ## Flow
 
 1. **Git setup** – Ensure `development` branch exists (created from `main` if missing).
-2. **Architecture Expert** designs the system from product requirements.
-3. **Tech Lead** breaks down work and assigns tasks to specialists.
-4. Specialists execute tasks in dependency order; each uses the architecture when implementing or validating.
-5. **Security** and **QA** agents review code produced by Backend and Frontend.
+2. **Load spec** – Read `initial_spec.md` from the repo.
+3. **Architecture Expert** designs the system from product requirements.
+4. **Tech Lead** retrieves the spec, generates a complete build plan, and assigns tasks with dependencies:
+   - DevOps (CI/CD, Docker) runs early
+   - Backend and Frontend implement per spec
+   - Security runs only after Backend/Frontend have produced code to review
+   - QA runs only after Security has reviewed the code
+5. Specialists execute in dependency order; outputs (code) are passed to Security and QA.
 
 ## Quick Start
 

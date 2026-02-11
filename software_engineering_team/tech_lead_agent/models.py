@@ -15,6 +15,14 @@ class TechLeadInput(BaseModel):
         None,
         description="System architecture from Architecture Expert (required for task breakdown)",
     )
+    repo_path: Optional[str] = Field(
+        None,
+        description="Path to the git repo; Tech Lead uses this for context and orchestration",
+    )
+    spec_content: Optional[str] = Field(
+        None,
+        description="Full content of initial_spec.md; used to generate the build plan",
+    )
     existing_tasks: Optional[List[Task]] = Field(
         None,
         description="Existing tasks to extend or reprioritize",

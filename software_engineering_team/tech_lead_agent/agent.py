@@ -41,6 +41,17 @@ class TechLeadAgent:
             f"**Priority:** {reqs.priority}",
         ]
 
+        if input_data.repo_path:
+            context_parts.extend(["", f"**Repo path:** {input_data.repo_path}"])
+        if input_data.spec_content:
+            context_parts.extend([
+                "",
+                "**Full initial_spec.md (use this to generate the complete build plan):**",
+                "---",
+                input_data.spec_content[:6000] + ("..." if len(input_data.spec_content or "") > 6000 else ""),
+                "---",
+            ])
+
         if arch:
             context_parts.extend([
                 "",
@@ -60,7 +71,8 @@ class TechLeadAgent:
 
         tasks = []
         for t in data.get("tasks") or []:
-            if isinstance(t, dict) and t.get("id") and t.get("assignee"):
+            if isinstance(t, dict) and t.get("id"):
+                assignee = t.get("assignee") or "devops"
                 try:
                     task_type = TaskType(t.get("type", "backend"))
                 except ValueError:
@@ -70,7 +82,7 @@ class TechLeadAgent:
                         id=t["id"],
                         type=task_type,
                         description=t.get("description", ""),
-                        assignee=t["assignee"],
+                        assignee=assignee,
                         requirements=t.get("requirements", ""),
                         dependencies=t.get("dependencies", []),
                         status=TaskStatus.PENDING,

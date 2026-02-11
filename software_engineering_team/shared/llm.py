@@ -40,15 +40,19 @@ class DummyLLMClient(LLMClient):
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         lowered = prompt.lower()
         # Tech Lead prompt asks for tasks + execution_order; Architecture asks for components
-        if ("execution_order" in lowered or "task_assignments" in lowered) and "tasks" in lowered:
+        if ("execution_order" in lowered or "task_assignments" in lowered or "dependencies" in lowered) and "tasks" in lowered:
             return {
                 "tasks": [
-                    {"id": "t1", "type": "backend", "description": "Implement API", "assignee": "backend"},
-                    {"id": "t2", "type": "frontend", "description": "Implement UI", "assignee": "frontend"},
+                    {"id": "t1", "type": "git_setup", "description": "Ensure development branch exists", "assignee": "devops", "requirements": "Create development branch from main if missing", "dependencies": []},
+                    {"id": "t2", "type": "devops", "description": "Create CI/CD pipeline and Docker config", "assignee": "devops", "requirements": "Pipeline, IaC, Dockerfile per architecture", "dependencies": ["t1"]},
+                    {"id": "t3", "type": "backend", "description": "Implement backend API per spec", "assignee": "backend", "requirements": "Implement API per initial_spec and architecture", "dependencies": ["t2"]},
+                    {"id": "t4", "type": "frontend", "description": "Implement frontend UI per spec", "assignee": "frontend", "requirements": "Implement Angular UI per initial_spec", "dependencies": ["t2"]},
+                    {"id": "t5", "type": "security", "description": "Review backend and frontend code for security flaws", "assignee": "security", "requirements": "Review code from t3 and t4", "dependencies": ["t3", "t4"]},
+                    {"id": "t6", "type": "qa", "description": "Add integration tests and maintain README", "assignee": "qa", "requirements": "Test security-fixed code, update README", "dependencies": ["t5"]},
                 ],
-                "execution_order": ["t1", "t2"],
-                "rationale": "Dummy plan",
-                "summary": "Dummy task assignment",
+                "execution_order": ["t1", "t2", "t3", "t4", "t5", "t6"],
+                "rationale": "Full build plan: git setup, devops, implementation, then security review of code, then QA.",
+                "summary": "Complete build plan with 6 tasks. Security runs after backend/frontend. QA runs after security.",
             }
         if "architecture" in lowered and "components" in lowered and "architecture_document" in lowered:
             return {

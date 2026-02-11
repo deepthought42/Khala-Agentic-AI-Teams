@@ -159,7 +159,12 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
         architecture = arch_output.architecture
 
         tech_lead = TechLeadAgent(llm_client=llm)
-        tech_lead_output = tech_lead.run(TechLeadInput(requirements=requirements, architecture=architecture))
+        tech_lead_output = tech_lead.run(TechLeadInput(
+            requirements=requirements,
+            architecture=architecture,
+            repo_path=str(repo_path),
+            spec_content=spec_content,
+        ))
         assignment = tech_lead_output.assignment
 
         agent_map = {
@@ -171,7 +176,9 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
         }
 
         task_results: List[TaskResult] = []
+        artifacts: dict = {}  # Accumulate code: backend_code, frontend_code, security_fixed_code
         logger.info("Pipeline: Architecture done, Tech Lead assigned %s tasks", len(assignment.tasks))
+
         for task_id in assignment.execution_order:
             task = next((t for t in assignment.tasks if t.id == task_id), None)
             if not task:
@@ -210,6 +217,9 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
                     )
                 )
                 summary = result.summary or "Done"
+                artifacts["backend_code"] = result.code or ""
+                if result.files:
+                    artifacts["backend_files"] = result.files
             elif task.assignee == "frontend":
                 result = agent.run(
                     FrontendInput(
@@ -219,19 +229,33 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
                     )
                 )
                 summary = result.summary or "Done"
+                artifacts["frontend_code"] = result.code or ""
+                if result.files:
+                    artifacts["frontend_files"] = result.files
             elif task.assignee == "security":
+                # Security reviews code produced by backend and/or frontend
+                code_to_review = "\n\n---BACKEND---\n\n" + artifacts.get("backend_code", "")
+                code_to_review += "\n\n---FRONTEND---\n\n" + artifacts.get("frontend_code", "")
+                code_to_review = code_to_review.strip() or "# No code yet (placeholder)"
                 result = agent.run(
                     SecurityInput(
-                        code="",
+                        code=code_to_review,
+                        language="python",
                         task_description=task.description,
                         architecture=architecture,
                     )
                 )
                 summary = result.summary or "Done"
+                artifacts["security_fixed_code"] = result.fixed_code or code_to_review
             elif task.assignee == "qa":
+                # QA tests code (prefer security-reviewed code if available)
+                code_to_test = artifacts.get("security_fixed_code") or artifacts.get("backend_code", "") or artifacts.get("frontend_code", "")
+                if not code_to_test.strip():
+                    code_to_test = "# No code to test (placeholder)"
                 result = agent.run(
                     QAInput(
-                        code="",
+                        code=code_to_test,
+                        language="python",
                         task_description=task.description,
                         architecture=architecture,
                     )

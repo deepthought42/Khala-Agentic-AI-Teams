@@ -20,7 +20,7 @@ import _path_setup  # noqa: F401
 import logging
 
 from shared.llm import DummyLLMClient, OllamaLLMClient
-from shared.models import ProductRequirements
+from shared.models import ProductRequirements, TaskType
 from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
 from devops_agent import DevOpsExpertAgent, DevOpsInput
@@ -73,7 +73,11 @@ def main() -> None:
     # 2. Tech Lead plans and assigns tasks
     logger.info("=== Tech Lead ===")
     tech_lead = TechLeadAgent(llm_client=LLM)
-    tech_lead_input = TechLeadInput(requirements=REQUIREMENTS, architecture=architecture)
+    tech_lead_input = TechLeadInput(
+        requirements=REQUIREMENTS,
+        architecture=architecture,
+        spec_content=REQUIREMENTS.description,
+    )
     tech_lead_output = tech_lead.run(tech_lead_input)
     assignment = tech_lead_output.assignment
     logger.info("Tasks: %s", [t.id for t in assignment.tasks])
@@ -87,9 +91,18 @@ def main() -> None:
         "qa": QAExpertAgent(LLM),
     }
 
+    artifacts = {}
     for task_id in assignment.execution_order:
         task = next((t for t in assignment.tasks if t.id == task_id), None)
-        if not task or task.assignee not in agent_map:
+        if not task:
+            continue
+
+        # Git setup: skip (platform handles at API level) or log for CLI
+        if task.type == TaskType.GIT_SETUP:
+            logger.info("=== Task %s (git_setup) - skipped in CLI (run via API with repo_path) ===", task.id)
+            continue
+
+        if task.assignee not in agent_map:
             continue
 
         logger.info("=== Task %s (%s) -> %s ===", task.id, task.type.value, task.assignee)
@@ -115,17 +128,9 @@ def main() -> None:
                 )
             )
             logger.info("Backend: %s", result.summary[:150] if result.summary else "Done")
-            if result.code:
-                # Security review of backend code
-                sec_result = agent_map["security"].run(
-                    SecurityInput(code=result.code, language="python", task_description=task.description)
-                )
-                logger.info("Security: %s vulnerabilities", len(sec_result.vulnerabilities))
-                # QA review
-                qa_result = agent_map["qa"].run(
-                    QAInput(code=sec_result.fixed_code, language="python", task_description=task.description)
-                )
-                logger.info("QA: %s bugs, integration tests: %s chars", len(qa_result.bugs_found), len(qa_result.integration_tests))
+            artifacts["backend_code"] = result.code or ""
+            if result.files:
+                artifacts["backend_files"] = result.files
 
         elif task.assignee == "frontend":
             result = agent.run(
@@ -136,34 +141,38 @@ def main() -> None:
                 )
             )
             logger.info("Frontend: %s", result.summary[:150] if result.summary else "Done")
-            if result.code:
-                sec_result = agent_map["security"].run(
-                    SecurityInput(code=result.code, language="typescript", task_description=task.description)
-                )
-                qa_result = agent_map["qa"].run(
-                    QAInput(code=sec_result.fixed_code, language="typescript", task_description=task.description)
-                )
-                logger.info("Security: %s vulns, QA: %s bugs", len(sec_result.vulnerabilities), len(qa_result.bugs_found))
+            artifacts["frontend_code"] = result.code or ""
+            if result.files:
+                artifacts["frontend_files"] = result.files
 
         elif task.assignee == "security":
+            code_to_review = "\n\n---BACKEND---\n\n" + artifacts.get("backend_code", "")
+            code_to_review += "\n\n---FRONTEND---\n\n" + artifacts.get("frontend_code", "")
+            code_to_review = code_to_review.strip() or "# No code yet"
             result = agent.run(
                 SecurityInput(
-                    code="",  # Security tasks may review architecture or existing artifacts
+                    code=code_to_review,
+                    language="python",
                     task_description=task.description,
                     architecture=architecture,
                 )
             )
-            logger.info("Security: %s", result.summary[:150] if result.summary else "Done")
+            logger.info("Security: %s vulnerabilities", len(result.vulnerabilities))
+            artifacts["security_fixed_code"] = result.fixed_code or code_to_review
 
         elif task.assignee == "qa":
+            code_to_test = artifacts.get("security_fixed_code") or artifacts.get("backend_code", "") or artifacts.get("frontend_code", "")
+            if not code_to_test.strip():
+                code_to_test = "# No code to test"
             result = agent.run(
                 QAInput(
-                    code="",  # QA may run on consolidated codebase
+                    code=code_to_test,
+                    language="python",
                     task_description=task.description,
                     architecture=architecture,
                 )
             )
-            logger.info("QA: %s", result.summary[:150] if result.summary else "Done")
+            logger.info("QA: %s bugs, integration tests: %s chars", len(result.bugs_found), len(result.integration_tests))
 
     print("\n--- Team pipeline complete ---")
     print("Architecture:", architecture.overview[:300] + "..." if len(architecture.overview) > 300 else architecture.overview)
