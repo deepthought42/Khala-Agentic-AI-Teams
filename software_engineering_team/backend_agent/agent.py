@@ -103,11 +103,14 @@ def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str
     Only reads application source code by default (.py, .java).
     DevOps/infrastructure files (.yml, .yaml) are excluded to avoid
     polluting backend coding context with unrelated content.
+    Excludes .git to avoid errors on missing/corrupt git objects.
     """
     if extensions is None:
         extensions = [".py", ".java"]
     parts: List[str] = []
     for f in repo_path.rglob("*"):
+        if ".git" in f.parts:
+            continue
         if f.is_file() and f.suffix in extensions:
             try:
                 parts.append(
@@ -178,6 +181,7 @@ class BackendExpertAgent:
         remaining_tasks: List[Task] | None = None,
         all_tasks: Dict[str, Task] | None = None,
         execution_queue: List[str] | None = None,
+        append_task_fn: Optional[Callable[[Task], None]] = None,
     ) -> BackendWorkflowResult:
         """
         Execute the full backend task lifecycle autonomously.
@@ -331,7 +335,7 @@ class BackendExpertAgent:
 
         # ── Step 3: Write files and commit ──────────────────────────────────
         logger.info("[%s] WORKFLOW Step 3/9: Writing files and committing", task_id)
-        ok, write_msg = write_agent_output(repo_path, result, subdir="backend")
+        ok, write_msg = write_agent_output(repo_path, result, subdir="")
         if not ok:
             logger.error(
                 "[%s] WORKFLOW FAILED at Step 3: Write failed: %s",
@@ -402,7 +406,7 @@ class BackendExpertAgent:
                     architecture=architecture,
                     code_review_issues=code_review_issues,
                 )
-                ok, write_msg = write_agent_output(repo_path, result, subdir="backend")
+                ok, write_msg = write_agent_output(repo_path, result, subdir="")
                 if not ok:
                     logger.error(
                         "[%s] WORKFLOW   [%d] Write failed after build fix: %s",
@@ -468,7 +472,7 @@ class BackendExpertAgent:
                     architecture=architecture,
                     code_review_issues=cr_issues,
                 )
-                ok, write_msg = write_agent_output(repo_path, result, subdir="backend")
+                ok, write_msg = write_agent_output(repo_path, result, subdir="")
                 if not ok:
                     logger.error(
                         "[%s] WORKFLOW   [%d] Write failed after code review fix: %s",
@@ -577,7 +581,7 @@ class BackendExpertAgent:
                     architecture=architecture,
                     qa_issues=qa_issues,
                 )
-                ok, write_msg = write_agent_output(repo_path, result, subdir="backend")
+                ok, write_msg = write_agent_output(repo_path, result, subdir="")
                 if not ok:
                     logger.error(
                         "[%s] WORKFLOW   [%d] Write failed after QA fix: %s",
@@ -669,11 +673,15 @@ class BackendExpertAgent:
                 remaining_tasks=remaining_tasks or [],
                 codebase_summary=codebase_summary,
             )
-            if new_tasks and all_tasks is not None and execution_queue is not None:
-                for nt in new_tasks:
-                    if nt.id not in all_tasks:
-                        all_tasks[nt.id] = nt
-                        execution_queue.append(nt.id)
+            if new_tasks:
+                if append_task_fn is not None:
+                    for nt in new_tasks:
+                        append_task_fn(nt)
+                elif all_tasks is not None and execution_queue is not None:
+                    for nt in new_tasks:
+                        if nt.id not in all_tasks:
+                            all_tasks[nt.id] = nt
+                            execution_queue.append(nt.id)
                 logger.info(
                     "[%s] WORKFLOW   Tech Lead created %d new tasks from review",
                     task_id,
@@ -1023,5 +1031,6 @@ class BackendExpertAgent:
             tests=tests,
             suggested_commit_message=data.get("suggested_commit_message", ""),
             needs_clarification=needs_clarification,
-            clarification_requests=clarification_requests,
-        )
+        clarification_requests=clarification_requests,
+        gitignore_entries=[str(e).strip() for e in (data.get("gitignore_entries") or []) if str(e).strip()],
+    )

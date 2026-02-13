@@ -87,9 +87,15 @@ class DocumentationAgent:
                 f"\n\n... [truncated, {len(codebase) - MAX_CODEBASE_CHARS} more chars]"
             )
 
-        # --- Step 1: Update README.md ---
+        # --- Step 1: Update README.md (root + frontend/backend/devops) ---
         readme_content = ""
         readme_changed = False
+        readme_frontend_content = ""
+        readme_frontend_changed = False
+        readme_backend_content = ""
+        readme_backend_changed = False
+        readme_devops_content = ""
+        readme_devops_changed = False
         readme_summary = ""
         commit_message = "docs(readme): update project documentation"
 
@@ -102,13 +108,51 @@ class DocumentationAgent:
             if input_data.existing_readme:
                 readme_context.extend([
                     "",
-                    "**Current README.md:**",
+                    "**Current root README.md:**",
                     "---",
                     input_data.existing_readme,
                     "---",
                 ])
             else:
-                readme_context.append("\n**Current README.md:** (none -- create from scratch)")
+                readme_context.append("\n**Current root README.md:** (none -- create from scratch)")
+
+            if input_data.has_frontend_folder:
+                if input_data.existing_readme_frontend:
+                    readme_context.extend([
+                        "",
+                        "**Current frontend/README.md:**",
+                        "---",
+                        input_data.existing_readme_frontend,
+                        "---",
+                    ])
+                else:
+                    readme_context.append("\n**Current frontend/README.md:** (none -- create if appropriate)")
+            if input_data.has_backend_folder:
+                if input_data.existing_readme_backend:
+                    readme_context.extend([
+                        "",
+                        "**Current backend/README.md:**",
+                        "---",
+                        input_data.existing_readme_backend,
+                        "---",
+                    ])
+                else:
+                    readme_context.append("\n**Current backend/README.md:** (none -- create if appropriate)")
+            if input_data.has_devops_folder:
+                if input_data.existing_readme_devops:
+                    readme_context.extend([
+                        "",
+                        "**Current devops/README.md:**",
+                        "---",
+                        input_data.existing_readme_devops,
+                        "---",
+                    ])
+                else:
+                    readme_context.append("\n**Current devops/README.md:** (none -- create if appropriate)")
+            readme_context.append(
+                f"\n**Folders present in repo:** frontend={input_data.has_frontend_folder}, "
+                f"backend={input_data.has_backend_folder}, devops={input_data.has_devops_folder}"
+            )
 
             if input_data.spec_content:
                 spec_excerpt = input_data.spec_content
@@ -142,6 +186,12 @@ class DocumentationAgent:
 
             readme_content = data.get("readme_content", "")
             readme_changed = bool(data.get("readme_changed", False))
+            readme_frontend_content = data.get("frontend_readme", "")
+            readme_frontend_changed = bool(data.get("frontend_readme_changed", False))
+            readme_backend_content = data.get("backend_readme", "")
+            readme_backend_changed = bool(data.get("backend_readme_changed", False))
+            readme_devops_content = data.get("devops_readme", "")
+            readme_devops_changed = bool(data.get("devops_readme_changed", False))
             readme_summary = data.get("summary", "")
             commit_message = data.get(
                 "suggested_commit_message",
@@ -152,6 +202,12 @@ class DocumentationAgent:
             if readme_content and not readme_changed:
                 if readme_content.strip() != (input_data.existing_readme or "").strip():
                     readme_changed = True
+
+            # Safety: if no README existed and content was generated, force creation
+            if readme_content and not input_data.existing_readme:
+                if not readme_changed:
+                    logger.info("Documentation: README.md did not exist, forcing creation")
+                readme_changed = True
 
         except Exception as e:
             logger.warning("Documentation: README generation failed: %s", e)
@@ -209,15 +265,25 @@ class DocumentationAgent:
         combined_summary = "; ".join(summaries) if summaries else "No documentation changes."
 
         logger.info(
-            "Documentation: done, readme_changed=%s, contributors_changed=%s",
+            "Documentation: done, readme_changed=%s, readme_frontend_changed=%s, "
+            "readme_backend_changed=%s, readme_devops_changed=%s, contributors_changed=%s",
             readme_changed,
+            readme_frontend_changed,
+            readme_backend_changed,
+            readme_devops_changed,
             contributors_changed,
         )
 
         return DocumentationOutput(
             readme_content=readme_content,
+            readme_frontend_content=readme_frontend_content,
+            readme_backend_content=readme_backend_content,
+            readme_devops_content=readme_devops_content,
             contributors_content=contributors_content,
             readme_changed=readme_changed,
+            readme_frontend_changed=readme_frontend_changed,
+            readme_backend_changed=readme_backend_changed,
+            readme_devops_changed=readme_devops_changed,
             contributors_changed=contributors_changed,
             summary=combined_summary,
             suggested_commit_message=commit_message,
@@ -252,7 +318,7 @@ class DocumentationAgent:
             - No documentation failure blocks the main pipeline
         """
         path = Path(repo_path).resolve()
-        branch_name = f"docs/{task_id}"
+        branch_name = f"docs/{task_id}"  # preliminary; updated after branch creation
         workflow_start = time.monotonic()
 
         def _update(status: DocumentationStatus, detail: str = "") -> None:
@@ -285,16 +351,25 @@ class DocumentationAgent:
                 return DocumentationOutput(
                     summary=f"Documentation update skipped: branch creation failed ({msg})",
                 )
+            # msg contains the actual branch name (e.g. "feature/docs/backend-validation")
+            branch_name = msg
 
             if _check_timeout():
                 _update(DocumentationStatus.FAILED, "timeout")
                 self._cleanup_branch(path, branch_name)
                 return DocumentationOutput(summary="Documentation update skipped: timeout")
 
-            # Step 2: Read existing docs
+            # Step 2: Read existing docs (root + frontend/backend/devops)
             _update(DocumentationStatus.REVIEWING_CODEBASE)
             existing_readme = self._read_file(path / "README.md")
             existing_contributors = self._read_file(path / "CONTRIBUTORS.md")
+            frontend_dir = path / "frontend"
+            backend_dir = path / "backend"
+            devops_dir = path / "devops"
+            existing_readme_frontend = self._read_file(frontend_dir / "README.md") if frontend_dir.is_dir() else ""
+            existing_readme_backend = self._read_file(backend_dir / "README.md") if backend_dir.is_dir() else ""
+            existing_readme_devops = self._read_file(devops_dir / "README.md") if devops_dir.is_dir() else ""
+            readme_missing = not existing_readme
 
             # Step 3: Generate documentation
             _update(DocumentationStatus.UPDATING_README)
@@ -307,10 +382,21 @@ class DocumentationAgent:
                 architecture=architecture,
                 codebase_content=codebase_content,
                 existing_readme=existing_readme,
+                existing_readme_frontend=existing_readme_frontend,
+                existing_readme_backend=existing_readme_backend,
+                existing_readme_devops=existing_readme_devops,
                 existing_contributors=existing_contributors,
+                has_frontend_folder=frontend_dir.is_dir(),
+                has_backend_folder=backend_dir.is_dir(),
+                has_devops_folder=devops_dir.is_dir(),
             )
 
             result = self.run(input_data)
+
+            # Force creation if README did not exist but content was generated
+            if readme_missing and result.readme_content and not result.readme_changed:
+                logger.info("DocAgent [%s]: README.md did not exist, forcing creation", task_id)
+                result.readme_changed = True
 
             if _check_timeout():
                 _update(DocumentationStatus.FAILED, "timeout")
@@ -321,6 +407,12 @@ class DocumentationAgent:
             files_to_write: Dict[str, str] = {}
             if result.readme_changed and result.readme_content:
                 files_to_write["README.md"] = result.readme_content
+            if path.joinpath("frontend").is_dir() and result.readme_frontend_changed and result.readme_frontend_content:
+                files_to_write["frontend/README.md"] = result.readme_frontend_content
+            if path.joinpath("backend").is_dir() and result.readme_backend_changed and result.readme_backend_content:
+                files_to_write["backend/README.md"] = result.readme_backend_content
+            if path.joinpath("devops").is_dir() and result.readme_devops_changed and result.readme_devops_content:
+                files_to_write["devops/README.md"] = result.readme_devops_content
             if result.contributors_changed and result.contributors_content:
                 files_to_write["CONTRIBUTORS.md"] = result.contributors_content
 

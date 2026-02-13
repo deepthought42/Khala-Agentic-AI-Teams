@@ -143,6 +143,106 @@ def delete_branch(repo_path: str | Path, branch: str) -> Tuple[bool, str]:
     return True, f"Deleted branch {branch}"
 
 
+# Default .gitignore for new repos (Python, Node, IDE)
+_DEFAULT_GITIGNORE = """# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+"""
+
+
+def initialize_new_repo(repo_path: str | Path) -> Tuple[bool, str]:
+    """
+    Initialize a directory as a new git repo: init, .gitignore, README.md, CONTRIBUTORS.md,
+    initial commit, rename master to main, create and checkout development branch.
+
+    If the path is already a git repo, ensures development branch exists and checks it out.
+    Returns (success, message).
+    """
+    path = Path(repo_path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+
+    if (path / ".git").exists():
+        ok, msg = ensure_development_branch(path)
+        # Idempotent: already a repo; ensuring development is success
+        return True, f"Already a git repo; {msg}"
+
+    # 1. git init
+    code, out = _run_git(path, ["git", "init"])
+    if code != 0:
+        return False, f"git init failed: {out}"
+
+    # 2. .gitignore, README.md, CONTRIBUTORS.md
+    (path / ".gitignore").write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+    (path / "README.md").write_text("", encoding="utf-8")
+    (path / "CONTRIBUTORS.md").write_text("", encoding="utf-8")
+
+    # 3. Initial commit
+    code, out = _run_git(path, ["git", "add", "-A"])
+    if code != 0:
+        return False, f"git add failed: {out}"
+    code, out = _run_git(path, ["git", "commit", "-m", "Initial commit"])
+    if code != 0:
+        return False, f"Initial commit failed: {out}"
+
+    # 4. Rename master to main (git init may create master or main depending on version)
+    code, out = _run_git(path, ["git", "branch", "--show-current"])
+    current_branch = (out or "").strip() if code == 0 else "master"
+    if current_branch == "master":
+        code, out = _run_git(path, ["git", "branch", "-m", "master", "main"])
+        if code != 0:
+            return False, f"Rename master to main failed: {out}"
+
+    # 5. Create development branch and switch to it
+    code, out = _run_git(path, ["git", "checkout", "-b", DEVELOPMENT_BRANCH])
+    if code != 0:
+        return False, f"Create development branch failed: {out}"
+    logger.info("Initialized new repo at %s with development branch", path)
+    return True, f"Initialized repo at {path}; on branch {DEVELOPMENT_BRANCH}"
+
+
 def ensure_development_branch(repo_path: str | Path) -> Tuple[bool, str]:
     """
     Ensure the development branch exists. Create it from main if it does not.

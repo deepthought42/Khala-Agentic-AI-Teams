@@ -2,17 +2,17 @@
 Tech Lead orchestrator: runs the full pipeline with feature branches.
 
 Flow:
-1. Ensure development branch
-2. Read initial_spec.md, parse to requirements
-3. Request architecture from Architect when needed
-4. Tech Lead generates plan (multi-step: codebase analysis, spec analysis, task generation)
-5. For each task: create feature branch, implement, code review, build/test, merge
-6. Only one coding agent works at a time (sequential execution)
+1. Read initial_spec.md from work path (no git required at root)
+2. Request architecture, Tech Lead generates plan
+3. Prefix tasks (devops, git_setup) run sequentially on work path
+4. Backend and frontend tasks run in parallel (one task per agent type at a time),
+   each in its own repo (work_path/backend, work_path/frontend) initialized by Git Setup Agent
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -52,6 +52,7 @@ def _get_agents(llm):
     from devops_agent import DevOpsExpertAgent, DevOpsInput
     from documentation_agent import DocumentationAgent, DocumentationInput
     from frontend_agent import FrontendExpertAgent, FrontendInput
+    from git_setup_agent import GitSetupAgent
     from qa_agent import QAExpertAgent, QAInput
     from security_agent import CybersecurityExpertAgent, SecurityInput
     from tech_lead_agent import TechLeadAgent, TechLeadInput
@@ -67,6 +68,7 @@ def _get_agents(llm):
         "code_review": CodeReviewAgent(llm),
         "dbc_comments": DbcCommentsAgent(llm),
         "documentation": DocumentationAgent(llm),
+        "git_setup": GitSetupAgent(),
     }
 
 
@@ -97,11 +99,13 @@ def _issues_to_dicts(qa_bugs, sec_vulns) -> tuple:
 
 
 def _read_repo_code(repo_path: Path, extensions: List[str] = None) -> str:
-    """Read code files from repo, concatenated."""
+    """Read code files from repo, concatenated. Excludes .git to avoid corrupt object errors."""
     if extensions is None:
         extensions = [".py", ".ts", ".tsx", ".java", ".yml", ".yaml"]
     parts = []
     for f in repo_path.rglob("*"):
+        if ".git" in f.parts:
+            continue
         if f.is_file() and f.suffix in extensions:
             try:
                 parts.append(f"### {f.relative_to(repo_path)} ###\n{f.read_text(encoding='utf-8', errors='replace')}")
@@ -212,10 +216,12 @@ def _run_tech_lead_review(
     execution_queue: list,
     repo_path: Path,
     doc_agent=None,
+    append_task_id_fn=None,
 ) -> None:
     """
     Ask the Tech Lead to review progress after a task completes.
-    If the Tech Lead identifies gaps, new tasks are added to the execution queue.
+    If the Tech Lead identifies gaps, new tasks are added to the execution queue
+    (or to the queue provided via append_task_id_fn when running in a worker).
     After review, the Tech Lead triggers the Documentation Agent if available.
     """
     completed_tasks = [t for tid, t in all_tasks.items() if tid in completed]
@@ -236,7 +242,10 @@ def _run_tech_lead_review(
         for nt in new_tasks:
             if nt.id not in all_tasks:
                 all_tasks[nt.id] = nt
-                execution_queue.append(nt.id)
+                if append_task_id_fn is not None:
+                    append_task_id_fn(nt.id)
+                else:
+                    execution_queue.append(nt.id)
         logger.info(
             "Tech Lead review: added %s new tasks from progress review: %s",
             len(new_tasks),
@@ -335,34 +344,31 @@ def _run_build_verification(
     For frontend: runs ng build.
     For backend: runs python syntax check (pytest if tests exist).
     """
-    from shared.command_runner import run_ng_build, run_python_syntax_check, run_pytest
+    from shared.command_runner import run_ng_build_with_nvm_fallback, run_python_syntax_check, run_pytest
 
     if agent_type == "frontend":
-        # Look for Angular project (package.json with @angular/core)
-        frontend_dir = repo_path / "frontend"
+        # repo_path may be frontend repo root (package.json here) or work path (frontend/ subdir)
+        frontend_dir = repo_path if (repo_path / "package.json").exists() else (repo_path / "frontend")
         if not (frontend_dir / "package.json").exists():
-            # Try repo root
-            if (repo_path / "package.json").exists():
-                frontend_dir = repo_path
-            else:
-                logger.info("Build verification: no Angular project found, skipping ng build")
-                return True, ""
-        result = run_ng_build(frontend_dir)
+            logger.info("Build verification: no Angular project found, skipping ng build")
+            return True, ""
+        from shared.command_runner import is_ng_build_environment_failure
+        result = run_ng_build_with_nvm_fallback(frontend_dir)
         if not result.success:
+            if is_ng_build_environment_failure(result):
+                # Environment (e.g. Node version) - caller should fail task, not retry
+                return False, "ENV:" + result.error_summary
             logger.warning("Build verification failed for task %s: %s", task_id, result.error_summary[:200])
             return False, result.error_summary
         logger.info("Build verification passed for frontend task %s", task_id)
         return True, ""
 
     elif agent_type == "backend":
-        # Look for Python project
-        backend_dir = repo_path / "backend"
-        if not any(backend_dir.rglob("*.py")) if backend_dir.exists() else True:
-            if any(repo_path.rglob("*.py")):
-                backend_dir = repo_path
-            else:
-                logger.info("Build verification: no Python files found, skipping")
-                return True, ""
+        # repo_path may be backend repo root (py files here) or work path (backend/ subdir)
+        backend_dir = repo_path if any(repo_path.rglob("*.py")) else (repo_path / "backend")
+        if not backend_dir.exists() or not any(backend_dir.rglob("*.py")):
+            logger.info("Build verification: no Python files found, skipping")
+            return True, ""
         result = run_python_syntax_check(backend_dir)
         if not result.success:
             logger.warning("Syntax check failed for task %s: %s", task_id, result.error_summary[:200])
@@ -384,10 +390,13 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
     """
     Main orchestration loop. Runs in background thread.
 
-    IMPORTANT: Only one coding agent works at a time. All tasks are processed
-    sequentially to avoid conflicts on the shared repository.
+    Work path (repo_path) is the folder where work is saved; it does not need to be a git repo.
+    Backend and frontend each have their own repo at work_path/backend and work_path/frontend,
+    initialized by the Git Setup Agent before first use. Backend and frontend tasks run in parallel.
     """
     path = Path(repo_path).resolve()
+    backend_dir = path / "backend"
+    frontend_dir = path / "frontend"
     try:
         update_job(job_id, status=JOB_STATUS_RUNNING)
 
@@ -395,11 +404,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         llm = get_llm_client()
         agents = _get_agents(llm)
 
-        # 1. Ensure development branch
-        ensure_development_branch(path)
-        update_job(job_id, current_task="git_setup")
-
-        # 2. Read spec
+        # 1. Read spec from work path (no git required at root)
         from spec_parser import load_spec_from_repo, parse_spec_heuristic, parse_spec_with_llm
         spec_content = load_spec_from_repo(path)
         try:
@@ -444,141 +449,110 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         # Store execution order in job state for API polling
         update_job(job_id, execution_order=assignment.execution_order)
 
-        # 5. Execute tasks (use queue to support dynamic fix tasks from Tech Lead)
+        # 5. Execute tasks: partition into prefix (devops/git_setup), backend, frontend
         completed = set()
-        failed: Dict[str, str] = {}  # task_id -> failure reason
-        completed_code_task_ids = []  # backend/frontend tasks for security eligibility
-        execution_queue = list(assignment.execution_order)
+        failed: Dict[str, str] = {}
+        completed_code_task_ids: List[str] = []
         all_tasks = {t.id: t for t in assignment.tasks}
-        total_tasks = len(execution_queue)
-        task_counter = 0
-        # Safety limit: tasks are never re-queued for dependencies, but QA fix
-        # tasks and Tech Lead review tasks can be dynamically added.
-        max_passes = total_tasks * 3
+        full_order = list(assignment.execution_order)
+        prefix_queue = [tid for tid in full_order if all_tasks.get(tid) and (
+            all_tasks[tid].type.value == "git_setup" or all_tasks[tid].assignee == "devops"
+        )]
+        backend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "backend"]
+        frontend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"]
+        total_tasks = len(prefix_queue) + len(backend_queue) + len(frontend_queue)
+        state_lock = threading.Lock()
+
+        # Remaining task ids (still in backend/frontend queues) for Tech Lead
+        def _remaining_queue_ids() -> List[str]:
+            with state_lock:
+                return list(backend_queue) + list(frontend_queue)
 
         logger.info(
-            "=== Starting task execution: %s tasks in queue ===", total_tasks,
+            "=== Starting task execution: prefix=%s, backend=%s, frontend=%s ===",
+            len(prefix_queue), len(backend_queue), len(frontend_queue),
         )
 
-        # SEQUENTIAL EXECUTION INVARIANT: Only one coding agent works at a time.
-        # All tasks are processed one-by-one in this synchronous while loop.
-        # No threading, no asyncio -- the loop blocks until each agent finishes
-        # (including any documentation/review sub-agents) before starting the next.
-        _active_task_id: str | None = None
-
-        while execution_queue and max_passes > 0:
-            max_passes -= 1
-            task_id = execution_queue.pop(0)
+        # Run prefix tasks sequentially (work path; devops writes to path/devops, no git)
+        for task_id in prefix_queue:
             task = all_tasks.get(task_id)
             if not task:
-                logger.warning("Task %s not found in task registry - skipping", task_id)
                 continue
-
-            # Enforce single-agent-at-a-time invariant
-            assert _active_task_id is None, (
-                f"Sequential execution violated: starting {task_id} while "
-                f"{_active_task_id} is still active"
-            )
-            _active_task_id = task_id
-
-            task_counter += 1
-            task_start_time = time.monotonic()
-            logger.info(
-                "=== [%s/%s] Starting task %s (type=%s, assignee=%s) [exclusive] ===",
-                task_counter, total_tasks, task_id, task.type.value, task.assignee,
-            )
             update_job(job_id, current_task=task_id)
-            branch_name = f"feature/{task_id}"
-
-            try:
-                if task.type.value == "git_setup":
-                    completed.add(task_id)
-                    logger.info("[%s] Git setup task auto-completed", task_id)
-                    continue
-
-                # Backend agent manages its own branch lifecycle
-                if task.assignee == "backend":
-                    pass  # Branch creation handled inside run_workflow()
-                else:
-                    # Create feature branch for non-backend agents
-                    ok, msg = create_feature_branch(path, DEVELOPMENT_BRANCH, task_id)
-                    if not ok:
-                        logger.error("[%s] Feature branch creation FAILED: %s", task_id, msg)
-                        failed[task_id] = f"Feature branch creation failed: {msg}"
-                        continue
-
-                if task.assignee == "devops":
-                    logger.info("[%s] Phase 1: DevOps agent implementing task", task_id)
-                    from devops_agent.models import DevOpsInput
-                    existing_pipeline = _read_repo_code(path, [".yml", ".yaml"])
-                    current_task = task
-                    result = None
-                    task_completed = False
-                    failure_reason = ""
-                    for _ in range(MAX_CLARIFICATION_REFINEMENTS + 1):
-                        result = agents["devops"].run(DevOpsInput(
-                            task_description=current_task.description,
-                            requirements=_task_requirements(current_task),
-                            architecture=architecture,
-                            existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
-                            tech_stack=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
-                        ))
-                        if not result.needs_clarification or not result.clarification_requests:
-                            break
-                        logger.info("DevOps requested clarification for %s: refining task", task_id)
-                        current_task = tech_lead.refine_task(
-                            current_task, result.clarification_requests, spec_content, architecture,
-                        )
-                    if result and result.needs_clarification:
-                        failure_reason = "Agent still needs clarification after max refinements"
-                        logger.warning("Task %s still needs clarification after refinements", task_id)
-                        checkout_branch(path, DEVELOPMENT_BRANCH)
-                    else:
-                        subdir = "devops"
-                        ok, msg = write_agent_output(path, result, subdir=subdir)
-                        if ok:
-                            merge_ok, merge_msg = merge_branch(path, branch_name, DEVELOPMENT_BRANCH)
-                            if merge_ok:
-                                delete_branch(path, branch_name)
-                                task_completed = True
-                            else:
-                                failure_reason = f"Merge failed: {merge_msg}"
-                                logger.warning("[%s] Merge failed: %s", task_id, merge_msg)
-                        else:
-                            failure_reason = f"Write failed: {msg}"
-                            logger.warning("[%s] DevOps write failed: %s", task_id, msg)
-                        checkout_branch(path, DEVELOPMENT_BRANCH)
-                    elapsed = time.monotonic() - task_start_time
-                    if task_completed:
+            if task.type.value == "git_setup":
+                completed.add(task_id)
+                logger.info("[%s] Git setup task auto-completed", task_id)
+                continue
+            if task.assignee == "devops":
+                from devops_agent.models import DevOpsInput
+                existing_pipeline = _read_repo_code(path, [".yml", ".yaml"])
+                current_task = task
+                result = None
+                for _ in range(MAX_CLARIFICATION_REFINEMENTS + 1):
+                    result = agents["devops"].run(DevOpsInput(
+                        task_description=current_task.description,
+                        requirements=_task_requirements(current_task),
+                        architecture=architecture,
+                        existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                        tech_stack=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+                    ))
+                    if not result.needs_clarification or not result.clarification_requests:
+                        break
+                    current_task = tech_lead.refine_task(
+                        current_task, result.clarification_requests, spec_content, architecture,
+                    )
+                if result and not result.needs_clarification:
+                    ok, _ = write_agent_output(path, result, subdir="devops")
+                    if ok:
                         completed.add(task_id)
-                        logger.info(
-                            "[%s] Task COMPLETED in %.1fs (completed: %s/%s)",
-                            task_id, elapsed, len(completed), total_tasks,
-                        )
-                        # Tech Lead reviews progress after devops task completion
                         task_update = _build_task_update(task_id, "devops", result)
                         _run_tech_lead_review(
                             tech_lead, task_update, spec_content, architecture,
-                            all_tasks, completed, execution_queue, path,
+                            all_tasks, completed, _remaining_queue_ids(), path,
                             doc_agent=agents.get("documentation"),
                         )
                     else:
-                        failed[task_id] = failure_reason
-                        logger.warning("[%s] Task FAILED after %.1fs: %s", task_id, elapsed, failure_reason)
+                        failed[task_id] = "Write failed"
+                else:
+                    failed[task_id] = "Agent needs clarification after refinements"
 
-                elif task.assignee == "backend":
-                    # ── Backend agent runs its own autonomous workflow ──
-                    logger.info("[%s] >>> Backend agent workflow starting", task_id)
-                    task_completed = False
-                    failure_reason = ""
-
-                    # Collect context lists for the Tech Lead notification inside the workflow
+        # Backend and frontend workers run in parallel (one task per agent type at a time)
+        def _backend_worker() -> None:
+            while True:
+                with state_lock:
+                    if not backend_queue:
+                        break
+                    task_id = backend_queue.pop(0)
+                    task = all_tasks.get(task_id)
+                if not task:
+                    continue
+                update_job(job_id, current_task=task_id)
+                logger.info("[%s] >>> Backend worker starting task %s", task_id, task_id)
+                task_start_time = time.monotonic()
+                try:
+                    from shared.command_runner import ensure_backend_project_initialized
+                    init_result = ensure_backend_project_initialized(backend_dir)
+                    if not init_result.success:
+                        with state_lock:
+                            failed[task_id] = f"Backend init failed: {init_result.error_summary}"
+                        continue
+                    if not (backend_dir / ".git").exists():
+                        gs_result = agents["git_setup"].run(backend_dir)
+                        if not gs_result.success:
+                            with state_lock:
+                                failed[task_id] = f"Git setup failed: {gs_result.message}"
+                            continue
                     completed_tasks_list = [t for tid, t in all_tasks.items() if tid in completed]
-                    remaining_ids = set(execution_queue)
+                    remaining_ids = set(_remaining_queue_ids()) - {task_id}
                     remaining_tasks_list = [t for tid, t in all_tasks.items() if tid in remaining_ids]
 
+                    def _append_backend_task(nt) -> None:
+                        with state_lock:
+                            all_tasks[nt.id] = nt
+                            backend_queue.append(nt.id)
+
                     workflow_result = agents["backend"].run_workflow(
-                        repo_path=path,
+                        repo_path=backend_dir,
                         task=task,
                         spec_content=spec_content,
                         architecture=architecture,
@@ -591,28 +565,56 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         completed_tasks=completed_tasks_list,
                         remaining_tasks=remaining_tasks_list,
                         all_tasks=all_tasks,
-                        execution_queue=execution_queue,
+                        execution_queue=backend_queue,
+                        append_task_fn=_append_backend_task,
                     )
-
                     elapsed = time.monotonic() - task_start_time
-                    if workflow_result.success:
-                        task_completed = True
-                        completed.add(task_id)
-                        completed_code_task_ids.append(task_id)
-                        logger.info(
-                            "[%s] Task COMPLETED in %.1fs (%d review iterations, completed: %s/%s)",
-                            task_id, elapsed, workflow_result.iterations_used,
-                            len(completed), total_tasks,
-                        )
-                    else:
-                        failure_reason = workflow_result.failure_reason or "Backend workflow produced no output"
-                        failed[task_id] = failure_reason
-                        logger.warning("[%s] Task FAILED after %.1fs: %s", task_id, elapsed, failure_reason)
-                    logger.info("[%s] <<< Backend agent workflow complete", task_id)
+                    with state_lock:
+                        if workflow_result.success:
+                            completed.add(task_id)
+                            completed_code_task_ids.append(task_id)
+                            logger.info("[%s] Backend COMPLETED in %.1fs", task_id, elapsed)
+                        else:
+                            failed[task_id] = workflow_result.failure_reason or "Backend workflow failed"
+                            logger.warning("[%s] Backend FAILED after %.1fs: %s", task_id, elapsed, failed[task_id])
+                except Exception as e:
+                    with state_lock:
+                        failed[task_id] = f"Unhandled exception: {e}"
+                    logger.exception("[%s] Backend task exception", task_id)
+                logger.info("[%s] <<< Backend worker done", task_id)
 
-                elif task.assignee == "frontend":
-                    # ── SEQUENTIAL CODING: Frontend agent has exclusive repo access ──
-                    logger.info("[%s] >>> Frontend agent acquiring coding slot (other agents wait)", task_id)
+        def _frontend_worker() -> None:
+            while True:
+                with state_lock:
+                    if not frontend_queue:
+                        break
+                    task_id = frontend_queue.pop(0)
+                    task = all_tasks.get(task_id)
+                if not task:
+                    continue
+                update_job(job_id, current_task=task_id)
+                logger.info("[%s] >>> Frontend worker starting task %s", task_id, task_id)
+                task_start_time = time.monotonic()
+                branch_name = f"feature/{task_id}"
+                try:
+                    from shared.command_runner import ensure_frontend_project_initialized
+                    init_result = ensure_frontend_project_initialized(frontend_dir)
+                    if not init_result.success:
+                        with state_lock:
+                            failed[task_id] = f"Frontend init failed: {init_result.error_summary}"
+                        continue
+                    if not (frontend_dir / ".git").exists():
+                        gs_result = agents["git_setup"].run(frontend_dir)
+                        if not gs_result.success:
+                            with state_lock:
+                                failed[task_id] = f"Git setup failed: {gs_result.message}"
+                            continue
+                    ok, msg = create_feature_branch(frontend_dir, DEVELOPMENT_BRANCH, task_id)
+                    if not ok:
+                        with state_lock:
+                            failed[task_id] = f"Feature branch failed: {msg}"
+                        continue
+
                     from frontend_agent.models import FrontendInput
                     from qa_agent.models import QAInput
                     qa_issues, sec_issues = [], []
@@ -623,19 +625,13 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     failure_reason = ""
                     current_task = task
 
-                    # Phase 1: Clarification + code review loop
                     for iteration_round in range(MAX_CODE_REVIEW_ITERATIONS):
-                        logger.info(
-                            "[%s] Phase 1: Frontend agent coding (round %s/%s, review_issues=%s)",
-                            task_id, iteration_round + 1, MAX_CODE_REVIEW_ITERATIONS,
-                            len(code_review_issues),
-                        )
                         existing_code = _truncate_for_context(
-                            _read_repo_code(path, [".ts", ".tsx", ".html", ".scss"]),
+                            _read_repo_code(frontend_dir, [".ts", ".tsx", ".html", ".scss"]),
                             MAX_EXISTING_CODE_CHARS,
                         )
                         api_endpoints = _truncate_for_context(
-                            _read_repo_code(path, [".py"]),
+                            _read_repo_code(backend_dir, [".py"]),
                             MAX_API_SPEC_CHARS,
                         )
                         result = agents["frontend"].run(FrontendInput(
@@ -650,69 +646,47 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             security_issues=sec_issues,
                             code_review_issues=code_review_issues,
                         ))
-
-                        # Handle clarification requests
                         if result.needs_clarification and result.clarification_requests:
                             if iteration_round < MAX_CLARIFICATION_REFINEMENTS:
-                                logger.info("Frontend requested clarification for %s: refining task", task_id)
                                 current_task = tech_lead.refine_task(
                                     current_task, result.clarification_requests, spec_content, architecture,
                                 )
-                                code_review_issues = []  # reset review issues for fresh attempt
+                                code_review_issues = []
                                 continue
-                            else:
-                                failure_reason = "Agent still needs clarification after max refinements"
-                                logger.warning("Task %s still needs clarification - skipping", task_id)
-                                checkout_branch(path, DEVELOPMENT_BRANCH)
-                                break
-
-                        # Have code - write it
-                        ok, msg = write_agent_output(path, result, subdir="frontend")
-                        if not ok:
-                            failure_reason = f"Write failed: {msg}"
-                            logger.warning("[%s] Frontend write failed: %s", task_id, msg)
-                            checkout_branch(path, DEVELOPMENT_BRANCH)
+                            failure_reason = "Agent needs clarification after max refinements"
+                            checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
                             break
 
-                        # Phase 2: Build verification (ng build)
-                        logger.info("[%s] Phase 2: Build verification (ng build)", task_id)
-                        build_ok, build_errors = _run_build_verification(path, "frontend", task_id)
+                        ok, msg = write_agent_output(frontend_dir, result, subdir="")
+                        if not ok:
+                            failure_reason = f"Write failed: {msg}"
+                            checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
+                            break
+
+                        build_ok, build_errors = _run_build_verification(frontend_dir, "frontend", task_id)
                         if not build_ok:
-                            logger.warning("[%s] Build FAILED - sending errors back to agent", task_id)
+                            if build_errors.startswith("ENV:"):
+                                failure_reason = "Unsupported environment: " + build_errors[4:].strip()[:500]
+                                checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
+                                break
                             code_review_issues = [{"severity": "critical", "category": "logic",
                                                    "file_path": "", "description": f"ng build failed: {build_errors[:2000]}",
                                                    "suggestion": "Fix the Angular compilation errors"}]
-                            continue  # retry with build errors
+                            continue
 
-                        # Phase 3: Code review
-                        logger.info(
-                            "[%s] Phase 3: Code review (round %s/%s)",
-                            task_id, iteration_round + 1, MAX_CODE_REVIEW_ITERATIONS,
-                        )
-                        code_on_branch = _read_repo_code(path, [".ts", ".tsx", ".html", ".scss"])
+                        code_on_branch = _read_repo_code(frontend_dir, [".ts", ".tsx", ".html", ".scss"])
+                        existing_code = _truncate_for_context(code_on_branch, MAX_EXISTING_CODE_CHARS)
                         review_result = _run_code_review(
                             agents, code_on_branch, spec_content, current_task,
                             "typescript", architecture, existing_code,
                         )
                         _log_code_review_result(review_result, task_id)
-
                         if not review_result.approved:
                             code_review_issues = _code_review_issues_to_dicts(review_result.issues)
                             if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
-                                logger.info(
-                                    "[%s] Sending %s review issues back to frontend agent for fixes",
-                                    task_id, len(review_result.issues),
-                                )
-                                continue  # retry with code review issues
-                            else:
-                                logger.warning(
-                                    "[%s] Code review still failing after max iterations - proceeding to QA anyway",
-                                    task_id,
-                                )
+                                continue
 
-                        # Phase 4: QA review
-                        logger.info("[%s] Phase 4: QA review", task_id)
-                        code_to_review = _read_repo_code(path, [".ts", ".tsx", ".html", ".scss"])
+                        code_to_review = _read_repo_code(frontend_dir, [".ts", ".tsx", ".html", ".scss"])
                         qa_result = agents["qa"].run(QAInput(
                             code=code_to_review, language="typescript",
                             task_description=current_task.description, architecture=architecture,
@@ -721,70 +695,70 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             current_task, qa_result, spec_content, architecture,
                         )
                         if fix_tasks:
-                            for ft in fix_tasks:
-                                all_tasks[ft.id] = ft
-                                execution_queue.insert(0, ft.id)
+                            with state_lock:
+                                for ft in fix_tasks:
+                                    all_tasks[ft.id] = ft
+                                    if getattr(ft, "assignee", None) == "frontend":
+                                        frontend_queue.insert(0, ft.id)
+                                    else:
+                                        backend_queue.insert(0, ft.id)
                             logger.info("Tech Lead created %s fix tasks from QA feedback", len(fix_tasks))
 
-                        # Phase 5: DbC Comments review
-                        logger.info("[%s] Phase 5: DbC comments review", task_id)
                         _run_dbc_comments_review(
-                            agents, path, task_id, "typescript",
+                            agents, frontend_dir, task_id, "typescript",
                             current_task.description, architecture,
                         )
-
-                        # Phase 6: Merge to development and cleanup
-                        logger.info("[%s] Phase 6: Merge to development", task_id)
-                        merge_ok, merge_msg = merge_branch(path, branch_name, DEVELOPMENT_BRANCH)
+                        merge_ok, merge_msg = merge_branch(frontend_dir, branch_name, DEVELOPMENT_BRANCH)
                         if merge_ok:
-                            delete_branch(path, branch_name)
+                            delete_branch(frontend_dir, branch_name)
                             merged = True
                             task_completed = True
-                            completed_code_task_ids.append(task_id)
-                            logger.info("[%s] Feature branch %s merged to development", task_id, branch_name)
+                            with state_lock:
+                                completed.add(task_id)
+                                completed_code_task_ids.append(task_id)
                         else:
                             failure_reason = f"Merge failed: {merge_msg}"
-                            logger.warning("[%s] Merge FAILED: %s", task_id, merge_msg)
-                        checkout_branch(path, DEVELOPMENT_BRANCH)
-                        break  # task done (merged or merge-failed)
+                        checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
+                        break
 
                     elapsed = time.monotonic() - task_start_time
                     if not merged:
-                        checkout_branch(path, DEVELOPMENT_BRANCH)
+                        checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
                     if task_completed:
-                        completed.add(task_id)
-                        logger.info(
-                            "[%s] Task COMPLETED in %.1fs (completed: %s/%s)",
-                            task_id, elapsed, len(completed), total_tasks,
-                        )
+                        with state_lock:
+                            completed.add(task_id)
                         task_update = _build_task_update(task_id, "frontend", result)
+                        def _append_frontend_task_id(tid: str) -> None:
+                            with state_lock:
+                                frontend_queue.append(tid)
                         _run_tech_lead_review(
                             tech_lead, task_update, spec_content, architecture,
-                            all_tasks, completed, execution_queue, path,
+                            all_tasks, completed, _remaining_queue_ids(), frontend_dir,
                             doc_agent=agents.get("documentation"),
+                            append_task_id_fn=_append_frontend_task_id,
                         )
                     else:
-                        failed[task_id] = failure_reason or "Frontend agent produced no output"
-                        logger.warning("[%s] Task FAILED after %.1fs: %s", task_id, elapsed, failed[task_id])
-                    logger.info("[%s] <<< Frontend agent releasing coding slot", task_id)
+                        with state_lock:
+                            failed[task_id] = failure_reason or "Frontend agent produced no output"
+                    logger.info("[%s] <<< Frontend worker done (completed=%s)", task_id, task_completed)
+                except Exception as e:
+                    with state_lock:
+                        failed[task_id] = f"Unhandled exception: {e}"
+                    logger.exception("[%s] Frontend task exception", task_id)
+                    checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
 
-                else:
-                    logger.warning("[%s] Unknown assignee '%s' - auto-completing", task_id, task.assignee)
-                    completed.add(task_id)
+        t_backend = threading.Thread(target=_backend_worker)
+        t_frontend = threading.Thread(target=_frontend_worker)
+        t_backend.start()
+        t_frontend.start()
+        t_backend.join()
+        t_frontend.join()
 
-            except Exception as e:
-                elapsed = time.monotonic() - task_start_time
-                logger.exception("[%s] Task FAILED with exception after %.1fs", task_id, elapsed)
-                failed[task_id] = f"Unhandled exception: {e}"
-                checkout_branch(path, DEVELOPMENT_BRANCH)
-            finally:
-                # Release the single-agent-at-a-time slot
-                _active_task_id = None
-
+        remaining_in_queues = len(backend_queue) + len(frontend_queue)
         # Log final execution summary
         logger.info(
-            "=== Task execution finished: %s completed, %s failed, %s remaining in queue (of %s total) ===",
-            len(completed), len(failed), len(execution_queue), total_tasks,
+            "=== Task execution finished: %s completed, %s failed, %s remaining (of %s total) ===",
+            len(completed), len(failed), remaining_in_queues, total_tasks,
         )
         if failed:
             logger.warning("=== Failed task report ===")
@@ -792,10 +766,10 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 task_obj = all_tasks.get(tid)
                 title = task_obj.title if task_obj else tid
                 logger.warning("  [%s] %s — Reason: %s", tid, title, reason)
-        if execution_queue:
+        if remaining_in_queues:
             logger.warning(
-                "Unprocessed tasks still in queue: %s",
-                execution_queue,
+                "Unprocessed tasks still in queues: backend=%s, frontend=%s",
+                len(backend_queue), len(frontend_queue),
             )
 
         # Persist failed task details and retryable state in job store
@@ -816,21 +790,37 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             _architecture_overview=architecture.overview if architecture else None,
         )
 
-        # Security: Tech Lead invokes only when code covers 90%+ of spec
+        # Security: run on backend repo and frontend repo separately
         if completed_code_task_ids and tech_lead.should_run_security(
             completed_code_task_ids, spec_content, tech_lead_output.requirement_task_mapping
         ):
             from security_agent.models import SecurityInput
-            logger.info("Tech Lead requested security review - running Security agent")
-            code_to_review = _read_repo_code(path)
-            sec_result = agents["security"].run(SecurityInput(
-                code=code_to_review,
-                language="python",
-                task_description="Full codebase security review",
-                architecture=architecture,
-            ))
-            if sec_result.vulnerabilities:
-                logger.warning("Security found %s vulnerabilities: %s", len(sec_result.vulnerabilities), [v.description[:50] for v in sec_result.vulnerabilities[:3]])
+            has_backend = any(all_tasks.get(tid) and all_tasks[tid].assignee == "backend" for tid in completed_code_task_ids)
+            has_frontend = any(all_tasks.get(tid) and all_tasks[tid].assignee == "frontend" for tid in completed_code_task_ids)
+            if has_backend:
+                logger.info("Tech Lead requested security review - running Security agent on backend repo")
+                code_backend = _read_repo_code(backend_dir)
+                if code_backend and code_backend != "# No code files found":
+                    sec_result = agents["security"].run(SecurityInput(
+                        code=code_backend,
+                        language="python",
+                        task_description="Full codebase security review",
+                        architecture=architecture,
+                    ))
+                    if sec_result.vulnerabilities:
+                        logger.warning("Security (backend) found %s vulnerabilities", len(sec_result.vulnerabilities))
+            if has_frontend:
+                logger.info("Tech Lead requested security review - running Security agent on frontend repo")
+                code_frontend = _read_repo_code(frontend_dir, [".ts", ".tsx", ".html", ".scss"])
+                if code_frontend and code_frontend != "# No code files found":
+                    sec_result = agents["security"].run(SecurityInput(
+                        code=code_frontend,
+                        language="typescript",
+                        task_description="Full codebase security review",
+                        architecture=architecture,
+                    ))
+                    if sec_result.vulnerabilities:
+                        logger.warning("Security (frontend) found %s vulnerabilities", len(sec_result.vulnerabilities))
 
         update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, current_task=None)
 
@@ -867,14 +857,14 @@ def run_failed_tasks(job_id: str) -> None:
     logger.info("=== Retrying %s failed tasks for job %s: %s ===", len(failed_ids), job_id, failed_ids)
 
     path = Path(repo_path).resolve()
+    backend_dir = path / "backend"
+    frontend_dir = path / "frontend"
     try:
         update_job(job_id, status=JOB_STATUS_RUNNING, failed_tasks=[], error=None)
 
         from shared.llm import get_llm_client
         llm = get_llm_client()
         agents = _get_agents(llm)
-
-        ensure_development_branch(path)
 
         # Reconstruct task objects from stored data
         all_tasks: Dict[str, Task] = {}
@@ -895,9 +885,9 @@ def run_failed_tasks(job_id: str) -> None:
 
         tech_lead = agents["tech_lead"]
 
-        # Execute only the failed tasks
+        # Execute only the failed tasks (sequential retry; use correct repo per assignee)
         completed = set()
-        failed: Dict[str, str] = {}
+        failed_retry: Dict[str, str] = {}
         completed_code_task_ids = []
         execution_queue = list(failed_ids)
         total_tasks = len(execution_queue)
@@ -928,13 +918,17 @@ def run_failed_tasks(job_id: str) -> None:
                     continue
 
                 if task.assignee == "backend":
-                    # Backend agent manages its own branch lifecycle via run_workflow()
+                    if not (backend_dir / ".git").exists():
+                        gs_result = agents["git_setup"].run(backend_dir)
+                        if not gs_result.success:
+                            failed_retry[task_id] = f"Git setup failed: {gs_result.message}"
+                            continue
                     completed_tasks_list = [t for tid, t in all_tasks.items() if tid in completed]
                     remaining_ids = set(execution_queue)
                     remaining_tasks_list = [t for tid, t in all_tasks.items() if tid in remaining_ids]
 
                     workflow_result = agents["backend"].run_workflow(
-                        repo_path=path,
+                        repo_path=backend_dir,
                         task=task,
                         spec_content=spec_content,
                         architecture=architecture,
@@ -953,15 +947,9 @@ def run_failed_tasks(job_id: str) -> None:
                         completed.add(task_id)
                         completed_code_task_ids.append(task_id)
                     else:
-                        failed[task_id] = workflow_result.failure_reason or "Backend workflow produced no output"
+                        failed_retry[task_id] = workflow_result.failure_reason or "Backend workflow produced no output"
 
                 elif task.assignee == "devops":
-                    ok, msg = create_feature_branch(path, DEVELOPMENT_BRANCH, task_id)
-                    if not ok:
-                        logger.error("[%s] Feature branch creation FAILED: %s", task_id, msg)
-                        failed[task_id] = f"Feature branch creation failed: {msg}"
-                        continue
-
                     from devops_agent.models import DevOpsInput
                     existing_pipeline = _read_repo_code(path, [".yml", ".yaml"])
                     result = agents["devops"].run(DevOpsInput(
@@ -973,30 +961,29 @@ def run_failed_tasks(job_id: str) -> None:
                     ))
                     ok, msg = write_agent_output(path, result, subdir="devops")
                     if ok:
-                        merge_ok, merge_msg = merge_branch(path, branch_name, DEVELOPMENT_BRANCH)
-                        if merge_ok:
-                            delete_branch(path, branch_name)
-                            completed.add(task_id)
-                        else:
-                            failed[task_id] = f"Merge failed: {merge_msg}"
+                        completed.add(task_id)
                     else:
-                        failed[task_id] = f"Write failed: {msg}"
-                    checkout_branch(path, DEVELOPMENT_BRANCH)
+                        failed_retry[task_id] = f"Write failed: {msg}"
 
                 elif task.assignee == "frontend":
-                    ok, msg = create_feature_branch(path, DEVELOPMENT_BRANCH, task_id)
+                    if not (frontend_dir / ".git").exists():
+                        gs_result = agents["git_setup"].run(frontend_dir)
+                        if not gs_result.success:
+                            failed_retry[task_id] = f"Git setup failed: {gs_result.message}"
+                            continue
+                    ok, msg = create_feature_branch(frontend_dir, DEVELOPMENT_BRANCH, task_id)
                     if not ok:
-                        logger.error("[%s] Feature branch creation FAILED: %s", task_id, msg)
-                        failed[task_id] = f"Feature branch creation failed: {msg}"
+                        failed_retry[task_id] = f"Feature branch failed: {msg}"
                         continue
 
                     from frontend_agent.models import FrontendInput
+                    from qa_agent.models import QAInput
                     existing_code = _truncate_for_context(
-                        _read_repo_code(path, [".ts", ".tsx", ".html", ".scss"]),
+                        _read_repo_code(frontend_dir, [".ts", ".tsx", ".html", ".scss"]),
                         MAX_EXISTING_CODE_CHARS,
                     )
                     api_endpoints = _truncate_for_context(
-                        _read_repo_code(path, [".py"]),
+                        _read_repo_code(backend_dir, [".py"]),
                         MAX_API_SPEC_CHARS,
                     )
                     code_review_issues_fe: list = []
@@ -1015,13 +1002,13 @@ def run_failed_tasks(job_id: str) -> None:
                             security_issues=[],
                             code_review_issues=code_review_issues_fe,
                         ))
-                        ok, msg = write_agent_output(path, result, subdir="frontend")
+                        ok, msg = write_agent_output(frontend_dir, result, subdir="")
                         if not ok:
                             failure_reason_fe = f"Write failed: {msg}"
                             break
-                        merge_ok, merge_msg = merge_branch(path, branch_name, DEVELOPMENT_BRANCH)
+                        merge_ok, merge_msg = merge_branch(frontend_dir, branch_name, DEVELOPMENT_BRANCH)
                         if merge_ok:
-                            delete_branch(path, branch_name)
+                            delete_branch(frontend_dir, branch_name)
                             task_completed_fe = True
                         else:
                             failure_reason_fe = f"Merge failed: {merge_msg}"
@@ -1030,8 +1017,8 @@ def run_failed_tasks(job_id: str) -> None:
                         completed.add(task_id)
                         completed_code_task_ids.append(task_id)
                     else:
-                        failed[task_id] = failure_reason_fe or "Frontend agent produced no output"
-                    checkout_branch(path, DEVELOPMENT_BRANCH)
+                        failed_retry[task_id] = failure_reason_fe or "Frontend agent produced no output"
+                    checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
 
                 else:
                     completed.add(task_id)
@@ -1040,32 +1027,37 @@ def run_failed_tasks(job_id: str) -> None:
                 if task_id in completed:
                     logger.info("[%s] Retry COMPLETED in %.1fs", task_id, elapsed)
                 else:
-                    logger.warning("[%s] Retry FAILED after %.1fs: %s", task_id, elapsed, failed.get(task_id, "unknown"))
+                    logger.warning("[%s] Retry FAILED after %.1fs: %s", task_id, elapsed, failed_retry.get(task_id, "unknown"))
 
             except Exception as e:
                 elapsed = time.monotonic() - task_start_time
                 logger.exception("[%s] Retry FAILED with exception after %.1fs", task_id, elapsed)
-                failed[task_id] = f"Unhandled exception: {e}"
-                checkout_branch(path, DEVELOPMENT_BRANCH)
+                failed_retry[task_id] = f"Unhandled exception: {e}"
+                if task.assignee == "backend":
+                    checkout_branch(backend_dir, DEVELOPMENT_BRANCH)
+                elif task.assignee == "frontend":
+                    checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
 
         # Final summary
         logger.info(
             "=== Retry finished: %s completed, %s still failed (of %s retried) ===",
-            len(completed), len(failed), total_tasks,
+            len(completed), len(failed_retry), total_tasks,
         )
-        if failed:
+        if failed_retry:
             logger.warning("=== Still-failed task report ===")
-            for tid, reason in sorted(failed.items()):
+            for tid, reason in sorted(failed_retry.items()):
                 task_obj = all_tasks.get(tid)
                 title = task_obj.title if task_obj else tid
                 logger.warning("  [%s] %s — Reason: %s", tid, title, reason)
 
         failed_details = [
             {"task_id": tid, "reason": reason, "title": (all_tasks.get(tid).title if all_tasks.get(tid) else tid)}
-            for tid, reason in failed.items()
+            for tid, reason in failed_retry.items()
         ]
         update_job(job_id, failed_tasks=failed_details, status=JOB_STATUS_COMPLETED, current_task=None)
 
     except Exception as e:
         logger.exception("Retry orchestrator failed")
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
+
+

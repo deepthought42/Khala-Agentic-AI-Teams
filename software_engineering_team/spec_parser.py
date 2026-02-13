@@ -84,7 +84,7 @@ def parse_spec_heuristic(spec_content: str) -> ProductRequirements:
 
 def load_spec_from_repo(repo_path: str | Path) -> str:
     """
-    Load initial_spec.md from the root of a git repo.
+    Load initial_spec.md from the root of the given path.
     Raises FileNotFoundError if not found.
     """
     path = Path(repo_path).resolve()
@@ -92,6 +92,23 @@ def load_spec_from_repo(repo_path: str | Path) -> str:
     if not spec_file.exists():
         raise FileNotFoundError(f"{SPEC_FILENAME} not found at {spec_file}")
     return spec_file.read_text()
+
+
+def validate_work_path(work_path: str | Path) -> Path:
+    """
+    Validate that the path exists, is a directory, and has initial_spec.md.
+    Does not require the path to be a git repository.
+    Returns the resolved Path. Raises ValueError on failure.
+    """
+    path = Path(work_path).resolve()
+    if not path.exists():
+        raise ValueError(f"Path does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"Path is not a directory: {path}")
+    spec_file = path / SPEC_FILENAME
+    if not spec_file.exists():
+        raise ValueError(f"{SPEC_FILENAME} not found at {spec_file}")
+    return path
 
 
 def validate_repo_path(repo_path: str | Path) -> Path:

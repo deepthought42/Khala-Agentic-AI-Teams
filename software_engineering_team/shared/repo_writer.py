@@ -62,6 +62,13 @@ def _validate_paths(files: Dict[str, str], subdir: str = "") -> Tuple[Dict[str, 
     warnings: List[str] = []
 
     for path, content in files.items():
+        # Always allow repo root .gitignore (written by merge_gitignore_entries)
+        if path == ".gitignore":
+            if content and content.strip():
+                validated[path] = content
+            else:
+                warnings.append("REJECTED: empty content for '.gitignore'")
+            continue
         segments = path.split("/")
         bad = False
         for seg in segments:
@@ -161,6 +168,34 @@ def _output_to_files_dict(output: Any, subdir: str = "") -> Dict[str, str]:
     return files
 
 
+def merge_gitignore_entries(repo_path: Path, new_entries: List[str]) -> Tuple[str, bool]:
+    """
+    Merge new gitignore patterns into existing repo root .gitignore.
+    Preserves existing content and order; appends new patterns (deduplicated).
+    Returns (full file content, True if content changed).
+    """
+    path = Path(repo_path).resolve()
+    gitignore_file = path / ".gitignore"
+    existing = gitignore_file.read_text(encoding="utf-8") if gitignore_file.exists() else ""
+    existing_lines = existing.splitlines()
+    # Normalize non-empty, non-comment lines for dedup
+    seen = {line.strip() for line in existing_lines if line.strip() and not line.strip().startswith("#")}
+    added: List[str] = []
+    for entry in new_entries:
+        e = entry.strip()
+        if e and e not in seen:
+            seen.add(e)
+            added.append(e)
+    if not added:
+        return existing, False
+    result_lines = list(existing_lines)
+    if result_lines and result_lines[-1].strip():
+        result_lines.append("")
+    result_lines.append("# Build/install artifacts")
+    result_lines.extend(added)
+    return "\n".join(result_lines) + "\n", True
+
+
 def write_agent_output(
     repo_path: str | Path,
     output: Any,
@@ -185,9 +220,18 @@ def write_agent_output(
             fix_path = output.get("fix_path", "fixes.py")
             files[fix_path] = output["fixed_code"]
         commit_message = commit_message or output.get("commit_message", "chore: apply fixes")
+        gitignore_entries = output.get("gitignore_entries") or []
     else:
         files = _output_to_files_dict(output, subdir)
         commit_message = commit_message or getattr(output, "suggested_commit_message", None) or "chore: agent output"
+        gitignore_entries = getattr(output, "gitignore_entries", None) or []
+
+    # Merge agent-provided gitignore patterns into repo root .gitignore
+    if gitignore_entries:
+        repo = Path(repo_path).resolve()
+        merged_content, changed = merge_gitignore_entries(repo, list(gitignore_entries))
+        if changed:
+            files[".gitignore"] = merged_content
 
     if not files:
         return False, "No files to write"

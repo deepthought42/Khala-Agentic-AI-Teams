@@ -49,11 +49,35 @@ class DocumentationInput(BaseModel):
     )
     existing_readme: str = Field(
         default="",
-        description="Current content of README.md (empty if none exists)",
+        description="Current content of root README.md (empty if none exists)",
+    )
+    existing_readme_frontend: str = Field(
+        default="",
+        description="Current content of frontend/README.md (empty if none exists)",
+    )
+    existing_readme_backend: str = Field(
+        default="",
+        description="Current content of backend/README.md (empty if none exists)",
+    )
+    existing_readme_devops: str = Field(
+        default="",
+        description="Current content of devops/README.md (empty if none exists)",
     )
     existing_contributors: str = Field(
         default="",
         description="Current content of CONTRIBUTORS.md (empty if none exists)",
+    )
+    has_frontend_folder: bool = Field(
+        default=True,
+        description="Whether the repo has a frontend/ folder (write frontend/README.md only if true)",
+    )
+    has_backend_folder: bool = Field(
+        default=True,
+        description="Whether the repo has a backend/ folder (write backend/README.md only if true)",
+    )
+    has_devops_folder: bool = Field(
+        default=True,
+        description="Whether the repo has a devops/ folder (write devops/README.md only if true)",
     )
 
 
@@ -62,7 +86,19 @@ class DocumentationOutput(BaseModel):
 
     readme_content: str = Field(
         default="",
-        description="Updated README.md content",
+        description="Updated root README.md content",
+    )
+    readme_frontend_content: str = Field(
+        default="",
+        description="Updated frontend/README.md content",
+    )
+    readme_backend_content: str = Field(
+        default="",
+        description="Updated backend/README.md content",
+    )
+    readme_devops_content: str = Field(
+        default="",
+        description="Updated devops/README.md content",
     )
     contributors_content: str = Field(
         default="",
@@ -70,7 +106,19 @@ class DocumentationOutput(BaseModel):
     )
     readme_changed: bool = Field(
         default=False,
-        description="True if README.md was updated",
+        description="True if root README.md was updated",
+    )
+    readme_frontend_changed: bool = Field(
+        default=False,
+        description="True if frontend/README.md was updated",
+    )
+    readme_backend_changed: bool = Field(
+        default=False,
+        description="True if backend/README.md was updated",
+    )
+    readme_devops_changed: bool = Field(
+        default=False,
+        description="True if devops/README.md was updated",
     )
     contributors_changed: bool = Field(
         default=False,

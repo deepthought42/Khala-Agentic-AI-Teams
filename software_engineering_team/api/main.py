@@ -22,7 +22,7 @@ _team_dir = Path(__file__).resolve().parent.parent
 if str(_team_dir) not in sys.path:
     sys.path.insert(0, str(_team_dir))
 
-from spec_parser import validate_repo_path
+from spec_parser import validate_work_path
 from shared.job_store import JOB_STATUS_FAILED, JOB_STATUS_PENDING, create_job, get_job, update_job
 
 from shared.logging_config import setup_logging
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Software Engineering Team API",
-    description="Async API: POST /run-team with repo_path returns job_id. "
+    description="Async API: POST /run-team with work folder path returns job_id. "
     "GET /run-team/{job_id} polls status. Tech Lead orchestrates the full pipeline.",
     version="0.2.0",
 )
@@ -43,7 +43,7 @@ class RunTeamRequest(BaseModel):
 
     repo_path: str = Field(
         ...,
-        description="Local filesystem path to the git repository. Must contain initial_spec.md at the root.",
+        description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
     )
 
 
@@ -96,20 +96,20 @@ def _run_orchestrator_background(job_id: str, repo_path: str) -> None:
     "/run-team",
     response_model=RunTeamResponse,
     summary="Start software engineering team",
-    description="Validates repo, creates job, starts Tech Lead orchestrator in background. "
+    description="Validates work folder, creates job, starts Tech Lead orchestrator in background. "
     "Returns job_id immediately. Poll GET /run-team/{job_id} for status.",
 )
 def run_team(request: RunTeamRequest) -> RunTeamResponse:
     """
-    Start the software engineering team on a git repository.
+    Start the software engineering team on a work folder.
 
-    The repo must:
+    The path must:
     - Exist and be a valid directory
-    - Be a git repository (.git present)
     - Contain initial_spec.md at the root with the full project specification
+    - Does not need to be a git repository
     """
     try:
-        repo_path = validate_repo_path(request.repo_path)
+        repo_path = validate_work_path(request.repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

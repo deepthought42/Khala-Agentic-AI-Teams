@@ -153,10 +153,10 @@ YOUR RESPONSIBILITIES
 **Task dependencies and order:**
 1. git_setup (first)
 2. devops (CI/CD, Docker – early)
-3. backend and frontend tasks INTERLEAVED – only ONE coding agent works at a time
+3. backend and frontend tasks – the orchestrator runs backend and frontend IN PARALLEL (one task at a time per agent type). You MUST still list tasks in execution_order in a sensible dependency order; the orchestrator will split by assignee and run backend and frontend streams concurrently.
 
 **CRITICAL – INTERLEAVE backend and frontend tasks in execution_order:**
-The orchestrator processes tasks sequentially (one at a time). You MUST interleave backend and frontend tasks so that work alternates between agents. Do NOT batch all backend tasks together followed by all frontend tasks. Instead, alternate: 1 backend task, then 1 frontend task, then 1 backend task, then 1 frontend task, etc.
+Backend and frontend tasks run simultaneously (one backend task and one frontend task at a time, in parallel). You MUST interleave backend and frontend tasks in execution_order so that dependencies are respected and work is distributed. Do NOT batch all backend tasks together followed by all frontend tasks. Instead, alternate: 1 backend task, then 1 frontend task, then 1 backend task, then 1 frontend task, etc.
 
 **Example of BAD execution order (DO NOT DO THIS):**
 ["git-setup", "devops-dockerfile", "backend-models", "backend-crud-api", "backend-validation", "frontend-app-shell", "frontend-list", "frontend-form"]
@@ -164,7 +164,7 @@ The orchestrator processes tasks sequentially (one at a time). You MUST interlea
 **Example of GOOD execution order (DO THIS):**
 ["git-setup", "devops-dockerfile", "backend-models", "frontend-app-shell", "backend-crud-api", "frontend-list", "backend-validation", "frontend-form"]
 
-The first backend task (data models) and first frontend task (app shell) may come before other coding tasks since they are foundational. After that, strictly alternate between backend and frontend.
+The first backend task (data models) and first frontend task (app shell) may come before other coding tasks since they are foundational. After that, strictly alternate between backend and frontend in execution_order.
 
 **IMPORTANT:** Do NOT create standalone security or qa tasks. QA is invoked by the orchestrator after every backend/frontend task. Security is invoked by the Tech Lead when code covers 90%+ of the spec. Only create: git_setup, devops, backend, frontend tasks.
 

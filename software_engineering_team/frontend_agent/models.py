@@ -56,3 +56,7 @@ class FrontendOutput(BaseModel):
         default_factory=list,
         description="Specific questions for Tech Lead when task is poorly defined",
     )
+    gitignore_entries: List[str] = Field(
+        default_factory=list,
+        description="Patterns to add to repo .gitignore (e.g. node_modules/, dist/)",
+    )

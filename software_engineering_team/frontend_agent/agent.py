@@ -29,6 +29,11 @@ _ALLOWED_DIRS = frozenset({
     "interceptors", "directives", "utils", "helpers", "test", "spec", "dist", "node_modules",
 })
 
+# Only browser-compatible file extensions are allowed
+_ALLOWED_EXTENSIONS = frozenset({
+    ".ts", ".html", ".scss", ".css", ".json",
+})
+
 
 def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[str]]:
     """
@@ -36,6 +41,8 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
 
     Returns (validated_files, warnings).
     Rejects files with:
+    - Paths not starting with 'src/' (Angular project root)
+    - Non-browser file extensions (only .ts, .html, .scss, .css, .json allowed)
     - Path segments > MAX_PATH_SEGMENT_LENGTH
     - Names that look like sentences (4+ hyphenated words)
     - Names starting with verbs (implement-, create-, build-, etc.)
@@ -45,6 +52,17 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
     validated = {}
     warnings = []
     for path, content in files.items():
+        # Reject files not under src/ (Angular project root)
+        if not ANGULAR_PATH_PATTERN.match(path):
+            warnings.append(f"Path does not start with 'src/' (not Angular project structure): '{path}'")
+            continue
+
+        # Reject non-browser file extensions (e.g. .py, .java)
+        ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
+        if ext not in _ALLOWED_EXTENSIONS:
+            warnings.append(f"File extension '{ext}' is not a browser-compatible frontend file: '{path}'")
+            continue
+
         segments = path.split("/")
         bad_segment = False
         for seg in segments:
@@ -205,4 +223,5 @@ class FrontendExpertAgent:
             suggested_commit_message=data.get("suggested_commit_message", ""),
             needs_clarification=needs_clarification,
             clarification_requests=clarification_requests,
+            gitignore_entries=[str(e).strip() for e in (data.get("gitignore_entries") or []) if str(e).strip()],
         )
