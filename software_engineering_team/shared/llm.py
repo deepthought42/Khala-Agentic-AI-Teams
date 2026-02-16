@@ -380,6 +380,11 @@ class DummyLLMClient(LLMClient):
                 "vulnerabilities": [],
                 "summary": "No security issues found (dummy)",
             }
+        elif "accessibility" in lowered and "wcag" in lowered and "issues" in lowered:
+            return {
+                "issues": [],
+                "summary": "No WCAG 2.2 accessibility issues found (dummy)",
+            }
         # Backend agent – generate unique files per task based on task hint and counter
         # NOTE: Uses the agent's unique role identifier from BACKEND_PROMPT to avoid
         # matching DevOps/Frontend prompts that share CODING_STANDARDS keywords.

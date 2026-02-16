@@ -149,6 +149,7 @@ YOUR RESPONSIBILITIES
 - frontend: Angular implementation
 - security: Reviews code for vulnerabilities – ONLY runs after code exists
 - qa: Bug detection, integration tests, README – ONLY runs after code exists
+- accessibility: Reviews frontend for WCAG 2.2 compliance – ONLY runs after frontend code exists
 
 **Task dependencies and order:**
 1. git_setup (first)
@@ -166,7 +167,7 @@ Backend and frontend tasks run simultaneously (one backend task and one frontend
 
 The first backend task (data models) and first frontend task (app shell) may come before other coding tasks since they are foundational. After that, strictly alternate between backend and frontend in execution_order.
 
-**IMPORTANT:** Do NOT create standalone security or qa tasks. QA is invoked by the orchestrator after every backend/frontend task. Security is invoked by the Tech Lead when code covers 90%+ of the spec. Only create: git_setup, devops, backend, frontend tasks.
+**IMPORTANT:** Do NOT create standalone security, qa, or accessibility tasks. QA, accessibility, and security are invoked by the orchestrator after frontend code exists. Only create: git_setup, devops, backend, frontend tasks.
 
 **Task types (use exactly these – NO security or qa):**
 - git_setup (create development branch – first task only)
@@ -174,7 +175,7 @@ The first backend task (data models) and first frontend task (app shell) may com
 - backend (Python/Java implementation – split into multiple tasks per feature)
 - frontend (Angular implementation – split into multiple tasks per component/screen)
 
-**Assignees:** devops, backend, frontend only. QA and Security are invoked by the orchestrator in response to coding work.
+**Assignees:** devops, backend, frontend only. QA, accessibility, and security are invoked by the orchestrator in response to coding work.
 
 ============================================================
 OUTPUT FORMAT

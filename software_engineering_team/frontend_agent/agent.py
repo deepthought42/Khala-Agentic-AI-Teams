@@ -116,7 +116,7 @@ class FrontendExpertAgent:
         logger.info(
             "Frontend: received task - description=%s | requirements=%s | user_story=%s | "
             "has_architecture=%s | has_existing_code=%s | has_api_endpoints=%s | has_spec=%s | "
-            "qa_issues=%s | security_issues=%s | code_review_issues=%s",
+            "qa_issues=%s | security_issues=%s | accessibility_issues=%s | code_review_issues=%s",
             input_data.task_description[:120],
             input_data.requirements[:120] if input_data.requirements else "",
             input_data.user_story[:80] if input_data.user_story else "",
@@ -126,6 +126,7 @@ class FrontendExpertAgent:
             bool(input_data.spec_content),
             len(input_data.qa_issues) if input_data.qa_issues else 0,
             len(input_data.security_issues) if input_data.security_issues else 0,
+            len(input_data.accessibility_issues) if input_data.accessibility_issues else 0,
             len(input_data.code_review_issues) if input_data.code_review_issues else 0,
         )
         context_parts = [
@@ -165,6 +166,12 @@ class FrontendExpertAgent:
                 for i in input_data.security_issues
             )
             context_parts.extend(["", "**Security issues to fix (implement these):**", sec_text])
+        if input_data.accessibility_issues:
+            a11y_text = "\n".join(
+                f"- [{i.get('severity')}] WCAG {i.get('wcag_criterion', '')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                for i in input_data.accessibility_issues
+            )
+            context_parts.extend(["", "**Accessibility issues to fix (implement these):**", a11y_text])
         if input_data.code_review_issues:
             cr_text = "\n".join(
                 f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
@@ -215,6 +222,11 @@ class FrontendExpertAgent:
             "Frontend: done, code=%s chars, files=%s (validated from %s), summary=%s chars, needs_clarification=%s",
             len(code), len(validated_files), len(raw_files), len(summary), needs_clarification,
         )
+        npm_packages = data.get("npm_packages_to_install") or []
+        if not isinstance(npm_packages, list):
+            npm_packages = [str(npm_packages)] if npm_packages else []
+        npm_packages = [str(p).strip() for p in npm_packages if str(p).strip()]
+
         return FrontendOutput(
             code=code,
             summary=summary,
@@ -224,4 +236,5 @@ class FrontendExpertAgent:
             needs_clarification=needs_clarification,
             clarification_requests=clarification_requests,
             gitignore_entries=[str(e).strip() for e in (data.get("gitignore_entries") or []) if str(e).strip()],
+            npm_packages_to_install=npm_packages,
         )

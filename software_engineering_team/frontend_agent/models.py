@@ -31,6 +31,10 @@ class FrontendInput(BaseModel):
         default_factory=list,
         description="Security issues to fix. Implement fixes and commit to feature branch.",
     )
+    accessibility_issues: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Accessibility (WCAG 2.2) issues to fix. Implement fixes and commit to feature branch.",
+    )
     code_review_issues: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Code review issues to resolve. Fix each issue before re-submitting.",
@@ -59,4 +63,8 @@ class FrontendOutput(BaseModel):
     gitignore_entries: List[str] = Field(
         default_factory=list,
         description="Patterns to add to repo .gitignore (e.g. node_modules/, dist/)",
+    )
+    npm_packages_to_install: List[str] = Field(
+        default_factory=list,
+        description="npm package names to install, e.g. ['@ngrx/store', 'ngx-toastr']",
     )

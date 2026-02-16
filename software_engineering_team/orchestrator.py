@@ -37,6 +37,7 @@ from shared.job_store import (
     JOB_STATUS_RUNNING,
     update_job,
 )
+from shared.command_runner import run_command_with_nvm
 from shared.models import TaskUpdate
 from shared.repo_writer import write_agent_output
 
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 def _get_agents(llm):
     """Lazy init agents including the code review, documentation, and DbC comments agents."""
+    from accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
     from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
     from backend_agent import BackendExpertAgent, BackendInput
     from code_review_agent import CodeReviewAgent, CodeReviewInput
@@ -65,6 +67,7 @@ def _get_agents(llm):
         "frontend": FrontendExpertAgent(llm),
         "security": CybersecurityExpertAgent(llm),
         "qa": QAExpertAgent(llm),
+        "accessibility": AccessibilityExpertAgent(llm),
         "code_review": CodeReviewAgent(llm),
         "dbc_comments": DbcCommentsAgent(llm),
         "documentation": DocumentationAgent(llm),
@@ -608,7 +611,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
 
                     from frontend_agent.models import FrontendInput
                     from qa_agent.models import QAInput
-                    qa_issues, sec_issues = [], []
+                    qa_issues, sec_issues, a11y_issues = [], [], []
                     code_review_issues = []
                     result = None
                     merged = False
@@ -635,6 +638,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             api_endpoints=api_endpoints if api_endpoints and api_endpoints != "# No code files found" else None,
                             qa_issues=qa_issues,
                             security_issues=sec_issues,
+                            accessibility_issues=a11y_issues,
                             code_review_issues=code_review_issues,
                         ))
                         if result.needs_clarification and result.clarification_requests:
@@ -653,6 +657,15 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             failure_reason = f"Write failed: {msg}"
                             checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
                             break
+
+                        if result.npm_packages_to_install:
+                            install_cmd = ["npm", "install", "--save"] + result.npm_packages_to_install
+                            install_res = run_command_with_nvm(install_cmd, cwd=frontend_dir)
+                            if not install_res.success:
+                                logger.warning(
+                                    "[%s] npm install for packages %s failed: %s",
+                                    task_id, result.npm_packages_to_install, install_res.stderr[:500],
+                                )
 
                         build_ok, build_errors = _run_build_verification(frontend_dir, "frontend", task_id)
                         if not build_ok:
@@ -682,18 +695,44 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             code=code_to_review, language="typescript",
                             task_description=current_task.description, architecture=architecture,
                         ))
+                        a11y_result = agents["accessibility"].run(AccessibilityInput(
+                            code=code_to_review, language="typescript",
+                            task_description=current_task.description, architecture=architecture,
+                        ))
+                        from security_agent.models import SecurityInput
+                        sec_result = agents["security"].run(SecurityInput(
+                            code=code_to_review, language="typescript",
+                            task_description=current_task.description, architecture=architecture,
+                        ))
+                        qa_issues = [b.model_dump() if hasattr(b, "model_dump") else b.dict() for b in (qa_result.bugs_found or [])]
+                        a11y_issues = [i.model_dump() if hasattr(i, "model_dump") else i.dict() for i in (a11y_result.issues or [])]
+                        sec_issues = [v.model_dump() if hasattr(v, "model_dump") else v.dict() for v in (sec_result.vulnerabilities or [])]
+                        all_approved = qa_result.approved and a11y_result.approved and sec_result.approved
+                        if not all_approved:
+                            if not qa_result.approved:
+                                logger.info("[%s] QA not approved (%s issues) - passing to frontend for fix", task_id, len(qa_issues))
+                            if not a11y_result.approved:
+                                logger.info("[%s] Accessibility not approved (%s issues) - passing to frontend for fix", task_id, len(a11y_issues))
+                            if not sec_result.approved:
+                                logger.info("[%s] Security not approved (%s issues) - passing to frontend for fix", task_id, len(sec_issues))
+                            if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
+                                code_review_issues = []
+                                continue
+                            failure_reason = "QA, accessibility, or security did not approve after max iterations"
+                            checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
+                            break
                         fix_tasks = tech_lead.evaluate_qa_and_create_fix_tasks(
                             current_task, qa_result, spec_content, architecture,
                         )
                         if fix_tasks:
+                            backend_fix_tasks = [ft for ft in fix_tasks if getattr(ft, "assignee", None) == "backend"]
                             with state_lock:
                                 for ft in fix_tasks:
                                     all_tasks[ft.id] = ft
-                                    if getattr(ft, "assignee", None) == "frontend":
-                                        frontend_queue.insert(0, ft.id)
-                                    else:
-                                        backend_queue.insert(0, ft.id)
-                            logger.info("Tech Lead created %s fix tasks from QA feedback", len(fix_tasks))
+                                for ft in backend_fix_tasks:
+                                    backend_queue.insert(0, ft.id)
+                            if backend_fix_tasks:
+                                logger.info("Tech Lead created %s backend fix tasks from QA feedback", len(backend_fix_tasks))
 
                         _run_dbc_comments_review(
                             agents, frontend_dir, task_id, "typescript",
@@ -1058,6 +1097,14 @@ def run_failed_tasks(job_id: str) -> None:
                         if not ok:
                             failure_reason_fe = f"Write failed: {msg}"
                             break
+                        if result.npm_packages_to_install:
+                            install_cmd = ["npm", "install", "--save"] + result.npm_packages_to_install
+                            install_res = run_command_with_nvm(install_cmd, cwd=frontend_dir)
+                            if not install_res.success:
+                                logger.warning(
+                                    "[%s] npm install for packages %s failed: %s",
+                                    task_id, result.npm_packages_to_install, install_res.stderr[:500],
+                                )
                         merge_ok, merge_msg = merge_branch(frontend_dir, branch_name, DEVELOPMENT_BRANCH)
                         if merge_ok:
                             delete_branch(frontend_dir, branch_name)

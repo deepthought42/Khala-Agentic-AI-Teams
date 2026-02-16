@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import shlex
 import signal
 import subprocess
@@ -337,11 +338,17 @@ def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:
     found, return an explicit failure instead of using system Node (which is
     often too old).
     """
+    cwd = Path(project_path).resolve()
+    _ensure_angular_common_in_package_json(cwd)
+    _ensure_angular_material_in_package_json(cwd)
+    _ensure_tsconfig_module_resolution(cwd)
+    _ensure_material_theme_in_styles(cwd)
+    _ensure_provide_animations_in_config(cwd)
     if _get_nvm_script_prefix() is not None:
         logger.info("Running ng build with NVM (node %s)", ANGULAR_NODE_VERSION)
         return run_command_with_nvm(
             ["npx", "ng", "build", "--configuration=development"],
-            cwd=project_path,
+            cwd=cwd,
             node_version=ANGULAR_NODE_VERSION,
             timeout=BUILD_TIMEOUT,
         )
@@ -364,15 +371,152 @@ def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:
     return CommandResult(success=False, exit_code=-1, stdout="", stderr=msg)
 
 
+def _ensure_angular_common_in_package_json(cwd: Path) -> None:
+    """
+    Ensure package.json has @angular/common (provides @angular/common/http).
+    Repairs projects where package.json was overwritten or is missing this dep.
+    """
+    import json
+    pkg_path = cwd / "package.json"
+    if not pkg_path.exists():
+        return
+    try:
+        data = json.loads(pkg_path.read_text(encoding="utf-8"))
+        deps = data.setdefault("dependencies", {})
+        if "@angular/common" not in deps:
+            deps["@angular/common"] = _ANGULAR_VERSION
+            pkg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            logger.info("Repaired package.json: added @angular/common for HttpClient support")
+    except Exception as e:
+        logger.warning("Could not repair package.json for @angular/common: %s", e)
+
+
+def _ensure_angular_material_in_package_json(cwd: Path) -> None:
+    """
+    Ensure package.json has @angular/material and @angular/cdk.
+    Repairs projects where package.json was overwritten or is missing these deps.
+    """
+    import json
+    pkg_path = cwd / "package.json"
+    if not pkg_path.exists():
+        return
+    try:
+        data = json.loads(pkg_path.read_text(encoding="utf-8"))
+        deps = data.setdefault("dependencies", {})
+        changed = False
+        if "@angular/material" not in deps:
+            deps["@angular/material"] = _ANGULAR_VERSION
+            changed = True
+        if "@angular/cdk" not in deps:
+            deps["@angular/cdk"] = _ANGULAR_VERSION
+            changed = True
+        if changed:
+            pkg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            logger.info("Repaired package.json: added @angular/material and @angular/cdk")
+    except Exception as e:
+        logger.warning("Could not repair package.json for @angular/material: %s", e)
+
+
+def _ensure_tsconfig_module_resolution(cwd: Path) -> None:
+    """
+    Ensure tsconfig.json uses moduleResolution 'bundler' for Angular 17+.
+    Fixes 'Cannot find module @angular/common/http' when resolution was 'node'.
+    """
+    import json
+    ts_path = cwd / "tsconfig.json"
+    if not ts_path.exists():
+        return
+    try:
+        data = json.loads(ts_path.read_text(encoding="utf-8"))
+        opts = data.get("compilerOptions") or {}
+        if opts.get("moduleResolution") == "node":
+            opts["moduleResolution"] = "bundler"
+            data["compilerOptions"] = opts
+            ts_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            logger.info("Repaired tsconfig.json: moduleResolution node -> bundler for Angular compatibility")
+    except Exception as e:
+        logger.warning("Could not repair tsconfig.json: %s", e)
+
+
+def _ensure_material_theme_in_styles(cwd: Path) -> None:
+    """
+    Ensure styles.scss (or styles.css) has a Material prebuilt theme import.
+    Appends it at the top if missing. Required for Angular Material components.
+    """
+    for name in ("styles.scss", "styles.css"):
+        styles_path = cwd / "src" / name
+        if not styles_path.exists():
+            continue
+        try:
+            content = styles_path.read_text(encoding="utf-8")
+            if "material" in content.lower() and ("prebuilt-themes" in content or "indigo-pink" in content):
+                return
+            theme_line = "@use '@angular/material/prebuilt-themes/indigo-pink.css';\n"
+            new_content = theme_line + content if content.strip() else theme_line
+            styles_path.write_text(new_content, encoding="utf-8")
+            logger.info("Repaired %s: added Material prebuilt theme import", name)
+        except Exception as e:
+            logger.warning("Could not repair %s for Material theme: %s", name, e)
+        return
+
+
+def _ensure_provide_animations_in_config(cwd: Path) -> None:
+    """
+    Ensure app.config.ts has provideAnimations in providers.
+    Adds import and provider if missing. Required for Angular Material components.
+    """
+    config_path = cwd / "src" / "app" / "app.config.ts"
+    if not config_path.exists():
+        return
+    try:
+        content = config_path.read_text(encoding="utf-8")
+        if "provideAnimations" in content:
+            return
+        if "providers:" not in content:
+            return
+        import_line = "import { provideAnimations } from '@angular/platform-browser/animations';\n"
+        lines = content.split("\n")
+        insert_idx = 0
+        for i, line in enumerate(lines):
+            if line.strip().startswith("import "):
+                insert_idx = i + 1
+            elif insert_idx > 0 and not line.strip().startswith("import "):
+                break
+        lines.insert(insert_idx, import_line.rstrip())
+        content = "\n".join(lines)
+        if "provideAnimations()" not in content:
+            if "provideHttpClient()," in content:
+                content = content.replace(
+                    "provideHttpClient(),",
+                    "provideHttpClient(),\n    provideAnimations(),",
+                )
+            elif "provideRouter(routes)," in content:
+                content = content.replace(
+                    "provideRouter(routes),",
+                    "provideRouter(routes),\n    provideAnimations(),",
+                )
+        if "provideAnimations()" in content:
+            config_path.write_text(content, encoding="utf-8")
+            logger.info("Repaired app.config.ts: added provideAnimations")
+    except Exception as e:
+        logger.warning("Could not repair app.config.ts for provideAnimations: %s", e)
+
+
 def ensure_frontend_dependencies_installed(project_path: str | Path) -> CommandResult:
     """
     Run npm install so dependencies are installed before the frontend agent runs.
     Uses NVM when available for consistent Node version. If package.json does not
     exist, returns success (no-op) so callers do not block.
+    Ensures @angular/common is present (provides @angular/common/http for HttpClient).
     """
     cwd = Path(project_path).resolve()
     if not (cwd / "package.json").exists():
         return CommandResult(success=True, exit_code=0, stdout="", stderr="")
+    _ensure_angular_common_in_package_json(cwd)
+    _ensure_angular_material_in_package_json(cwd)
+    _ensure_tsconfig_module_resolution(cwd)
+    _ensure_material_theme_in_styles(cwd)
+    _ensure_provide_animations_in_config(cwd)
     if _get_nvm_script_prefix() is not None:
         return run_command_with_nvm(
             ["npm", "install"],
@@ -588,6 +732,16 @@ _MINIMAL_ANGULAR_JSON = """\
             "production": { "buildTarget": "app:build:production" }
           },
           "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:application",
+          "options": {
+            "buildTarget": "app:build:development"
+          },
+          "configurations": {
+            "development": {}
+          },
+          "defaultConfiguration": "development"
         }
       }
     }
@@ -609,7 +763,7 @@ _MINIMAL_TSCONFIG = """\
     "declaration": false,
     "downlevelIteration": true,
     "experimentalDecorators": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "importHelpers": true,
     "target": "ES2022",
     "module": "ES2022",
@@ -636,6 +790,8 @@ _MINIMAL_INDEX_HTML = """\
   <title>App</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
 <body>
   <app-root></app-root>
@@ -672,6 +828,7 @@ _MINIMAL_APP_CONFIG_TS = """\
 import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
+import { provideAnimations } from '@angular/platform-browser/animations';
 import { routes } from './app.routes';
 
 export const appConfig: ApplicationConfig = {
@@ -679,6 +836,7 @@ export const appConfig: ApplicationConfig = {
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),
     provideHttpClient(),
+    provideAnimations(),
   ],
 };
 """
@@ -689,25 +847,43 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [];
 """
 
-# Angular runtime + dev dependencies
+_MINIMAL_ENVIRONMENT_TS = """\
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8000',
+};
+"""
+
+_MINIMAL_ENVIRONMENT_PROD_TS = """\
+export const environment = {
+  production: true,
+  apiUrl: '/api',
+};
+"""
+
+# Angular runtime + dev dependencies (pinned to same major for compatibility)
+# @angular/common provides @angular/common/http (HttpClient, provideHttpClient)
+_ANGULAR_VERSION = "^18.0.0"
 _ANGULAR_DEPS = [
-    "@angular/core",
-    "@angular/common",
-    "@angular/compiler",
-    "@angular/platform-browser",
-    "@angular/platform-browser-dynamic",
-    "@angular/router",
-    "@angular/forms",
-    "@angular/animations",
+    f"@angular/core@{_ANGULAR_VERSION}",
+    f"@angular/common@{_ANGULAR_VERSION}",
+    f"@angular/compiler@{_ANGULAR_VERSION}",
+    f"@angular/platform-browser@{_ANGULAR_VERSION}",
+    f"@angular/platform-browser-dynamic@{_ANGULAR_VERSION}",
+    f"@angular/router@{_ANGULAR_VERSION}",
+    f"@angular/forms@{_ANGULAR_VERSION}",
+    f"@angular/animations@{_ANGULAR_VERSION}",
+    f"@angular/material@{_ANGULAR_VERSION}",
+    f"@angular/cdk@{_ANGULAR_VERSION}",
     "rxjs",
     "zone.js",
     "tslib",
 ]
 
 _ANGULAR_DEV_DEPS = [
-    "@angular/cli",
-    "@angular/compiler-cli",
-    "@angular/build",
+    f"@angular/cli@{_ANGULAR_VERSION}",
+    f"@angular/compiler-cli@{_ANGULAR_VERSION}",
+    f"@angular/build@{_ANGULAR_VERSION}",
     "typescript",
 ]
 
@@ -790,11 +966,24 @@ def ensure_frontend_project_initialized(project_dir: str | Path) -> CommandResul
 
     _write_if_missing(src / "index.html", _MINIMAL_INDEX_HTML)
     _write_if_missing(src / "main.ts", _MINIMAL_MAIN_TS)
-    _write_if_missing(src / "styles.scss", "/* Global styles */\n")
+    _write_if_missing(
+        src / "styles.scss",
+        """@use '@angular/material/prebuilt-themes/indigo-pink.css';
+
+html, body { height: 100%; }
+body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+""",
+    )
     _write_if_missing(app / "app.component.ts", _MINIMAL_APP_COMPONENT_TS)
     _write_if_missing(app / "app.component.scss", "/* App root styles */\n")
     _write_if_missing(app / "app.config.ts", _MINIMAL_APP_CONFIG_TS)
     _write_if_missing(app / "app.routes.ts", _MINIMAL_APP_ROUTES_TS)
+
+    # Step 5b: Environment files for API base URL
+    env_dir = src / "environments"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    _write_if_missing(env_dir / "environment.ts", _MINIMAL_ENVIRONMENT_TS)
+    _write_if_missing(env_dir / "environment.prod.ts", _MINIMAL_ENVIRONMENT_PROD_TS)
 
     # Step 6: Pin Node version for nvm use
     _write_if_missing(cwd / ".nvmrc", ANGULAR_NODE_VERSION + "\n")
@@ -816,6 +1005,60 @@ def _write_if_missing(filepath: Path, content: str) -> None:
         logger.info("Created %s", filepath)
 
 
+# Python/FastAPI .gitignore for backend projects (no Node patterns)
+_PYTHON_GITIGNORE = """# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Testing and coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+"""
+
 # Minimal FastAPI backend skeleton for ensure_backend_project_initialized
 _MINIMAL_REQUIREMENTS_TXT = """fastapi>=0.115,<1.0
 uvicorn[standard]>=0.32,<1.0
@@ -836,39 +1079,77 @@ def health():
 def ensure_backend_project_initialized(backend_dir: str | Path) -> CommandResult:
     """Ensure a minimal FastAPI backend project exists at *backend_dir*.
 
-    If ``requirements.txt`` and ``app/main.py`` already exist, the function is a no-op.
-    Otherwise it creates:
+    Creates (if missing):
     - requirements.txt (fastapi, uvicorn)
-    - app/__init__.py
-    - app/main.py (minimal FastAPI app with /health)
+    - app/__init__.py, app/main.py (minimal FastAPI app with /health)
     - tests/ directory with a trivial test so pytest runs without error
+    - .gitignore (Python/FastAPI patterns)
+    - README.md, CONTRIBUTORS.md (blank)
+    - Git repo with initial commit on main, development branch
+
+    If ``requirements.txt`` and ``app/main.py`` already exist, scaffold creation
+    is skipped but repo files (.gitignore, README, CONTRIBUTORS) are still
+    ensured and committed on main if missing.
 
     Returns a :class:`CommandResult` indicating success or the first failure.
     """
+    from shared.git_utils import ensure_files_committed_on_main, initialize_new_repo
+
     cwd = Path(backend_dir).resolve()
     requirements = cwd / "requirements.txt"
     main_py = cwd / "app" / "main.py"
 
-    if requirements.exists() and main_py.exists():
+    already_initialized = requirements.exists() and main_py.exists()
+    if not already_initialized:
+        logger.info("Initializing new backend project at %s", cwd)
+        cwd.mkdir(parents=True, exist_ok=True)
+
+        _write_if_missing(requirements, _MINIMAL_REQUIREMENTS_TXT)
+        app_dir = cwd / "app"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        _write_if_missing(app_dir / "__init__.py", '"""Application package."""\n')
+        _write_if_missing(main_py, _MINIMAL_APP_MAIN_PY)
+
+        tests_dir = cwd / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        _write_if_missing(tests_dir / "__init__.py", "")
+        _write_if_missing(
+            tests_dir / "test_main.py",
+            '"""Minimal test so pytest runs."""\n\ndef test_health():\n    assert True\n',
+        )
+    else:
         logger.info("Backend project already initialized at %s", cwd)
-        return CommandResult(success=True, exit_code=0, stdout="Already initialized", stderr="")
 
-    logger.info("Initializing new backend project at %s", cwd)
-    cwd.mkdir(parents=True, exist_ok=True)
+    # Always ensure repo files exist
+    _write_if_missing(cwd / ".gitignore", _PYTHON_GITIGNORE)
+    _write_if_missing(cwd / "README.md", "")
+    _write_if_missing(cwd / "CONTRIBUTORS.md", "")
 
-    _write_if_missing(requirements, _MINIMAL_REQUIREMENTS_TXT)
-    app_dir = cwd / "app"
-    app_dir.mkdir(parents=True, exist_ok=True)
-    _write_if_missing(app_dir / "__init__.py", '"""Application package."""\n')
-    _write_if_missing(main_py, _MINIMAL_APP_MAIN_PY)
+    # Git: init and initial commit if no repo, else ensure files committed on main
+    if not (cwd / ".git").exists():
+        ok, msg = initialize_new_repo(cwd, gitignore_content=_PYTHON_GITIGNORE)
+        if not ok:
+            return CommandResult(success=False, exit_code=1, stdout="", stderr=msg)
+    else:
+        ok, msg = ensure_files_committed_on_main(
+            cwd, [".gitignore", "README.md", "CONTRIBUTORS.md"]
+        )
+        if not ok:
+            return CommandResult(success=False, exit_code=1, stdout="", stderr=msg)
 
-    tests_dir = cwd / "tests"
-    tests_dir.mkdir(parents=True, exist_ok=True)
-    _write_if_missing(tests_dir / "__init__.py", "")
-    _write_if_missing(
-        tests_dir / "test_main.py",
-        '"""Minimal test so pytest runs."""\n\ndef test_health():\n    assert True\n',
-    )
+    # Optional: install dependencies (non-blocking; CI/containers typically run pip install)
+    try:
+        result = run_command(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=cwd,
+            timeout=120,
+        )
+        if not result.success:
+            logger.warning(
+                "pip install failed (non-blocking): %s", result.error_summary
+            )
+    except Exception as e:
+        logger.warning("pip install failed (non-blocking): %s", e)
 
     logger.info("Backend project initialized successfully at %s", cwd)
     return CommandResult(
