@@ -4,7 +4,12 @@ from social_media_marketing_team import (
     HumanReview,
     SocialMediaMarketingOrchestrator,
 )
-from social_media_marketing_team.models import CampaignPerformanceSnapshot, MetricDefinition, PostPerformanceObservation, Platform
+from social_media_marketing_team.models import (
+    CampaignPerformanceSnapshot,
+    MetricDefinition,
+    Platform,
+    PostPerformanceObservation,
+)
 
 
 def _goals() -> BrandGoals:

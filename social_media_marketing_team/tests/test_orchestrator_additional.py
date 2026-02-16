@@ -2,8 +2,8 @@ from social_media_marketing_team.agents import ContentConceptAgent
 from social_media_marketing_team.models import (
     BrandGoals,
     CampaignPerformanceSnapshot,
-    CampaignStatus,
     CampaignProposal,
+    CampaignStatus,
     ConceptIdea,
     HumanReview,
     MetricDefinition,
