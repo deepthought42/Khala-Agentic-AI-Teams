@@ -38,6 +38,7 @@ from shared.job_store import (
     update_job,
 )
 from shared.command_runner import run_command_with_nvm
+from shared.development_plan_writer import write_architecture_plan, write_tech_lead_plan
 from shared.models import TaskUpdate
 from shared.repo_writer import write_agent_output
 
@@ -347,7 +348,7 @@ def _run_build_verification(
     For frontend: runs ng build.
     For backend: runs python syntax check (pytest if tests exist).
     """
-    from shared.command_runner import run_ng_build_with_nvm_fallback, run_python_syntax_check, run_pytest
+    from shared.command_runner import run_command, run_ng_build_with_nvm_fallback, run_python_syntax_check, run_pytest
 
     if agent_type == "frontend":
         # repo_path may be frontend repo root (package.json here) or work path (frontend/ subdir)
@@ -379,10 +380,28 @@ def _run_build_verification(
         # Also try pytest if tests directory exists
         tests_dir = backend_dir / "tests"
         if tests_dir.exists() and any(tests_dir.rglob("test_*.py")):
-            test_result = run_pytest(backend_dir)
+            # Install deps before pytest so agent-added packages (e.g. sqlalchemy) are available
+            req_txt = backend_dir / "requirements.txt"
+            if req_txt.exists():
+                try:
+                    pip_result = run_command(
+                        [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                        cwd=backend_dir,
+                        timeout=120,
+                    )
+                    if not pip_result.success:
+                        logger.warning(
+                            "pip install -r requirements.txt failed (non-fatal): %s",
+                            pip_result.error_summary[:200],
+                        )
+                except Exception as e:
+                    logger.warning("pip install before pytest failed (non-fatal): %s", e)
+            test_result = run_pytest(backend_dir, python_exe=sys.executable)
             if not test_result.success:
-                logger.warning("Tests failed for task %s: %s", task_id, test_result.error_summary[:200])
-                return False, test_result.error_summary
+                # Use pytest-specific summary so agent sees actual error (ImportError, etc.) not session header
+                summary = test_result.pytest_error_summary()
+                logger.warning("Tests failed for task %s: %s", task_id, summary[:1200])
+                return False, summary
         logger.info("Build verification passed for backend task %s", task_id)
         return True, ""
 
@@ -426,6 +445,10 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         arch_output = arch_agent.run(arch_input)
         architecture = arch_output.architecture
         update_job(job_id, architecture_overview=architecture.overview)
+        try:
+            write_architecture_plan(path, architecture)
+        except Exception as e:
+            logger.warning("Failed to write DEVELOPMENT_PLAN-architecture.md: %s", e)
 
         # 4. Tech Lead generates plan (multi-step: codebase analysis, spec analysis, task generation)
         from tech_lead_agent.models import TechLeadInput
@@ -448,6 +471,17 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             return
 
         assignment = tech_lead_output.assignment
+
+        # Write Tech Lead development plan to DEVELOPMENT_PLAN-tech_lead.md
+        try:
+            write_tech_lead_plan(
+                path,
+                assignment,
+                summary=tech_lead_output.summary or "",
+                requirement_task_mapping=tech_lead_output.requirement_task_mapping or [],
+            )
+        except Exception as e:
+            logger.warning("Failed to write DEVELOPMENT_PLAN-tech_lead.md: %s", e)
 
         # Store execution order in job state for API polling
         update_job(job_id, execution_order=assignment.execution_order)

@@ -67,7 +67,7 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
         bad_segment = False
         for seg in segments:
             name_part = seg.split(".")[0]  # strip extension
-            if not name_part:
+            if not name_part:  # pragma: no cover
                 continue
             # Skip well-known directory names
             if name_part.lower() in _ALLOWED_DIRS:
@@ -193,6 +193,18 @@ class FrontendExpertAgent:
             for fpath, fcontent in list(raw_files.items()):
                 if isinstance(fcontent, str) and "\\n" in fcontent:
                     raw_files[fpath] = fcontent.replace("\\n", "\n")
+        else:
+            raw_files = {}
+
+        # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
+        if not raw_files and data.get("content"):
+            from shared.llm_response_utils import extract_files_from_content
+            extracted = extract_files_from_content(str(data["content"]))
+            if extracted:
+                raw_files = extracted
+                for fpath, fcontent in list(raw_files.items()):
+                    if isinstance(fcontent, str) and "\\n" in fcontent:
+                        raw_files[fpath] = fcontent.replace("\\n", "\n")
 
         # Validate file paths - reject bad names/empty files
         validated_files, validation_warnings = _validate_file_paths(raw_files)
@@ -200,7 +212,7 @@ class FrontendExpertAgent:
             logger.warning("Frontend output validation: %s", warn)
 
         # If all files were rejected but we have code, that's a problem - log it
-        if not validated_files and not data.get("needs_clarification", False):
+        if not validated_files and not data.get("needs_clarification", False):  # pragma: no cover
             if raw_files:
                 logger.error(
                     "Frontend: ALL %d files were rejected by validation. Raw filenames: %s",

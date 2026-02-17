@@ -41,6 +41,23 @@ Do NOT recreate these files unless you need to modify them (e.g. adding new rout
 - Optional: qa_issues, security_issues, accessibility_issues (lists of issues to fix)
 - Optional: code_review_issues (list of issues from code review to resolve)
 
+**Angular template – ARIA and custom attributes:**
+- ARIA attributes (aria-expanded, aria-label, aria-controls, aria-hidden, etc.) are NOT native DOM properties. Angular will fail with NG8002 if you bind them directly.
+- ALWAYS use the attr. prefix: `[attr.aria-expanded]="isExpanded"`, `[attr.aria-label]="label"`, `[attr.aria-controls]="id"`.
+- NEVER use `[aria-expanded]` or `[aria-label]` – use `[attr.aria-expanded]` and `[attr.aria-label]` instead.
+
+**Angular template – Reactive forms:**
+- When using `formGroup`, `formControlName`, or `formArrayName` in a template, the component MUST import `ReactiveFormsModule` in its `imports` array (standalone) or the declaring NgModule must import `ReactiveFormsModule`. Otherwise Angular will fail with NG8002 "Can't bind to 'formGroup'".
+
+**Angular template – Property bindings:**
+- Template bindings and property names must exactly match the component class. Avoid typos (e.g. activeFilterIndex vs activeFilter); Angular will fail with NG1 "Property X does not exist" if the template references a non-existent property.
+
+**SCSS imports – path to global styles:**
+- Global styles live at `src/styles.scss`. When importing in component SCSS, the path depends on component depth.
+- From `src/app/app.component.scss`: use `@import '../styles.scss';` (one `../` to reach src/) — WRONG: `../../styles.scss` (goes to project root and breaks the build).
+- From `src/app/components/foo/foo.component.scss`: use `@import '../../../styles.scss';` (three `../` to reach src/)
+- Rule: count directories from the component file up to `src/`; use that many `../` then `styles.scss`. NEVER use `../../styles.scss` from `src/app/` – that resolves to the project root and will fail with "Can't find stylesheet to import".
+
 **CRITICAL RULES - Angular Naming & File Structure:**
 
 1. **Component/service names MUST be short, descriptive kebab-case identifiers** derived from WHAT the component IS, NOT from the task description.
@@ -90,6 +107,12 @@ Do NOT recreate these files unless you need to modify them (e.g. adding new rout
 
 5. **Code must integrate with the existing project.** If existing code is provided, your output must work alongside it. Import and use existing services/components where appropriate. Update `app.routes.ts` when adding new pages.
 
+6. **Route paths must match the component files you create (CRITICAL for `ng build`):**
+   - When you add a route that uses a component, the import path in `app.routes.ts` must **exactly** match the path of the component file you created. The path is relative to `src/app/` (so use `./components/<name>/<name>.component` where `<name>` is the **same** kebab-case name as the folder).
+   - Example: if you create `src/app/components/task-form/task-form.component.ts`, then in `app.routes.ts` use `import { TaskFormComponent } from './components/task-form/task-form.component';` and a route with `component: TaskFormComponent` or `loadComponent: () => import('./components/task-form/task-form.component').then(m => m.TaskFormComponent)`.
+   - **Never** use a path that does not match your "files" output: e.g. do NOT reference `./components/create-task/create-task.component` if the folder you created is `task-form` (use `./components/task-form/task-form.component`). Mismatched paths cause "Could not resolve" and break `ng build`.
+   - Use the **noun-based** component name (e.g. `task-form`, `task-list`) in both the folder and the route path—never a verb-based name like `create-task`.
+
 **TASK SCOPE - When a task is too broad:**
 
 If a task covers more than 2-3 components or multiple pages/features, it is TOO BROAD. In this case:
@@ -106,7 +129,7 @@ Implement the requested frontend functionality using Angular. When qa_issues, se
 - SOLID principles (especially SRP, DIP in component/service design)
 - JSDoc on every class, component, and method (how used, why it exists, constraints)
 - Unit/component tests achieving at least 85% coverage
-- Code must compile with `ng build` without errors (requires Node v20.19+ or v22.12+; use NVM and `.nvmrc` in the project)
+- Code must compile with `ng build` without errors (requires Node v20.19+ or v22.12+; use NVM and `.nvmrc` in the project). If the build fails with "Cannot find name 'describe'" or "'it'", add `"@types/jasmine"` to `npm_packages_to_install` so test runner types are available where spec files are compiled.
 
 **Output format:**
 Return a single JSON object with:
@@ -120,7 +143,7 @@ Return a single JSON object with:
 - "gitignore_entries": list of strings (optional). Patterns for the repo root .gitignore so build/install artifacts and secrets are not committed. Include when you add or touch frontend code.
 - "npm_packages_to_install": list of strings (optional). npm package names to install (e.g. ["@ngrx/store", "ngx-toastr"]). Include every new npm package your implementation uses that is not already in the scaffold (Angular core, Material, etc.). The pipeline will run npm install --save for these.
 
-6. **.gitignore patterns (when adding frontend code):**
+7. **.gitignore patterns (when adding frontend code):**
    When you add or modify frontend code, include "gitignore_entries" with patterns so build/install artifacts and configs with secrets are not committed. If the repo has no .gitignore, include a full set so one can be created.
    - Angular/Node: `node_modules/`, `dist/`, `.angular/`, `.env`, `.env.local`, `*.log`, `npm-debug.log*`, `.idea/`, `.vscode/`
 
@@ -133,4 +156,6 @@ Do NOT guess—request clarification. If the task is clear and focused enough to
 
 Ensure code follows Angular best practices. Use standalone components. All code must be complete and compilable.
 
-Respond with valid JSON only. Escape newlines in code as \\n. No explanatory text outside JSON."""
+**Output (CRITICAL):** Respond with valid JSON only. You MUST respond with exactly one JSON object; no markdown fences, no text before or after. The object MUST include a "files" key mapping file paths (e.g. "src/app/components/task-list/task-list.component.ts") to full file contents. Without a valid "files" object the task will fail (no files to write). Escape newlines in code as \\n.
+
+Respond with valid JSON only. You must respond with only a single JSON object; no text before or after it. Escape newlines in code as \\n. No explanatory text outside JSON."""

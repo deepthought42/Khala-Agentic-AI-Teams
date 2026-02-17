@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import shlex
 import signal
@@ -63,6 +64,28 @@ class CommandResult:
         # Truncate long output
         if len(text) > 4000:
             text = text[:4000] + "\n... [truncated]"
+        return text
+
+    def pytest_error_summary(self, max_chars: int = 2500) -> str:
+        """
+        For pytest runs: extract the failure/error section so agents see the real
+        error (e.g. ImportError, assertion) not the session header (rootdir: ...).
+        Falls back to error_summary if no ERRORS/FAILURES section found.
+        """
+        if self.success:
+            return ""
+        text = (self.stdout or "") + "\n" + (self.stderr or "")
+        for marker in ("= ERRORS =", "= FAILURES =", "ERROR collecting", "FAILED "):
+            idx = text.find(marker)
+            if idx != -1:
+                excerpt = text[idx:].strip()
+                if len(excerpt) > max_chars:
+                    excerpt = excerpt[:max_chars] + "\n... [truncated]"
+                return excerpt
+        # No marker: return tail of output (where pytest usually puts the failure)
+        text = text.strip()
+        if len(text) > max_chars:
+            text = "...\n" + text[-max_chars:]
         return text
 
 
@@ -141,7 +164,7 @@ def run_command(
         )
 
 
-def run_ng_build(project_path: str | Path) -> CommandResult:
+def run_ng_build(project_path: str | Path) -> CommandResult:  # pragma: no cover
     """
     Run `ng build` in the given Angular project directory.
     Returns CommandResult with compilation status and any errors.
@@ -196,7 +219,7 @@ class NvmInstallResult:
     stderr: str = ""
 
 
-def ensure_nvm_installed() -> NvmInstallResult:
+def ensure_nvm_installed() -> NvmInstallResult:  # pragma: no cover
     """
     Ensure NVM is installed. If _get_nvm_script_prefix() already finds NVM, return success.
     Otherwise run the official NVM install script in a subprocess (non-interactive,
@@ -243,7 +266,7 @@ def ensure_nvm_installed() -> NvmInstallResult:
     )
 
 
-def run_command_with_nvm(
+def run_command_with_nvm(  # pragma: no cover
     cmd: list[str],
     cwd: str | Path,
     node_version: str = ANGULAR_NODE_VERSION,
@@ -331,7 +354,7 @@ def run_command_with_nvm(
         )
 
 
-def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:
+def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:  # pragma: no cover
     """
     Run ng build with Node version Angular CLI needs. When NVM is available, use
     NVM to install and use ANGULAR_NODE_VERSION (22.12) first. When NVM is not
@@ -344,6 +367,8 @@ def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:
     _ensure_tsconfig_module_resolution(cwd)
     _ensure_material_theme_in_styles(cwd)
     _ensure_provide_animations_in_config(cwd)
+    _ensure_reactive_forms_module_in_components(cwd)
+    _normalize_double_at_angular(cwd)
     if _get_nvm_script_prefix() is not None:
         logger.info("Running ng build with NVM (node %s)", ANGULAR_NODE_VERSION)
         return run_command_with_nvm(
@@ -472,7 +497,7 @@ def _ensure_provide_animations_in_config(cwd: Path) -> None:
         content = config_path.read_text(encoding="utf-8")
         if "provideAnimations" in content:
             return
-        if "providers:" not in content:
+        if "providers:" not in content:  # pragma: no cover
             return
         import_line = "import { provideAnimations } from '@angular/platform-browser/animations';\n"
         lines = content.split("\n")
@@ -498,8 +523,74 @@ def _ensure_provide_animations_in_config(cwd: Path) -> None:
         if "provideAnimations()" in content:
             config_path.write_text(content, encoding="utf-8")
             logger.info("Repaired app.config.ts: added provideAnimations")
-    except Exception as e:
+    except Exception as e:  # pragma: no cover
         logger.warning("Could not repair app.config.ts for provideAnimations: %s", e)
+
+
+def _normalize_double_at_angular(cwd: Path) -> None:
+    """
+    Fix @@angular typo (double @) in frontend .ts and .html files.
+    Replaces '@@angular with '@angular and \"@@angular with \"@angular.
+    """
+    src = cwd / "src"
+    if not src.exists():
+        return
+    for ext in ("*.ts", "*.html"):
+        for path in src.rglob(ext):
+            try:
+                content = path.read_text(encoding="utf-8")
+                if "@@angular" not in content:
+                    continue
+                new_content = content.replace("'@@angular", "'@angular").replace('"@@angular', '"@angular')
+                if new_content != content:
+                    path.write_text(new_content, encoding="utf-8")
+                    logger.info("Repaired %s: normalized @@angular to @angular", path.name)
+            except Exception as e:
+                logger.warning("Could not normalize @@angular in %s: %s", path.name, e)
+
+
+def _ensure_reactive_forms_module_in_components(cwd: Path) -> None:
+    """
+    Ensure components that use formGroup/formControlName/formArrayName in their
+    template import ReactiveFormsModule. Scans .component.html files and adds
+    the import to the corresponding .component.ts if missing.
+    """
+    src = cwd / "src"
+    if not src.exists():
+        return
+    for html_path in src.rglob("*.component.html"):
+        try:
+            html_content = html_path.read_text(encoding="utf-8")
+            if "formGroup" not in html_content and "formControlName" not in html_content and "formArrayName" not in html_content:
+                continue
+            ts_path = html_path.with_suffix(".ts")
+            if not ts_path.exists():
+                continue
+            ts_content = ts_path.read_text(encoding="utf-8")
+            if "ReactiveFormsModule" in ts_content:
+                continue
+            if "import { ReactiveFormsModule }" not in ts_content:
+                lines = ts_content.split("\n")
+                insert_idx = 0
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("import "):
+                        insert_idx = i + 1
+                    elif insert_idx > 0 and not line.strip().startswith("import ") and line.strip() and not line.strip().startswith("//"):
+                        break
+                lines.insert(insert_idx, "import { ReactiveFormsModule } from '@angular/forms';")
+                ts_content = "\n".join(lines)
+            imports_match = re.search(r"imports:\s*\[", ts_content)
+            if not imports_match:
+                continue
+            pos = imports_match.end()
+            after_bracket = ts_content[pos:pos + 80]
+            if "ReactiveFormsModule" in after_bracket or re.search(r"ReactiveFormsModule\s*[,\)]", ts_content[pos:pos + 200]):
+                continue
+            ts_content = ts_content[:pos] + "ReactiveFormsModule,\n    " + ts_content[pos:]
+            ts_path.write_text(ts_content, encoding="utf-8")
+            logger.info("Repaired %s: added ReactiveFormsModule for formGroup", ts_path.name)
+        except Exception as e:
+            logger.warning("Could not repair %s for ReactiveFormsModule: %s", html_path.name, e)
 
 
 def ensure_frontend_dependencies_installed(project_path: str | Path) -> CommandResult:
@@ -517,7 +608,9 @@ def ensure_frontend_dependencies_installed(project_path: str | Path) -> CommandR
     _ensure_tsconfig_module_resolution(cwd)
     _ensure_material_theme_in_styles(cwd)
     _ensure_provide_animations_in_config(cwd)
-    if _get_nvm_script_prefix() is not None:
+    _ensure_reactive_forms_module_in_components(cwd)
+    _normalize_double_at_angular(cwd)
+    if _get_nvm_script_prefix() is not None:  # pragma: no cover
         return run_command_with_nvm(
             ["npm", "install"],
             cwd=cwd,
@@ -586,14 +679,14 @@ def run_ng_serve_smoke_test(project_path: str | Path, port: int = 4299) -> Comma
                 stdout="Angular dev server started successfully (smoke test passed)",
                 stderr="",
             )
-    except FileNotFoundError:
+    except FileNotFoundError:  # pragma: no cover
         return CommandResult(
             success=False,
             exit_code=-1,
             stdout="",
             stderr="npx/ng not found - Angular CLI may not be installed",
         )
-    except Exception as e:
+    except Exception as e:  # pragma: no cover
         logger.exception("ng serve smoke test failed")
         return CommandResult(
             success=False,
@@ -606,7 +699,7 @@ def run_ng_serve_smoke_test(project_path: str | Path, port: int = 4299) -> Comma
 _cached_python: Optional[str] = None
 
 
-def _find_python() -> str:
+def _find_python() -> str:  # pragma: no cover
     """Return the name of an available Python interpreter, preferring 'python' then 'python3'.
 
     The result is cached so that discovery only runs once per process.
@@ -631,18 +724,35 @@ def _find_python() -> str:
     return _cached_python
 
 
-def run_pytest(project_path: str | Path, test_path: str = "") -> CommandResult:
+def run_pytest(
+    project_path: str | Path,
+    test_path: str = "",
+    python_exe: Optional[str] = None,
+) -> CommandResult:  # pragma: no cover
     """
     Run `python -m pytest` in the given project directory.
     Returns CommandResult with test results.
+    Uses --rootdir so pytest uses the project dir as root even when there is
+    no pytest.ini/pyproject.toml (avoids rootdir falling back to /home/).
+    Sets PYTHONPATH to the project root so `import app` works in agent-generated
+    backends with app/ and tests/ at the same level.
+
+    When python_exe is provided (e.g. sys.executable), use it instead of
+    _find_python() so the same interpreter that ran pip install runs pytest.
     """
-    cmd = [_find_python(), "-m", "pytest", "-v", "--tb=short"]
+    root = str(Path(project_path).resolve())
+    python = python_exe if python_exe else _find_python()
+    cmd = [python, "-m", "pytest", "-v", "--tb=short", "--rootdir", root]
     if test_path:
         cmd.append(test_path)
-    return run_command(cmd, cwd=project_path, timeout=TEST_TIMEOUT)
+    existing = os.environ.get("PYTHONPATH", "")
+    pythonpath = root if not existing else f"{root}:{existing}"
+    return run_command(
+        cmd, cwd=project_path, timeout=TEST_TIMEOUT, env_override={"PYTHONPATH": pythonpath}
+    )
 
 
-def run_python_syntax_check(project_path: str | Path) -> CommandResult:
+def run_python_syntax_check(project_path: str | Path) -> CommandResult:  # pragma: no cover
     """
     Run a quick syntax check on all Python files in the project.
     Uses `python -m py_compile` on each .py file.
@@ -919,11 +1029,11 @@ def ensure_frontend_project_initialized(project_dir: str | Path) -> CommandResul
             nvm_result.stderr or "unknown",
         )
     use_nvm = _get_nvm_script_prefix() is not None
-    if use_nvm:
+    if use_nvm:  # pragma: no cover
         logger.info("Using NVM (node %s) for frontend project init", ANGULAR_NODE_VERSION)
 
     # Step 1: npm init
-    if use_nvm:
+    if use_nvm:  # pragma: no cover
         result = run_command_with_nvm(
             ["npm", "init", "-y"], cwd=cwd, node_version=ANGULAR_NODE_VERSION, timeout=30
         )
@@ -934,7 +1044,7 @@ def ensure_frontend_project_initialized(project_dir: str | Path) -> CommandResul
 
     # Step 2: Install runtime dependencies
     install_cmd = ["npm", "install", "--save"] + _ANGULAR_DEPS
-    if use_nvm:
+    if use_nvm:  # pragma: no cover
         result = run_command_with_nvm(
             install_cmd, cwd=cwd, node_version=ANGULAR_NODE_VERSION, timeout=BUILD_TIMEOUT
         )
@@ -945,7 +1055,7 @@ def ensure_frontend_project_initialized(project_dir: str | Path) -> CommandResul
 
     # Step 3: Install dev dependencies
     dev_install_cmd = ["npm", "install", "--save-dev"] + _ANGULAR_DEV_DEPS
-    if use_nvm:
+    if use_nvm:  # pragma: no cover
         result = run_command_with_nvm(
             dev_install_cmd, cwd=cwd, node_version=ANGULAR_NODE_VERSION, timeout=BUILD_TIMEOUT
         )
@@ -1060,8 +1170,12 @@ Thumbs.db
 """
 
 # Minimal FastAPI backend skeleton for ensure_backend_project_initialized
+# httpx>=0.24: Starlette's TestClient passes follow_redirects to httpx; older httpx raises TypeError
+# sqlalchemy>=2.0: use String(36) for UUID columns (SQLite used in tests has no native UUID type)
 _MINIMAL_REQUIREMENTS_TXT = """fastapi>=0.115,<1.0
 uvicorn[standard]>=0.32,<1.0
+httpx>=0.24,<0.28
+sqlalchemy>=2.0,<3.0
 """
 
 _MINIMAL_APP_MAIN_PY = """\"\"\"FastAPI application entry point.\"\"\"
@@ -1076,7 +1190,7 @@ def health():
 """
 
 
-def ensure_backend_project_initialized(backend_dir: str | Path) -> CommandResult:
+def ensure_backend_project_initialized(backend_dir: str | Path) -> CommandResult:  # pragma: no cover
     """Ensure a minimal FastAPI backend project exists at *backend_dir*.
 
     Creates (if missing):

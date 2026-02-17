@@ -1,10 +1,18 @@
 """Models for the DevOps Expert agent."""
 
-from typing import Dict, List, Literal, Optional
+from enum import Enum
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 from shared.models import SystemArchitecture
+
+
+class TargetRepo(str, Enum):
+    """Which application repo to containerize."""
+
+    BACKEND = "backend"
+    FRONTEND = "frontend"
 
 
 class DevOpsInput(BaseModel):
@@ -15,7 +23,7 @@ class DevOpsInput(BaseModel):
     architecture: Optional[SystemArchitecture] = None
     existing_pipeline: Optional[str] = None
     tech_stack: Optional[List[str]] = None  # e.g. ["python", "docker", "kubernetes"]
-    target_repo: Optional[Literal["backend", "frontend"]] = Field(
+    target_repo: Optional[TargetRepo] = Field(
         default=None,
         description="Which application repo to containerize: backend (Python/FastAPI) or frontend (Node/Angular). When set, produce a Dockerfile and CI appropriate for that repo only.",
     )

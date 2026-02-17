@@ -150,6 +150,11 @@ class DummyLLMClient(LLMClient):
                 "overview": "API backend + WebApp frontend (Dummy architecture).",
                 "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
                 "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
+                "diagrams": {
+                    "client_server_architecture": "graph LR\n  Browser-->API\n  API-->DB",
+                    "frontend_code_structure": "graph TD\n  App-->Components\n  App-->Services",
+                },
+                "decisions": [{"decision": "Use REST API", "context": "Standard web stack", "consequences": "Simple integration"}],
             }
         # Tech Lead codebase analysis prompt (Step 1 of multi-step planning)
         elif "codebase audit" in lowered and "files_inventory" in lowered:
@@ -517,7 +522,24 @@ class OllamaLLMClient(LLMClient):
             try:
                 return json.loads(obj_match.group(0))
             except Exception:
-                logger.debug("Object extraction JSON parse failed; falling back to raw content wrapper")
+                logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
+        # Retry once after stripping common leading/trailing noise
+        stripped = text.strip()
+        for pattern in (
+            r"^(?:Here(?:'s| is) (?:the )?JSON:?)\s*",
+            r"^(?:The (?:response|output|result) is:?)\s*",
+            r"^(?:JSON:?)\s*",
+            r"^\s*```(?:json)?\s*",
+            r"\s*```\s*$",
+        ):
+            stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE).strip()
+        if stripped and stripped != text.strip():
+            obj_match2 = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
+            if obj_match2:
+                try:
+                    return json.loads(obj_match2.group(0))
+                except Exception:
+                    pass
         # As a final fallback, return the raw content in a JSON object so that
         # callers never crash the orchestrator on non-JSON responses (e.g. mermaid).
         # Downstream agents that expect structured fields should defensively use .get().

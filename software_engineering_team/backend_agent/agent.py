@@ -85,14 +85,19 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
         if bad_segment:
             continue
         if not content or not content.strip():
-            warnings.append(f"Empty file content for '{path}' - skipping")
-            continue
-        validated[path] = content
+            if path.endswith("__init__.py") or path == "tests/__init__.py":
+                validated[path] = '"""Package."""\n'
+            else:
+                warnings.append(f"Empty file content for '{path}' - skipping")
+                continue
+        else:
+            validated[path] = content
     return validated, warnings
 
 
 # ── Workflow constants ──────────────────────────────────────────────────────
 MAX_REVIEW_ITERATIONS = 20
+MAX_SAME_BUILD_FAILURES = 3  # Stop retrying if build fails identically this many times
 MAX_CLARIFICATION_ROUNDS = 5
 MAX_EXISTING_CODE_CHARS = 40_000
 
@@ -359,6 +364,10 @@ class BackendExpertAgent:
             MAX_REVIEW_ITERATIONS,
         )
 
+        last_build_error_sig: Optional[str] = None
+        consecutive_same_build_failures = 0
+        repeated_build_failure_reason: Optional[str] = None
+
         for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
             iter_start = time.monotonic()
             logger.info(
@@ -384,10 +393,30 @@ class BackendExpertAgent:
                     "[%s] WORKFLOW   [%d] Build FAILED: %s",
                     task_id,
                     iteration,
-                    build_errors[:200],
+                    build_errors[:800],
                 )
                 record.action_taken = "fixed_build"
                 review_history.append(record)
+
+                # Stop if the same build error repeats (avoids infinite loop on env/config issues)
+                build_error_sig = (build_errors[:800] or build_errors).strip()
+                if build_error_sig == last_build_error_sig:
+                    consecutive_same_build_failures += 1
+                else:
+                    last_build_error_sig = build_error_sig
+                    consecutive_same_build_failures = 1
+                if consecutive_same_build_failures >= MAX_SAME_BUILD_FAILURES:
+                    repeated_build_failure_reason = (
+                        f"Build failed {MAX_SAME_BUILD_FAILURES} times with the same error; "
+                        "stopping to avoid loop. Last error: " + build_errors[:800]
+                    )
+                    logger.error(
+                        "[%s] WORKFLOW   [%d] %s",
+                        task_id,
+                        iteration,
+                        repeated_build_failure_reason[:800],
+                    )
+                    break
 
                 # Feed build errors back as code-review issues and regenerate
                 code_review_issues = [
@@ -605,6 +634,18 @@ class BackendExpertAgent:
                 "-- proceeding to merge with remaining issues",
                 task_id,
                 MAX_REVIEW_ITERATIONS,
+            )
+
+        if repeated_build_failure_reason is not None:
+            checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+            return BackendWorkflowResult(
+                task_id=task_id,
+                success=False,
+                branch_name=branch_name,
+                iterations_used=len(review_history),
+                review_history=review_history,
+                summary=result.summary if result else "",
+                failure_reason=repeated_build_failure_reason,
             )
 
         # ── Step 7: Merge feature branch into development ───────────────────
@@ -992,6 +1033,18 @@ class BackendExpertAgent:
             for fpath, fcontent in list(raw_files.items()):
                 if isinstance(fcontent, str) and "\\n" in fcontent:
                     raw_files[fpath] = fcontent.replace("\\n", "\n")
+        else:
+            raw_files = {}
+
+        # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
+        if not raw_files and data.get("content"):
+            from shared.llm_response_utils import extract_files_from_content
+            extracted = extract_files_from_content(str(data["content"]))
+            if extracted:
+                raw_files = extracted
+                for fpath, fcontent in list(raw_files.items()):
+                    if isinstance(fcontent, str) and "\\n" in fcontent:
+                        raw_files[fpath] = fcontent.replace("\\n", "\n")
 
         # Validate file paths
         validated_files, validation_warnings = _validate_file_paths(raw_files)

@@ -32,7 +32,23 @@ Produce a complete system architecture design that includes:
    - Key design decisions and rationale
    - Non-functional considerations (scalability, security, observability)
 
-4. **Decisions** – List of architecture decision records (ADR) with:
+4. **Diagrams** – Produce Mermaid diagrams only. Each value must be valid Mermaid syntax (no explanatory text). Do not wrap in markdown code fences; output raw Mermaid.
+
+   **Required (always produce):**
+   - client_server_architecture: Client–server view (browsers, app server(s), APIs)
+   - frontend_code_structure: Front-end code layout (modules, layers, key directories)
+   - backend_code_structure: Backend code layout (packages, layers, entrypoints)
+   - backend_infrastructure: Backend infra (servers, queues, DBs, caches)
+   - infrastructure: Overall infrastructure (hosting, networking, CI/CD)
+   - security_architecture: Security boundaries, auth flow, data protection
+
+   **Optional (include when relevant or as suggested deployment):**
+   - backend_code_architecture: Logical/component view of backend (if different from code structure)
+   - cloud_aws, cloud_gcp, cloud_digital_ocean: Deployment view for each provider (one or more)
+
+   You may add extra keys (e.g. data_flow, sequence_auth) for anything else helpful.
+
+5. **Decisions** – List of architecture decision records (ADR) with:
    - decision
    - context
    - consequences
@@ -42,7 +58,7 @@ Return a single JSON object with:
 - "overview": string
 - "components": list of {"name", "type", "description", "technology", "dependencies", "interfaces"}
 - "architecture_document": string (full markdown)
-- "diagrams": object with diagram names as keys and description/mermaid as values
+- "diagrams": object with diagram names as keys and Mermaid source code as values (no code fences). Required keys: client_server_architecture, frontend_code_structure, backend_code_structure, backend_infrastructure, infrastructure, security_architecture. Optional: backend_code_architecture, cloud_aws, cloud_gcp, cloud_digital_ocean.
 - "decisions": list of {"decision", "context", "consequences"}
 - "summary": string (2-3 sentence summary)
 

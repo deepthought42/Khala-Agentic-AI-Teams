@@ -40,6 +40,8 @@ def create_feature_branch(repo_path: str | Path, base_branch: str, feature_name:
     Create and checkout a feature branch from base_branch.
     feature_name: e.g. "t3-backend-auth" (will become feature/t3-backend-auth).
 
+    If the working tree has uncommitted changes, they are committed on the current
+    branch first so checkout can succeed (avoids "would be overwritten by checkout").
     If the branch already exists (e.g. from a previous run), it is deleted
     and recreated from the base branch so the task gets a clean start.
 
@@ -49,8 +51,31 @@ def create_feature_branch(repo_path: str | Path, base_branch: str, feature_name:
     if not (path / ".git").exists():
         return False, "Not a git repository"
     branch_name = f"feature/{feature_name}" if not feature_name.startswith("feature/") else feature_name
+
+    # Ensure working tree is clean so checkout does not fail with "would be overwritten"
+    status_code, status_out = _run_git(path, ["git", "status", "--porcelain"])
+    if status_code == 0 and status_out.strip():
+        _run_git(path, ["git", "add", "-A"])
+        commit_code, commit_out = _run_git(
+            path, ["git", "commit", "-m", "chore: save working tree before feature branch"]
+        )
+        if commit_code != 0 and "nothing to commit" not in (commit_out or ""):
+            logger.warning("Could not commit before feature branch: %s", commit_out)
+        else:
+            logger.info("Committed uncommitted changes before creating feature branch")
+
     code, out = _run_git(path, ["git", "checkout", "-b", branch_name, base_branch])
     if code != 0:
+        if "would be overwritten" in out or "Your local changes" in out:
+            # Working tree still dirty (e.g. untracked files that would be overwritten) — try stash
+            logger.info("Checkout failed due to local changes, trying stash")
+            stash_code, stash_out = _run_git(path, ["git", "stash", "push", "-u", "-m", "pre-feature-branch"])
+            if stash_code == 0:
+                code, out = _run_git(path, ["git", "checkout", "-b", branch_name, base_branch])
+                if code == 0:
+                    logger.info("Created branch '%s' from '%s' (changes stashed)", branch_name, base_branch)
+                    return True, branch_name
+            return False, f"Failed to create branch {branch_name}: {out}"
         if "already exists" in out:
             # Stale branch from a previous run — delete and recreate
             logger.warning(
