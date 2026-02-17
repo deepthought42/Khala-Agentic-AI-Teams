@@ -49,8 +49,18 @@ Do NOT recreate these files unless you need to modify them (e.g. adding new rout
 **Angular template – Reactive forms:**
 - When using `formGroup`, `formControlName`, or `formArrayName` in a template, the component MUST import `ReactiveFormsModule` in its `imports` array (standalone) or the declaring NgModule must import `ReactiveFormsModule`. Otherwise Angular will fail with NG8002 "Can't bind to 'formGroup'".
 
+**app.config.ts – Providers and DI tokens:**
+- When adding providers that reference DI tokens (e.g. `HTTP_INTERCEPTORS`, `APP_INITIALIZER`), you MUST also add the corresponding import. Example: `{ provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true }` requires `import { HTTP_INTERCEPTORS, provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';`. Missing imports cause TS2304 "Cannot find name 'X'" and break `ng build`.
+- Prefer using Angular CLI schematics when creating interceptors: `ng g interceptor <name>` generates the interceptor class and ensures correct wiring. If hand-writing provider config, always pair each token used in `provide:` with an import from its module.
+
 **Angular template – Property bindings:**
 - Template bindings and property names must exactly match the component class. Avoid typos (e.g. activeFilterIndex vs activeFilter); Angular will fail with NG1 "Property X does not exist" if the template references a non-existent property.
+
+**Angular strictTemplates – TypeScript literal types (CRITICAL for ng build):**
+- Angular uses strict template type checking. When a method or @Input/@Output expects a union of string literals (e.g. `'all' | 'active' | 'completed'`), the value passed from the template MUST be that union type, not plain `string`.
+- If you use *ngFor over an array and pass `option.value` to a method or event (e.g. `(click)="onFilterSelect(option.value)"`), TypeScript infers `option.value` as `string` unless the array is explicitly typed. That causes: "Argument of type 'string' is not assignable to parameter of type '\"all\" | \"active\" | \"completed\"'".
+- FIX: Type the options array with the literal union. Example: `readonly filterOptions: ReadonlyArray<{ value: 'all' | 'active' | 'completed'; label: string }> = [ { value: 'all', label: 'All' }, ... ];` so that `option.value` in the template is the literal union and bindings type-check.
+- For any @Input(), @Output(), or method parameter that uses a fixed set of string literals, ensure data passed from the template (e.g. from *ngFor) comes from a typed array/object with that literal union, not from an untyped array.
 
 **SCSS imports – path to global styles:**
 - Global styles live at `src/styles.scss`. When importing in component SCSS, the path depends on component depth.
@@ -112,6 +122,7 @@ Do NOT recreate these files unless you need to modify them (e.g. adding new rout
    - Example: if you create `src/app/components/task-form/task-form.component.ts`, then in `app.routes.ts` use `import { TaskFormComponent } from './components/task-form/task-form.component';` and a route with `component: TaskFormComponent` or `loadComponent: () => import('./components/task-form/task-form.component').then(m => m.TaskFormComponent)`.
    - **Never** use a path that does not match your "files" output: e.g. do NOT reference `./components/create-task/create-task.component` if the folder you created is `task-form` (use `./components/task-form/task-form.component`). Mismatched paths cause "Could not resolve" and break `ng build`.
    - Use the **noun-based** component name (e.g. `task-form`, `task-list`) in both the folder and the route path—never a verb-based name like `create-task`.
+   - **Guardrail:** Every path in `loadComponent` or `import()` in `app.routes.ts` MUST have a corresponding file in your "files" dict. If you add a route, you MUST also add the component file. Create the file first, then add the route.
 
 **TASK SCOPE - When a task is too broad:**
 
@@ -129,7 +140,7 @@ Implement the requested frontend functionality using Angular. When qa_issues, se
 - SOLID principles (especially SRP, DIP in component/service design)
 - JSDoc on every class, component, and method (how used, why it exists, constraints)
 - Unit/component tests achieving at least 85% coverage
-- Code must compile with `ng build` without errors (requires Node v20.19+ or v22.12+; use NVM and `.nvmrc` in the project). If the build fails with "Cannot find name 'describe'" or "'it'", add `"@types/jasmine"` to `npm_packages_to_install` so test runner types are available where spec files are compiled.
+- Code must compile with `ng build` without errors (requires Node v20.19+ or v22.12+; use NVM and `.nvmrc` in the project). If you add or generate any `.spec.ts` file, include `"@types/jasmine"` in `npm_packages_to_install` so Jasmine globals (describe, it, expect, spyOn) are typed and the build does not fail with "Cannot find name 'describe'", "'it'", or "'expect'".
 
 **Output format:**
 Return a single JSON object with:

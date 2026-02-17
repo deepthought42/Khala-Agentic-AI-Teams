@@ -88,6 +88,22 @@ class CommandResult:
             text = "...\n" + text[-max_chars:]
         return text
 
+    def parsed_failures(self, command_kind: str = "pytest") -> list:
+        """
+        Parse stdout/stderr into structured failures for agent consumption.
+
+        command_kind: "pytest" | "ng_build" | "ng"
+        Returns list of ParsedFailure objects (empty if success).
+        """
+        if self.success:
+            return []
+        try:
+            from shared.error_parsing import parse_command_failure
+            return parse_command_failure(command_kind, self.stdout or "", self.stderr or "")
+        except Exception as e:
+            logger.debug("Error parsing failures: %s", e)
+            return []
+
 
 def run_command(
     cmd: list[str],
@@ -367,6 +383,7 @@ def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:  
     _ensure_tsconfig_module_resolution(cwd)
     _ensure_material_theme_in_styles(cwd)
     _ensure_provide_animations_in_config(cwd)
+    _ensure_app_config_di_token_imports(cwd)
     _ensure_reactive_forms_module_in_components(cwd)
     _normalize_double_at_angular(cwd)
     if _get_nvm_script_prefix() is not None:
@@ -527,6 +544,70 @@ def _ensure_provide_animations_in_config(cwd: Path) -> None:
         logger.warning("Could not repair app.config.ts for provideAnimations: %s", e)
 
 
+# Well-known Angular DI tokens that must be imported when used in app.config.ts
+_APP_CONFIG_TOKEN_IMPORTS: dict[str, str] = {
+    "HTTP_INTERCEPTORS": "@angular/common/http",
+}
+
+
+def _ensure_app_config_di_token_imports(cwd: Path) -> None:
+    """
+    Ensure app.config.ts imports any DI tokens it uses in providers.
+    E.g. HTTP_INTERCEPTORS must be imported from @angular/common/http when
+    used in { provide: HTTP_INTERCEPTORS, useClass: ..., multi: true }.
+    """
+    import re
+
+    config_path = cwd / "src" / "app" / "app.config.ts"
+    if not config_path.exists():
+        return
+    try:
+        content = config_path.read_text(encoding="utf-8")
+        changed = False
+        for token, module in _APP_CONFIG_TOKEN_IMPORTS.items():
+            if token not in content:
+                continue
+            # Already imported if token appears in an import from the expected module
+            already_imported = re.search(
+                r"import\s*\{[^}]*\b" + re.escape(token) + r"\b[^}]*\}\s*from\s*['\"]"
+                + re.escape(module) + r"['\"]",
+                content,
+            )
+            if already_imported:
+                continue
+            # Check for existing import from this module
+            match = re.search(
+                r"import\s*\{([^}]+)\}\s*from\s*['\"]" + re.escape(module) + r"['\"]",
+                content,
+            )
+            if match:
+                imports = match.group(1)
+                if token in imports:
+                    continue
+                new_imports = f"{token}, {imports.strip()}" if imports.strip() else token
+                new_line = f"import {{ {new_imports} }} from '{module}';"
+                old_line = match.group(0)
+                content = content.replace(old_line, new_line, 1)
+                changed = True
+            else:
+                lines = content.split("\n")
+                insert_idx = 0
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("import "):
+                        insert_idx = i + 1
+                    elif insert_idx > 0 and not line.strip().startswith("import "):
+                        break
+                import_line = f"import {{ {token} }} from '{module}';\n"
+                lines.insert(insert_idx, import_line.rstrip())
+                content = "\n".join(lines)
+                changed = True
+        if changed:
+            config_path.write_text(content, encoding="utf-8")
+            logger.info("Repaired app.config.ts: ensured HTTP_INTERCEPTORS import")
+    except Exception as e:  # pragma: no cover
+        logger.warning("Could not repair app.config.ts for DI token imports: %s", e)
+
+
 def _normalize_double_at_angular(cwd: Path) -> None:
     """
     Fix @@angular typo (double @) in frontend .ts and .html files.
@@ -608,6 +689,7 @@ def ensure_frontend_dependencies_installed(project_path: str | Path) -> CommandR
     _ensure_tsconfig_module_resolution(cwd)
     _ensure_material_theme_in_styles(cwd)
     _ensure_provide_animations_in_config(cwd)
+    _ensure_app_config_di_token_imports(cwd)
     _ensure_reactive_forms_module_in_components(cwd)
     _normalize_double_at_angular(cwd)
     if _get_nvm_script_prefix() is not None:  # pragma: no cover

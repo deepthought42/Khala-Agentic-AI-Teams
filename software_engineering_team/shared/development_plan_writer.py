@@ -28,6 +28,76 @@ def _normalize_mermaid(content: str) -> str:
     return s
 
 
+def write_project_overview_plan(repo_path: str | Path, overview: Any) -> Path:
+    """
+    Write the project overview plan to DEVELOPMENT_PLAN-project_overview.md.
+    Returns the path of the written file.
+    """
+    path = Path(repo_path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}project_overview.md"
+
+    sections: List[str] = [
+        "# Development Plan: Project Overview",
+        "",
+        "## Primary Goal",
+        "",
+        overview.primary_goal.strip() or "(No primary goal provided.)",
+        "",
+    ]
+
+    if overview.secondary_goals:
+        sections.extend(["## Secondary Goals", ""])
+        for g in overview.secondary_goals:
+            sections.append(f"- {g}")
+        sections.append("")
+
+    if overview.delivery_strategy:
+        sections.extend(["## Delivery Strategy", "", overview.delivery_strategy.strip(), ""])
+
+    if overview.milestones:
+        sections.extend(["## Milestones", ""])
+        for m in sorted(overview.milestones, key=lambda x: x.target_order):
+            sections.append(f"### {m.name}")
+            sections.append(f"- **Order:** {m.target_order}")
+            if m.description:
+                sections.append(f"- **Description:** {m.description}")
+            if m.scope_summary:
+                sections.append(f"- **Scope:** {m.scope_summary}")
+            sections.append("")
+
+    if overview.risk_items:
+        sections.extend(["## Risks", ""])
+        for r in overview.risk_items:
+            sections.append(f"- **[{r.severity}]** {r.description}")
+            if r.mitigation:
+                sections.append(f"  - Mitigation: {r.mitigation}")
+        sections.append("")
+
+    content = "\n".join(sections)
+    out_file.write_text(content, encoding="utf-8")
+    logger.info("Wrote development plan to %s", out_file)
+    return out_file
+
+
+def write_features_and_functionality_plan(repo_path: str | Path, features_doc: str) -> Path:
+    """
+    Write the features and functionality document to DEVELOPMENT_PLAN-features_and_functionality.md.
+    Returns the path of the written file.
+    """
+    path = Path(repo_path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}features_and_functionality.md"
+    content = (
+        "# Development Plan: Features and Functionality\n\n"
+        "High-level features and functionalities required (from initial spec).\n\n"
+        "---\n\n"
+    ) + (features_doc.strip() or "(No features document generated.)")
+    out_file.write_text(content, encoding="utf-8")
+    logger.info("Wrote development plan to %s", out_file)
+    return out_file
+
+
 def write_architecture_plan(repo_path: str | Path, architecture: SystemArchitecture) -> Path:
     """
     Write the architecture plan to DEVELOPMENT_PLAN-architecture.md.
@@ -94,10 +164,11 @@ def write_tech_lead_plan(
     assignment: TaskAssignment,
     summary: str = "",
     requirement_task_mapping: List[Dict[str, Any]] | None = None,
+    validation_report: str | None = None,
 ) -> Path:
     """
     Write the Tech Lead task plan to DEVELOPMENT_PLAN-tech_lead.md.
-    Includes all tasks with full details and execution order.
+    Includes all tasks with full details, execution order, and optional validation report.
     Returns the path of the written file.
     """
     path = Path(repo_path).resolve()
@@ -112,6 +183,9 @@ def write_tech_lead_plan(
         summary.strip() or "(No summary provided.)",
         "",
     ]
+
+    if validation_report:
+        sections.extend([validation_report.strip(), ""])
 
     if assignment.rationale:
         sections.extend(["## Rationale", "", assignment.rationale.strip(), ""])
@@ -143,6 +217,19 @@ def write_tech_lead_plan(
             t.description.strip() or "(No description.)",
             "",
         ])
+        # If the task is linked to a specific architecture component, surface that for readers
+        component_name = None
+        try:
+            component_name = (getattr(t, "metadata", {}) or {}).get("component_name")
+        except Exception:
+            component_name = None
+        if component_name:
+            sections.extend(
+                [
+                    f"- **Architecture component:** {component_name}",
+                    "",
+                ]
+            )
         if t.user_story:
             sections.extend(["#### User Story", "", t.user_story.strip(), ""])
         if t.requirements:

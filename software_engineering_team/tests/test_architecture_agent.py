@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -80,3 +81,19 @@ def test_write_architecture_plan_includes_mermaid_diagrams(requirements: Product
         content = path.read_text()
     assert "## Diagrams" in content
     assert "```mermaid" in content
+
+
+def test_architecture_agent_builds_synthetic_when_parse_fails(requirements: ProductRequirements) -> None:
+    """When LLM returns raw wrapper (parse failure), agent builds synthetic architecture."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {"content": "Here is some non-JSON text from the model"}
+    agent = ArchitectureExpertAgent(llm_client=mock_llm)
+    result = agent.run(
+        ArchitectureInput(requirements=requirements, technology_preferences=["Python", "FastAPI"])
+    )
+    assert result.architecture.overview
+    assert "Task Manager API" in result.architecture.overview
+    assert len(result.architecture.components) >= 1
+    assert result.architecture.diagrams
+    assert "client_server_architecture" in result.architecture.diagrams
+    assert "security_architecture" in result.architecture.diagrams

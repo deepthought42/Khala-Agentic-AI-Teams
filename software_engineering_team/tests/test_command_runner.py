@@ -10,6 +10,7 @@ from shared.command_runner import (
     CommandResult,
     _ensure_angular_common_in_package_json,
     _ensure_angular_material_in_package_json,
+    _ensure_app_config_di_token_imports,
     _ensure_material_theme_in_styles,
     _ensure_provide_animations_in_config,
     _ensure_tsconfig_module_resolution,
@@ -353,6 +354,51 @@ export const appConfig = { providers: [provideAnimations()] };
 def test_ensure_provide_animations_in_config_no_config_file(tmp_path: Path) -> None:
     """When app.config.ts does not exist, no error."""
     _ensure_provide_animations_in_config(tmp_path)
+    assert not (tmp_path / "src" / "app" / "app.config.ts").exists()
+
+
+def test_ensure_app_config_di_token_imports_adds_http_interceptors_when_missing(tmp_path: Path) -> None:
+    """When app.config.ts uses HTTP_INTERCEPTORS but does not import it, the import is added."""
+    app = tmp_path / "src" / "app"
+    app.mkdir(parents=True)
+    config = app / "app.config.ts"
+    config.write_text(
+        """import { ApplicationConfig } from '@angular/core';
+import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
+import { AuthInterceptor } from './interceptors/auth.interceptor';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(withInterceptorsFromDi()),
+    { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true },
+  ],
+};
+""",
+        encoding="utf-8",
+    )
+    _ensure_app_config_di_token_imports(tmp_path)
+    content = config.read_text(encoding="utf-8")
+    assert "HTTP_INTERCEPTORS" in content
+    assert "import { HTTP_INTERCEPTORS" in content or "HTTP_INTERCEPTORS," in content
+    assert "@angular/common/http" in content
+
+
+def test_ensure_app_config_di_token_imports_noop_when_already_imported(tmp_path: Path) -> None:
+    """When HTTP_INTERCEPTORS is already imported, app.config.ts is unchanged."""
+    app = tmp_path / "src" / "app"
+    app.mkdir(parents=True)
+    orig = """import { provideHttpClient, withInterceptorsFromDi, HTTP_INTERCEPTORS } from '@angular/common/http';
+export const appConfig = { providers: [{ provide: HTTP_INTERCEPTORS, multi: true }] };
+"""
+    config = app / "app.config.ts"
+    config.write_text(orig, encoding="utf-8")
+    _ensure_app_config_di_token_imports(tmp_path)
+    assert config.read_text(encoding="utf-8") == orig
+
+
+def test_ensure_app_config_di_token_imports_no_config_file(tmp_path: Path) -> None:
+    """When app.config.ts does not exist, no error."""
+    _ensure_app_config_di_token_imports(tmp_path)
     assert not (tmp_path / "src" / "app" / "app.config.ts").exists()
 
 

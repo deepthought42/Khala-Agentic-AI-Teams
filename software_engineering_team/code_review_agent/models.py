@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 
 from shared.models import SystemArchitecture
 
+# Max chars of code to send to the code review LLM (avoids HTTP 400 "request body too large")
+MAX_CODE_REVIEW_CHARS = 150_000
+
 
 class CodeReviewIssue(BaseModel):
     """A single issue found during code review."""

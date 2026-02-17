@@ -331,6 +331,125 @@ def test_frontend_agent_with_code_review_issues() -> None:
     assert "Code review" in call_args
 
 
+def test_frontend_agent_includes_problem_solving_header_when_issues_present() -> None:
+    """When code_review_issues are present, prompt includes PROBLEM-SOLVING MODE header."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Fixed",
+        "files": {"src/app/x.component.ts": "content"},
+        "components": ["x"],
+        "suggested_commit_message": "fix: resolve",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    agent.run(
+        FrontendInput(
+            task_description="Fix ng build",
+            requirements="",
+            code_review_issues=[
+                {"severity": "critical", "category": "build", "description": "NG8002 formGroup", "suggestion": "Add ReactiveFormsModule", "file_path": "x.component.ts"},
+            ],
+        )
+    )
+    prompt = mock_llm.complete_json.call_args[0][0]
+    assert "PROBLEM-SOLVING MODE" in prompt
+    assert "Frontend / Angular" in prompt
+    assert "code review issues" in prompt
+    assert "NG8002" in prompt or "ReactiveFormsModule" in prompt
+    assert "Add ReactiveFormsModule" in prompt
+    assert "error details above" not in prompt
+
+
+def test_frontend_agent_no_problem_solving_header_when_no_issues() -> None:
+    """When no issues are present, prompt does not include PROBLEM-SOLVING MODE header."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Added",
+        "files": {"src/app/x.component.ts": "content"},
+        "components": ["x"],
+        "suggested_commit_message": "feat: add",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    agent.run(FrontendInput(task_description="Add component", requirements=""))
+    prompt = mock_llm.complete_json.call_args[0][0]
+    assert "PROBLEM-SOLVING MODE" not in prompt
+
+
+def test_frontend_agent_logs_llm_prompt(caplog: pytest.LogCaptureFixture) -> None:
+    """Frontend agent logs LLM call metadata before each LLM call."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Done",
+        "files": {"src/app/x.component.ts": "content"},
+        "components": ["x"],
+        "suggested_commit_message": "feat: add",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    agent.run(FrontendInput(task_description="Add component", requirements=""))
+    assert any("LLM call" in rec.message and "agent=Frontend" in rec.message for rec in caplog.records)
+    assert any("mode=initial" in rec.message for rec in caplog.records)
+
+
+def test_frontend_agent_logs_problem_solving_context_and_header_when_issues_present(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Frontend agent logs problem-solving context and header when issues are present."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Fixed",
+        "files": {"src/app/x.component.ts": "content"},
+        "components": ["x"],
+        "suggested_commit_message": "fix: resolve",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    agent.run(
+        FrontendInput(
+            task_description="Fix build",
+            requirements="",
+            code_review_issues=[
+                {
+                    "severity": "critical",
+                    "category": "build",
+                    "description": "ng build failed",
+                    "suggestion": "Fix Angular errors",
+                    "file_path": "src/app/x.component.ts",
+                },
+            ],
+        )
+    )
+    assert any("Frontend problem-solving context" in rec.message for rec in caplog.records)
+    assert any("Frontend problem-solving header for LLM" in rec.message for rec in caplog.records)
+    assert any("mode=problem_solving" in rec.message for rec in caplog.records)
+
+
+def test_frontend_agent_no_problem_solving_logs_when_no_issues(caplog: pytest.LogCaptureFixture) -> None:
+    """Frontend agent does not log problem-solving context/header when no issues."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Done",
+        "files": {"src/app/x.component.ts": "content"},
+        "components": ["x"],
+        "suggested_commit_message": "feat: add",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    agent.run(FrontendInput(task_description="Add component", requirements=""))
+    assert not any("Frontend problem-solving context" in rec.message for rec in caplog.records)
+    assert not any("Frontend problem-solving header for LLM" in rec.message for rec in caplog.records)
+
+
 def test_frontend_agent_with_qa_issues() -> None:
     """Agent includes qa_issues in context when provided."""
     mock_llm = MagicMock()
@@ -419,3 +538,29 @@ def test_frontend_agent_unescapes_newlines_in_files() -> None:
     agent = FrontendExpertAgent(llm_client=mock_llm)
     result = agent.run(FrontendInput(task_description="Add", requirements=""))
     assert result.files["src/app/x.component.ts"] == "line1\nline2"
+
+
+def test_read_repo_code_excludes_node_modules_and_dist(tmp_path):
+    """_read_repo_code excludes node_modules, dist, and .angular so code review stays under body limit."""
+    from pathlib import Path
+
+    from frontend_agent.agent import _read_repo_code
+
+    (tmp_path / "src" / "app").mkdir(parents=True)
+    (tmp_path / "node_modules" / "foo").mkdir(parents=True)
+    (tmp_path / "dist").mkdir(parents=True)
+    (tmp_path / ".angular").mkdir(parents=True)
+
+    (tmp_path / "src" / "app" / "app.ts").write_text("// app source", encoding="utf-8")
+    (tmp_path / "node_modules" / "foo" / "bar.ts").write_text("// node_modules content", encoding="utf-8")
+    (tmp_path / "dist" / "main.js").write_text("// dist is not .ts", encoding="utf-8")
+    (tmp_path / ".angular" / "cache").write_text("cache", encoding="utf-8")
+
+    result = _read_repo_code(Path(tmp_path), [".ts", ".tsx", ".html", ".scss"])
+
+    assert "// app source" in result
+    assert "// node_modules content" not in result
+    assert "node_modules" not in result
+    assert "dist" not in result
+    assert ".angular" not in result
+    assert len(result) < 500

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.models import SystemArchitecture, Task, TaskUpdate
+from shared.prompt_utils import build_problem_solving_header, log_llm_prompt
 
 from .models import (
     BackendInput,
@@ -100,7 +101,6 @@ MAX_REVIEW_ITERATIONS = 20
 MAX_SAME_BUILD_FAILURES = 3  # Stop retrying if build fails identically this many times
 MAX_CLARIFICATION_ROUNDS = 5
 MAX_EXISTING_CODE_CHARS = 40_000
-
 # Patterns that indicate pytest failed due to missing /test-generic-error route or
 # exception handler re-raising (test client gets exception instead of response).
 # When matched, we give the agent a targeted suggestion instead of generic "fix errors".
@@ -172,6 +172,28 @@ def _build_code_review_issues_for_missing_test_routes() -> List[Dict[str, Any]]:
     ]
 
 
+def _extract_failing_test_file_from_build_errors(build_errors: str) -> Optional[str]:
+    """Extract failing test file path from build_errors (e.g. tests/test_auth_middleware.py)."""
+    match = re.search(r"tests/test_[a-zA-Z0-9_]+\.py", build_errors)
+    return match.group(0) if match else None
+
+
+def _is_pytest_assertion_failure(build_errors: str) -> bool:
+    """Return True if build_errors indicates a pytest assertion failure."""
+    return "[pytest_assertion]" in build_errors or "failure_class=pytest_assertion" in build_errors
+
+
+def _build_error_signature(build_errors: str) -> str:
+    """Compute a signature for same-error detection.
+
+    For pytest assertion failures, use the last 1200 chars (where assertion details
+    usually appear) so assertion changes are detected. Otherwise use first 800 chars.
+    """
+    if _is_pytest_assertion_failure(build_errors):
+        return (build_errors[-1200:] if len(build_errors) > 1200 else build_errors).strip()
+    return (build_errors[:800] or build_errors).strip()
+
+
 def _build_code_review_issues_for_build_failure(build_errors: str) -> List[Dict[str, Any]]:
     """Build code_review_issues from build/test failure output.
 
@@ -229,6 +251,29 @@ def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str
     return "\n\n".join(parts) if parts else "# No code files found"
 
 
+def _read_repo_meta_files(repo_path: Path) -> str:
+    """Read .gitignore, README.md, CONTRIBUTORS.md for code review when task is repo-setup."""
+    parts: List[str] = []
+    for name in (".gitignore", "README.md", "CONTRIBUTORS.md"):
+        f = repo_path / name
+        if f.is_file():
+            try:
+                parts.append(f"### {name} ###\n{f.read_text(encoding='utf-8', errors='replace')}")
+            except Exception:
+                pass
+    return "\n\n".join(parts) if parts else ""
+
+
+def _is_repo_setup_task(task: Any) -> bool:
+    """True if task description suggests repo setup / initial commit / branching."""
+    desc = (getattr(task, "description", None) or "").lower()
+    return (
+        "git" in desc and ("setup" in desc or "initial" in desc or "branch" in desc)
+        or "initial commit" in desc
+        or "branching strategy" in desc
+    )
+
+
 def _truncate_for_context(text: str, max_chars: int) -> str:
     """Truncate text for agent context, with truncation notice."""
     if not text or len(text) <= max_chars:
@@ -248,6 +293,19 @@ def _task_requirements(task: Task) -> str:
     if getattr(task, "acceptance_criteria", None):
         parts.append("Acceptance Criteria:\n- " + "\n- ".join(task.acceptance_criteria))
     return "\n\n".join(parts) if parts else task.description
+
+
+def _task_requirements_with_test_expectations(task: Task, repo_path: Path) -> str:
+    """Build requirements string including test/spec expectations from repo."""
+    base = _task_requirements(task)
+    try:
+        from shared.test_spec_expectations import build_test_spec_checklist
+        checklist = build_test_spec_checklist(repo_path, "backend")
+        if checklist:
+            base += "\n\n" + checklist
+    except Exception:
+        pass
+    return base
 
 
 class BackendExpertAgent:
@@ -391,7 +449,7 @@ class BackendExpertAgent:
             result = self.run(
                 BackendInput(
                     task_description=current_task.description,
-                    requirements=_task_requirements(current_task),
+                    requirements=_task_requirements_with_test_expectations(current_task, repo_path),
                     user_story=getattr(current_task, "user_story", "") or "",
                     spec_content=_truncate_for_context(
                         spec_content, MAX_EXISTING_CODE_CHARS
@@ -526,7 +584,7 @@ class BackendExpertAgent:
                 review_history.append(record)
 
                 # Stop if the same build error repeats (avoids infinite loop on env/config issues)
-                build_error_sig = (build_errors[:800] or build_errors).strip()
+                build_error_sig = _build_error_signature(build_errors)
                 if build_error_sig == last_build_error_sig:
                     consecutive_same_build_failures += 1
                 else:
@@ -547,6 +605,47 @@ class BackendExpertAgent:
 
                 # Feed build errors back as code-review issues and regenerate.
                 code_review_issues = _build_code_review_issues_for_build_failure(build_errors)
+                # Escalate when same error repeats: add failing test content and clearer instructions
+                if consecutive_same_build_failures >= 2:
+                    failing_test_file = (
+                        _extract_failing_test_file_from_build_errors(build_errors)
+                        if _is_pytest_assertion_failure(build_errors)
+                        else None
+                    )
+                    escalation_desc = (
+                        f"ESCALATION: This build error has occurred {consecutive_same_build_failures} times. "
+                        "Focus ONLY on fixing this specific error. Make minimal, targeted changes. "
+                        "Do not add new features or refactor. Follow the Suggestion and Playbook in the error output."
+                    )
+                    escalation_suggestion = (
+                        "Apply the minimal fix indicated by the error message. "
+                        "Re-read the Suggestion and Playbook sections above. "
+                        "Read the failing test's assertions line-by-line and ensure the implementation satisfies each one."
+                    )
+                    if failing_test_file:
+                        test_path = repo_path / failing_test_file
+                        if test_path.exists():
+                            try:
+                                test_content = test_path.read_text(encoding="utf-8", errors="replace")
+                                escalation_desc += (
+                                    f"\n\nFailing test expectations (from {failing_test_file}):\n```\n"
+                                    f"{test_content[:3000]}{'... [truncated]' if len(test_content) > 3000 else ''}\n```"
+                                )
+                                escalation_suggestion = (
+                                    f"The failing test is in {failing_test_file}. "
+                                    "Read its assertions line-by-line and ensure the implementation satisfies each one."
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            escalation_desc += f"\n\nFailing test file: {failing_test_file} (file not found in repo)."
+                    code_review_issues.insert(0, {
+                        "severity": "critical",
+                        "category": "build",
+                        "file_path": failing_test_file or "",
+                        "description": escalation_desc,
+                        "suggestion": escalation_suggestion,
+                    })
                 result = self._regenerate_with_issues(
                     repo_path=repo_path,
                     current_task=current_task,
@@ -596,6 +695,10 @@ class BackendExpertAgent:
                 iteration,
             )
             code_on_branch = _read_repo_code(repo_path)
+            if _is_repo_setup_task(current_task):
+                meta = _read_repo_meta_files(repo_path)
+                if meta:
+                    code_on_branch = code_on_branch + "\n\n" + meta
             review_result = self._run_code_review(
                 code_review_agent=code_review_agent,
                 code=code_on_branch,
@@ -1142,7 +1245,7 @@ class BackendExpertAgent:
         return self.run(
             BackendInput(
                 task_description=current_task.description,
-                requirements=_task_requirements(current_task),
+                requirements=_task_requirements_with_test_expectations(current_task, repo_path),
                 user_story=getattr(current_task, "user_story", "") or "",
                 spec_content=_truncate_for_context(
                     spec_content, MAX_EXISTING_CODE_CHARS
@@ -1180,11 +1283,12 @@ class BackendExpertAgent:
         Postconditions:
             - Returns a ``CodeReviewOutput`` with ``approved`` and ``issues``.
         """
-        from code_review_agent.models import CodeReviewInput
+        from code_review_agent.models import CodeReviewInput, MAX_CODE_REVIEW_CHARS
 
+        code_capped = _truncate_for_context(code, MAX_CODE_REVIEW_CHARS)
         return code_review_agent.run(
             CodeReviewInput(
-                code=code,
+                code=code_capped,
                 spec_content=spec_content,
                 task_description=task.description,
                 task_requirements=_task_requirements(task),
@@ -1417,11 +1521,69 @@ class BackendExpertAgent:
             len(input_data.security_issues) if input_data.security_issues else 0,
             len(input_data.code_review_issues) if input_data.code_review_issues else 0,
         )
-        context_parts = [
+        qa_count = len(input_data.qa_issues) if input_data.qa_issues else 0
+        security_count = len(input_data.security_issues) if input_data.security_issues else 0
+        code_review_count = len(input_data.code_review_issues) if input_data.code_review_issues else 0
+        has_issues = qa_count > 0 or security_count > 0 or code_review_count > 0
+
+        context_parts: List[str] = []
+        if has_issues:
+            issue_summaries = {}
+            if qa_count:
+                issue_summaries["QA issues"] = qa_count
+            if security_count:
+                issue_summaries["security issues"] = security_count
+            if code_review_count:
+                issue_summaries["code review issues"] = code_review_count
+            desc_lines: List[str] = []
+            for i in input_data.qa_issues or []:
+                desc_lines.append(f"  - QA: {i.get('description', '')} (location: {i.get('location', '')})")
+            for i in input_data.security_issues or []:
+                desc_lines.append(f"  - Security [{i.get('category', '')}]: {i.get('description', '')} (location: {i.get('location', '')})")
+            for i in input_data.code_review_issues or []:
+                desc_lines.append(f"  - Code review [{i.get('category', 'general')}]: {i.get('description', '')} (file: {i.get('file_path', 'unknown')})")
+            issue_descriptions = "\n".join(desc_lines) if desc_lines else None
+            header = build_problem_solving_header(
+                issue_summaries, "Backend", issue_descriptions=issue_descriptions
+            )
+            # Strip trailing "---" so we can put issue details inside the problem-solving section
+            header_body = header.rstrip()
+            if header_body.endswith("---"):
+                header_body = header_body[:-3].rstrip()
+            problem_block_parts: List[str] = [header_body]
+            if input_data.qa_issues:
+                qa_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                    for i in input_data.qa_issues
+                )
+                problem_block_parts.extend(["", "**QA issues to fix (implement these):**", qa_text])
+            if input_data.security_issues:
+                sec_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('category')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                    for i in input_data.security_issues
+                )
+                problem_block_parts.extend(["", "**Security issues to fix (implement these):**", sec_text])
+            if input_data.code_review_issues:
+                cr_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
+                    f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {i.get('suggestion', '')}"
+                    for i in input_data.code_review_issues
+                )
+                problem_block_parts.extend(["", "**Code review issues to resolve:**", cr_text])
+            problem_block_parts.extend(["", "---"])
+            context_parts.append("\n".join(problem_block_parts))
+            logger.info(
+                "Backend problem-solving context: qa_issues=%d, security_issues=%d, code_review_issues=%d",
+                qa_count,
+                security_count,
+                code_review_count,
+            )
+            logger.info("Backend problem-solving header for LLM:\n%s", context_parts[0][:800])
+        context_parts.extend([
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
             f"**Language:** {input_data.language}",
-        ]
+        ])
         if input_data.user_story:
             context_parts.extend(["", f"**User Story:** {input_data.user_story}"])
         if input_data.spec_content:
@@ -1443,72 +1605,84 @@ class BackendExpertAgent:
             context_parts.extend(["", "**Existing code:**", input_data.existing_code])
         if input_data.api_spec:
             context_parts.extend(["", "**API spec:**", input_data.api_spec])
-        if input_data.qa_issues:
-            qa_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                for i in input_data.qa_issues
-            )
-            context_parts.extend(["", "**QA issues to fix (implement these):**", qa_text])
-        if input_data.security_issues:
-            sec_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('category')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                for i in input_data.security_issues
-            )
-            context_parts.extend(["", "**Security issues to fix (implement these):**", sec_text])
-        if input_data.code_review_issues:
-            cr_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
-                f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {i.get('suggestion', '')}"
-                for i in input_data.code_review_issues
-            )
-            context_parts.extend(["", "**Code review issues to resolve:**", cr_text])
 
         prompt = BACKEND_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        data = self.llm.complete_json(prompt, temperature=0.2)
+        mode = "problem_solving" if has_issues else "initial"
+        task_hint = (input_data.task_description or "")[:80]
+        log_llm_prompt(logger, "Backend", mode, task_hint, prompt)
 
-        code = data.get("code", "")
-        if code and "\\n" in code:
-            code = code.replace("\\n", "\n")
-        tests = data.get("tests", "")
-        if tests and "\\n" in tests:
-            tests = tests.replace("\\n", "\n")
+        empty_retry_prompt = (
+            "\n\n**CRITICAL - Your previous response was REJECTED:** "
+            "You produced 0 files and 0 code characters. You MUST return valid JSON only (no markdown, no text outside JSON) with a 'files' key "
+            "containing at least one complete file (path -> content). Without files, the task cannot be completed. "
+            "For Git/repository setup tasks: include existing project files (e.g. .gitignore, README.md, app/main.py, requirements.txt) with their full content in 'files'. "
+            "Try again with concrete, complete file contents."
+        )
 
-        # Process files dict - unescape newlines in file contents
-        raw_files = data.get("files", {})
-        if raw_files and isinstance(raw_files, dict):
-            for fpath, fcontent in list(raw_files.items()):
-                if isinstance(fcontent, str) and "\\n" in fcontent:
-                    raw_files[fpath] = fcontent.replace("\\n", "\n")
-        else:
-            raw_files = {}
+        data = None
+        validated_files = {}
+        code = ""
+        tests = ""
+        for attempt in range(2):
+            data = self.llm.complete_json(prompt, temperature=0.2)
 
-        # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
-        if not raw_files and data.get("content"):
-            from shared.llm_response_utils import extract_files_from_content
-            extracted = extract_files_from_content(str(data["content"]))
-            if extracted:
-                raw_files = extracted
+            code = data.get("code", "")
+            if code and "\\n" in code:
+                code = code.replace("\\n", "\n")
+            tests = data.get("tests", "")
+            if tests and "\\n" in tests:
+                tests = tests.replace("\\n", "\n")
+
+            # Process files dict - unescape newlines in file contents
+            raw_files = data.get("files", {})
+            if raw_files and isinstance(raw_files, dict):
                 for fpath, fcontent in list(raw_files.items()):
                     if isinstance(fcontent, str) and "\\n" in fcontent:
                         raw_files[fpath] = fcontent.replace("\\n", "\n")
-
-        # Validate file paths
-        validated_files, validation_warnings = _validate_file_paths(raw_files)
-        for warn in validation_warnings:
-            logger.warning("Backend output validation: %s", warn)
-
-        # If all files were rejected but we have code, that's a problem
-        if not validated_files and not data.get("needs_clarification", False):
-            if raw_files:
-                logger.error(
-                    "Backend: ALL %d files were rejected by validation. Raw filenames: %s",
-                    len(raw_files),
-                    list(raw_files.keys()),
-                )
-            elif code:
-                logger.warning("Backend: returned 'code' but no 'files' dict. Code will be written as fallback.")
             else:
-                logger.error("Backend: produced no files and no code. Task may have failed.")
+                raw_files = {}
+
+            # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
+            if not raw_files and data.get("content"):
+                from shared.llm_response_utils import extract_files_from_content, heuristic_extract_files_from_content
+                extracted = extract_files_from_content(str(data["content"]))
+                if not extracted:
+                    extracted = heuristic_extract_files_from_content(str(data["content"]), (".py",))
+                    if extracted:
+                        logger.warning("Backend: using heuristic file extraction from raw content")
+                if extracted:
+                    raw_files = extracted
+                    for fpath, fcontent in list(raw_files.items()):
+                        if isinstance(fcontent, str) and "\\n" in fcontent:
+                            raw_files[fpath] = fcontent.replace("\\n", "\n")
+
+            # Validate file paths
+            validated_files, validation_warnings = _validate_file_paths(raw_files)
+            for warn in validation_warnings:
+                logger.warning("Backend output validation: %s", warn)
+
+            # Guard: 0 files and 0 code -> retry once with explicit rejection message
+            total_chars = sum(len(c or "") for c in (validated_files or {}).values()) + len(code or "")
+            if not data.get("needs_clarification", False) and total_chars == 0 and attempt == 0:
+                logger.warning(
+                    "Backend: produced no files and no code (failure_class=empty_completion); re-prompting once",
+                )
+                prompt = prompt + empty_retry_prompt
+                continue
+
+            # If all files were rejected but we have code, that's a problem (no retry)
+            if not validated_files and not data.get("needs_clarification", False):
+                if raw_files:
+                    logger.error(
+                        "Backend: ALL %d files were rejected by validation. Raw filenames: %s",
+                        len(raw_files),
+                        list(raw_files.keys()),
+                    )
+                elif code:
+                    logger.warning("Backend: returned 'code' but no 'files' dict. Code will be written as fallback.")
+                elif attempt == 0:
+                    logger.error("Backend: produced no files and no code. Task may have failed.")
+            break
 
         summary = data.get("summary", "")
         needs_clarification = bool(data.get("needs_clarification", False))

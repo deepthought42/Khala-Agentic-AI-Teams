@@ -11,6 +11,7 @@ from shared.llm import (
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
+    OLLAMA_WEEKLY_LIMIT_MESSAGE,
     OllamaLLMClient,
 )
 
@@ -33,6 +34,11 @@ def test_ollama_429_raises_rate_limit_error_after_retries() -> None:
 
     assert exc_info.value.status_code == 429
     assert "429" in str(exc_info.value) or "rate" in str(exc_info.value).lower()
+
+
+def test_ollama_weekly_limit_message_constant() -> None:
+    """OLLAMA_WEEKLY_LIMIT_MESSAGE is defined for use in orchestrator and logs."""
+    assert OLLAMA_WEEKLY_LIMIT_MESSAGE == "Ollama LLM usage limit exceeded for week"
 
 
 def test_ollama_500_raises_temporary_error_after_retries() -> None:
@@ -119,3 +125,30 @@ def test_ollama_connection_error_raises_temporary_error_after_retries() -> None:
                 client.complete_json("test prompt")
 
     assert "connection" in str(exc_info.value).lower() or "Connection" in str(exc_info.value)
+
+
+def test_extract_json_valid_json_inside_markdown_fence() -> None:
+    """When response is markdown with a JSON code block, _extract_json returns parsed dict not raw wrapper."""
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    text = 'Here is the result:\n```json\n{"files": {"a.py": "x"}, "summary": "Done"}\n```'
+    result = client._extract_json(text)
+    assert result == {"files": {"a.py": "x"}, "summary": "Done"}
+    assert "content" not in result or result.get("files") is not None
+
+
+def test_extract_json_object_extraction_fallback() -> None:
+    """When text contains a JSON object (e.g. on same line), _extract_json can recover it."""
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    text = 'The response is: {"summary": "ok", "approved": true}'
+    result = client._extract_json(text)
+    assert isinstance(result, dict)
+    assert result.get("summary") == "ok"
+    assert result.get("approved") is True
+
+
+def test_extract_json_unparseable_returns_raw_content_wrapper() -> None:
+    """When no JSON can be recovered, _extract_json returns {"content": text} so callers do not crash."""
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    text = "no code blocks or json here at all"
+    result = client._extract_json(text)
+    assert result == {"content": text}

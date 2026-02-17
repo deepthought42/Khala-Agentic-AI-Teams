@@ -28,6 +28,9 @@ ENV_LLM_MAX_CONCURRENCY = "SW_LLM_MAX_CONCURRENCY"  # max concurrent complete_js
 
 logger = logging.getLogger(__name__)
 
+# Message used when Ollama 429 indicates weekly usage limit exceeded (for logging and job state)
+OLLAMA_WEEKLY_LIMIT_MESSAGE = "Ollama LLM usage limit exceeded for week"
+
 
 # ---------------------------------------------------------------------------
 # Domain-specific exceptions for LLM errors
@@ -595,6 +598,14 @@ class OllamaLLMClient(LLMClient):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    def _repair_json(self, s: str) -> str:
+        """Attempt tolerant JSON repair for common LLM output issues."""
+        # Remove trailing commas before ] or }
+        s = re.sub(r",\s*([}\]])", r"\1", s)
+        # Fix unescaped newlines in strings (replace with \n)
+        # Be cautious: only fix obvious cases
+        return s
+
     def _extract_json(self, text: str) -> Dict[str, Any]:
         if "---DRAFT---" in text:
             parts = text.split("---DRAFT---", 1)
@@ -606,13 +617,22 @@ class OllamaLLMClient(LLMClient):
         try:
             return json.loads(text)
         except Exception:
-            logger.debug("Primary JSON parse failed; attempting object extraction fallback")
+            logger.debug("Primary JSON parse failed; attempting repair")
+        repaired = self._repair_json(text)
+        try:
+            return json.loads(repaired)
+        except Exception:
+            logger.debug("Repaired JSON parse failed; attempting object extraction fallback")
         obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if obj_match:
+            raw = obj_match.group(0)
             try:
-                return json.loads(obj_match.group(0))
+                return json.loads(raw)
             except Exception:
-                logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
+                try:
+                    return json.loads(self._repair_json(raw))
+                except Exception:
+                    logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
         # Retry once after stripping common leading/trailing noise
         stripped = text.strip()
         for pattern in (
@@ -630,24 +650,54 @@ class OllamaLLMClient(LLMClient):
                     return json.loads(obj_match2.group(0))
                 except Exception:
                     pass
-        # As a final fallback, return the raw content in a JSON object so that
-        # callers never crash the orchestrator on non-JSON responses (e.g. mermaid).
-        # Downstream agents that expect structured fields should defensively use .get().
-        logger.warning("Could not parse structured JSON from LLM response; returning raw content wrapper")
+
+        # Try every markdown code block: parse each as JSON and use first that yields a useful dict
+        _EXPECTED_KEYS = frozenset({
+            "files", "summary", "code", "overview", "issues", "approved", "components",
+            "architecture_document", "diagrams", "decisions",
+        })
+        for block_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+            block = block_match.group(1).strip()
+            if not block:
+                continue
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
+                    return parsed
+            except Exception:
+                try:
+                    parsed = json.loads(self._repair_json(block))
+                    if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
+                        return parsed
+                except Exception:
+                    continue
+
+        # If still no JSON, try extracting files from raw content so backend/frontend get usable output
+        try:
+            from shared.llm_response_utils import extract_files_from_content
+            extracted = extract_files_from_content(text)
+            if isinstance(extracted, dict) and extracted:
+                return {"files": extracted}
+        except Exception:
+            pass
+
+        # Final fallback: raw content wrapper. Callers should defensively use .get().
+        # Models that frequently ignore JSON-only instructions may need a different model or pre-processing.
+        logger.warning(
+            "Could not parse structured JSON from LLM response; returning raw content wrapper | failure_class=json_parse_failure",
+        )
         return {"content": text.strip()}
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
 
-        logger.info(
-            "*** ACTIVE LLM MODEL (REQUEST) *** provider=ollama, model=%s, base_url=%s",
-            self.model,
-            self.base_url,
-        )
+        logger.info("LLM request: provider=ollama model=%s base_url=%s", self.model, self.base_url)
+        # If the model uses a code block, put only the JSON object inside it with no surrounding text.
         system_message = (
             "You are a strict JSON generator. Respond with a single valid JSON object only, "
-            "no explanatory text, no Markdown, no code fences."
+            "no explanatory text, no Markdown, no code fences. "
+            "If you use a code block, put only the JSON object inside it with no surrounding text."
         )
         payload = {
             "model": self.model,
@@ -802,13 +852,7 @@ def get_llm_client() -> Union["DummyLLMClient", "OllamaLLMClient"]:
         except ValueError:
             timeout = 1800.0
         client = OllamaLLMClient(model=model, base_url=base_url, timeout=timeout)
-        logger.info(
-            "*** ACTIVE LLM MODEL *** %s",
-            get_llm_config_summary(),
-        )
+        logger.info("LLM config: %s", get_llm_config_summary())
         return client
-    logger.info(
-        "*** ACTIVE LLM MODEL *** %s",
-        get_llm_config_summary(),
-    )
+    logger.info("LLM config: %s", get_llm_config_summary())
     return DummyLLMClient()

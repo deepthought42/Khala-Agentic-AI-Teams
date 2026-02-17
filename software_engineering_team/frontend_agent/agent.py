@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.models import SystemArchitecture, Task, TaskUpdate
+from shared.prompt_utils import build_problem_solving_header, log_llm_prompt
 
 from .models import FrontendInput, FrontendOutput, FrontendWorkflowResult
 from .prompts import FRONTEND_PROMPT
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Workflow constants
 MAX_CODE_REVIEW_ITERATIONS = 10
 MAX_CLARIFICATION_REFINEMENTS = 10
+MAX_SAME_BUILD_FAILURES = 3
 MAX_EXISTING_CODE_CHARS = 40_000
 MAX_API_SPEC_CHARS = 20_000
 
@@ -36,13 +38,30 @@ def _task_requirements(task: Task) -> str:
     return "\n\n".join(parts) if parts else task.description
 
 
+def _task_requirements_with_route_expectations(task: Task, repo_path: Path) -> str:
+    """Build requirements string including route/component expectations from repo."""
+    base = _task_requirements(task)
+    try:
+        from shared.test_spec_expectations import build_test_spec_checklist
+        checklist = build_test_spec_checklist(repo_path, "frontend")
+        if checklist:
+            base += "\n\n" + checklist
+    except Exception:
+        pass
+    return base
+
+
+# Directories to exclude when reading repo code (avoid sending node_modules/dist to LLM)
+_READ_REPO_EXCLUDE_PARTS = frozenset({".git", "node_modules", "dist", ".angular"})
+
+
 def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str:
-    """Read code files from repo, concatenated."""
+    """Read code files from repo, concatenated. Excludes node_modules, dist, .angular."""
     if extensions is None:
         extensions = [".ts", ".tsx", ".html", ".scss"]
     parts: List[str] = []
     for f in repo_path.rglob("*"):
-        if ".git" in f.parts:
+        if _READ_REPO_EXCLUDE_PARTS & set(f.parts):
             continue
         if f.is_file() and f.suffix in extensions:
             try:
@@ -149,6 +168,16 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
     return validated, warnings
 
 
+_ANGULAR_PROBLEM_SOLVING_INSTRUCTIONS = (
+    "1. Use the issue details in this section (e.g. NG8002, TS errors) to locate the offending components/templates.\n"
+    "2. Apply minimal, localized edits. Do not recreate large portions of the app.\n"
+    "3. Preserve existing working routes, DI configuration (app.config.ts), and forms.\n"
+    "4. Only adjust what is necessary to resolve the errors and issues (e.g. add ReactiveFormsModule, fix bindings).\n"
+    "5. Focus on resolving the provided issues before adding new features.\n"
+    "6. For \"Argument of type 'string' is not assignable to parameter of type 'X'\" (e.g. in filter controls): type the source so the template gets the literal union. E.g. type the options array as ReadonlyArray<{ value: 'all' | 'active' | 'completed'; label: string }> instead of an untyped array, so option.value is not inferred as string."
+)
+
+
 class FrontendExpertAgent:
     """
     Frontend expert that implements solutions using Angular.
@@ -177,10 +206,84 @@ class FrontendExpertAgent:
             len(input_data.accessibility_issues) if input_data.accessibility_issues else 0,
             len(input_data.code_review_issues) if input_data.code_review_issues else 0,
         )
-        context_parts = [
+        qa_count = len(input_data.qa_issues) if input_data.qa_issues else 0
+        security_count = len(input_data.security_issues) if input_data.security_issues else 0
+        accessibility_count = len(input_data.accessibility_issues) if input_data.accessibility_issues else 0
+        code_review_count = len(input_data.code_review_issues) if input_data.code_review_issues else 0
+        has_issues = qa_count > 0 or security_count > 0 or accessibility_count > 0 or code_review_count > 0
+
+        context_parts: List[str] = []
+        if has_issues:
+            issue_summaries: Dict[str, int] = {}
+            if qa_count:
+                issue_summaries["QA issues"] = qa_count
+            if security_count:
+                issue_summaries["security issues"] = security_count
+            if accessibility_count:
+                issue_summaries["accessibility issues"] = accessibility_count
+            if code_review_count:
+                issue_summaries["code review issues"] = code_review_count
+            desc_lines: List[str] = []
+            for i in input_data.qa_issues or []:
+                desc_lines.append(f"  - QA: {i.get('description', '')} (location: {i.get('location', '')})")
+            for i in input_data.security_issues or []:
+                desc_lines.append(f"  - Security [{i.get('category', '')}]: {i.get('description', '')} (location: {i.get('location', '')})")
+            for i in input_data.accessibility_issues or []:
+                desc_lines.append(f"  - Accessibility: {i.get('description', '')} (location: {i.get('location', '')})")
+            for i in input_data.code_review_issues or []:
+                desc_lines.append(f"  - Code review [{i.get('category', 'general')}]: {i.get('description', '')} (file: {i.get('file_path', 'unknown')})")
+            issue_descriptions = "\n".join(desc_lines) if desc_lines else None
+            header = build_problem_solving_header(
+                issue_summaries,
+                "Frontend / Angular",
+                instructions=_ANGULAR_PROBLEM_SOLVING_INSTRUCTIONS,
+                issue_descriptions=issue_descriptions,
+            )
+            # Strip trailing "---" so we can put issue details inside the problem-solving section
+            header_body = header.rstrip()
+            if header_body.endswith("---"):
+                header_body = header_body[:-3].rstrip()
+            problem_block_parts: List[str] = [header_body]
+            if input_data.qa_issues:
+                qa_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                    for i in input_data.qa_issues
+                )
+                problem_block_parts.extend(["", "**QA issues to fix (implement these):**", qa_text])
+            if input_data.security_issues:
+                sec_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('category')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                    for i in input_data.security_issues
+                )
+                problem_block_parts.extend(["", "**Security issues to fix (implement these):**", sec_text])
+            if input_data.accessibility_issues:
+                a11y_text = "\n".join(
+                    f"- [{i.get('severity')}] WCAG {i.get('wcag_criterion', '')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
+                    for i in input_data.accessibility_issues
+                )
+                problem_block_parts.extend(["", "**Accessibility issues to fix (implement these):**", a11y_text])
+            if input_data.code_review_issues:
+                cr_text = "\n".join(
+                    f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
+                    f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {i.get('suggestion', '')}"
+                    for i in input_data.code_review_issues
+                )
+                problem_block_parts.extend(["", "**Code review issues to resolve:**", cr_text])
+            problem_block_parts.extend(["", "---"])
+            context_parts.append("\n".join(problem_block_parts))
+            logger.info(
+                "Frontend problem-solving context: qa_issues=%d, security_issues=%d, "
+                "accessibility_issues=%d, code_review_issues=%d",
+                qa_count,
+                security_count,
+                accessibility_count,
+                code_review_count,
+            )
+            logger.info("Frontend problem-solving header for LLM:\n%s", context_parts[0][:800])
+        context_parts.extend([
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
-        ]
+        ])
         if input_data.user_story:
             context_parts.extend(["", f"**User Story:** {input_data.user_story}"])
         if input_data.spec_content:
@@ -202,62 +305,70 @@ class FrontendExpertAgent:
             context_parts.extend(["", "**Existing code:**", input_data.existing_code])
         if input_data.api_endpoints:
             context_parts.extend(["", "**API endpoints:**", input_data.api_endpoints])
-        if input_data.qa_issues:
-            qa_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                for i in input_data.qa_issues
-            )
-            context_parts.extend(["", "**QA issues to fix (implement these):**", qa_text])
-        if input_data.security_issues:
-            sec_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('category')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                for i in input_data.security_issues
-            )
-            context_parts.extend(["", "**Security issues to fix (implement these):**", sec_text])
-        if input_data.accessibility_issues:
-            a11y_text = "\n".join(
-                f"- [{i.get('severity')}] WCAG {i.get('wcag_criterion', '')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                for i in input_data.accessibility_issues
-            )
-            context_parts.extend(["", "**Accessibility issues to fix (implement these):**", a11y_text])
-        if input_data.code_review_issues:
-            cr_text = "\n".join(
-                f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
-                f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {i.get('suggestion', '')}"
-                for i in input_data.code_review_issues
-            )
-            context_parts.extend(["", "**Code review issues to resolve:**", cr_text])
 
         prompt = FRONTEND_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        data = self.llm.complete_json(prompt, temperature=0.2)
+        mode = "problem_solving" if has_issues else "initial"
+        task_hint = (input_data.task_description or "")[:80]
+        log_llm_prompt(logger, "Frontend", mode, task_hint, prompt)
 
-        code = data.get("code", "")
-        if code and "\\n" in code:
-            code = code.replace("\\n", "\n")
+        empty_retry_prompt = (
+            "\n\n**CRITICAL - Your previous response was REJECTED:** "
+            "You produced 0 files and 0 code characters. You MUST return a valid JSON object with a 'files' key "
+            "containing at least one complete Angular component file (path -> content). Without files, the task cannot be completed. "
+            "Try again with concrete, complete file contents under src/app/."
+        )
 
-        # Process files dict - unescape newlines in file contents
-        raw_files = data.get("files", {})
-        if raw_files and isinstance(raw_files, dict):
-            for fpath, fcontent in list(raw_files.items()):
-                if isinstance(fcontent, str) and "\\n" in fcontent:
-                    raw_files[fpath] = fcontent.replace("\\n", "\n")
-        else:
-            raw_files = {}
+        data = None
+        validated_files = {}
+        code = ""
+        raw_files = {}
+        for attempt in range(2):
+            data = self.llm.complete_json(prompt, temperature=0.2)
 
-        # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
-        if not raw_files and data.get("content"):
-            from shared.llm_response_utils import extract_files_from_content
-            extracted = extract_files_from_content(str(data["content"]))
-            if extracted:
-                raw_files = extracted
+            code = data.get("code", "")
+            if code and "\\n" in code:
+                code = code.replace("\\n", "\n")
+
+            # Process files dict - unescape newlines in file contents
+            raw_files = data.get("files", {})
+            if raw_files and isinstance(raw_files, dict):
                 for fpath, fcontent in list(raw_files.items()):
                     if isinstance(fcontent, str) and "\\n" in fcontent:
                         raw_files[fpath] = fcontent.replace("\\n", "\n")
+            else:
+                raw_files = {}
 
-        # Validate file paths - reject bad names/empty files
-        validated_files, validation_warnings = _validate_file_paths(raw_files)
-        for warn in validation_warnings:
-            logger.warning("Frontend output validation: %s", warn)
+            # Content fallback: when LLM returns raw content wrapper, try to extract files from code blocks
+            if not raw_files and data.get("content"):
+                from shared.llm_response_utils import extract_files_from_content, heuristic_extract_files_from_content
+                extracted = extract_files_from_content(str(data["content"]))
+                if not extracted:
+                    extracted = heuristic_extract_files_from_content(
+                        str(data["content"]), (".ts", ".tsx", ".html", ".scss")
+                    )
+                    if extracted:
+                        logger.warning("Frontend: using heuristic file extraction from raw content")
+                if extracted:
+                    raw_files = extracted
+                    for fpath, fcontent in list(raw_files.items()):
+                        if isinstance(fcontent, str) and "\\n" in fcontent:
+                            raw_files[fpath] = fcontent.replace("\\n", "\n")
+
+            # Validate file paths - reject bad names/empty files
+            validated_files, validation_warnings = _validate_file_paths(raw_files)
+            for warn in validation_warnings:
+                logger.warning("Frontend output validation: %s", warn)
+
+            # Guard: 0 files and 0 code -> retry once with explicit rejection message
+            total_chars = sum(len(c or "") for c in (validated_files or {}).values()) + len(code or "")
+            if not data.get("needs_clarification", False) and total_chars == 0 and attempt == 0:
+                logger.warning(
+                    "Frontend: produced no files and no code (failure_class=empty_completion); re-prompting once",
+                )
+                prompt = prompt + empty_retry_prompt
+                continue
+
+            break
 
         # If all files were rejected but we have code, that's a problem - log it
         if not validated_files and not data.get("needs_clarification", False):  # pragma: no cover
@@ -374,6 +485,8 @@ class FrontendExpertAgent:
         code_review_issues: List[Dict[str, Any]] = []
         result: Optional[FrontendOutput] = None
         current_task = task
+        last_build_error_sig = ""
+        consecutive_same_build_failures = 0
 
         for iteration_round in range(MAX_CODE_REVIEW_ITERATIONS):
             existing_code = _truncate_for_context(
@@ -387,7 +500,7 @@ class FrontendExpertAgent:
 
             result = self.run(FrontendInput(
                 task_description=current_task.description,
-                requirements=_task_requirements(current_task),
+                requirements=_task_requirements_with_route_expectations(current_task, repo_path),
                 user_story=getattr(current_task, "user_story", "") or "",
                 spec_content=_truncate_for_context(spec_content, MAX_EXISTING_CODE_CHARS),
                 architecture=architecture,
@@ -445,6 +558,22 @@ class FrontendExpertAgent:
                         success=False,
                         failure_reason="Unsupported environment: " + build_errors[4:].strip()[:500],
                     )
+                build_error_sig = (build_errors[:800] or build_errors).strip()
+                if build_error_sig == last_build_error_sig:
+                    consecutive_same_build_failures += 1
+                else:
+                    last_build_error_sig = build_error_sig
+                    consecutive_same_build_failures = 1
+                if consecutive_same_build_failures >= MAX_SAME_BUILD_FAILURES:
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason=(
+                            f"Build failed {MAX_SAME_BUILD_FAILURES} times with the same error. "
+                            f"Last error: {build_errors[:500]}"
+                        ),
+                    )
                 code_review_issues = [{
                     "severity": "critical",
                     "category": "logic",
@@ -452,13 +581,30 @@ class FrontendExpertAgent:
                     "description": f"ng build failed: {build_errors[:2000]}",
                     "suggestion": "Fix the Angular compilation errors",
                 }]
+                if consecutive_same_build_failures >= 2:
+                    code_review_issues.insert(0, {
+                        "severity": "critical",
+                        "category": "build",
+                        "file_path": "",
+                        "description": (
+                            f"ESCALATION: This build error has occurred {consecutive_same_build_failures} times. "
+                            "Focus ONLY on fixing this specific error. Make minimal, targeted changes. "
+                            "Create the missing component file or fix the import path as indicated."
+                        ),
+                        "suggestion": "Apply the minimal fix indicated by the error message.",
+                    })
                 continue
+
+            consecutive_same_build_failures = 0
+            last_build_error_sig = ""
 
             code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
             existing_code_ctx = _truncate_for_context(code_on_branch, MAX_EXISTING_CODE_CHARS)
+            from code_review_agent.models import MAX_CODE_REVIEW_CHARS
+            code_for_review = _truncate_for_context(code_on_branch, MAX_CODE_REVIEW_CHARS)
             review_result = self._run_code_review(
                 code_review_agent=code_review_agent,
-                code=code_on_branch,
+                code=code_for_review,
                 spec_content=spec_content,
                 task=current_task,
                 architecture=architecture,

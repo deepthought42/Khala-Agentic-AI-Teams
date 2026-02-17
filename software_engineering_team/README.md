@@ -167,6 +167,12 @@ setup_logging(level=logging.INFO, log_file=Path("agent.log"))
 pytest tests/ -v --log-cli-level=INFO
 ```
 
+**Finding error-resolution prompts:** When agents fix build failures, QA/security/code review issues, they enter problem-solving mode. To see what the agent is doing when resolving errors:
+
+- Search for `LLM call` – each LLM invocation logs one short line: `agent=Backend|Frontend`, `mode=initial|problem_solving`, `task=...`, `prompt_len=N`. No prompt body is logged.
+- Search for `problem-solving header for LLM` – shows the exact header text (instructions and issue summary) prepended to the prompt.
+- Search for `problem-solving context` – shows structured issue counts (e.g. `qa_issues=2, code_review_issues=1`).
+
 ## Pipeline Diagram
 
 ```

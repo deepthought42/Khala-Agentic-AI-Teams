@@ -1,12 +1,18 @@
 """
 Tech Lead orchestrator: runs the full pipeline with feature branches.
 
-Flow:
-1. Read initial_spec.md from work path (no git required at root)
-2. Request architecture, Tech Lead generates plan
-3. Prefix tasks (devops, git_setup) run sequentially on work path
-4. Backend and frontend tasks run in parallel (one task per agent type at a time),
-   each in its own repo (work_path/backend, work_path/frontend) initialized by Git Setup Agent
+Planning flow:
+1. Review initial_spec and document features and functionalities (high level) via Project Planning.
+2. Create detailed tasks from spec + features/functionality doc (Tech Lead).
+3. Produce architecture from features/functionality doc + spec (Architecture Expert).
+4. Loop steps 2 and 3 until tasks and architecture align (alignment review).
+5. Review tasks and architecture for conformance to initial_spec; if non-compliant, go to step 2
+   with a detailed list of issues; if compliant, proceed to execution.
+
+Execution:
+- Prefix tasks (devops, git_setup) run sequentially on work path.
+- Backend and frontend tasks run in parallel (one task per agent type at a time),
+  each in its own repo (work_path/backend, work_path/frontend) initialized by Git Setup Agent.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from shared.llm import (
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
+    OLLAMA_WEEKLY_LIMIT_MESSAGE,
 )
 from shared.job_store import (
     JOB_STATUS_COMPLETED,
@@ -46,8 +53,13 @@ from shared.job_store import (
     update_job,
 )
 from shared.command_runner import run_command_with_nvm
-from shared.development_plan_writer import write_architecture_plan, write_tech_lead_plan
-from shared.models import TaskUpdate
+from shared.development_plan_writer import (
+    write_architecture_plan,
+    write_features_and_functionality_plan,
+    write_project_overview_plan,
+    write_tech_lead_plan,
+)
+from shared.models import TaskUpdate, model_to_dict
 from shared.repo_writer import write_agent_output
 
 logger = logging.getLogger(__name__)
@@ -58,6 +70,7 @@ def _get_agents(llm):
     from accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
     from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
     from backend_agent import BackendExpertAgent, BackendInput
+    from project_planning_agent import ProjectPlanningAgent, ProjectPlanningInput
     from code_review_agent import CodeReviewAgent, CodeReviewInput
     from dbc_comments_agent import DbcCommentsAgent, DbcCommentsInput
     from devops_agent import DevOpsExpertAgent, DevOpsInput
@@ -68,8 +81,10 @@ def _get_agents(llm):
     from qa_agent import QAExpertAgent, QAInput
     from security_agent import CybersecurityExpertAgent, SecurityInput
     from tech_lead_agent import TechLeadAgent, TechLeadInput
+    from acceptance_verifier_agent import AcceptanceVerifierAgent
 
     return {
+        "project_planning": ProjectPlanningAgent(llm),
         "architecture": ArchitectureExpertAgent(llm),
         "integration": IntegrationAgent(llm),
         "acceptance_verifier": AcceptanceVerifierAgent(llm),
@@ -113,13 +128,21 @@ def _issues_to_dicts(qa_bugs, sec_vulns) -> tuple:
     return qa_list, sec_list
 
 
+# When reading frontend-like extensions, exclude dirs that bloat payload (request body too large)
+_READ_REPO_EXCLUDE_PARTS = frozenset({".git", "node_modules", "dist", ".angular"})
+
+
 def _read_repo_code(repo_path: Path, extensions: List[str] = None) -> str:
-    """Read code files from repo, concatenated. Excludes .git to avoid corrupt object errors."""
+    """Read code files from repo, concatenated. Excludes .git, and for frontend paths node_modules/dist/.angular."""
     if extensions is None:
         extensions = [".py", ".ts", ".tsx", ".java", ".yml", ".yaml"]
+    frontend_exts = {".ts", ".tsx", ".html", ".scss"}
+    use_frontend_exclusions = bool(set(extensions) & frontend_exts)
     parts = []
     for f in repo_path.rglob("*"):
         if ".git" in f.parts:
+            continue
+        if use_frontend_exclusions and _READ_REPO_EXCLUDE_PARTS & set(f.parts):
             continue
         if f.is_file() and f.suffix in extensions:
             try:
@@ -292,9 +315,11 @@ def _run_code_review(
     Run the code review agent on the given code.
     Returns the CodeReviewOutput.
     """
-    from code_review_agent.models import CodeReviewInput
+    from code_review_agent.models import CodeReviewInput, MAX_CODE_REVIEW_CHARS
+
+    code_capped = _truncate_for_context(code_to_review, MAX_CODE_REVIEW_CHARS)
     review_input = CodeReviewInput(
-        code=code_to_review,
+        code=code_capped,
         spec_content=spec_content,
         task_description=task.description,
         task_requirements=_task_requirements(task),
@@ -373,6 +398,16 @@ def _run_build_verification(
             if is_ng_build_environment_failure(result):
                 # Environment (e.g. Node version) - caller should fail task, not retry
                 return False, "ENV:" + result.error_summary
+            failures = result.parsed_failures("ng_build")
+            if failures:
+                from shared.error_parsing import build_agent_feedback, get_failure_class_tag
+                feedback = build_agent_feedback(failures)
+                logger.warning(
+                    "Build verification failed for task %s: %s",
+                    task_id,
+                    get_failure_class_tag(failures[0].failure_class),
+                )
+                return False, feedback
             logger.warning("Build verification failed for task %s: %s", task_id, result.error_summary[:200])
             return False, result.error_summary
         logger.info("Build verification passed for frontend task %s", task_id)
@@ -409,18 +444,24 @@ def _run_build_verification(
                     logger.warning("pip install before pytest failed (non-fatal): %s", e)
             test_result = run_pytest(backend_dir, python_exe=sys.executable)
             if not test_result.success:
-                # Use pytest-specific summary so agent sees actual error (ImportError, etc.) not session header
-                summary = test_result.pytest_error_summary()
+                failures = test_result.parsed_failures("pytest")
+                if failures:
+                    from shared.error_parsing import build_agent_feedback, get_failure_class_tag
+                    summary = build_agent_feedback(failures)
+                    logger.warning(
+                        "Tests failed for task %s: %s",
+                        task_id,
+                        get_failure_class_tag(failures[0].failure_class),
+                    )
+                else:
+                    summary = test_result.pytest_error_summary()
                 # When failure matches exception-handler test patterns, append canonical FIX line
-                # so the backend agent gets an explicit instruction even if traceback is long.
-                # This prevents repeated failures when the agent drops /test-generic-error from main.py.
                 from backend_agent.agent import EXCEPTION_HANDLER_TEST_PATTERNS
                 if any(p in summary for p in EXCEPTION_HANDLER_TEST_PATTERNS):
                     summary += (
                         "\n\nFIX: Preserve the /test-generic-error route in app/main.py and "
                         "ensure the exception handler returns JSONResponse; do not re-raise."
                     )
-                logger.warning("Tests failed for task %s: %s", task_id, summary[:1200])
                 return False, summary
         logger.info("Build verification passed for backend task %s", task_id)
         return True, ""
@@ -451,54 +492,238 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         spec_content = load_spec_from_repo(path)
         try:
             requirements = parse_spec_with_llm(spec_content, llm)
+        except LLMRateLimitError:
+            logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+            update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+            return
         except Exception:
             requirements = parse_spec_heuristic(spec_content)
         update_job(job_id, requirements_title=requirements.title)
 
-        # 3. Architecture (Tech Lead needs it)
-        from architecture_agent.models import ArchitectureInput
-        arch_agent = agents["architecture"]
-        arch_input = ArchitectureInput(
-            requirements=requirements,
-            technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
-        )
-        arch_output = arch_agent.run(arch_input)
-        architecture = arch_output.architecture
-        update_job(job_id, architecture_overview=architecture.overview)
-        try:
-            write_architecture_plan(path, architecture)
-        except Exception as e:
-            logger.warning("Failed to write DEVELOPMENT_PLAN-architecture.md: %s", e)
+        # 2. Project Overview (before architecture) - never skip; use fallback if LLM fails
+        project_overview: Optional[Dict[str, Any]] = None
+        project_planning_agent = agents.get("project_planning")
+        if project_planning_agent:
+            try:
+                from project_planning_agent.models import ProjectPlanningInput, build_fallback_overview_from_requirements
+                repo_summary = _truncate_for_context(_read_repo_code(path), 2000)
+                pp_input = ProjectPlanningInput(
+                    requirements=requirements,
+                    spec_content=spec_content,
+                    repo_state_summary=repo_summary if repo_summary != "# No code files found" else None,
+                )
+                pp_output = project_planning_agent.run(pp_input)
+                project_overview = model_to_dict(pp_output.overview)
+                logger.info("Project Planning: success (LLM-based)")
+                try:
+                    write_project_overview_plan(path, pp_output.overview)
+                except Exception as e:
+                    logger.warning("Failed to write DEVELOPMENT_PLAN-project_overview.md: %s", e)
+                try:
+                    features_doc = getattr(pp_output, "features_and_functionality_doc", None) or (project_overview.get("features_and_functionality_doc") or "")
+                    if features_doc:
+                        write_features_and_functionality_plan(path, features_doc)
+                except Exception as e:
+                    logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", e)
+            except LLMRateLimitError:
+                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                return
+            except Exception as e:
+                logger.warning("Project planning failed (attempting fallback overview): %s", e)
+                try:
+                    fallback = build_fallback_overview_from_requirements(requirements)
+                    project_overview = model_to_dict(fallback)
+                    logger.info("Project Planning: success via fallback overview (LLM failed: %s)", e)
+                    try:
+                        write_project_overview_plan(path, fallback)
+                    except Exception as we:
+                        logger.warning("Failed to write DEVELOPMENT_PLAN-project_overview.md: %s", we)
+                    try:
+                        if getattr(fallback, "features_and_functionality_doc", ""):
+                            write_features_and_functionality_plan(path, fallback.features_and_functionality_doc)
+                    except Exception as we2:
+                        logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", we2)
+                except Exception as fallback_err:
+                    logger.error(
+                        "Project planning hard failure (no overview available): LLM=%s, fallback=%s",
+                        e, fallback_err,
+                    )
+                    update_job(
+                        job_id,
+                        status=JOB_STATUS_FAILED,
+                        error=f"Project planning failed and fallback unavailable: {fallback_err}",
+                    )
+                    return
+        else:
+            # No project planning agent; build fallback so downstream agents always get an overview
+            try:
+                from project_planning_agent.models import build_fallback_overview_from_requirements
+                fallback = build_fallback_overview_from_requirements(requirements)
+                project_overview = model_to_dict(fallback)
+                logger.info("Project Planning: no agent configured, using fallback overview")
+                try:
+                    if getattr(fallback, "features_and_functionality_doc", ""):
+                        write_features_and_functionality_plan(path, fallback.features_and_functionality_doc)
+                except Exception as e2:
+                    logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", e2)
+            except Exception as e:
+                logger.error("Project planning fallback failed (no agent): %s", e)
+                update_job(job_id, status=JOB_STATUS_FAILED, error=f"Project planning fallback failed: {e}")
+                return
 
-        # 4. Tech Lead generates plan (multi-step: codebase analysis, spec analysis, task generation)
-        from tech_lead_agent.models import TechLeadInput
-        tech_lead = agents["tech_lead"]
-        existing_code = _truncate_for_context(_read_repo_code(path), MAX_EXISTING_CODE_CHARS)
-        tech_lead_output = tech_lead.run(TechLeadInput(
-            requirements=requirements,
-            architecture=architecture,
-            repo_path=str(path),
-            spec_content=spec_content,
-            existing_codebase=existing_code if existing_code != "# No code files found" else None,
-        ))
-        if tech_lead_output.spec_clarification_needed:
-            questions = tech_lead_output.clarification_questions or []
-            error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
-            if len(questions) > 5:
-                error_msg += f" (+{len(questions) - 5} more)"
-            logger.warning(error_msg)
-            update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
+        if project_overview is None:
+            logger.error("Project planning produced no overview; failing job")
+            update_job(job_id, status=JOB_STATUS_FAILED, error="Project planning produced no overview")
             return
 
-        assignment = tech_lead_output.assignment
+        # Planning process: (1) features doc done above; (2) tasks from spec + features; (3) architecture from spec + features;
+        # (4) loop until tasks and architecture align; (5) conformance to spec; if non-compliant, re-run from (2) with feedback.
+        features_and_functionality_doc = (project_overview.get("features_and_functionality_doc") or "").strip()
+        from architecture_agent.models import ArchitectureInput
+        from tech_lead_agent.models import TechLeadInput
+        from planning.planning_review import check_tasks_architecture_alignment, check_spec_conformance
 
-        # Write Tech Lead development plan to DEVELOPMENT_PLAN-tech_lead.md
+        arch_agent = agents["architecture"]
+        tech_lead = agents["tech_lead"]
+        existing_code = _truncate_for_context(_read_repo_code(path), MAX_EXISTING_CODE_CHARS)
+        MAX_ALIGNMENT_ITERATIONS = 3
+        MAX_CONFORMANCE_RETRIES = 2
+
+        assignment = None
+        architecture = None
+        conformance_retries = 0
+        conformance_issues_from_last: List[str] = []
+        tech_lead_output = None
+
+        while True:
+            # Step 2: Detailed tasks from spec + features doc (and architecture if we have it from a previous iteration)
+            alignment_feedback = []
+            conformance_issues = conformance_issues_from_last if conformance_retries > 0 else []
+            if conformance_retries > 0 and conformance_issues:
+                logger.info("Re-running task generation with %d spec conformance issues", len(conformance_issues))
+
+            try:
+                tech_lead_output = tech_lead.run(TechLeadInput(
+                    requirements=requirements,
+                    architecture=architecture,
+                    repo_path=str(path),
+                    spec_content=spec_content,
+                    existing_codebase=existing_code if existing_code != "# No code files found" else None,
+                    project_overview=project_overview,
+                    alignment_feedback=alignment_feedback if alignment_feedback else None,
+                    conformance_issues=conformance_issues if conformance_issues else None,
+                ))
+            except LLMRateLimitError:
+                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                return
+            if tech_lead_output.spec_clarification_needed:
+                questions = tech_lead_output.clarification_questions or []
+                error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
+                if len(questions) > 5:
+                    error_msg += f" (+{len(questions) - 5} more)"
+                logger.warning(error_msg)
+                update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
+                return
+            assignment = tech_lead_output.assignment
+            if not assignment or not assignment.tasks:
+                logger.error("Tech Lead produced no tasks; failing job")
+                update_job(job_id, status=JOB_STATUS_FAILED, error="Tech Lead produced no tasks")
+                return
+
+            # Step 3: Architecture from features doc + spec (and optional planning feedback)
+            planning_feedback_for_arch = (alignment_feedback + conformance_issues) if (alignment_feedback or conformance_issues) else None
+            arch_input = ArchitectureInput(
+                requirements=requirements,
+                technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+                project_overview=project_overview,
+                features_and_functionality_doc=features_and_functionality_doc or None,
+                planning_feedback=planning_feedback_for_arch,
+            )
+            try:
+                arch_output = arch_agent.run(arch_input)
+            except LLMRateLimitError:
+                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                return
+            architecture = arch_output.architecture
+            update_job(job_id, architecture_overview=architecture.overview)
+            try:
+                write_architecture_plan(path, architecture)
+            except Exception as e:
+                logger.warning("Failed to write DEVELOPMENT_PLAN-architecture.md: %s", e)
+
+            # Step 4: Loop until tasks and architecture align
+            alignment_iterations = 0
+            while alignment_iterations < MAX_ALIGNMENT_ITERATIONS:
+                aligned, alignment_feedback = check_tasks_architecture_alignment(assignment, architecture, llm)
+                if aligned:
+                    logger.info("Tasks and architecture aligned (iteration %s)", alignment_iterations + 1)
+                    break
+                logger.warning("Tasks and architecture not aligned (iteration %s/%s): %s", alignment_iterations + 1, MAX_ALIGNMENT_ITERATIONS, alignment_feedback[:3])
+                alignment_iterations += 1
+                if alignment_iterations >= MAX_ALIGNMENT_ITERATIONS:
+                    logger.warning("Max alignment iterations reached; proceeding with current plan")
+                    break
+                # Re-run Tech Lead with architecture and alignment feedback
+                try:
+                    tech_lead_output = tech_lead.run(TechLeadInput(
+                        requirements=requirements,
+                        architecture=architecture,
+                        repo_path=str(path),
+                        spec_content=spec_content,
+                        existing_codebase=existing_code if existing_code != "# No code files found" else None,
+                        project_overview=project_overview,
+                        alignment_feedback=alignment_feedback,
+                    ))
+                except LLMRateLimitError:
+                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                    return
+                if tech_lead_output.spec_clarification_needed:
+                    update_job(job_id, status=JOB_STATUS_FAILED, error="Spec clarification needed during alignment")
+                    return
+                assignment = tech_lead_output.assignment
+                if not assignment or not assignment.tasks:
+                    break
+                # Re-run Architecture with alignment feedback
+                arch_input = ArchitectureInput(
+                    requirements=requirements,
+                    technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+                    project_overview=project_overview,
+                    features_and_functionality_doc=features_and_functionality_doc or None,
+                    planning_feedback=alignment_feedback,
+                )
+                try:
+                    arch_output = arch_agent.run(arch_input)
+                except LLMRateLimitError:
+                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                    return
+                architecture = arch_output.architecture
+                try:
+                    write_architecture_plan(path, architecture)
+                except Exception:
+                    pass
+
+            # Step 5: Conformance review (tasks + architecture vs initial_spec)
+            conformant, conformance_issues_from_last = check_spec_conformance(spec_content, assignment, architecture, llm)
+            if conformant:
+                logger.info("Tasks and architecture conform to initial spec; proceeding to execution")
+                break
+            logger.warning("Spec conformance failed (%d issues); re-running planning with feedback", len(conformance_issues_from_last))
+            conformance_retries += 1
+            if conformance_retries > MAX_CONFORMANCE_RETRIES:
+                logger.warning("Max conformance retries reached; proceeding with current plan")
+                break
+
+        # Write Tech Lead development plan
         try:
             write_tech_lead_plan(
                 path,
                 assignment,
-                summary=tech_lead_output.summary or "",
-                requirement_task_mapping=tech_lead_output.requirement_task_mapping or [],
+                summary=getattr(tech_lead_output, "summary", "") or "",
+                requirement_task_mapping=getattr(tech_lead_output, "requirement_task_mapping", None) or [],
+                validation_report=getattr(tech_lead_output, "validation_report", None),
             )
         except Exception as e:
             logger.warning("Failed to write DEVELOPMENT_PLAN-tech_lead.md: %s", e)
@@ -506,7 +731,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         # Store execution order in job state for API polling
         update_job(job_id, execution_order=assignment.execution_order)
 
-        # 5. Execute tasks: partition into prefix (devops/git_setup), backend, frontend
+        # 6. Execute tasks: partition into prefix (devops/git_setup), backend, frontend
         completed = set()
         failed: Dict[str, str] = {}
         completed_code_task_ids: List[str] = []
@@ -519,6 +744,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         frontend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"]
         total_tasks = len(prefix_queue) + len(backend_queue) + len(frontend_queue)
         state_lock = threading.Lock()
+        llm_limit_exceeded = False
 
         # Remaining task ids (still in backend/frontend queues) for Tech Lead
         def _remaining_queue_ids() -> List[str]:
@@ -548,8 +774,11 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
 
         # Backend and frontend workers run in parallel (one task per agent type at a time)
         def _backend_worker() -> None:
+            nonlocal llm_limit_exceeded
             while True:
                 with state_lock:
+                    if llm_limit_exceeded:
+                        break
                     if not backend_queue:
                         break
                     task_id = backend_queue.pop(0)
@@ -611,13 +840,19 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             logger.warning("[%s] Backend FAILED after %.1fs: %s", task_id, elapsed, failed[task_id])
                 except (LLMError, httpx.HTTPError) as e:
                     with state_lock:
-                        if isinstance(e, (LLMRateLimitError, LLMTemporaryError)):
+                        if isinstance(e, LLMRateLimitError):
+                            llm_limit_exceeded = True
+                            failed[task_id] = OLLAMA_WEEKLY_LIMIT_MESSAGE
+                        elif isinstance(e, LLMTemporaryError):
                             failed[task_id] = "LLM rate limited or temporarily unavailable – please retry later"
                         elif isinstance(e, LLMPermanentError):
                             failed[task_id] = str(e)
                         else:
                             failed[task_id] = f"LLM error: {e}"
-                    logger.warning("[%s] Backend task LLM/HTTP error: %s", task_id, e)
+                    if isinstance(e, LLMRateLimitError):
+                        logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                    else:
+                        logger.warning("[%s] Backend task LLM/HTTP error: %s", task_id, e)
                 except Exception as e:
                     with state_lock:
                         failed[task_id] = f"Unhandled exception: {e}"
@@ -634,8 +869,11 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 )
 
         def _frontend_worker() -> None:
+            nonlocal llm_limit_exceeded
             while True:
                 with state_lock:
+                    if llm_limit_exceeded:
+                        break
                     if not frontend_queue:
                         break
                     task_id = frontend_queue.pop(0)
@@ -707,13 +945,19 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     logger.info("[%s] <<< Frontend worker done (completed=%s)", task_id, workflow_result.success)
                 except (LLMError, httpx.HTTPError) as e:
                     with state_lock:
-                        if isinstance(e, (LLMRateLimitError, LLMTemporaryError)):
+                        if isinstance(e, LLMRateLimitError):
+                            llm_limit_exceeded = True
+                            failed[task_id] = OLLAMA_WEEKLY_LIMIT_MESSAGE
+                        elif isinstance(e, LLMTemporaryError):
                             failed[task_id] = "LLM rate limited or temporarily unavailable – please retry later"
                         elif isinstance(e, LLMPermanentError):
                             failed[task_id] = str(e)
                         else:
                             failed[task_id] = f"LLM error: {e}"
-                    logger.warning("[%s] Frontend task LLM/HTTP error: %s", task_id, e)
+                    if isinstance(e, LLMRateLimitError):
+                        logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                    else:
+                        logger.warning("[%s] Frontend task LLM/HTTP error: %s", task_id, e)
                     checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
                 except Exception as e:
                     with state_lock:
@@ -890,7 +1134,16 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         doc_err,
                     )
 
-        update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, current_task=None)
+        if llm_limit_exceeded:
+            update_job(
+                job_id,
+                status="paused_llm_limit",
+                error=OLLAMA_WEEKLY_LIMIT_MESSAGE,
+                progress=100,
+                current_task=None,
+            )
+        else:
+            update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, current_task=None)
 
     except Exception as e:
         logger.exception("Orchestrator failed")
@@ -961,8 +1214,11 @@ def run_failed_tasks(job_id: str) -> None:
         total_tasks = len(execution_queue)
         task_counter = 0
         max_passes = total_tasks * 3
+        llm_limit_exceeded = False
 
         while execution_queue and max_passes > 0:
+            if llm_limit_exceeded:
+                break
             max_passes -= 1
             task_id = execution_queue.pop(0)
             task = all_tasks.get(task_id)
@@ -1090,6 +1346,14 @@ def run_failed_tasks(job_id: str) -> None:
                 else:
                     logger.warning("[%s] Retry FAILED after %.1fs: %s", task_id, elapsed, failed_retry.get(task_id, "unknown"))
 
+            except LLMRateLimitError:
+                llm_limit_exceeded = True
+                failed_retry[task_id] = OLLAMA_WEEKLY_LIMIT_MESSAGE
+                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                if task.assignee == "backend":
+                    checkout_branch(backend_dir, DEVELOPMENT_BRANCH)
+                elif task.assignee == "frontend":
+                    checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
             except Exception as e:
                 elapsed = time.monotonic() - task_start_time
                 logger.exception("[%s] Retry FAILED with exception after %.1fs", task_id, elapsed)
@@ -1130,7 +1394,16 @@ def run_failed_tasks(job_id: str) -> None:
             {"task_id": tid, "reason": reason, "title": (all_tasks.get(tid).title if all_tasks.get(tid) else tid)}
             for tid, reason in failed_retry.items()
         ]
-        update_job(job_id, failed_tasks=failed_details, status=JOB_STATUS_COMPLETED, current_task=None)
+        if llm_limit_exceeded:
+            update_job(
+                job_id,
+                failed_tasks=failed_details,
+                status="paused_llm_limit",
+                error=OLLAMA_WEEKLY_LIMIT_MESSAGE,
+                current_task=None,
+            )
+        else:
+            update_job(job_id, failed_tasks=failed_details, status=JOB_STATUS_COMPLETED, current_task=None)
 
     except Exception as e:
         logger.exception("Retry orchestrator failed")

@@ -67,7 +67,10 @@ class JobStatusResponse(BaseModel):
     """Response from GET /run-team/{job_id}."""
 
     job_id: str = Field(..., description="Job ID.")
-    status: str = Field(..., description="pending, running, completed, failed.")
+    status: str = Field(
+        ...,
+        description="pending, running, completed, failed, or paused_llm_limit (Ollama weekly usage limit exceeded; call retry-failed after limit resets).",
+    )
     repo_path: Optional[str] = Field(None, description="Path to the repo.")
     requirements_title: Optional[str] = Field(None, description="Parsed project title.")
     architecture_overview: Optional[str] = Field(None, description="Architecture overview.")
@@ -188,13 +191,15 @@ def _run_retry_background(job_id: str) -> None:
     response_model=RetryResponse,
     summary="Retry failed tasks",
     description="Re-run only the tasks that failed in a previous job run. "
-    "The job must have completed with failed tasks.",
+    "Use when status is completed, failed, or paused_llm_limit. "
+    "When paused_llm_limit (Ollama weekly usage limit exceeded), call after the weekly limit resets to resume.",
 )
 def retry_failed_tasks(job_id: str) -> RetryResponse:
     """
     Retry the failed tasks from a previous job run.
 
-    Only works if the job has completed and has failed tasks.
+    Works when the job has completed, failed, or is paused_llm_limit (Ollama weekly
+    usage limit exceeded). For paused_llm_limit, call after the weekly limit resets.
     """
     data = get_job(job_id)
     if not data:

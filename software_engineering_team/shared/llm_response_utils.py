@@ -131,3 +131,51 @@ def extract_files_from_content(content: str) -> Dict[str, str]:
                 files[path] = content_str
 
     return files
+
+
+def heuristic_extract_files_from_content(content: str, extensions: tuple = (".py", ".ts", ".html", ".scss")) -> Dict[str, str]:
+    """
+    When extract_files_from_content returns nothing, try to recover files by splitting on path-like
+    lines or "File:" / "path:" headers. Used so backend/frontend have something to write instead of
+    failing with zero files.
+    """
+    if not content or not content.strip():
+        return {}
+    files: Dict[str, str] = {}
+    lines = content.split("\n")
+    path_exts = set(extensions)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        path_candidate: str | None = None
+        if re.match(r"^(?:File|path|filepath)\s*:\s*\S+", stripped, re.IGNORECASE):
+            # "File: app/main.py" or "path: src/foo.ts"
+            match = re.search(r":\s*(\S+)", stripped)
+            if match:
+                path_candidate = match.group(1).strip("'\"").strip()
+        elif stripped and "/" in stripped and len(stripped) < 120 and any(stripped.endswith(ext) for ext in path_exts):
+            # Standalone path line
+            path_candidate = stripped
+        if path_candidate and path_candidate not in files and any(path_candidate.endswith(ext) for ext in path_exts):
+            # Collect content until next path-like line or blank separator
+            body_lines: list = []
+            i += 1
+            while i < len(lines):
+                next_line = lines[i]
+                next_stripped = next_line.strip()
+                if not next_stripped:
+                    i += 1
+                    continue
+                if re.match(r"^(?:File|path|filepath)\s*:\s*\S+", next_stripped, re.IGNORECASE):
+                    break
+                if next_stripped and "/" in next_stripped and len(next_stripped) < 120 and any(next_stripped.endswith(ext) for ext in path_exts):
+                    break
+                body_lines.append(next_line)
+                i += 1
+            content_str = "\n".join(body_lines).rstrip()
+            if content_str and len(content_str) > 10:
+                files[path_candidate] = content_str
+            continue
+        i += 1
+    return files

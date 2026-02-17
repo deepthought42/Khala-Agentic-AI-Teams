@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Run from software_engineering_team dir so api.main is resolvable
 if __name__ == "__main__":
-    logger.info("*** ACTIVE LLM MODEL *** %s", get_llm_config_summary())
+    logger.info("LLM config: %s", get_llm_config_summary())
     uvicorn.run(
         "api.main:app",
         host="0.0.0.0",

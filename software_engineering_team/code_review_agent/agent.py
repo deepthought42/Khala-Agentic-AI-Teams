@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from shared.llm import LLMClient
 
-from .models import CodeReviewInput, CodeReviewIssue, CodeReviewOutput
+from .models import CodeReviewInput, CodeReviewIssue, CodeReviewOutput, MAX_CODE_REVIEW_CHARS
 from .prompts import CODE_REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -27,9 +27,18 @@ class CodeReviewAgent:
 
     def run(self, input_data: CodeReviewInput) -> CodeReviewOutput:
         """Review code and return approval or issues."""
+        code = input_data.code or ""
+        if len(code) > MAX_CODE_REVIEW_CHARS:
+            logger.info(
+                "CodeReview: truncating code from %s to %s chars for review",
+                len(code),
+                MAX_CODE_REVIEW_CHARS,
+            )
+            code = code[:MAX_CODE_REVIEW_CHARS] + f"\n\n... [truncated for code review, {len(code) - MAX_CODE_REVIEW_CHARS} more chars]"
+
         logger.info(
             "CodeReview: reviewing %s chars of %s code | task=%s | has_spec=%s | has_architecture=%s | acceptance_criteria=%s",
-            len(input_data.code or ""),
+            len(code),
             input_data.language,
             input_data.task_description[:80] if input_data.task_description else "",
             bool(input_data.spec_content),
@@ -79,7 +88,7 @@ class CodeReviewAgent:
             "",
             "**Code to review:**",
             "```",
-            input_data.code,
+            code,
             "```",
         ])
 

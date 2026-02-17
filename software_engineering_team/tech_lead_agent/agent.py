@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from planning.planning_graph import (
+    PlanningDomain,
+    PlanningGraph,
+    PlanningNode,
+    PlanningNodeKind,
+    compile_planning_graph_to_task_assignment,
+)
 from shared.llm import LLMClient
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType, TaskUpdate
 from shared.task_validation import validate_assignment
@@ -157,6 +164,236 @@ class TechLeadAgent:
         data = self.llm.complete_json(prompt, temperature=0.1)
         return json.dumps(data, indent=2)
 
+    def _run_planning_pipeline(
+        self,
+        input_data: TechLeadInput,
+        codebase_analysis: str,
+        spec_analysis: str,
+    ) -> Optional[TechLeadOutput]:
+        """
+        Run the multi-agent planning pipeline (Backend + Frontend planners).
+        Returns TechLeadOutput if successful and valid, else None.
+        """
+        from backend_planning_agent import BackendPlanningAgent, BackendPlanningInput
+        from frontend_planning_agent import FrontendPlanningAgent, FrontendPlanningInput
+
+        reqs = input_data.requirements
+        arch = input_data.architecture
+        project_overview = getattr(input_data, "project_overview", None)
+
+        if not arch:
+            logger.info("Tech Lead: skipping planning pipeline (no architecture)")
+            return None
+
+        logger.info("Tech Lead: running planning pipeline (Backend + Frontend planners)")
+        backend_planner = BackendPlanningAgent(self.llm)
+        frontend_planner = FrontendPlanningAgent(self.llm)
+
+        backend_input = BackendPlanningInput(
+            requirements=reqs,
+            architecture=arch,
+            spec_content=input_data.spec_content or "",
+            project_overview=project_overview,
+            codebase_analysis=codebase_analysis or None,
+            spec_analysis=spec_analysis or None,
+        )
+        backend_output = backend_planner.run(backend_input)
+
+        frontend_input = FrontendPlanningInput(
+            requirements=reqs,
+            architecture=arch,
+            spec_content=input_data.spec_content or "",
+            project_overview=project_overview,
+            codebase_analysis=codebase_analysis or None,
+            spec_analysis=spec_analysis or None,
+            backend_planning_summary=backend_output.summary,
+        )
+        frontend_output = frontend_planner.run(frontend_input)
+
+        merged = PlanningGraph()
+
+        # Seed graph with high-level EPIC/FEATURE nodes derived from architecture components
+        if arch and arch.components:
+            for comp in arch.components:
+                domain = PlanningDomain.BACKEND
+                if comp.type in ("frontend", "ui", "client"):
+                    domain = PlanningDomain.FRONTEND
+                elif comp.type in ("devops", "ci", "cicd"):
+                    domain = PlanningDomain.DEVOPS
+                elif comp.type in ("database", "data"):
+                    domain = PlanningDomain.DATA
+                node_id = f"arch-{domain.value}-{comp.name.replace(' ', '-').lower()}"
+                merged.add_node(
+                    PlanningNode(
+                        id=node_id,
+                        domain=domain,
+                        kind=PlanningNodeKind.FEATURE,
+                        summary=f"{comp.name} ({comp.type})",
+                        details=comp.description or f"Architecture component {comp.name} of type {comp.type}.",
+                        metadata={"component_name": comp.name},
+                    )
+                )
+
+        merged.merge(backend_output.planning_graph)
+        merged.merge(frontend_output.planning_graph)
+
+        # Data planner (optional)
+        try:
+            from data_planning_agent import DataPlanningAgent, DataPlanningInput
+            data_planner = DataPlanningAgent(self.llm)
+            data_output = data_planner.run(DataPlanningInput(
+                requirements=reqs,
+                architecture=arch,
+                spec_content=input_data.spec_content or "",
+                project_overview=project_overview,
+            ))
+            if data_output.planning_graph.nodes:
+                merged.merge(data_output.planning_graph)
+        except Exception as e:
+            logger.debug("Data planner skipped: %s", e)
+
+        # Test planner
+        executable_ids = [
+            nid for nid, n in merged.nodes.items()
+            if n.kind in (PlanningNodeKind.TASK, PlanningNodeKind.SUBTASK)
+            and n.domain in (PlanningDomain.BACKEND, PlanningDomain.FRONTEND)
+        ]
+        try:
+            from test_planning_agent import TestPlanningAgent, TestPlanningInput
+            test_planner = TestPlanningAgent(self.llm)
+            test_output = test_planner.run(TestPlanningInput(
+                requirements=reqs,
+                architecture=arch,
+                spec_content=input_data.spec_content or "",
+                project_overview=project_overview,
+                existing_task_ids=executable_ids[:15],
+            ))
+            if test_output.planning_graph.nodes:
+                merged.merge(test_output.planning_graph)
+        except Exception as e:
+            logger.debug("Test planner skipped: %s", e)
+
+        # Performance planner (apply node_budgets to merged nodes)
+        try:
+            from performance_planning_agent import PerformancePlanningAgent, PerformancePlanningInput
+            perf_planner = PerformancePlanningAgent(self.llm)
+            perf_output = perf_planner.run(PerformancePlanningInput(
+                requirements=reqs,
+                architecture=arch,
+                spec_content=input_data.spec_content or "",
+                project_overview=project_overview,
+                existing_node_ids=executable_ids[:20],
+            ))
+            for nid, budget in perf_output.node_budgets.items():
+                if nid in merged.nodes:
+                    node = merged.nodes[nid]
+                    merged.nodes[nid] = node.model_copy(update={"performance_budget": budget})
+            if perf_output.planning_graph.nodes:
+                merged.merge(perf_output.planning_graph)
+        except Exception as e:
+            logger.debug("Performance planner skipped: %s", e)
+
+        # Documentation planner
+        try:
+            from documentation_planning_agent import DocumentationPlanningAgent, DocumentationPlanningInput
+            doc_planner = DocumentationPlanningAgent(self.llm)
+            doc_output = doc_planner.run(DocumentationPlanningInput(
+                requirements=reqs,
+                architecture=arch,
+                spec_content=input_data.spec_content or "",
+                project_overview=project_overview,
+                existing_task_ids=executable_ids[:10],
+            ))
+            if doc_output.planning_graph.nodes:
+                merged.merge(doc_output.planning_graph)
+        except Exception as e:
+            logger.debug("Documentation planner skipped: %s", e)
+
+        # Quality gate planner (apply quality_gates to merged nodes)
+        try:
+            from quality_gate_planning_agent import QualityGatePlanningAgent, QualityGatePlanningInput
+            qg_planner = QualityGatePlanningAgent(self.llm)
+            qg_output = qg_planner.run(QualityGatePlanningInput(
+                task_ids=executable_ids,
+                project_overview=project_overview,
+                delivery_strategy=project_overview.get("delivery_strategy", "") if project_overview else "",
+            ))
+            for nid, gates in qg_output.node_quality_gates.items():
+                if nid in merged.nodes:
+                    node = merged.nodes[nid]
+                    merged.nodes[nid] = node.model_copy(update={"quality_gates": gates})
+        except Exception as e:
+            logger.debug("Quality gate planner skipped: %s", e)
+
+        # Ensure git_setup exists when we have backend/frontend tasks
+        has_backend = any(n.domain.value == "backend" for n in merged.nodes.values())
+        has_frontend = any(n.domain.value == "frontend" for n in merged.nodes.values())
+        has_git_setup = any(n.domain == PlanningDomain.GIT_SETUP for n in merged.nodes.values())
+        if (has_backend or has_frontend) and not has_git_setup:
+            git_node = PlanningNode(
+                id="git-setup-repos",
+                domain=PlanningDomain.GIT_SETUP,
+                kind=PlanningNodeKind.TASK,
+                summary="Initialize git repositories for backend and frontend",
+                details="Create backend/ and frontend/ directories with git init. Set up development branch.",
+                acceptance_criteria=[
+                    "Backend repo initialized at work_path/backend",
+                    "Frontend repo initialized at work_path/frontend",
+                    "Development branch created in both repos",
+                ],
+            )
+            merged.add_node(git_node)
+            from planning.planning_graph import EdgeType, PlanningEdge
+            for nid, node in list(merged.nodes.items()):
+                if node.kind in (PlanningNodeKind.TASK, PlanningNodeKind.SUBTASK) and node.domain != PlanningDomain.GIT_SETUP:
+                    merged.add_edge(PlanningEdge(from_id="git-setup-repos", to_id=nid, type=EdgeType.BLOCKS))
+
+        assignment = compile_planning_graph_to_task_assignment(
+            merged,
+            rationale=f"Planning pipeline: {backend_output.summary}; {frontend_output.summary}",
+        )
+
+        # Run planning graph validation and build report
+        from planning.validation import format_validation_report, validate_planning_graph
+        is_valid, val_errors = validate_planning_graph(merged, requirement_count=len(reqs.acceptance_criteria or []))
+        domain_counts = {}
+        for n in merged.nodes.values():
+            d = n.domain.value
+            domain_counts[d] = domain_counts.get(d, 0) + 1
+        validation_report = format_validation_report(
+            is_valid, val_errors,
+            total_nodes=len(merged.nodes),
+            total_edges=len(merged.edges),
+            domain_counts=domain_counts,
+        )
+
+        mapping = []
+        for ac in reqs.acceptance_criteria or []:
+            task_ids = [t.id for t in assignment.tasks if ac[:30].lower() in (t.description or "").lower() or (t.title or "").lower() in ac[:30].lower()]
+            if not task_ids:
+                task_ids = [t.id for t in assignment.tasks[:2]]
+            mapping.append({"spec_item": ac[:80], "task_ids": task_ids[:3]})
+
+        is_valid, errors = validate_assignment(assignment, reqs, mapping)
+        if not is_valid:
+            logger.warning("Tech Lead planning pipeline validation failed: %s", errors[:3])
+            return None
+
+        coding_count = sum(1 for t in assignment.tasks if t.type.value in ("backend", "frontend", "devops"))
+        if coding_count < 4:
+            logger.info("Tech Lead: planning pipeline produced too few coding tasks (%s), falling back to monolithic", coding_count)
+            return None
+
+        logger.info("Tech Lead: planning pipeline produced %s tasks", len(assignment.tasks))
+        return TechLeadOutput(
+            assignment=assignment,
+            summary=f"Planning pipeline: {backend_output.summary}. {frontend_output.summary}",
+            requirement_task_mapping=mapping,
+            spec_clarification_needed=False,
+            clarification_questions=[],
+            validation_report=validation_report,
+        )
+
     def run(self, input_data: TechLeadInput) -> TechLeadOutput:
         """
         Plan and assign tasks to the team using a multi-step approach:
@@ -185,7 +422,12 @@ class TechLeadAgent:
             spec_analysis = self._analyze_spec(spec_content, reqs)
             logger.info("Tech Lead: spec analysis complete (%s chars)", len(spec_analysis))
 
-        # ── Step 3: Task generation with combined context ──
+        # ── Step 2b: Try planning pipeline (Backend + Frontend planners) ──
+        pipeline_output = self._run_planning_pipeline(input_data, codebase_analysis, spec_analysis)
+        if pipeline_output is not None:
+            return pipeline_output
+
+        # ── Step 3: Task generation with combined context (fallback monolithic) ──
         logger.info("Tech Lead: Step 3/3 - Generating task plan from combined analysis")
         context_parts = [
             f"**Product Title:** {reqs.title}",
@@ -196,6 +438,41 @@ class TechLeadAgent:
             *[f"- {c}" for c in reqs.constraints],
             f"**Priority:** {reqs.priority}",
         ]
+
+        if getattr(input_data, "project_overview", None):
+            po = input_data.project_overview
+            context_parts.extend([
+                "",
+                "**Project Overview (align task plan with delivery strategy):**",
+                f"- Primary goal: {po.get('primary_goal', '')}",
+                f"- Delivery strategy: {po.get('delivery_strategy', '')}",
+                "- Milestones: " + ", ".join(m.get("name", "") for m in po.get("milestones", [])),
+            ])
+            features_doc = po.get("features_and_functionality_doc") or ""
+            if features_doc and str(features_doc).strip():
+                context_parts.extend([
+                    "",
+                    "**Features and Functionality (required – tasks must implement all of these):**",
+                    "---",
+                    (features_doc[:15000] + ("..." if len(features_doc) > 15000 else "")),
+                    "---",
+                ])
+
+        alignment_feedback = getattr(input_data, "alignment_feedback", None) or []
+        conformance_issues = getattr(input_data, "conformance_issues", None) or []
+        if alignment_feedback or conformance_issues:
+            feedback_lines = []
+            if alignment_feedback:
+                feedback_lines.append("**Alignment (tasks vs architecture):**")
+                feedback_lines.extend(f"- " + str(x) for x in alignment_feedback)
+            if conformance_issues:
+                feedback_lines.append("**Spec conformance – address these non-compliances:**")
+                feedback_lines.extend(f"- " + str(x) for x in conformance_issues)
+            context_parts.extend([
+                "",
+                "**Planning review feedback – you must address these in your task plan:**",
+                "\n".join(feedback_lines),
+            ])
 
         if input_data.repo_path:
             context_parts.extend(["", f"**Repo path:** {input_data.repo_path}"])
