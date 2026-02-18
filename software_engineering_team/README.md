@@ -13,7 +13,7 @@ A multi-agent system that simulates a real software engineering team with a mix 
 | **DevOps Expert** | Infrastructure specialist | CI/CD pipelines, IaC (Terraform, etc.), Docker, networking |
 | **Cybersecurity Expert** | Security specialist | Reviews code for security flaws per task (backend and frontend); remediates vulnerabilities |
 | **Backend Expert** | Backend engineer | Implements solutions in Python or Java; runs autonomous workflow with quality gates |
-| **Frontend Expert** | Frontend engineer | Implements solutions in Angular; runs unified workflow mirroring backend |
+| **Frontend Expert** (via Frontend Engineering Team) | Frontend sub-orchestration | UX Designer, UI Designer, Design System, Frontend Architect, Feature Implementation, UX Engineer, Accessibility, Security, Performance Engineer, QA, Build/Release, Code Review – full pipeline per task |
 | **QA Expert** | Quality assurance | Reviews for bugs; produces integration/unit tests and README content (persisted to repo) |
 | **Code Review Agent** | Code reviewer | Reviews code against spec, standards, and acceptance criteria |
 | **Acceptance Verifier** | Criteria checker | Verifies each task acceptance criterion is satisfied with evidence |
@@ -36,12 +36,35 @@ All agents enforce these rules for produced code:
 | **Git Branching** | Work on `development` branch; PR to merge into `main`. Tech Lead creates `development` if missing |
 | **Commit Messages** | Conventional Commits format: `type(scope): description` (feat, fix, docs, test, ci, etc.) |
 
+## Plan folder
+
+All planning artifacts are written to a `plan/` folder at the project root (work path). The folder is created when the spec is first ingested successfully. Artifacts include:
+
+- `plan/spec_lint_report.md`, `plan/glossary.md`, `plan/assumptions_and_questions.md`, `plan/acceptance_criteria_index.md` (Spec Intake)
+- `plan/project_overview.md`, `plan/features_and_functionality.md` (Project Planning)
+- `plan/architecture.md` (Architecture)
+- `plan/openapi.yaml`, `plan/api_error_model.md`, `plan/api_versioning.md`, `plan/contract_tests_plan.md` (API Contract)
+- `plan/data_schema.md`, `plan/data_architecture.md` (Data Architecture)
+- `plan/ui_ux.md` (UI/UX Design)
+- `plan/frontend_architecture.md` (Frontend Architecture)
+- `plan/infrastructure.md` (Infrastructure)
+- `plan/devops_pipeline.md` (DevOps)
+- `plan/test_strategy.md` (QA Test Strategy)
+- `plan/security_and_compliance.md` (Security)
+- `plan/observability.md` (Observability)
+- `plan/performance.md` (Performance)
+- `plan/tech_lead.md` (Tech Lead task plan)
+- `plan/master_plan.md` (Consolidated master plan, risk register, ship checklist)
+
 ## Flow
 
-1. **Load spec** – Read `initial_spec.md` from the repo.
-2. **Project Planning** produces a features/functionality document from the spec.
-3. **Tech Lead** (using planning sub-agents: backend, frontend, data, test, performance, documentation, quality gates) and **Architecture Expert** iterate until tasks and architecture align.
-4. **Tech Lead** generates a complete build plan and assigns tasks (git_setup, devops, backend, frontend).
+1. **Load spec** – Read `initial_spec.md` from the repo. Create `plan/` folder on first successful ingest.
+2. **Spec Intake and Validation** (optional) – Validates spec, produces REQ-IDs, glossary, assumptions.
+3. **Project Planning** produces a features/functionality document from the spec.
+4. **Tech Lead** (using planning sub-agents: backend, frontend, data, test, performance, documentation, quality gates) and **Architecture Expert** iterate until tasks and architecture align.
+5. **Planning agents** (API Contract, Data Architecture, UI/UX, Infrastructure, Frontend Architecture, DevOps, QA Test Strategy, Security, Observability, Performance) produce additional artifacts in `plan/`.
+6. **Planning consolidation** produces `plan/master_plan.md` with risk register and ship checklist.
+7. **Tech Lead** generates a complete build plan and assigns tasks (git_setup, devops, backend, frontend).
 5. **Backend and Frontend workers** run in parallel. Each task follows a unified workflow:
    - Create feature branch
    - Generate code (with clarification loop via Tech Lead if needed)
@@ -53,9 +76,9 @@ All agents enforce these rules for produced code:
    - **Accessibility review** (frontend only)
    - **DbC comments** (add pre/postconditions)
    - Merge to development, Tech Lead review, Documentation update
-6. **Integration phase** – After workers complete, Integration Agent validates backend-frontend API contract alignment.
-7. **Final security** (full codebase) and **documentation** pass when Tech Lead requests.
-8. **Retry path** – Failed tasks are retried through the same full workflow (build, code review, QA, a11y, security, DBC).
+9. **Integration phase** – After workers complete, Integration Agent validates backend-frontend API contract alignment.
+10. **Final security** (full codebase) and **documentation** pass when Tech Lead requests.
+11. **Retry path** – Failed tasks are retried through the same full workflow (build, code review, QA, a11y, security, DBC).
 
 ## Requirements
 
@@ -207,7 +230,8 @@ software_engineering_team/
 ├── devops_agent/
 ├── security_agent/
 ├── backend_agent/
-├── frontend_agent/
+├── frontend_agent/        # Feature Implementation (used by Frontend Orchestrator)
+├── frontend_team/         # Frontend Engineering Team: UX, UI, Design System, Architect, UX Engineer, Performance, Build/Release, Orchestrator
 ├── qa_agent/
 ├── integration_agent/   # Full-stack API contract validation
 ├── acceptance_verifier_agent/
@@ -222,6 +246,17 @@ software_engineering_team/
 ├── performance_planning_agent/
 ├── documentation_planning_agent/
 ├── quality_gate_planning_agent/
+├── spec_intake_agent/
+├── api_contract_planning_agent/
+├── data_architecture_agent/
+├── ui_ux_design_agent/
+├── frontend_architecture_agent/
+├── infrastructure_planning_agent/
+├── devops_planning_agent/
+├── qa_test_strategy_agent/
+├── security_planning_agent/
+├── observability_planning_agent/
+├── performance_planning_doc_agent/
 ├── agent_implementations/
 │   ├── run_team.py   # CLI orchestration script
 │   └── run_api_server.py

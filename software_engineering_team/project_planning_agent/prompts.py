@@ -25,14 +25,23 @@ Then produce a ProjectOverview that frames the engagement for downstream planner
 
 **Constraint (when the spec includes a public REST API):** The system's public REST API must expose an OpenAPI 3.0 specification so that it can be consumed by cloud API gateways (e.g. AWS API Gateway, Azure API Management) and by clients for type/code generation.
 
+**Additionally produce:**
+7. **Epic/story breakdown** – List of epics and stories with id, name, description, scope (MVP/V1/later), and dependencies (IDs of items this depends on)
+8. **Scope cut** – Brief summary of what is in MVP vs V1 vs "later" (deferred)
+9. **Non-functional requirements** – List of NFRs (SLOs, latency, compliance, retention, security, etc.)
+10. **Definition of done per milestone** – For each milestone, a clear exit criterion (definition_of_done)
+
 **Output format:**
 Return a single JSON object with:
 - "features_and_functionality": string (markdown: high-level list of required features and functionalities; use newlines for readability)
 - "primary_goal": string
 - "secondary_goals": list of strings
-- "milestones": list of {"id", "name", "description", "target_order", "scope_summary"}
+- "milestones": list of {"id", "name", "description", "target_order", "scope_summary", "definition_of_done"}
 - "risk_items": list of {"description", "severity", "mitigation"}
 - "delivery_strategy": string
+- "epic_story_breakdown": list of {"id", "name", "description", "scope", "dependencies"} (scope: "MVP", "V1", or "later")
+- "scope_cut": string (summary of MVP vs V1 vs later)
+- "non_functional_requirements": list of strings
 - "summary": string (2-3 sentence summary)
 
 Respond with valid JSON only. No explanatory text, markdown, or code fences."""

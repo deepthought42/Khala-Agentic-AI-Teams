@@ -53,6 +53,7 @@ from shared.job_store import (
     update_job,
 )
 from shared.command_runner import run_command_with_nvm
+from planning.plan_dir import ensure_plan_dir
 from shared.development_plan_writer import (
     write_architecture_plan,
     write_features_and_functionality_plan,
@@ -80,12 +81,33 @@ def _get_agents(llm):
     from integration_agent import IntegrationAgent, IntegrationInput
     from qa_agent import QAExpertAgent, QAInput
     from security_agent import CybersecurityExpertAgent, SecurityInput
+    from api_contract_planning_agent import ApiContractPlanningAgent
+    from data_architecture_agent import DataArchitectureAgent
+    from devops_planning_agent import DevOpsPlanningAgent
+    from frontend_architecture_agent import FrontendArchitectureAgent
+    from infrastructure_planning_agent import InfrastructurePlanningAgent
+    from observability_planning_agent import ObservabilityPlanningAgent
+    from performance_planning_doc_agent import PerformancePlanningDocAgent
+    from qa_test_strategy_agent import QaTestStrategyAgent
+    from security_planning_agent import SecurityPlanningAgent
+    from spec_intake_agent import SpecIntakeAgent
     from tech_lead_agent import TechLeadAgent, TechLeadInput
+    from ui_ux_design_agent import UiUxDesignAgent
     from acceptance_verifier_agent import AcceptanceVerifierAgent
 
     return {
+        "spec_intake": SpecIntakeAgent(llm),
         "project_planning": ProjectPlanningAgent(llm),
         "architecture": ArchitectureExpertAgent(llm),
+        "api_contract": ApiContractPlanningAgent(llm),
+        "data_architecture": DataArchitectureAgent(llm),
+        "ui_ux": UiUxDesignAgent(llm),
+        "frontend_architecture": FrontendArchitectureAgent(llm),
+        "infrastructure": InfrastructurePlanningAgent(llm),
+        "devops_planning": DevOpsPlanningAgent(llm),
+        "qa_test_strategy": QaTestStrategyAgent(llm),
+        "security_planning": SecurityPlanningAgent(llm),
+        "observability": ObservabilityPlanningAgent(llm),
         "integration": IntegrationAgent(llm),
         "acceptance_verifier": AcceptanceVerifierAgent(llm),
         "tech_lead": TechLeadAgent(llm),
@@ -500,6 +522,26 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             requirements = parse_spec_heuristic(spec_content)
         update_job(job_id, requirements_title=requirements.title)
 
+        # Create plan folder after spec is ingested successfully (all planning artifacts go here)
+        plan_dir = ensure_plan_dir(path)
+        logger.info("Plan folder ensured at %s", plan_dir)
+
+        # 1b. Spec Intake and Validation (optional): validate spec, produce REQ-IDs, glossary, assumptions
+        spec_intake_agent = agents.get("spec_intake")
+        if spec_intake_agent:
+            try:
+                spec_intake_output = spec_intake_agent.run(SpecIntakeInput(
+                    spec_content=spec_content,
+                    plan_dir=plan_dir,
+                ))
+                requirements = validated_spec_to_requirements(spec_intake_output)
+                logger.info("Spec Intake: success, %s REQ-IDs", len(spec_intake_output.acceptance_criteria_index))
+            except LLMRateLimitError:
+                logger.warning("Spec Intake skipped (LLM rate limit); using parsed requirements")
+            except Exception as e:
+                logger.warning("Spec Intake failed (using parsed requirements): %s", e)
+        update_job(job_id, requirements_title=requirements.title)
+
         # 2. Project Overview (before architecture) - never skip; use fallback if LLM fails
         project_overview: Optional[Dict[str, Any]] = None
         project_planning_agent = agents.get("project_planning")
@@ -511,20 +553,21 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     requirements=requirements,
                     spec_content=spec_content,
                     repo_state_summary=repo_summary if repo_summary != "# No code files found" else None,
+                    plan_dir=plan_dir,
                 )
                 pp_output = project_planning_agent.run(pp_input)
                 project_overview = model_to_dict(pp_output.overview)
                 logger.info("Project Planning: success (LLM-based)")
                 try:
-                    write_project_overview_plan(path, pp_output.overview)
+                    write_project_overview_plan(path, pp_output.overview, plan_dir=plan_dir)
                 except Exception as e:
-                    logger.warning("Failed to write DEVELOPMENT_PLAN-project_overview.md: %s", e)
+                    logger.warning("Failed to write plan/project_overview.md: %s", e)
                 try:
                     features_doc = getattr(pp_output, "features_and_functionality_doc", None) or (project_overview.get("features_and_functionality_doc") or "")
                     if features_doc:
-                        write_features_and_functionality_plan(path, features_doc)
+                        write_features_and_functionality_plan(path, features_doc, plan_dir=plan_dir)
                 except Exception as e:
-                    logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", e)
+                    logger.warning("Failed to write plan/features_and_functionality.md: %s", e)
             except LLMRateLimitError:
                 logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
                 update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
@@ -536,14 +579,14 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     project_overview = model_to_dict(fallback)
                     logger.info("Project Planning: success via fallback overview (LLM failed: %s)", e)
                     try:
-                        write_project_overview_plan(path, fallback)
+                        write_project_overview_plan(path, fallback, plan_dir=plan_dir)
                     except Exception as we:
-                        logger.warning("Failed to write DEVELOPMENT_PLAN-project_overview.md: %s", we)
+                        logger.warning("Failed to write plan/project_overview.md: %s", we)
                     try:
                         if getattr(fallback, "features_and_functionality_doc", ""):
-                            write_features_and_functionality_plan(path, fallback.features_and_functionality_doc)
+                            write_features_and_functionality_plan(path, fallback.features_and_functionality_doc, plan_dir=plan_dir)
                     except Exception as we2:
-                        logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", we2)
+                        logger.warning("Failed to write plan/features_and_functionality.md: %s", we2)
                 except Exception as fallback_err:
                     logger.error(
                         "Project planning hard failure (no overview available): LLM=%s, fallback=%s",
@@ -564,9 +607,9 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 logger.info("Project Planning: no agent configured, using fallback overview")
                 try:
                     if getattr(fallback, "features_and_functionality_doc", ""):
-                        write_features_and_functionality_plan(path, fallback.features_and_functionality_doc)
+                        write_features_and_functionality_plan(path, fallback.features_and_functionality_doc, plan_dir=plan_dir)
                 except Exception as e2:
-                    logger.warning("Failed to write DEVELOPMENT_PLAN-features_and_functionality.md: %s", e2)
+                    logger.warning("Failed to write plan/features_and_functionality.md: %s", e2)
             except Exception as e:
                 logger.error("Project planning fallback failed (no agent): %s", e)
                 update_job(job_id, status=JOB_STATUS_FAILED, error=f"Project planning fallback failed: {e}")
@@ -650,9 +693,9 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             architecture = arch_output.architecture
             update_job(job_id, architecture_overview=architecture.overview)
             try:
-                write_architecture_plan(path, architecture)
+                write_architecture_plan(path, architecture, plan_dir=plan_dir)
             except Exception as e:
-                logger.warning("Failed to write DEVELOPMENT_PLAN-architecture.md: %s", e)
+                logger.warning("Failed to write plan/architecture.md: %s", e)
 
             # Step 4: Loop until tasks and architecture align
             alignment_iterations = 0
@@ -701,7 +744,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     return
                 architecture = arch_output.architecture
                 try:
-                    write_architecture_plan(path, architecture)
+                    write_architecture_plan(path, architecture, plan_dir=plan_dir)
                 except Exception:
                     pass
 
@@ -716,6 +759,142 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 logger.warning("Max conformance retries reached; proceeding with current plan")
                 break
 
+        # Run additional planning agents (API Contract, Data Arch, UI/UX, Infra, etc.) with final architecture
+        arch_overview = architecture.overview if architecture else ""
+        tenancy = getattr(architecture, "tenancy_model", "") or "" if architecture else ""
+        req_ids = (requirements.metadata or {}).get("requirement_ids", []) if requirements else []
+        infra_doc = ""
+        data_lifecycle = ""
+        ui_ux_doc = ""
+        devops_doc = ""
+        try:
+            if agents.get("api_contract"):
+                from api_contract_planning_agent.models import ApiContractPlanningInput
+                agents["api_contract"].run(ApiContractPlanningInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    requirements_title=requirements.title,
+                    acceptance_criteria=requirements.acceptance_criteria or [],
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("API Contract planning skipped: %s", e)
+        try:
+            if agents.get("data_architecture"):
+                from data_architecture_agent.models import DataArchitectureInput
+                data_out = agents["data_architecture"].run(DataArchitectureInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+                data_lifecycle = data_out.data_lifecycle_policy or ""
+        except Exception as e:
+            logger.debug("Data Architecture planning skipped: %s", e)
+        try:
+            if agents.get("ui_ux"):
+                from ui_ux_design_agent.models import UiUxDesignInput
+                ui_out = agents["ui_ux"].run(UiUxDesignInput(
+                    spec_content=spec_content,
+                    requirements_title=requirements.title,
+                    features_doc=features_and_functionality_doc or "",
+                    plan_dir=plan_dir,
+                ))
+                ui_ux_doc = (ui_out.user_journeys or "") + "\n" + (ui_out.wireframes or "")
+        except Exception as e:
+            logger.debug("UI/UX planning skipped: %s", e)
+        try:
+            if agents.get("infrastructure"):
+                from infrastructure_planning_agent.models import InfrastructurePlanningInput
+                infra_out = agents["infrastructure"].run(InfrastructurePlanningInput(
+                    architecture_overview=arch_overview,
+                    tenancy_model=tenancy,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+                infra_doc = (infra_out.cloud_diagram or "") + "\n" + (infra_out.environment_strategy or "")
+        except Exception as e:
+            logger.debug("Infrastructure planning skipped: %s", e)
+        try:
+            if agents.get("frontend_architecture"):
+                from frontend_architecture_agent.models import FrontendArchitectureInput
+                agents["frontend_architecture"].run(FrontendArchitectureInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    ui_ux_doc=ui_ux_doc,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("Frontend Architecture planning skipped: %s", e)
+        try:
+            if agents.get("devops_planning"):
+                from devops_planning_agent.models import DevOpsPlanningInput
+                dev_out = agents["devops_planning"].run(DevOpsPlanningInput(
+                    architecture_overview=arch_overview,
+                    infrastructure_doc=infra_doc,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+                devops_doc = (dev_out.ci_pipeline or "") + "\n" + (dev_out.cd_pipeline or "")
+        except Exception as e:
+            logger.debug("DevOps planning skipped: %s", e)
+        try:
+            if agents.get("qa_test_strategy"):
+                from qa_test_strategy_agent.models import QaTestStrategyInput
+                agents["qa_test_strategy"].run(QaTestStrategyInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    acceptance_criteria=requirements.acceptance_criteria or [],
+                    requirement_ids=req_ids,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("QA Test Strategy planning skipped: %s", e)
+        try:
+            if agents.get("security_planning"):
+                from security_planning_agent import SecurityPlanningInput
+                agents["security_planning"].run(SecurityPlanningInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    data_lifecycle=data_lifecycle,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("Security planning skipped: %s", e)
+        try:
+            if agents.get("observability"):
+                from observability_planning_agent.models import ObservabilityPlanningInput
+                agents["observability"].run(ObservabilityPlanningInput(
+                    architecture_overview=arch_overview,
+                    infrastructure_doc=infra_doc,
+                    devops_doc=devops_doc,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("Observability planning skipped: %s", e)
+        try:
+            if agents.get("performance_doc"):
+                from performance_planning_doc_agent.models import PerformancePlanningDocInput
+                agents["performance_doc"].run(PerformancePlanningDocInput(
+                    spec_content=spec_content,
+                    architecture_overview=arch_overview,
+                    requirements_title=requirements.title,
+                    plan_dir=plan_dir,
+                ))
+        except Exception as e:
+            logger.debug("Performance doc planning skipped: %s", e)
+
+        # Planning consolidation: master plan, risk register, ship checklist
+        try:
+            from planning.planning_consolidation import run_planning_consolidation
+            run_planning_consolidation(plan_dir, assignment, architecture, project_overview)
+        except Exception as e:
+            logger.warning("Planning consolidation skipped: %s", e)
+
         # Write Tech Lead development plan
         try:
             write_tech_lead_plan(
@@ -724,9 +903,10 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 summary=getattr(tech_lead_output, "summary", "") or "",
                 requirement_task_mapping=getattr(tech_lead_output, "requirement_task_mapping", None) or [],
                 validation_report=getattr(tech_lead_output, "validation_report", None),
+                plan_dir=plan_dir,
             )
         except Exception as e:
-            logger.warning("Failed to write DEVELOPMENT_PLAN-tech_lead.md: %s", e)
+            logger.warning("Failed to write plan/tech_lead.md: %s", e)
 
         # Store execution order in job state for API polling
         update_job(job_id, execution_order=assignment.execution_order)

@@ -266,12 +266,17 @@ class ArchitectureExpertAgent:
             },
         }
 
+        tenancy_model = (data.get("tenancy_model") or "").strip()
+        reliability_model = (data.get("reliability_model") or "").strip()
+
         architecture = SystemArchitecture(
             overview=overview,
             components=components,
             architecture_document=architecture_document,
             diagrams=diagrams,
             decisions=data.get("decisions", []),
+            tenancy_model=tenancy_model,
+            reliability_model=reliability_model,
             planning_hints=planning_hints,
         )
 

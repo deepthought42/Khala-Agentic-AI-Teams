@@ -9,6 +9,7 @@ from shared.llm import LLMClient
 from shared.models import ProductRequirements
 
 from .models import (
+    EpicStoryItem,
     Milestone,
     ProjectOverview,
     ProjectPlanningInput,
@@ -68,7 +69,23 @@ class ProjectPlanningAgent:
                     description=m.get("description", ""),
                     target_order=m.get("target_order", len(milestones)),
                     scope_summary=m.get("scope_summary", ""),
+                    definition_of_done=m.get("definition_of_done", ""),
                 ))
+
+        epic_story_breakdown: List[EpicStoryItem] = []
+        for e in data.get("epic_story_breakdown") or []:
+            if isinstance(e, dict) and e.get("id"):
+                epic_story_breakdown.append(EpicStoryItem(
+                    id=e["id"],
+                    name=e.get("name", ""),
+                    description=e.get("description", ""),
+                    scope=e.get("scope", "MVP"),
+                    dependencies=e.get("dependencies", []),
+                ))
+
+        nfr_list = data.get("non_functional_requirements") or []
+        if not isinstance(nfr_list, list):
+            nfr_list = []
 
         risk_items: List[RiskItem] = []
         for r in data.get("risk_items") or []:
@@ -90,6 +107,9 @@ class ProjectPlanningAgent:
             milestones=milestones,
             risk_items=risk_items,
             delivery_strategy=data.get("delivery_strategy", ""),
+            epic_story_breakdown=epic_story_breakdown,
+            scope_cut=data.get("scope_cut", ""),
+            non_functional_requirements=nfr_list,
         )
 
         logger.info("Project Planning: done, features_doc=%s chars, %s milestones, %s risks", len(features_doc), len(milestones), len(risk_items))

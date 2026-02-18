@@ -15,6 +15,23 @@ class Milestone(BaseModel):
     description: str = ""
     target_order: int = 0
     scope_summary: str = ""
+    definition_of_done: str = Field(
+        default="",
+        description="Definition of done for this milestone (exit criteria)",
+    )
+
+
+class EpicStoryItem(BaseModel):
+    """An epic or story in the breakdown."""
+
+    id: str
+    name: str
+    description: str = ""
+    scope: str = Field(
+        default="MVP",
+        description="Scope cut: MVP, V1, or later",
+    )
+    dependencies: List[str] = Field(default_factory=list, description="IDs of epics/stories this depends on")
 
 
 class RiskItem(BaseModel):
@@ -37,6 +54,18 @@ class ProjectOverview(BaseModel):
     milestones: List[Milestone] = Field(default_factory=list)
     risk_items: List[RiskItem] = Field(default_factory=list)
     delivery_strategy: str = ""  # e.g., backend-first, vertical slices
+    epic_story_breakdown: List[EpicStoryItem] = Field(
+        default_factory=list,
+        description="Epic/story breakdown with dependencies and scope cut (MVP/V1/later)",
+    )
+    scope_cut: str = Field(
+        default="",
+        description="Overall scope cut summary: MVP vs V1 vs later",
+    )
+    non_functional_requirements: List[str] = Field(
+        default_factory=list,
+        description="Non-functional requirements (SLOs, latency, compliance, retention, etc.)",
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -48,6 +77,10 @@ class ProjectPlanningInput(BaseModel):
     repo_state_summary: Optional[str] = Field(
         None,
         description="Summary of existing codebase from scan",
+    )
+    plan_dir: Optional[Any] = Field(
+        None,
+        description="Path to plan folder for writing artifacts",
     )
 
 
@@ -83,9 +116,9 @@ def build_fallback_overview_from_requirements(requirements: ProductRequirements)
             secondary_goals.append(f"Constraint: {c.strip()}")
 
     milestones = [
-        Milestone(id="M1", name="Foundational backend & data", description="Core API, data models, persistence", target_order=0, scope_summary="Backend foundation"),
-        Milestone(id="M2", name="Frontend & UX", description="UI implementation and user flows", target_order=1, scope_summary="Frontend and integration"),
-        Milestone(id="M3", name="Hardening & polish", description="Testing, security, documentation, deployment", target_order=2, scope_summary="Quality and delivery"),
+        Milestone(id="M1", name="Foundational backend & data", description="Core API, data models, persistence", target_order=0, scope_summary="Backend foundation", definition_of_done="API endpoints working, data layer in place"),
+        Milestone(id="M2", name="Frontend & UX", description="UI implementation and user flows", target_order=1, scope_summary="Frontend and integration", definition_of_done="UI flows complete, integrated with API"),
+        Milestone(id="M3", name="Hardening & polish", description="Testing, security, documentation, deployment", target_order=2, scope_summary="Quality and delivery", definition_of_done="Tests pass, docs updated, deployable"),
     ]
 
     risk_items = [

@@ -79,7 +79,15 @@ class SystemArchitecture(BaseModel):
     )
     decisions: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Architecture decision records",
+        description="Architecture decision records (ADR-001, ADR-002, ...)",
+    )
+    tenancy_model: str = Field(
+        default="",
+        description="Tenancy model: single tenant, pooled, isolated, hybrid",
+    )
+    reliability_model: str = Field(
+        default="",
+        description="Reliability model: blast radius, failure modes, graceful degradation",
     )
     planning_hints: Dict[str, Any] = Field(
         default_factory=dict,

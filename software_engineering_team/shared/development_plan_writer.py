@@ -1,7 +1,9 @@
 """
 Write development plans produced by planning agents to markdown files.
 
-Files are named DEVELOPMENT_PLAN-[AGENT_TYPE].md and written to the work path (repo root).
+When plan_dir is provided (or defaulted), files are written under plan/ at project root
+(e.g. plan/project_overview.md). When plan_dir is explicitly None, files use the legacy
+DEVELOPMENT_PLAN- prefix at repo root for backward compatibility.
 """
 
 from __future__ import annotations
@@ -9,13 +11,28 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from shared.models import Task, TaskAssignment, SystemArchitecture
 
 logger = logging.getLogger(__name__)
 
 DEVELOPMENT_PLAN_PREFIX = "DEVELOPMENT_PLAN-"
+PLAN_FOLDER_NAME = "plan"
+
+
+def _resolve_output_dir(repo_path: str | Path, plan_dir: Optional[Path]) -> Path:
+    """Resolve the directory for writing plan artifacts. Defaults to {repo_path}/plan."""
+    base = Path(repo_path).resolve()
+    if plan_dir is not None:
+        return Path(plan_dir).resolve()
+    return base / PLAN_FOLDER_NAME
+
+
+def _resolve_output_file(repo_path: str | Path, plan_dir: Optional[Path], filename: str) -> Path:
+    """Resolve the full path for a plan artifact file under plan/."""
+    out_dir = _resolve_output_dir(repo_path, plan_dir)
+    return out_dir / filename
 
 
 def _normalize_mermaid(content: str) -> str:
@@ -28,14 +45,18 @@ def _normalize_mermaid(content: str) -> str:
     return s
 
 
-def write_project_overview_plan(repo_path: str | Path, overview: Any) -> Path:
+def write_project_overview_plan(
+    repo_path: str | Path,
+    overview: Any,
+    plan_dir: Optional[Path] = None,
+) -> Path:
     """
-    Write the project overview plan to DEVELOPMENT_PLAN-project_overview.md.
+    Write the project overview plan to plan/project_overview.md.
     Returns the path of the written file.
     """
-    path = Path(repo_path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}project_overview.md"
+    out_dir = _resolve_output_dir(repo_path, plan_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = _resolve_output_file(repo_path, plan_dir, "project_overview.md")
 
     sections: List[str] = [
         "# Development Plan: Project Overview",
@@ -64,6 +85,33 @@ def write_project_overview_plan(repo_path: str | Path, overview: Any) -> Path:
                 sections.append(f"- **Description:** {m.description}")
             if m.scope_summary:
                 sections.append(f"- **Scope:** {m.scope_summary}")
+            if getattr(m, "definition_of_done", "") and str(m.definition_of_done).strip():
+                sections.append(f"- **Definition of Done:** {m.definition_of_done}")
+            sections.append("")
+
+    if getattr(overview, "scope_cut", "") and str(overview.scope_cut).strip():
+        sections.extend(["## Scope Cut (MVP vs V1 vs Later)", "", overview.scope_cut.strip(), ""])
+
+    if getattr(overview, "epic_story_breakdown", None):
+        breakdown = overview.epic_story_breakdown
+        if breakdown:
+            sections.extend(["## Epic/Story Breakdown", ""])
+            for e in breakdown:
+                deps = ", ".join(e.dependencies) if getattr(e, "dependencies", None) else ""
+                scope = getattr(e, "scope", "MVP") or "MVP"
+                sections.append(f"- **{e.name}** (id: {e.id}, scope: {scope})")
+                if e.description:
+                    sections.append(f"  - {e.description}")
+                if deps:
+                    sections.append(f"  - Dependencies: {deps}")
+            sections.append("")
+
+    if getattr(overview, "non_functional_requirements", None):
+        nfrs = overview.non_functional_requirements
+        if nfrs:
+            sections.extend(["## Non-Functional Requirements", ""])
+            for nfr in nfrs:
+                sections.append(f"- {nfr}")
             sections.append("")
 
     if overview.risk_items:
@@ -80,14 +128,18 @@ def write_project_overview_plan(repo_path: str | Path, overview: Any) -> Path:
     return out_file
 
 
-def write_features_and_functionality_plan(repo_path: str | Path, features_doc: str) -> Path:
+def write_features_and_functionality_plan(
+    repo_path: str | Path,
+    features_doc: str,
+    plan_dir: Optional[Path] = None,
+) -> Path:
     """
-    Write the features and functionality document to DEVELOPMENT_PLAN-features_and_functionality.md.
+    Write the features and functionality document to plan/features_and_functionality.md.
     Returns the path of the written file.
     """
-    path = Path(repo_path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}features_and_functionality.md"
+    out_dir = _resolve_output_dir(repo_path, plan_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = _resolve_output_file(repo_path, plan_dir, "features_and_functionality.md")
     content = (
         "# Development Plan: Features and Functionality\n\n"
         "High-level features and functionalities required (from initial spec).\n\n"
@@ -98,14 +150,18 @@ def write_features_and_functionality_plan(repo_path: str | Path, features_doc: s
     return out_file
 
 
-def write_architecture_plan(repo_path: str | Path, architecture: SystemArchitecture) -> Path:
+def write_architecture_plan(
+    repo_path: str | Path,
+    architecture: SystemArchitecture,
+    plan_dir: Optional[Path] = None,
+) -> Path:
     """
-    Write the architecture plan to DEVELOPMENT_PLAN-architecture.md.
+    Write the architecture plan to plan/architecture.md.
     Returns the path of the written file.
     """
-    path = Path(repo_path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}architecture.md"
+    out_dir = _resolve_output_dir(repo_path, plan_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = _resolve_output_file(repo_path, plan_dir, "architecture.md")
 
     sections: List[str] = [
         "# Development Plan: Architecture",
@@ -140,14 +196,22 @@ def write_architecture_plan(repo_path: str | Path, architecture: SystemArchitect
             mermaid = _normalize_mermaid(content)
             sections.extend([f"### {name}", "", "```mermaid", mermaid, "```", ""])
 
+    if getattr(architecture, "tenancy_model", "") and str(architecture.tenancy_model).strip():
+        sections.extend(["## Tenancy Model", "", architecture.tenancy_model.strip(), ""])
+
+    if getattr(architecture, "reliability_model", "") and str(architecture.reliability_model).strip():
+        sections.extend(["## Reliability Model", "", architecture.reliability_model.strip(), ""])
+
     if architecture.decisions:
-        sections.extend(["## Architecture Decisions", ""])
+        sections.extend(["## Architecture Decision Records (ADRs)", ""])
         for d in architecture.decisions:
             if isinstance(d, dict):
+                adr_id = d.get("id", "")
                 title = d.get("title") or d.get("name") or "Decision"
-                sections.append(f"### {title}")
+                header = f"### {adr_id} {title}" if adr_id else f"### {title}"
+                sections.append(header)
                 for k, v in d.items():
-                    if k not in ("title", "name") and v is not None:
+                    if k not in ("title", "name", "id") and v is not None:
                         sections.append(f"- **{k}:** {v}")
             else:
                 sections.append(f"- {d}")
@@ -165,15 +229,16 @@ def write_tech_lead_plan(
     summary: str = "",
     requirement_task_mapping: List[Dict[str, Any]] | None = None,
     validation_report: str | None = None,
+    plan_dir: Optional[Path] = None,
 ) -> Path:
     """
-    Write the Tech Lead task plan to DEVELOPMENT_PLAN-tech_lead.md.
+    Write the Tech Lead task plan to plan/tech_lead.md.
     Includes all tasks with full details, execution order, and optional validation report.
     Returns the path of the written file.
     """
-    path = Path(repo_path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    out_file = path / f"{DEVELOPMENT_PLAN_PREFIX}tech_lead.md"
+    out_dir = _resolve_output_dir(repo_path, plan_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = _resolve_output_file(repo_path, plan_dir, "tech_lead.md")
 
     sections: List[str] = [
         "# Development Plan: Tech Lead",

@@ -48,10 +48,11 @@ Produce a complete system architecture design that includes:
 
    You may add extra keys (e.g. data_flow, sequence_auth) for anything else helpful.
 
-5. **Decisions** – List of architecture decision records (ADR) with:
-   - decision
-   - context
-   - consequences
+5. **Decisions** – List of architecture decision records (ADRs) with id (ADR-001, ADR-002, ...), title, context, decision, tradeoffs, status. Each ADR documents a key architectural choice.
+
+6. **Tenancy model** – Describe the tenancy model: single tenant, pooled (shared DB with row-level isolation), isolated (separate DB per tenant), or hybrid. Include rationale.
+
+7. **Reliability model** – Describe blast radius (what fails when X fails), failure modes, and graceful degradation strategies.
 
 **Output format:**
 Return a single JSON object with:
@@ -59,7 +60,9 @@ Return a single JSON object with:
 - "components": list of {"name", "type", "description", "technology", "dependencies", "interfaces"}
 - "architecture_document": string (full markdown)
 - "diagrams": object with diagram names as keys and Mermaid source code as values (no code fences). Required keys: client_server_architecture, frontend_code_structure, backend_code_structure, backend_infrastructure, infrastructure, security_architecture. Optional: backend_code_architecture, cloud_aws, cloud_gcp, cloud_digital_ocean.
-- "decisions": list of {"decision", "context", "consequences"}
+- "decisions": list of {"id", "title", "context", "decision", "tradeoffs", "status"} (id: ADR-001, ADR-002, ...)
+- "tenancy_model": string (single tenant, pooled, isolated, hybrid, with brief rationale)
+- "reliability_model": string (blast radius, failure modes, graceful degradation)
 - "summary": string (2-3 sentence summary)
 
 Respond with valid JSON only. No explanatory text, markdown, or code fences."""
