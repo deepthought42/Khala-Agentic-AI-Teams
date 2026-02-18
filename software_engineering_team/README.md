@@ -55,6 +55,7 @@ All planning artifacts are written to a `plan/` folder at the project root (work
 - `plan/performance.md` (Performance)
 - `plan/tech_lead.md` (Tech Lead task plan)
 - `plan/master_plan.md` (Consolidated master plan, risk register, ship checklist)
+- `plan/backend_task_<task_id>.md`, `plan/frontend_task_<task_id>.md` (Per-task implementation plans from coding agents)
 
 ## Flow
 
@@ -67,6 +68,7 @@ All planning artifacts are written to a `plan/` folder at the project root (work
 7. **Tech Lead** generates a complete build plan and assigns tasks (git_setup, devops, backend, frontend).
 5. **Backend and Frontend workers** run in parallel. Each task follows a unified workflow:
    - Create feature branch
+   - **Per-task planning** – Review codebase, produce implementation plan (feature intent, what to change, algorithms/data structures, tests needed). The plan drives the implementation; code generation must realize the plan's what_changes and tests_needed.
    - Generate code (with clarification loop via Tech Lead if needed)
    - **Build verification** (pytest for backend, ng build for frontend)
    - **Code review** (against spec and standards)

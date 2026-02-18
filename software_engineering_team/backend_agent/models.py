@@ -43,6 +43,11 @@ class BackendInput(BaseModel):
         description="Suggested unit_tests and integration_tests from QA/testing sub-agent. "
         "Keys: 'unit_tests', 'integration_tests'. Integrate into appropriate tests/test_*.py files.",
     )
+    task_plan: Optional[str] = Field(
+        default=None,
+        description="Implementation plan from _plan_task(). When present, the model must implement "
+        "the task according to this plan (realize what_changes and tests_needed).",
+    )
 
 
 class BackendOutput(BaseModel):

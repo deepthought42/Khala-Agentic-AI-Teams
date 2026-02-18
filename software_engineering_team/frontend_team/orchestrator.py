@@ -292,6 +292,18 @@ class FrontendOrchestratorAgent:
                 MAX_API_SPEC_CHARS,
             )
 
+            plan_text = ""
+            if not qa_issues and not sec_issues and not a11y_issues and not code_review_issues:
+                plan_text = self.feature_agent._plan_task(
+                    task=current_task,
+                    existing_code=existing_code,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
+                )
+                if plan_text:
+                    logger.info("[%s] Orchestrator: planning complete, plan length=%d chars", task_id, len(plan_text))
+
             result = self.feature_agent.run(FrontendInput(
                 task_description=current_task.description,
                 requirements=enriched_requirements,
@@ -305,6 +317,7 @@ class FrontendOrchestratorAgent:
                 accessibility_issues=a11y_issues,
                 code_review_issues=code_review_issues,
                 suggested_tests_from_qa=suggested_tests_from_qa,
+                task_plan=plan_text if plan_text else None,
             ))
 
             if result.needs_clarification and result.clarification_requests:

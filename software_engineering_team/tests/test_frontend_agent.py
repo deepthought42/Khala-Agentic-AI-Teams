@@ -564,3 +564,56 @@ def test_read_repo_code_excludes_node_modules_and_dist(tmp_path):
     assert "dist" not in result
     assert ".angular" not in result
     assert len(result) < 500
+
+
+def test_frontend_plan_task_returns_plan_markdown() -> None:
+    """_plan_task parses LLM JSON and returns plan markdown."""
+    from shared.models import Task, TaskType
+
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "feature_intent": "Add task list component",
+        "what_changes": ["src/app/components/task-list/"],
+        "algorithms_data_structures": "RxJS BehaviorSubject for list state",
+        "tests_needed": "task-list.component.spec.ts",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    task = Task(id="f1", type=TaskType.FRONTEND, assignee="frontend", title="Add task list", description="Implement task list component")
+    plan_text = agent._plan_task(
+        task=task,
+        existing_code="# No code",
+        spec_content="",
+        architecture=None,
+    )
+    assert plan_text
+    assert "Add task list component" in plan_text
+    assert "task-list" in plan_text
+    assert "BehaviorSubject" in plan_text
+
+
+def test_frontend_run_injects_task_plan_and_follow_instruction_into_prompt() -> None:
+    """When task_plan is set, run() injects Implementation plan and follow-plan instruction into prompt."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Done",
+        "files": {
+            "src/app/components/foo/foo.component.ts": "import { Component } from '@angular/core';\n@Component({selector: 'app-foo', template: 'x'}) export class FooComponent {}",
+        },
+        "components": ["foo"],
+        "suggested_commit_message": "feat: add foo",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    plan_content = "**Feature intent:** Add foo\n**What changes:** src/app/components/foo/"
+    agent.run(
+        FrontendInput(
+            task_description="Add foo component",
+            requirements="",
+            task_plan=plan_content,
+        )
+    )
+    prompt = mock_llm.complete_json.call_args[0][0]
+    assert "IMPLEMENTATION PLAN (follow this)" in prompt
+    assert "Implement the task strictly according to" in prompt
+    assert "realize every item under 'What changes' and 'Tests needed'" in prompt
+    assert "Add foo" in prompt

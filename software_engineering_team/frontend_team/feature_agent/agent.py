@@ -12,7 +12,8 @@ from shared.models import SystemArchitecture, Task, TaskUpdate
 from shared.prompt_utils import build_problem_solving_header, log_llm_prompt
 
 from .models import FrontendInput, FrontendOutput, FrontendWorkflowResult
-from .prompts import FRONTEND_PROMPT
+from .prompts import FRONTEND_PLANNING_PROMPT, FRONTEND_PROMPT
+from shared.task_plan import TaskPlan
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,57 @@ class FrontendExpertAgent:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
 
+    def _plan_task(
+        self,
+        *,
+        task: Task,
+        existing_code: str,
+        spec_content: str,
+        architecture: Optional[SystemArchitecture],
+        api_endpoints: Optional[str] = None,
+    ) -> str:
+        """Produce an implementation plan for the task. Returns plan markdown or empty string on failure."""
+        context_parts: List[str] = [
+            f"**Task:** {task.description}",
+            f"**Requirements:** {_task_requirements(task)}",
+        ]
+        if getattr(task, "user_story", None):
+            context_parts.append(f"**User Story:** {task.user_story}")
+        if spec_content:
+            context_parts.extend([
+                "",
+                "**Project Specification:**",
+                _truncate_for_context(spec_content, 15_000),
+            ])
+        if architecture:
+            context_parts.extend([
+                "",
+                "**Architecture:**",
+                architecture.overview,
+                *[f"- {c.name} ({c.type})" for c in architecture.components if c.type == "frontend"],
+            ])
+        if api_endpoints and api_endpoints != "# No code files found":
+            context_parts.extend([
+                "",
+                "**API endpoints (from backend):**",
+                _truncate_for_context(api_endpoints, 8_000),
+            ])
+        if existing_code and existing_code != "# No code files found":
+            context_parts.extend([
+                "",
+                "**Existing codebase:**",
+                _truncate_for_context(existing_code, 25_000),
+            ])
+        prompt = FRONTEND_PLANNING_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
+        log_llm_prompt(logger, "Frontend", "planning", (task.description or "")[:80], prompt)
+        try:
+            data = self.llm.complete_json(prompt, temperature=0.2)
+            plan = TaskPlan.from_llm_json(data)
+            return plan.to_markdown()
+        except Exception as e:
+            logger.warning("[%s] Planning step failed, proceeding without plan: %s", task.id, e)
+            return ""
+
     def run(self, input_data: FrontendInput) -> FrontendOutput:
         """Implement frontend functionality in Angular."""
         logger.info(
@@ -280,6 +332,15 @@ class FrontendExpertAgent:
                 code_review_count,
             )
             logger.info("Frontend problem-solving header for LLM:\n%s", context_parts[0][:800])
+        if input_data.task_plan:
+            plan_instruction = (
+                "**IMPLEMENTATION PLAN (follow this):**\n"
+                "Implement the task strictly according to the Implementation plan below. "
+                "Your output must realize every item under 'What changes' and 'Tests needed', "
+                "and use the algorithms/data structures described. Do not deviate from the plan unless the task description explicitly contradicts it.\n\n"
+                "**Implementation plan:**\n" + input_data.task_plan
+            )
+            context_parts.append(plan_instruction)
         context_parts.extend([
             f"**Task:** {input_data.task_description}",
             f"**Requirements:** {input_data.requirements}",
@@ -516,6 +577,31 @@ class FrontendExpertAgent:
                 MAX_API_SPEC_CHARS,
             )
 
+            plan_text = ""
+            if not qa_issues and not sec_issues and not a11y_issues and not code_review_issues:
+                plan_text = self._plan_task(
+                    task=current_task,
+                    existing_code=existing_code,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
+                )
+                if plan_text:
+                    logger.info("[%s] WORKFLOW   Planning complete, plan length=%d chars", task_id, len(plan_text))
+                    plan_dir = repo_path.parent / "plan"
+                    if not plan_dir.exists():
+                        plan_dir = repo_path / "plan"
+                    if plan_dir.exists() and plan_dir.is_dir():
+                        try:
+                            plan_file = plan_dir / f"frontend_task_{task_id}.md"
+                            plan_file.write_text(
+                                f"# Frontend task plan: {task_id}\n\n{plan_text}",
+                                encoding="utf-8",
+                            )
+                            logger.info("[%s] WORKFLOW   Persisted plan to %s", task_id, plan_file)
+                        except Exception as e:
+                            logger.warning("[%s] Failed to persist plan (non-blocking): %s", task_id, e)
+
             result = self.run(FrontendInput(
                 task_description=current_task.description,
                 requirements=_task_requirements_with_route_expectations(current_task, repo_path),
@@ -529,6 +615,7 @@ class FrontendExpertAgent:
                 accessibility_issues=a11y_issues,
                 code_review_issues=code_review_issues,
                 suggested_tests_from_qa=suggested_tests_from_qa,
+                task_plan=plan_text if plan_text else None,
             ))
 
             if result.needs_clarification and result.clarification_requests:

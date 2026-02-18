@@ -293,3 +293,57 @@ def test_backend_agent_content_fallback_no_code_blocks_does_not_crash() -> None:
     result = agent.run(BackendInput(task_description="Add", requirements=""))
     assert result.files == {}
     assert result.summary == "" or result.summary is not None
+
+
+def test_backend_plan_task_returns_plan_markdown() -> None:
+    """_plan_task parses LLM JSON and returns plan markdown."""
+    from shared.models import Task, TaskType
+
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "feature_intent": "Add CRUD for tasks",
+        "what_changes": ["app/routers/tasks.py", "app/models/task.py"],
+        "algorithms_data_structures": "Use dict for O(1) lookup",
+        "tests_needed": "tests/test_task_endpoints.py",
+    }
+    agent = BackendExpertAgent(llm_client=mock_llm)
+    task = Task(id="t1", type=TaskType.BACKEND, assignee="backend", title="Add tasks", description="Implement task CRUD")
+    plan_text = agent._plan_task(
+        task=task,
+        existing_code="# No code",
+        spec_content="",
+        architecture=None,
+    )
+    assert plan_text
+    assert "Add CRUD for tasks" in plan_text
+    assert "app/routers/tasks.py" in plan_text
+    assert "tests/test_task_endpoints.py" in plan_text
+    assert "O(1) lookup" in plan_text
+
+
+def test_backend_run_injects_task_plan_and_follow_instruction_into_prompt() -> None:
+    """When task_plan is set, run() injects Implementation plan and follow-plan instruction into prompt."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "language": "python",
+        "summary": "Done",
+        "files": {"app/main.py": "content"},
+        "tests": "",
+        "suggested_commit_message": "feat: add",
+    }
+    agent = BackendExpertAgent(llm_client=mock_llm)
+    plan_content = "**Feature intent:** Add API\n**What changes:** app/routers/foo.py"
+    agent.run(
+        BackendInput(
+            task_description="Add foo API",
+            requirements="",
+            task_plan=plan_content,
+        )
+    )
+    prompt = mock_llm.complete_json.call_args[0][0]
+    assert "IMPLEMENTATION PLAN (follow this)" in prompt
+    assert "Implement the task strictly according to" in prompt
+    assert "realize every item under 'What changes' and 'Tests needed'" in prompt
+    assert "Add API" in prompt
+    assert "app/routers/foo.py" in prompt
