@@ -49,6 +49,11 @@ class FrontendInput(BaseModel):
         description="Implementation plan from _plan_task(). When present, the model must implement "
         "the task according to this plan (realize what_changes and tests_needed).",
     )
+    convergence_hint: Optional[str] = Field(
+        default=None,
+        description="Optional hint when code review issue count has not decreased over several rounds. "
+        "E.g. 'Code review issue count has not decreased; make minimal, targeted fixes and avoid refactoring unrelated code.'",
+    )
 
 
 class FrontendOutput(BaseModel):

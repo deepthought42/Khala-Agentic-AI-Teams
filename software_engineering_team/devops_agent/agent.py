@@ -27,6 +27,50 @@ class DevOpsExpertAgent:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
 
+    def _plan_task(
+        self,
+        *,
+        task_description: str,
+        requirements: str,
+        architecture: Optional[Any] = None,
+        existing_pipeline: Optional[str] = None,
+        target_repo: Optional[Any] = None,
+    ) -> str:
+        """Produce an implementation plan for the DevOps task. Returns plan markdown or empty string on failure."""
+        context_parts = [
+            f"**Task:** {task_description}",
+            f"**Requirements:** {requirements}",
+        ]
+        if architecture:
+            context_parts.extend([
+                "",
+                "**Architecture:**",
+                getattr(architecture, "overview", str(architecture)),
+                *[
+                    f"- {c.name} ({c.type}): {getattr(c, 'technology', None) or 'TBD'}"
+                    for c in getattr(architecture, "components", [])
+                ],
+            ])
+        if existing_pipeline:
+            context_parts.extend(["", "**Existing Pipeline:**", existing_pipeline])
+        if target_repo is not None:
+            repo_val = target_repo.value if hasattr(target_repo, "value") else target_repo
+            context_parts.extend([
+                "",
+                "**Target repo:**",
+                f"target_repo={repo_val}",
+            ])
+        context = "\n".join(context_parts)
+        prompt = DEVOPS_PLANNING_PROMPT + "\n\n---\n\n" + context
+        log_llm_prompt(logger, "DevOps", "planning", (task_description or "")[:80], prompt)
+        try:
+            data = self.llm.complete_json(prompt, temperature=0.2)
+            plan = TaskPlan.from_llm_json(data)
+            return plan.to_markdown()
+        except Exception as e:
+            logger.warning("DevOps planning step failed, proceeding without plan: %s", e)
+            return ""
+
     def run(self, input_data: DevOpsInput) -> DevOpsOutput:
         """Create or extend CI/CD, IaC, and Docker configurations."""
         logger.info("DevOps: starting task '%s'", input_data.task_description[:60] + ("..." if len(input_data.task_description) > 60 else ""))

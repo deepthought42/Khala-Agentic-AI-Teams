@@ -28,7 +28,7 @@ def _int_env(name: str, default: int, min_val: int = 1) -> int:
 
 MAX_CODE_REVIEW_ITERATIONS = _int_env("SW_MAX_CODE_REVIEW_ITERATIONS", 20)
 MAX_CLARIFICATION_REFINEMENTS = _int_env("SW_MAX_CLARIFICATION_REFINEMENTS", 20)
-MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 6)
+MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 3)
 def _task_requirements(task: Task) -> str:
     """Build full requirements string from a Task object."""
     parts: List[str] = []
@@ -179,7 +179,8 @@ _ANGULAR_PROBLEM_SOLVING_INSTRUCTIONS = (
     "3. Preserve existing working routes, DI configuration (app.config.ts), and forms.\n"
     "4. Only adjust what is necessary to resolve the errors and issues (e.g. add ReactiveFormsModule, fix bindings).\n"
     "5. Focus on resolving the provided issues before adding new features.\n"
-    "6. For \"Argument of type 'string' is not assignable to parameter of type 'X'\" (e.g. in filter controls): type the source so the template gets the literal union. E.g. type the options array as ReadonlyArray<{ value: 'all' | 'active' | 'completed'; label: string }> instead of an untyped array, so option.value is not inferred as string."
+    "6. For \"Argument of type 'string' is not assignable to parameter of type 'X'\" (e.g. in filter controls): type the source so the template gets the literal union. E.g. type the options array as ReadonlyArray<{ value: 'all' | 'active' | 'completed'; label: string }> instead of an untyped array, so option.value is not inferred as string.\n"
+    "7. When fixing QA/code review issues, only change what is explicitly reported. Preserve existing property and method names in the component. E.g. if the template uses isLoading, do not rename to loading; if the template calls toggleTaskCompletion, ensure the class has that method and do not replace with a different name unless the issue explicitly asks for it."
 )
 
 
@@ -289,6 +290,12 @@ class FrontendExpertAgent:
             for i in input_data.code_review_issues or []:
                 desc_lines.append(f"  - Code review [{i.get('category', 'general')}]: {i.get('description', '')} (file: {i.get('file_path', 'unknown')})")
             issue_descriptions = "\n".join(desc_lines) if desc_lines else None
+            if getattr(input_data, "convergence_hint", None):
+                issue_descriptions = (
+                    (issue_descriptions + "\n\n" + input_data.convergence_hint)
+                    if issue_descriptions
+                    else input_data.convergence_hint
+                )
             header = build_problem_solving_header(
                 issue_summaries,
                 "Frontend / Angular",
@@ -301,11 +308,17 @@ class FrontendExpertAgent:
                 header_body = header_body[:-3].rstrip()
             problem_block_parts: List[str] = [header_body]
             if input_data.qa_issues:
-                qa_text = "\n".join(
-                    f"- [{i.get('severity')}] {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
-                    for i in input_data.qa_issues
-                )
-                problem_block_parts.extend(["", "**QA issues to fix (implement these):**", qa_text])
+                qa_lines = []
+                for i in input_data.qa_issues:
+                    rec = i.get("recommendation", "")
+                    desc = i.get("description", "")
+                    if "does not exist" in desc and ("Property" in desc or "Method" in desc):
+                        hint = " Add the missing property/method on the component class or fix the template to use the existing name."
+                        rec = (rec + hint) if rec else hint.strip()
+                    qa_lines.append(
+                        f"- [{i.get('severity')}] {desc} (location: {i.get('location', '')})\n  Recommendation: {rec}"
+                    )
+                problem_block_parts.extend(["", "**QA issues to fix (implement these):**", "\n".join(qa_lines)])
             if input_data.security_issues:
                 sec_text = "\n".join(
                     f"- [{i.get('severity')}] {i.get('category')}: {i.get('description')} (location: {i.get('location')})\n  Recommendation: {i.get('recommendation')}"
@@ -319,12 +332,18 @@ class FrontendExpertAgent:
                 )
                 problem_block_parts.extend(["", "**Accessibility issues to fix (implement these):**", a11y_text])
             if input_data.code_review_issues:
-                cr_text = "\n".join(
-                    f"- [{i.get('severity')}] {i.get('category', 'general')}: {i.get('description')} "
-                    f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {i.get('suggestion', '')}"
-                    for i in input_data.code_review_issues
-                )
-                problem_block_parts.extend(["", "**Code review issues to resolve:**", cr_text])
+                cr_lines = []
+                for i in input_data.code_review_issues:
+                    sug = i.get("suggestion", "")
+                    desc = i.get("description", "")
+                    if "does not exist" in desc and ("Property" in desc or "Method" in desc):
+                        hint = " Add the missing property/method on the component class or fix the template to use the existing name."
+                        sug = (sug + hint) if sug else hint.strip()
+                    cr_lines.append(
+                        f"- [{i.get('severity')}] {i.get('category', 'general')}: {desc} "
+                        f"(file: {i.get('file_path', 'unknown')})\n  Suggestion: {sug}"
+                    )
+                problem_block_parts.extend(["", "**Code review issues to resolve:**", "\n".join(cr_lines)])
             problem_block_parts.extend(["", "---"])
             context_parts.append("\n".join(problem_block_parts))
             logger.info(
@@ -442,11 +461,28 @@ class FrontendExpertAgent:
                     validation_retry = (
                         "\n\n**CRITICAL - Your file paths were REJECTED by validation:**\n"
                         + "\n".join(f"- {w}" for w in validation_warnings)
-                        + "\n\nFix the file paths (e.g. use shorter names, paths under src/) and return valid JSON with the 'files' key."
+                        + "\n\nFix the file paths (e.g. use shorter names, paths under src/). "
+                        "Path segments must not start with create-, add-, implement-, etc. Use task-form, task-list, or similar names. "
+                        "Return valid JSON with the 'files' key."
                     )
                     prompt = prompt + validation_retry
                 else:
-                    prompt = prompt + empty_retry_prompt
+                    # Check if this might be unresolved import fix (from qa_issues)
+                    has_unresolved = any(
+                        "Could not resolve" in str(i.get("description", ""))
+                        or "Unresolved" in str(i.get("description", ""))
+                        for i in (input_data.qa_issues or [])
+                    )
+                    if has_unresolved:
+                        prompt = prompt + (
+                            "\n\n**CRITICAL - Fix the unresolved import:** "
+                            "Either (a) add the missing component files under a path that does not start with a verb "
+                            "(e.g. task-form), and ensure app.routes.ts uses that path, or (b) change the import "
+                            "in app.routes.ts to an existing component. Respond with valid JSON and a 'files' object "
+                            "containing the changed files."
+                        )
+                    else:
+                        prompt = prompt + empty_retry_prompt
                 continue
 
             break
@@ -570,6 +606,9 @@ class FrontendExpertAgent:
         last_build_error_sig = ""
         consecutive_same_build_failures = 0
         write_tests_requested = False
+        last_code_review_count = 0
+        rounds_without_decrease = 0
+        convergence_hint: Optional[str] = None
 
         from shared.context_sizing import (
             compute_api_spec_chars,
@@ -628,6 +667,7 @@ class FrontendExpertAgent:
                 code_review_issues=code_review_issues,
                 suggested_tests_from_qa=suggested_tests_from_qa,
                 task_plan=plan_text if plan_text else None,
+                convergence_hint=convergence_hint,
             ))
 
             if result.needs_clarification and result.clarification_requests:
@@ -770,6 +810,18 @@ class FrontendExpertAgent:
                     i.model_dump() if hasattr(i, "model_dump") else i.dict()
                     for i in (review_result.issues or [])
                 ]
+                cr_count = len(code_review_issues)
+                if last_code_review_count > 0 and cr_count >= last_code_review_count:
+                    rounds_without_decrease += 1
+                else:
+                    rounds_without_decrease = 0
+                    convergence_hint = None
+                last_code_review_count = cr_count
+                if rounds_without_decrease >= 3:
+                    convergence_hint = (
+                        "Code review issue count has not decreased; make minimal, targeted fixes "
+                        "and avoid refactoring unrelated code."
+                    )
                 if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
                     continue
                 checkout_branch(repo_path, DEVELOPMENT_BRANCH)

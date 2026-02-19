@@ -69,6 +69,28 @@ Could not resolve "./components/task-form/task-form.component"
     assert "task-form" in failures[0].message
 
 
+def test_build_agent_feedback_frontend_unresolved_includes_path_fix():
+    """build_agent_feedback includes Path fix hint when failure is FRONTEND_UNRESOLVED_IMPORT."""
+    failures = [
+        ParsedFailure(
+            failure_class=FailureClass.FRONTEND_UNRESOLVED_IMPORT,
+            message="Could not resolve './components/create-task/create-task.component'",
+            file_path="src/app/app.routes.ts",
+            line=10,
+            suggestion="Create the missing file or fix the import path.",
+            playbook_hint="Create the missing component file or fix the import path.",
+            raw_excerpt="Could not resolve...",
+        )
+    ]
+    feedback = build_agent_feedback(failures, max_chars=500)
+    assert "[frontend_unresolved_import]" in feedback
+    assert "Suggestion:" in feedback
+    assert "Playbook:" in feedback
+    assert "Path fix:" in feedback
+    assert "task-form" in feedback or "create-task" in feedback
+    assert "verb" in feedback or "allowed name" in feedback
+
+
 def test_build_agent_feedback():
     failures = [
         ParsedFailure(

@@ -422,6 +422,14 @@ def build_agent_feedback(failures: List[ParsedFailure], max_chars: int = 2500) -
         parts.extend(["", "Interpretation:", PLAYBOOK_403_FORBIDDEN])
     elif primary.playbook_hint and PLAYBOOK_404_NOT_FOUND in primary.playbook_hint:
         parts.extend(["", "Interpretation:", PLAYBOOK_404_NOT_FOUND])
+    # Unresolved import: add verb-prefix path fix hint
+    if primary.failure_class == FailureClass.FRONTEND_UNRESOLVED_IMPORT:
+        parts.extend([
+            "",
+            "Path fix: If the missing path contains a folder name like create-task or add-task, "
+            "create the component under an allowed name (e.g. task-form) and update the import "
+            "in the route or module to that path.",
+        ])
     if primary.playbook_hint:
         parts.extend(["", "Playbook:", primary.playbook_hint])
     if primary.raw_excerpt:

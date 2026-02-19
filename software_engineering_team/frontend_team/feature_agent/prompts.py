@@ -8,7 +8,7 @@ FRONTEND_PLANNING_PROMPT = """You are a Senior Frontend Software Engineer expert
 
 **Output format:** Return a single JSON object with exactly these keys (all strings; keep each under ~200 words):
 - "feature_intent": What the feature is meant to achieve (1-2 sentences)
-- "what_changes": List of components/files to add or modify, or a short bullet summary. Be specific (e.g. "src/app/components/task-list/", "src/app/services/task.service.ts")
+- "what_changes": List of components/files to add or modify, or a short bullet summary. Be specific (e.g. "src/app/components/task-list/", "src/app/services/task.service.ts"). Use noun-based names (task-form, task-list, task-item)—never verb-prefix names (create-task, add-task).
 - "algorithms_data_structures": Key algorithmic or state-management choices (e.g. "RxJS BehaviorSubject for list state; OnPush change detection")
 - "tests_needed": What unit and component tests to add or update (e.g. "task-list.component.spec.ts for template rendering; task.service.spec.ts for HTTP calls")
 
@@ -110,6 +110,7 @@ Do NOT recreate these files unless you need to modify them (e.g. adding new rout
    - NEVER use the task description as a name – extract the noun only
    - NEVER start a name with a verb (implement-, create-, build-, add-, setup-, etc.)
    - NEVER include filler words (the-, that-, with-, using-, which-, for-)
+   - Do NOT use path segments that start with verbs (e.g. create-, add-, implement-). Use names like `task-form`, `task-list`, `task-item` instead of `create-task`, `add-task`.
    - Names that violate these rules WILL BE REJECTED and the task will fail
 
 2. **All file paths MUST follow Angular project structure:**
