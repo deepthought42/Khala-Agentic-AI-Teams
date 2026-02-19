@@ -27,9 +27,31 @@ def test_code_review_agent_truncates_long_code_before_llm_call():
         )
     )
 
+    # Uses coordinator when > 30K; may have multiple calls
+    assert mock_llm.complete_json.call_count >= 1
+    for call in mock_llm.complete_json.call_args_list:
+        prompt = call[0][0]
+        assert long_code not in prompt
+        assert "x" * (MAX_CODE_REVIEW_CHARS + 1) not in prompt
+
+
+def test_code_review_agent_small_code_uses_single_call():
+    """When code <= MAX_CODE_REVIEW_CHARS_SINGLE_CALL, agent uses single LLM call."""
+    small_code = "### app/main.py ###\ndef foo(): pass"
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "approved": True,
+        "issues": [],
+        "summary": "OK",
+    }
+
+    agent = CodeReviewAgent(llm_client=mock_llm)
+    agent.run(
+        CodeReviewInput(
+            code=small_code,
+            task_description="Test",
+            language="python",
+        )
+    )
+
     mock_llm.complete_json.assert_called_once()
-    prompt = mock_llm.complete_json.call_args[0][0]
-    # Prompt contains the code; total prompt can exceed cap due to spec/instructions, but code portion must be capped
-    assert long_code not in prompt
-    assert "x" * (MAX_CODE_REVIEW_CHARS + 1) not in prompt
-    assert "... [truncated for code review" in prompt or len(prompt) < len(long_code) + 10_000

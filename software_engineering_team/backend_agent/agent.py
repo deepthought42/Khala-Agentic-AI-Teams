@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -104,9 +105,16 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
 
 
 # ── Workflow constants ──────────────────────────────────────────────────────
-MAX_REVIEW_ITERATIONS = 20
-MAX_SAME_BUILD_FAILURES = 3  # Stop retrying if build fails identically this many times
-MAX_CLARIFICATION_ROUNDS = 5
+def _int_env(name: str, default: int, min_val: int = 1) -> int:
+    try:
+        return max(min_val, int(os.environ.get(name) or str(default)))
+    except ValueError:
+        return default
+
+
+MAX_REVIEW_ITERATIONS = _int_env("SW_MAX_REVIEW_ITERATIONS", 40)
+MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 6)  # Stop if build fails identically this many times
+MAX_CLARIFICATION_ROUNDS = _int_env("SW_MAX_CLARIFICATION_ROUNDS", 10)
 MAX_EXISTING_CODE_CHARS = 40_000
 # Patterns that indicate pytest failed due to missing /test-generic-error route or
 # exception handler re-raising (test client gets exception instead of response).
@@ -457,7 +465,7 @@ class BackendExpertAgent:
             8. Delete the feature branch.
             9. Inform the Tech Lead that the task is complete.
 
-        Steps 4-6 repeat for up to ``MAX_REVIEW_ITERATIONS`` (20) rounds.
+        Steps 4-6 repeat for up to ``MAX_REVIEW_ITERATIONS`` (40) rounds.
         The loop exits early when no issues are reported.
 
         Preconditions:

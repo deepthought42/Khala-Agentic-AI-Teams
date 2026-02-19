@@ -565,11 +565,11 @@ def _parse_retry_config() -> tuple[int, float, float]:
 
 
 def _get_llm_concurrency_limit() -> int:
-    """Return max concurrent complete_json calls from env (default 2)."""
+    """Return max concurrent complete_json calls from env (default 4)."""
     try:
-        return max(1, int(os.environ.get(ENV_LLM_MAX_CONCURRENCY) or "2"))
+        return max(1, int(os.environ.get(ENV_LLM_MAX_CONCURRENCY) or "4"))
     except ValueError:
-        return 2
+        return 4
 
 
 # Module-level semaphore for Ollama LLM concurrency (shared across client instances)

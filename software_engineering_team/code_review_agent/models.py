@@ -9,6 +9,48 @@ from shared.models import SystemArchitecture
 # Max chars of code to send to the code review LLM (avoids HTTP 400 "request body too large")
 MAX_CODE_REVIEW_CHARS = 150_000
 
+# When code exceeds this, use chunked review via coordinator
+MAX_CODE_REVIEW_CHARS_SINGLE_CALL = 30_000
+
+# Per-chunk limits for ChunkReviewAgent
+MAX_CHARS_PER_CHUNK = 28_000
+MAX_SPEC_EXCERPT_CHARS = 8_000
+MAX_ARCH_OVERVIEW_CHARS = 2_000
+MAX_EXISTING_CODEBASE_EXCERPT_CHARS = 4_000
+
+
+class ChunkReviewInput(BaseModel):
+    """Input for reviewing one chunk of code (used by ChunkReviewAgent)."""
+
+    code_chunk: str = Field(description="Code to review (one or more files, ≤MAX_CHARS_PER_CHUNK)")
+    file_path_or_label: str = Field(
+        default="",
+        description="File path(s) in this chunk for issue reporting",
+    )
+    task_description: str = Field(default="", description="Task the coding agent was working on")
+    task_requirements: str = Field(default="", description="Detailed task requirements")
+    acceptance_criteria: List[str] = Field(
+        default_factory=list,
+        description="Acceptance criteria the code must meet",
+    )
+    spec_excerpt: str = Field(default="", description="Spec excerpt (capped ~8K)")
+    architecture_overview: str = Field(default="", description="Architecture overview (capped ~2K)")
+    existing_codebase_excerpt: Optional[str] = Field(
+        default=None,
+        description="Existing codebase excerpt (capped ~4K)",
+    )
+
+
+class ChunkReviewOutput(BaseModel):
+    """Output from reviewing one chunk (approved, issues, summary for this chunk)."""
+
+    approved: bool = Field(default=False, description="True if chunk has no critical/major issues")
+    issues: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Issues found (each with severity, category, file_path, description, suggestion)",
+    )
+    summary: str = Field(default="", description="Review summary for this chunk")
+
 
 class CodeReviewIssue(BaseModel):
     """A single issue found during code review."""

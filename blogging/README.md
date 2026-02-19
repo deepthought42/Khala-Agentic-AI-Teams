@@ -26,7 +26,33 @@ Research → Review → Draft → (optional) Draft ↔ Copy Editor revision loop
 
 **Example scripts:**
 - [blogging/agent_implementations/blog_writing_process.py](agent_implementations/blog_writing_process.py) – Full pipeline: research → review → draft → copy-editor loop.
+- [blogging/agent_implementations/blog_writing_process_v2.py](agent_implementations/blog_writing_process_v2.py) – Brand-aligned pipeline with artifact persistence and gates.
 - [blogging/agent_implementations/run_publication_agent.py](agent_implementations/run_publication_agent.py) – Publication agent (submit, approve, reject, revision loop).
+
+## Brand-aligned pipeline (v2)
+
+When `work_dir` is provided, the pipeline persists all outputs as versioned artifacts and runs hard gates:
+
+**Artifacts** (in `work_dir`):
+- `brand_spec.yaml` – Brand and style rules (single source of truth)
+- `content_brief.md` – Audience model, title choices, outline
+- `research_packet.md` – Compiled research document
+- `allowed_claims.json` – Evidence-backed factual claims (writer must tag as `[CLAIM:id]`)
+- `outline.md` – Blog outline
+- `draft_v1.md`, `draft_v2.md`, `final.md` – Draft versions
+- `validator_report.json` – Deterministic checks (banned phrases, paragraph length, reading level, etc.)
+- `compliance_report.json` – Brand/style violations (PASS/FAIL; FAIL blocks publication)
+- `fact_check_report.json` – Claims and risk status
+- `publishing_pack.json` – Title options, meta description (when gates PASS)
+
+**Hard gates** (publish-ready only when all PASS):
+- Deterministic validators → `validator_report.json`
+- Fact-Checker / Risk → claims and risk PASS
+- Brand and Style Enforcer → `compliance_report.json` (veto on FAIL)
+
+**Closed-loop rewrite**: On any FAIL, the pipeline passes `required_fixes` to the Draft agent and re-runs gates until PASS or max iterations (default 3). Then status is `NEEDS_HUMAN_REVIEW`.
+
+**API**: `POST /full-pipeline` runs the full pipeline with gates. `POST /research-and-review` accepts optional `work_dir` or `run_id` to persist artifacts.
 
 ## Features
 
@@ -107,6 +133,10 @@ Request body:
 
 Response: `title_choices`, `outline`, `compiled_document`, `notes`.
 
+Optional: `work_dir` or `run_id` – when set, persists `research_packet.md` and `outline.md` to the artifact directory.
+
+**POST `/full-pipeline`** – Run the full brand-aligned pipeline (research → review → draft → validators → compliance → rewrite loop). Persists all artifacts. Returns `status` (PASS, FAIL, NEEDS_HUMAN_REVIEW), `work_dir`, and draft preview.
+
 **GET `/health`** – Health check.
 
 Interactive docs: http://localhost:8000/docs
@@ -151,16 +181,19 @@ blogging/
 ├── blog_review_agent/       # Title choices + outline
 ├── blog_draft_agent/        # Draft from research + outline; revise from feedback
 ├── blog_copy_editor_agent/  # Draft → feedback items
+├── blog_compliance_agent/   # Brand/style enforcer (veto on FAIL)
+├── blog_fact_check_agent/   # Claims and risk officer
 ├── blog_publication_agent/  # Submit, approve/reject, platform versions
+├── shared/                  # Artifacts, brand_spec loader
+├── validators/              # Deterministic checks (banned phrases, reading level, etc.)
 ├── agent_implementations/
 │   ├── run_api_server.py
-│   ├── run_research_agent.py
-│   ├── run_draft_agent.py
-│   ├── run_copy_editor_agent.py
-│   ├── run_publication_agent.py
-│   └── blog_writing_process.py   # Full pipeline example
+│   ├── blog_writing_process.py
+│   ├── blog_writing_process_v2.py   # Brand-aligned pipeline with gates
+│   └── ...
 ├── docs/
-│   └── brandon_kindred_brand_and_writing_style_guide.md
+│   ├── brandon_kindred_brand_and_writing_style_guide.md
+│   └── brand_spec.yaml
 └── requirements.txt
 ```
 

@@ -7,7 +7,14 @@ from typing import Any, Dict
 
 from shared.llm import LLMClient
 
-from .models import CodeReviewInput, CodeReviewIssue, CodeReviewOutput, MAX_CODE_REVIEW_CHARS
+from .coordinator import run_coordinator
+from .models import (
+    CodeReviewInput,
+    CodeReviewIssue,
+    CodeReviewOutput,
+    MAX_CODE_REVIEW_CHARS,
+    MAX_CODE_REVIEW_CHARS_SINGLE_CALL,
+)
 from .prompts import CODE_REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -28,6 +35,27 @@ class CodeReviewAgent:
     def run(self, input_data: CodeReviewInput) -> CodeReviewOutput:
         """Review code and return approval or issues."""
         code = input_data.code or ""
+        if len(code) > MAX_CODE_REVIEW_CHARS_SINGLE_CALL:
+            logger.info(
+                "CodeReview: code size %s exceeds single-call limit %s, using coordinator",
+                len(code),
+                MAX_CODE_REVIEW_CHARS_SINGLE_CALL,
+            )
+            if len(code) > MAX_CODE_REVIEW_CHARS:
+                code = code[:MAX_CODE_REVIEW_CHARS] + (
+                    f"\n\n... [truncated for code review, {len(code) - MAX_CODE_REVIEW_CHARS} more chars]"
+                )
+                input_data = CodeReviewInput(
+                    code=code,
+                    spec_content=input_data.spec_content,
+                    task_description=input_data.task_description,
+                    task_requirements=input_data.task_requirements,
+                    acceptance_criteria=input_data.acceptance_criteria,
+                    language=input_data.language,
+                    architecture=input_data.architecture,
+                    existing_codebase=input_data.existing_codebase,
+                )
+            return run_coordinator(self.llm, input_data)
         if len(code) > MAX_CODE_REVIEW_CHARS:
             logger.info(
                 "CodeReview: truncating code from %s to %s chars for review",

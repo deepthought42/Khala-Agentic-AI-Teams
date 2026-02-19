@@ -74,6 +74,45 @@ def test_is_lightweight_task_returns_false_for_full_feature_task() -> None:
     assert _is_lightweight_task(task) is False
 
 
+def test_is_lightweight_task_returns_true_for_refactor_task() -> None:
+    """Lightweight path: refactor-type tasks skip design phase."""
+    task = Task(
+        id="refactor-form",
+        type=TaskType.FRONTEND,
+        title="Refactor form validation",
+        description="Refactor the user form to use reactive validators and improve error messages.",
+        assignee="frontend",
+    )
+    assert _is_lightweight_task(task) is True
+
+
+def test_is_lightweight_task_returns_true_for_adjust_task() -> None:
+    """Lightweight path: adjust-type tasks skip design phase."""
+    task = Task(
+        id="adjust-layout",
+        type=TaskType.FRONTEND,
+        title="Adjust layout",
+        description="Adjust the grid layout to fix overflow on mobile.",
+        assignee="frontend",
+    )
+    assert _is_lightweight_task(task) is True
+
+
+def test_is_lightweight_task_returns_false_for_long_implement_task() -> None:
+    """Full design path: long descriptions with 'implement' are not lightweight even under 400 chars."""
+    task = Task(
+        id="implement-feature",
+        type=TaskType.FRONTEND,
+        title="Implement feature",
+        description=(
+            "Implement the user profile page with avatar upload, bio editor, and preferences. "
+            "Include validation and loading states. The page should integrate with the auth service."
+        ),
+        assignee="frontend",
+    )
+    assert _is_lightweight_task(task) is False
+
+
 def test_frontend_orchestrator_instantiates_with_llm() -> None:
     """FrontendOrchestratorAgent can be instantiated with LLM client."""
     llm = DummyLLMClient()

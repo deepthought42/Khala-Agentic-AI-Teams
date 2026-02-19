@@ -5,6 +5,23 @@ These rules MUST be followed for all code produced by Backend, Frontend, DevOps,
 Security, and QA agents.
 """
 
+from typing import Optional
+
+_coding_standards_cache: Optional[str] = None
+
+
+def get_coding_standards_cached() -> str:
+    """
+    Return CODING_STANDARDS text. Cached per process to avoid redundant resolution.
+    Use this when building prompts that need the full standards; agents can pass
+    the result instead of re-importing.
+    """
+    global _coding_standards_cache
+    if _coding_standards_cache is None:
+        _coding_standards_cache = CODING_STANDARDS
+    return _coding_standards_cache
+
+
 CODING_STANDARDS = """
 **MANDATORY CODING STANDARDS (all agents must enforce):**
 

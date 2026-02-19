@@ -9,6 +9,7 @@ Merge + Build/Release. Enforces the "ready to ship" gate checklist.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -35,9 +36,16 @@ from .build_release import BuildReleaseAgent, BuildReleaseInput
 
 logger = logging.getLogger(__name__)
 
-MAX_CODE_REVIEW_ITERATIONS = 10
-MAX_CLARIFICATION_REFINEMENTS = 10
-MAX_SAME_BUILD_FAILURES = 3
+def _int_env(name: str, default: int, min_val: int = 1) -> int:
+    try:
+        return max(min_val, int(os.environ.get(name) or str(default)))
+    except ValueError:
+        return default
+
+
+MAX_CODE_REVIEW_ITERATIONS = _int_env("SW_MAX_CODE_REVIEW_ITERATIONS", 20)
+MAX_CLARIFICATION_REFINEMENTS = _int_env("SW_MAX_CLARIFICATION_REFINEMENTS", 20)
+MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 3)
 MAX_EXISTING_CODE_CHARS = 40_000
 MAX_API_SPEC_CHARS = 20_000
 
@@ -56,8 +64,8 @@ FRONTEND_CODE_REVIEW_CHECKLIST = (
 )
 
 # Lightweight path: skip design for implementation-only or fix tasks
-LIGHTWEIGHT_KEYWORDS = ("fix", "resolve", "update", "patch", "correct", "remediate")
-LIGHTWEIGHT_MAX_DESC_LEN = 300
+LIGHTWEIGHT_KEYWORDS = ("fix", "resolve", "update", "patch", "correct", "remediate", "refactor", "adjust", "tweak")
+LIGHTWEIGHT_MAX_DESC_LEN = 400
 
 
 def _task_requirements(task: Task) -> str:

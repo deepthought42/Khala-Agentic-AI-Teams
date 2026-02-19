@@ -1,5 +1,6 @@
 """Unit tests for the orchestrator."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -281,3 +282,131 @@ def test_run_orchestrator_fails_job_when_planning_and_fallback_both_fail(tmp_pat
     ]
     assert len(failed_calls) >= 1
     assert "fallback" in failed_calls[0][1].get("error", "").lower() or "planning" in failed_calls[0][1].get("error", "").lower()
+
+
+def test_run_tier1_agent_returns_data_lifecycle_from_data_architecture(tmp_path: Path) -> None:
+    """Tier 1 data_architecture agent returns data_lifecycle in result."""
+    from shared.models import ProductRequirements
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    requirements = ProductRequirements(
+        title="Test",
+        description="Desc",
+        acceptance_criteria=[],
+        constraints=[],
+    )
+    mock_data_agent = MagicMock()
+    mock_data_agent.run.return_value = MagicMock(data_lifecycle_policy="retain 30 days")
+    agents = {"data_architecture": mock_data_agent}
+
+    key, result = orchestrator._run_tier1_agent(
+        "data_architecture",
+        agents,
+        "spec",
+        "arch",
+        plan_dir,
+        requirements,
+        "features",
+        "",
+    )
+    assert key == "data_architecture"
+    assert result is not None
+    assert result.get("data_lifecycle") == "retain 30 days"
+
+
+def test_run_tier1_agent_returns_none_on_exception() -> None:
+    """Tier 1 agent returns None on exception (skipped)."""
+    from shared.models import ProductRequirements
+
+    requirements = ProductRequirements(
+        title="Test",
+        description="Desc",
+        acceptance_criteria=[],
+        constraints=[],
+    )
+    mock_agent = MagicMock()
+    mock_agent.run.side_effect = Exception("LLM failed")
+    agents = {"api_contract": mock_agent}
+
+    key, result = orchestrator._run_tier1_agent(
+        "api_contract",
+        agents,
+        "spec",
+        "arch",
+        Path("/tmp/plan"),
+        requirements,
+        "",
+        "",
+    )
+    assert key == "api_contract"
+    assert result is None
+
+
+def test_minimal_planning_skips_domain_agents(tmp_path: Path) -> None:
+    """When SW_MINIMAL_PLANNING=1, domain planning agents are skipped and consolidation runs."""
+    (tmp_path / "initial_spec.md").write_text("# Test\n\nSpec.", encoding="utf-8")
+    job_id = "test-minimal-planning"
+    plan_agent_calls = []
+
+    def track_planning_agent_run(agent_key, *args, **kwargs):
+        plan_agent_calls.append(agent_key)
+
+    mock_api_contract = MagicMock()
+    mock_api_contract.run.side_effect = lambda *a, **kw: track_planning_agent_run("api_contract")
+
+    mock_agents = {
+        "project_planning": MagicMock(),
+        "architecture": MagicMock(),
+        "tech_lead": MagicMock(),
+        "devops": MagicMock(),
+        "backend": MagicMock(),
+        "frontend": MagicMock(),
+        "git_setup": MagicMock(),
+        "integration": MagicMock(),
+        "acceptance_verifier": MagicMock(),
+        "qa": MagicMock(),
+        "security": MagicMock(),
+        "accessibility": MagicMock(),
+        "code_review": MagicMock(),
+        "dbc_comments": MagicMock(),
+        "documentation": MagicMock(),
+        "api_contract": mock_api_contract,
+    }
+
+    # Configure mocks for full run
+    with patch("orchestrator.update_job"):
+        with patch("orchestrator._get_agents", return_value=mock_agents):
+            with patch(
+                "spec_parser.parse_spec_with_llm",
+                return_value=ProductRequirements(
+                    title="Test",
+                    description="Desc",
+                    acceptance_criteria=[],
+                    constraints=[],
+                ),
+            ):
+                with patch(
+                    "planning_team.planning_review.check_tasks_architecture_alignment",
+                    return_value=(True, []),
+                ):
+                    with patch(
+                        "planning_team.planning_review.check_spec_conformance",
+                        return_value=(True, []),
+                    ):
+                        with patch(
+                            "planning_team.project_planning_agent.models.build_fallback_overview_from_requirements",
+                            return_value=MagicMock(
+                                primary_goal="",
+                                delivery_strategy="",
+                                features_and_functionality_doc="",
+                            ),
+                        ):
+                            try:
+                                os.environ["SW_MINIMAL_PLANNING"] = "1"
+                                orchestrator.run_orchestrator(job_id, str(tmp_path))
+                            finally:
+                                os.environ.pop("SW_MINIMAL_PLANNING", None)
+
+    # api_contract should not have been called (minimal planning skips all domain agents)
+    assert mock_api_contract.run.call_count == 0

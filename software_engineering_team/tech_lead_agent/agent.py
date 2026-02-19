@@ -13,14 +13,18 @@ from planning_team.planning_graph import (
     PlanningNodeKind,
     compile_planning_graph_to_task_assignment,
 )
+from planning_team.spec_analysis_merger import SpecAnalysisMerger, SpecAnalysisMergerInput
+from planning_team.spec_chunk_analyzer import SpecChunkAnalyzer, SpecChunkAnalyzerInput
+from planning_team.spec_chunking import chunk_spec_by_size
+from planning_team.task_generator_agent import TaskGeneratorAgent, TaskGeneratorInput
 from shared.llm import LLMClient
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType, TaskUpdate
+from shared.task_parsing import parse_assignment_from_data
 from shared.task_validation import validate_assignment
 
 from .models import TechLeadInput, TechLeadOutput
 from .prompts import (
     TECH_LEAD_ANALYZE_CODEBASE_PROMPT,
-    TECH_LEAD_ANALYZE_SPEC_PROMPT,
     TECH_LEAD_EVALUATE_QA_PROMPT,
     TECH_LEAD_PROMPT,
     TECH_LEAD_REFINE_TASK_PROMPT,
@@ -31,7 +35,7 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-MAX_TECH_LEAD_RETRIES = 3
+MAX_TECH_LEAD_RETRIES = 6
 
 
 class TechLeadAgent:
@@ -45,96 +49,6 @@ class TechLeadAgent:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
 
-    def _parse_assignment_from_data(self, data: Dict[str, Any]) -> TaskAssignment:
-        """Parse LLM JSON output into TaskAssignment. Filters out security/qa (orchestrator invokes those)."""
-        tasks = []
-        for t in data.get("tasks") or []:
-            if isinstance(t, dict) and t.get("id"):
-                assignee = t.get("assignee") or "devops"
-                try:
-                    task_type = TaskType(t.get("type", "backend"))
-                except ValueError:
-                    task_type = TaskType.BACKEND
-                # Skip standalone security/qa - orchestrator invokes them in response to coding work
-                if task_type in (TaskType.SECURITY, TaskType.QA):
-                    continue
-                acc = t.get("acceptance_criteria") or []
-                if not isinstance(acc, list):
-                    acc = [str(acc)] if acc else []
-                tasks.append(
-                    Task(
-                        id=t["id"],
-                        type=task_type,
-                        title=t.get("title") or t.get("name") or t.get("label", ""),
-                        description=t.get("description", ""),
-                        user_story=t.get("user_story", ""),
-                        assignee=assignee,
-                        requirements=t.get("requirements", ""),
-                        dependencies=t.get("dependencies", []),
-                        acceptance_criteria=acc,
-                        status=TaskStatus.PENDING,
-                    )
-                )
-
-        execution_order = data.get("execution_order") or [t.id for t in tasks]
-        # Filter execution_order to only include task IDs we kept
-        valid_ids = {t.id for t in tasks}
-        execution_order = [tid for tid in execution_order if tid in valid_ids]
-
-        # Enforce interleaving: backend and frontend tasks should alternate
-        execution_order = self._interleave_execution_order(execution_order, {t.id: t for t in tasks})
-
-        return TaskAssignment(
-            tasks=tasks,
-            execution_order=execution_order,
-            rationale=data.get("rationale", ""),
-        )
-
-    @staticmethod
-    def _interleave_execution_order(execution_order: List[str], tasks_by_id: Dict[str, Any]) -> List[str]:
-        """
-        Enforce interleaving of backend and frontend tasks in the execution order.
-
-        Non-coding tasks (git_setup, devops) stay at the front in their original order.
-        Backend and frontend tasks are then interleaved: 1 backend, 1 frontend, 1 backend, etc.
-        """
-        prefix: List[str] = []        # git_setup + devops tasks (keep at front)
-        backend_queue: List[str] = []  # backend tasks in original order
-        frontend_queue: List[str] = [] # frontend tasks in original order
-
-        for tid in execution_order:
-            task = tasks_by_id.get(tid)
-            if not task:
-                prefix.append(tid)
-                continue
-            assignee = getattr(task, "assignee", None) or ""
-            if assignee == "backend":
-                backend_queue.append(tid)
-            elif assignee == "frontend":
-                frontend_queue.append(tid)
-            else:
-                # devops, git_setup, unknown — keep at front
-                prefix.append(tid)
-
-        # Interleave backend and frontend
-        interleaved: List[str] = []
-        bi, fi = 0, 0
-        while bi < len(backend_queue) or fi < len(frontend_queue):
-            if bi < len(backend_queue):
-                interleaved.append(backend_queue[bi])
-                bi += 1
-            if fi < len(frontend_queue):
-                interleaved.append(frontend_queue[fi])
-                fi += 1
-
-        result = prefix + interleaved
-        if result != execution_order:
-            logger.info(
-                "Tech Lead: reordered execution to interleave backend/frontend: %s",
-                result,
-            )
-        return result
-
     def _analyze_codebase(self, existing_codebase: str) -> str:
         """Step 1: Analyze the existing codebase to understand what already exists."""
         logger.info("Tech Lead: Step 1/3 - Analyzing existing codebase (%s chars)", len(existing_codebase))
@@ -143,26 +57,41 @@ class TechLeadAgent:
         # Return the full analysis as a formatted string for use in subsequent steps
         return json.dumps(data, indent=2)
 
-    def _analyze_spec(self, spec_content: str, reqs) -> str:
-        """Step 2: Deep analysis of the spec to extract every requirement."""
-        logger.info("Tech Lead: Step 2/3 - Analyzing spec in depth (%s chars)", len(spec_content))
-        context_parts = [
-            f"**Product Title:** {reqs.title}",
-            f"**Description:** {reqs.description}",
-            "**Acceptance Criteria:**",
-            *[f"- {c}" for c in reqs.acceptance_criteria],
-            "**Constraints:**",
-            *[f"- {c}" for c in reqs.constraints],
-            f"**Priority:** {reqs.priority}",
-            "",
-            "**Full Specification:**",
-            "---",
-            spec_content,
-            "---",
-        ]
-        prompt = TECH_LEAD_ANALYZE_SPEC_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        data = self.llm.complete_json(prompt, temperature=0.1)
-        return json.dumps(data, indent=2)
+    def _analyze_spec_chunked(self, spec_content: str, reqs) -> str:
+        """Step 2: Chunk spec, analyze each chunk, merge results."""
+        logger.info("Tech Lead: Step 2/3 - Analyzing spec in chunks (%s chars)", len(spec_content))
+        chunks = chunk_spec_by_size(spec_content, max_chars=12000, overlap=500)
+        if not chunks:
+            return "{}"
+
+        chunk_analyzer = SpecChunkAnalyzer(self.llm)
+        header = {
+            "title": reqs.title,
+            "description": reqs.description,
+            "acceptance_criteria": reqs.acceptance_criteria,
+            "constraints": reqs.constraints,
+            "priority": reqs.priority,
+        }
+        chunk_results = []
+        for i, chunk in enumerate(chunks):
+            analysis = chunk_analyzer.run(
+                SpecChunkAnalyzerInput(
+                    spec_chunk=chunk,
+                    chunk_index=i + 1,
+                    total_chunks=len(chunks),
+                    requirements_header=header,
+                )
+            )
+            chunk_results.append(
+                analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()
+            )
+
+        merger = SpecAnalysisMerger(self.llm)
+        merged = merger.run(SpecAnalysisMergerInput(chunk_results=chunk_results))
+        return json.dumps(
+            merged.model_dump() if hasattr(merged, "model_dump") else merged.dict(),
+            indent=2,
+        )
 
     def _run_planning_pipeline(
         self,
@@ -416,10 +345,10 @@ class TechLeadAgent:
             codebase_analysis = self._analyze_codebase(existing_codebase)
             logger.info("Tech Lead: codebase analysis complete (%s chars)", len(codebase_analysis))
 
-        # ── Step 2: Spec analysis ──
+        # ── Step 2: Spec analysis (chunked) ──
         spec_analysis = ""
         if spec_content:
-            spec_analysis = self._analyze_spec(spec_content, reqs)
+            spec_analysis = self._analyze_spec_chunked(spec_content, reqs)
             logger.info("Tech Lead: spec analysis complete (%s chars)", len(spec_analysis))
 
         # ── Step 2b: Try planning pipeline (Backend + Frontend planners) ──
@@ -427,158 +356,49 @@ class TechLeadAgent:
         if pipeline_output is not None:
             return pipeline_output
 
-        # ── Step 3: Task generation with combined context (fallback monolithic) ──
-        logger.info("Tech Lead: Step 3/3 - Generating task plan from combined analysis")
-        context_parts = [
-            f"**Product Title:** {reqs.title}",
-            f"**Description:** {reqs.description}",
-            "**Acceptance Criteria:**",
-            *[f"- {c}" for c in reqs.acceptance_criteria],
-            "**Constraints:**",
-            *[f"- {c}" for c in reqs.constraints],
-            f"**Priority:** {reqs.priority}",
-        ]
+        # ── Step 3: Task generation via TaskGeneratorAgent (fallback with capped inputs) ──
+        logger.info("Tech Lead: Step 3/3 - Generating task plan via TaskGeneratorAgent")
+        po = getattr(input_data, "project_overview", None) or {}
+        features_doc = (po.get("features_and_functionality_doc") or "")[:15000]
+        if len(po.get("features_and_functionality_doc") or "") > 15000:
+            features_doc += "..."
 
-        if getattr(input_data, "project_overview", None):
-            po = input_data.project_overview
-            context_parts.extend([
-                "",
-                "**Project Overview (align task plan with delivery strategy):**",
-                f"- Primary goal: {po.get('primary_goal', '')}",
-                f"- Delivery strategy: {po.get('delivery_strategy', '')}",
-                "- Milestones: " + ", ".join(m.get("name", "") for m in po.get("milestones", [])),
-            ])
-            features_doc = po.get("features_and_functionality_doc") or ""
-            if features_doc and str(features_doc).strip():
-                context_parts.extend([
-                    "",
-                    "**Features and Functionality (required – tasks must implement all of these):**",
-                    "---",
-                    (features_doc[:15000] + ("..." if len(features_doc) > 15000 else "")),
-                    "---",
-                ])
+        task_gen = TaskGeneratorAgent(self.llm)
+        task_gen_input = TaskGeneratorInput(
+            requirements=reqs,
+            merged_spec_analysis=spec_analysis,
+            codebase_analysis=codebase_analysis,
+            spec_content_truncated=spec_content[:20000],
+            existing_codebase=existing_codebase[:20000],
+            project_overview=po if po else None,
+            features_doc=features_doc,
+            architecture=arch,
+            alignment_feedback=getattr(input_data, "alignment_feedback", None),
+            conformance_issues=getattr(input_data, "conformance_issues", None),
+            repo_path=input_data.repo_path or "",
+        )
+        data = task_gen.run(task_gen_input)
 
-        alignment_feedback = getattr(input_data, "alignment_feedback", None) or []
-        conformance_issues = getattr(input_data, "conformance_issues", None) or []
-        if alignment_feedback or conformance_issues:
-            feedback_lines = []
-            if alignment_feedback:
-                feedback_lines.append("**Alignment (tasks vs architecture):**")
-                feedback_lines.extend(f"- " + str(x) for x in alignment_feedback)
-            if conformance_issues:
-                feedback_lines.append("**Spec conformance – address these non-compliances:**")
-                feedback_lines.extend(f"- " + str(x) for x in conformance_issues)
-            context_parts.extend([
-                "",
-                "**Planning review feedback – you must address these in your task plan:**",
-                "\n".join(feedback_lines),
-            ])
+        if data.get("spec_clarification_needed"):
+            clarification_questions = data.get("clarification_questions") or []
+            if not isinstance(clarification_questions, list):
+                clarification_questions = [str(clarification_questions)] if clarification_questions else []
+            logger.warning("Tech Lead: spec is unclear, requesting clarification: %s", clarification_questions[:3])
+            return TechLeadOutput(
+                assignment=None,
+                summary=data.get("summary", "Spec is incomplete or ambiguous."),
+                requirement_task_mapping=[],
+                spec_clarification_needed=True,
+                clarification_questions=clarification_questions,
+            )
 
-        if input_data.repo_path:
-            context_parts.extend(["", f"**Repo path:** {input_data.repo_path}"])
-
-        # Include the deep spec analysis from Step 2
-        if spec_analysis:
-            context_parts.extend([
-                "",
-                "**DEEP SPEC ANALYSIS (from prior analysis step - use this to ensure complete coverage):**",
-                "---",
-                spec_analysis,
-                "---",
-            ])
-
-        # Also include the raw spec for reference
-        if spec_content:
-            context_parts.extend([
-                "",
-                "**Full initial_spec.md (use this to generate the complete build plan):**",
-                "---",
-                spec_content,
-                "---",
-            ])
-
-        # Include the codebase analysis from Step 1
-        if codebase_analysis:
-            context_parts.extend([
-                "",
-                "**CODEBASE ANALYSIS (from prior analysis step - use this to avoid duplicating existing work):**",
-                "---",
-                codebase_analysis,
-                "---",
-            ])
-
-        # Also include raw existing code for reference
-        if existing_codebase:
-            context_parts.extend([
-                "",
-                "**EXISTING CODE (raw - reference for understanding current state):**",
-                "---",
-                existing_codebase[:20000] + ("..." if len(existing_codebase) > 20000 else ""),
-                "---",
-            ])
-
-        if arch:
-            context_parts.extend([
-                "",
-                "**System Architecture:**",
-                arch.overview,
-                "",
-                "**Components:**",
-                *[f"- {c.name} ({c.type}): {c.description}" for c in arch.components],
-                "",
-                "**Architecture Document (excerpt):**",
-                arch_doc,
-            ])
-
-        base_prompt = TECH_LEAD_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        validation_feedback: str = ""
-
-        # ── Step 4: Validation + retry ──
-        for attempt in range(MAX_TECH_LEAD_RETRIES):
-            prompt = base_prompt
-            if validation_feedback:
-                prompt += "\n\n**VALIDATION FAILED - Fix these issues before responding:**\n"
-                prompt += validation_feedback
-
-            data = self.llm.complete_json(prompt, temperature=0.2)
-
-            # Check for spec clarification needed (alternative output mode)
-            if data.get("spec_clarification_needed"):
-                clarification_questions = data.get("clarification_questions") or []
-                if not isinstance(clarification_questions, list):
-                    clarification_questions = [str(clarification_questions)] if clarification_questions else []
-                logger.warning("Tech Lead: spec is unclear, requesting clarification: %s", clarification_questions[:3])
-                return TechLeadOutput(
-                    assignment=None,
-                    summary=data.get("summary", "Spec is incomplete or ambiguous."),
-                    requirement_task_mapping=[],
-                    spec_clarification_needed=True,
-                    clarification_questions=clarification_questions,
-                )
-
-            assignment = self._parse_assignment_from_data(data)
-
-            mapping = data.get("requirement_task_mapping") or []
-            is_valid, errors = validate_assignment(assignment, reqs, mapping)
-            if is_valid:
-                logger.info("Tech Lead: assigned %s tasks in order %s", len(assignment.tasks), assignment.execution_order)
-                return TechLeadOutput(
-                    assignment=assignment,
-                    summary=data.get("summary", ""),
-                    requirement_task_mapping=mapping,
-                    spec_clarification_needed=False,
-                    clarification_questions=[],
-                )
-
-            validation_feedback = "\n".join(f"- {e}" for e in errors)
-            logger.warning("Tech Lead validation failed (attempt %s/%s): %s", attempt + 1, MAX_TECH_LEAD_RETRIES, validation_feedback[:200])
-
-        # Exhausted retries - return best effort
-        logger.warning("Tech Lead: returning assignment after %s failed validation attempts", MAX_TECH_LEAD_RETRIES)
+        assignment = parse_assignment_from_data(data)
+        mapping = data.get("requirement_task_mapping") or []
+        logger.info("Tech Lead: assigned %s tasks in order %s", len(assignment.tasks), assignment.execution_order)
         return TechLeadOutput(
             assignment=assignment,
-            summary=data.get("summary", "") + " [Validation incomplete - some issues may remain]",
-            requirement_task_mapping=data.get("requirement_task_mapping") or [],
+            summary=data.get("summary", ""),
+            requirement_task_mapping=mapping,
             spec_clarification_needed=False,
             clarification_questions=[],
         )

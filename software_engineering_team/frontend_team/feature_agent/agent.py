@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -18,9 +19,16 @@ from shared.task_plan import TaskPlan
 logger = logging.getLogger(__name__)
 
 # Workflow constants
-MAX_CODE_REVIEW_ITERATIONS = 10
-MAX_CLARIFICATION_REFINEMENTS = 10
-MAX_SAME_BUILD_FAILURES = 3
+def _int_env(name: str, default: int, min_val: int = 1) -> int:
+    try:
+        return max(min_val, int(os.environ.get(name) or str(default)))
+    except ValueError:
+        return default
+
+
+MAX_CODE_REVIEW_ITERATIONS = _int_env("SW_MAX_CODE_REVIEW_ITERATIONS", 20)
+MAX_CLARIFICATION_REFINEMENTS = _int_env("SW_MAX_CLARIFICATION_REFINEMENTS", 20)
+MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 6)
 MAX_EXISTING_CODE_CHARS = 40_000
 MAX_API_SPEC_CHARS = 20_000
 

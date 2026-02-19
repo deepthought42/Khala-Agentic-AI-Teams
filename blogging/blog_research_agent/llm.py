@@ -151,6 +151,14 @@ class DummyLLMClient(LLMClient):
                     },
                 ],
             }
+        # Compliance agent (brand/style enforcer)
+        if '"status"' in lowered and "violations" in lowered and "required_fixes" in lowered and "brand spec" in lowered:
+            return {
+                "status": "PASS",
+                "violations": [],
+                "required_fixes": [],
+                "notes": "Dummy: compliance check passed.",
+            }
         # Similar topics prompt
         if "similar_topics" in lowered and "similarity_score" in lowered:
             return {

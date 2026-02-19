@@ -18,10 +18,12 @@ Execution:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -138,9 +140,9 @@ def _task_requirements(task) -> str:
     return "\n\n".join(parts) if parts else task.description
 
 
-MAX_REVIEW_ITERATIONS = 10
-MAX_CLARIFICATION_REFINEMENTS = 10  # Max times to refine a task based on specialist clarification
-MAX_CODE_REVIEW_ITERATIONS = 10    # Max rounds of code review -> fix -> re-review
+MAX_REVIEW_ITERATIONS = 20
+MAX_CLARIFICATION_REFINEMENTS = 20  # Max times to refine a task based on specialist clarification
+MAX_CODE_REVIEW_ITERATIONS = 20    # Max rounds of code review -> fix -> re-review
 
 
 def _issues_to_dicts(qa_bugs, sec_vulns) -> tuple:
@@ -201,6 +203,163 @@ def _build_task_update(task_id: str, agent_type: str, result, status: str = "com
         files_changed=files_changed,
         needs_followup=needs_followup,
     )
+
+
+def _run_tier1_agent(
+    agent_key: str,
+    agents: dict,
+    spec_content: str,
+    arch_overview: str,
+    plan_dir: Path,
+    requirements: Any,
+    features_and_functionality_doc: str,
+    tenancy: str,
+) -> Tuple[str, Optional[Any]]:
+    """
+    Run a single Tier 1 planning agent. Returns (agent_key, output_or_exc).
+    Output is a dict with keys like infra_doc, data_lifecycle, ui_ux_doc, or None for agents that don't produce downstream inputs.
+    """
+    try:
+        if agent_key == "api_contract" and agents.get("api_contract"):
+            from planning_team.api_contract_planning_agent.models import ApiContractPlanningInput
+            agents["api_contract"].run(ApiContractPlanningInput(
+                spec_content=spec_content,
+                architecture_overview=arch_overview,
+                requirements_title=requirements.title,
+                acceptance_criteria=requirements.acceptance_criteria or [],
+                plan_dir=plan_dir,
+            ))
+            return (agent_key, None)
+        if agent_key == "data_architecture" and agents.get("data_architecture"):
+            from planning_team.data_architecture_agent.models import DataArchitectureInput
+            data_out = agents["data_architecture"].run(DataArchitectureInput(
+                spec_content=spec_content,
+                architecture_overview=arch_overview,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            return (agent_key, {"data_lifecycle": data_out.data_lifecycle_policy or ""})
+        if agent_key == "ui_ux" and agents.get("ui_ux"):
+            from ui_ux_design_agent.models import UiUxDesignInput
+            ui_out = agents["ui_ux"].run(UiUxDesignInput(
+                spec_content=spec_content,
+                requirements_title=requirements.title,
+                features_doc=features_and_functionality_doc or "",
+                plan_dir=plan_dir,
+            ))
+            ui_ux_doc = (ui_out.user_journeys or "") + "\n" + (ui_out.wireframes or "")
+            return (agent_key, {"ui_ux_doc": ui_ux_doc})
+        if agent_key == "infrastructure" and agents.get("infrastructure"):
+            from planning_team.infrastructure_planning_agent.models import InfrastructurePlanningInput
+            infra_out = agents["infrastructure"].run(InfrastructurePlanningInput(
+                architecture_overview=arch_overview,
+                tenancy_model=tenancy,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            infra_doc = (infra_out.cloud_diagram or "") + "\n" + (infra_out.environment_strategy or "")
+            return (agent_key, {"infra_doc": infra_doc})
+    except Exception as e:
+        logger.debug("%s planning skipped: %s", agent_key.replace("_", " ").title(), e)
+        return (agent_key, None)
+    return (agent_key, None)
+
+
+def _run_tier2_agent(
+    agent_key: str,
+    agents: dict,
+    spec_content: str,
+    arch_overview: str,
+    plan_dir: Path,
+    requirements: Any,
+    req_ids: List[str],
+    ui_ux_doc: str,
+    infra_doc: str,
+    data_lifecycle: str,
+) -> Tuple[str, Optional[Any]]:
+    """Run a single Tier 2 planning agent. Returns (agent_key, output_dict or None)."""
+    try:
+        if agent_key == "frontend_architecture" and agents.get("frontend_architecture"):
+            from planning_team.frontend_architecture_agent.models import FrontendArchitectureInput
+            agents["frontend_architecture"].run(FrontendArchitectureInput(
+                spec_content=spec_content,
+                architecture_overview=arch_overview,
+                ui_ux_doc=ui_ux_doc,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            return (agent_key, None)
+        if agent_key == "devops_planning" and agents.get("devops_planning"):
+            from planning_team.devops_planning_agent.models import DevOpsPlanningInput
+            dev_out = agents["devops_planning"].run(DevOpsPlanningInput(
+                architecture_overview=arch_overview,
+                infrastructure_doc=infra_doc,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            devops_doc = (dev_out.ci_pipeline or "") + "\n" + (dev_out.cd_pipeline or "")
+            return (agent_key, {"devops_doc": devops_doc})
+        if agent_key == "qa_test_strategy" and agents.get("qa_test_strategy"):
+            from planning_team.qa_test_strategy_agent.models import QaTestStrategyInput
+            agents["qa_test_strategy"].run(QaTestStrategyInput(
+                spec_content=spec_content,
+                architecture_overview=arch_overview,
+                acceptance_criteria=requirements.acceptance_criteria or [],
+                requirement_ids=req_ids,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            return (agent_key, None)
+        if agent_key == "security_planning" and agents.get("security_planning"):
+            from planning_team.security_planning_agent import SecurityPlanningInput
+            agents["security_planning"].run(SecurityPlanningInput(
+                spec_content=spec_content,
+                architecture_overview=arch_overview,
+                data_lifecycle=data_lifecycle,
+                requirements_title=requirements.title,
+                plan_dir=plan_dir,
+            ))
+            return (agent_key, None)
+    except Exception as e:
+        logger.debug("%s planning skipped: %s", agent_key.replace("_", " ").title(), e)
+        return (agent_key, None)
+    return (agent_key, None)
+
+
+def _run_tier3_observability(
+    agents: dict,
+    arch_overview: str,
+    infra_doc: str,
+    devops_doc: str,
+    requirements: Any,
+    plan_dir: Path,
+) -> None:
+    """Run observability planning agent."""
+    from planning_team.observability_planning_agent.models import ObservabilityPlanningInput
+    agents["observability"].run(ObservabilityPlanningInput(
+        architecture_overview=arch_overview,
+        infrastructure_doc=infra_doc,
+        devops_doc=devops_doc,
+        requirements_title=requirements.title,
+        plan_dir=plan_dir,
+    ))
+
+
+def _run_tier3_performance_doc(
+    agents: dict,
+    spec_content: str,
+    arch_overview: str,
+    requirements: Any,
+    plan_dir: Path,
+) -> None:
+    """Run performance doc planning agent."""
+    from planning_team.performance_planning_doc_agent.models import PerformancePlanningDocInput
+    agents["performance_doc"].run(PerformancePlanningDocInput(
+        spec_content=spec_content,
+        architecture_overview=arch_overview,
+        requirements_title=requirements.title,
+        plan_dir=plan_dir,
+    ))
 
 
 def _run_dbc_comments_review(
@@ -920,8 +1079,8 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         arch_agent = agents["architecture"]
         tech_lead = agents["tech_lead"]
         existing_code = _truncate_for_context(_read_repo_code(path), MAX_EXISTING_CODE_CHARS)
-        MAX_ALIGNMENT_ITERATIONS = 3
-        MAX_CONFORMANCE_RETRIES = 2
+        MAX_ALIGNMENT_ITERATIONS = int(os.environ.get("SW_MAX_ALIGNMENT_ITERATIONS") or "6")
+        MAX_CONFORMANCE_RETRIES = int(os.environ.get("SW_MAX_CONFORMANCE_RETRIES") or "4")
 
         assignment = None
         architecture = None
@@ -1049,7 +1208,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 logger.warning("Max conformance retries reached; proceeding with current plan")
                 break
 
-        # Run additional planning agents (API Contract, Data Arch, UI/UX, Infra, etc.) with final architecture
+        # Run additional planning agents in dependency tiers (parallel within each tier)
         arch_overview = architecture.overview if architecture else ""
         tenancy = getattr(architecture, "tenancy_model", "") or "" if architecture else ""
         req_ids = (requirements.metadata or {}).get("requirement_ids", []) if requirements else []
@@ -1057,126 +1216,92 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         data_lifecycle = ""
         ui_ux_doc = ""
         devops_doc = ""
-        try:
-            if agents.get("api_contract"):
-                from api_contract_planning_agent.models import ApiContractPlanningInput
-                agents["api_contract"].run(ApiContractPlanningInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    requirements_title=requirements.title,
-                    acceptance_criteria=requirements.acceptance_criteria or [],
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("API Contract planning skipped: %s", e)
-        try:
-            if agents.get("data_architecture"):
-                from planning_team.data_architecture_agent.models import DataArchitectureInput
-                data_out = agents["data_architecture"].run(DataArchitectureInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-                data_lifecycle = data_out.data_lifecycle_policy or ""
-        except Exception as e:
-            logger.debug("Data Architecture planning skipped: %s", e)
-        try:
-            if agents.get("ui_ux"):
-                from ui_ux_design_agent.models import UiUxDesignInput
-                ui_out = agents["ui_ux"].run(UiUxDesignInput(
-                    spec_content=spec_content,
-                    requirements_title=requirements.title,
-                    features_doc=features_and_functionality_doc or "",
-                    plan_dir=plan_dir,
-                ))
-                ui_ux_doc = (ui_out.user_journeys or "") + "\n" + (ui_out.wireframes or "")
-        except Exception as e:
-            logger.debug("UI/UX planning skipped: %s", e)
-        try:
-            if agents.get("infrastructure"):
-                from planning_team.infrastructure_planning_agent.models import InfrastructurePlanningInput
-                infra_out = agents["infrastructure"].run(InfrastructurePlanningInput(
-                    architecture_overview=arch_overview,
-                    tenancy_model=tenancy,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-                infra_doc = (infra_out.cloud_diagram or "") + "\n" + (infra_out.environment_strategy or "")
-        except Exception as e:
-            logger.debug("Infrastructure planning skipped: %s", e)
-        try:
-            if agents.get("frontend_architecture"):
-                from planning_team.frontend_architecture_agent.models import FrontendArchitectureInput
-                agents["frontend_architecture"].run(FrontendArchitectureInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    ui_ux_doc=ui_ux_doc,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("Frontend Architecture planning skipped: %s", e)
-        try:
-            if agents.get("devops_planning"):
-                from planning_team.devops_planning_agent.models import DevOpsPlanningInput
-                dev_out = agents["devops_planning"].run(DevOpsPlanningInput(
-                    architecture_overview=arch_overview,
-                    infrastructure_doc=infra_doc,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-                devops_doc = (dev_out.ci_pipeline or "") + "\n" + (dev_out.cd_pipeline or "")
-        except Exception as e:
-            logger.debug("DevOps planning skipped: %s", e)
-        try:
-            if agents.get("qa_test_strategy"):
-                from qa_test_strategy_agent.models import QaTestStrategyInput
-                agents["qa_test_strategy"].run(QaTestStrategyInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    acceptance_criteria=requirements.acceptance_criteria or [],
-                    requirement_ids=req_ids,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("QA Test Strategy planning skipped: %s", e)
-        try:
-            if agents.get("security_planning"):
-                from planning_team.security_planning_agent import SecurityPlanningInput
-                agents["security_planning"].run(SecurityPlanningInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    data_lifecycle=data_lifecycle,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("Security planning skipped: %s", e)
-        try:
-            if agents.get("observability"):
-                from planning_team.observability_planning_agent.models import ObservabilityPlanningInput
-                agents["observability"].run(ObservabilityPlanningInput(
-                    architecture_overview=arch_overview,
-                    infrastructure_doc=infra_doc,
-                    devops_doc=devops_doc,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("Observability planning skipped: %s", e)
-        try:
-            if agents.get("performance_doc"):
-                from planning_team.performance_planning_doc_agent.models import PerformancePlanningDocInput
-                agents["performance_doc"].run(PerformancePlanningDocInput(
-                    spec_content=spec_content,
-                    architecture_overview=arch_overview,
-                    requirements_title=requirements.title,
-                    plan_dir=plan_dir,
-                ))
-        except Exception as e:
-            logger.debug("Performance doc planning skipped: %s", e)
+
+        # Optional: skip domain planning agents (env SW_SKIP_PLANNING_AGENTS=agent1,agent2 or SW_MINIMAL_PLANNING=1)
+        skip_planning_agents: set = set()
+        skip_env = (os.environ.get("SW_SKIP_PLANNING_AGENTS") or "").strip()
+        if skip_env:
+            skip_planning_agents = {k.strip() for k in skip_env.split(",") if k.strip()}
+        minimal_planning = (os.environ.get("SW_MINIMAL_PLANNING") or "").strip().lower() in ("1", "true", "yes")
+        if minimal_planning:
+            skip_planning_agents = {
+                "api_contract", "data_architecture", "ui_ux", "infrastructure",
+                "frontend_architecture", "devops_planning", "qa_test_strategy",
+                "security_planning", "observability", "performance_doc",
+            }
+
+        if not minimal_planning:
+            # Tier 1: api_contract, data_architecture, ui_ux, infrastructure (parallel)
+            tier1_keys = [k for k in ("api_contract", "data_architecture", "ui_ux", "infrastructure") if k not in skip_planning_agents]
+            if tier1_keys:
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = {
+                        executor.submit(
+                            _run_tier1_agent,
+                            key,
+                            agents,
+                            spec_content,
+                            arch_overview,
+                            plan_dir,
+                            requirements,
+                            features_and_functionality_doc or "",
+                            tenancy,
+                        ): key
+                        for key in tier1_keys
+                    }
+                    for future in as_completed(futures):
+                        agent_key, result = future.result()
+                        if result:
+                            if "infra_doc" in result:
+                                infra_doc = result["infra_doc"]
+                            if "data_lifecycle" in result:
+                                data_lifecycle = result["data_lifecycle"]
+                            if "ui_ux_doc" in result:
+                                ui_ux_doc = result["ui_ux_doc"]
+
+            # Tier 2: frontend_architecture, devops_planning, qa_test_strategy, security_planning (parallel)
+            tier2_keys = [k for k in ("frontend_architecture", "devops_planning", "qa_test_strategy", "security_planning") if k not in skip_planning_agents]
+            if tier2_keys:
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = {
+                        executor.submit(
+                            _run_tier2_agent,
+                            key,
+                            agents,
+                            spec_content,
+                            arch_overview,
+                            plan_dir,
+                            requirements,
+                            req_ids,
+                            ui_ux_doc,
+                            infra_doc,
+                            data_lifecycle,
+                        ): key
+                        for key in tier2_keys
+                    }
+                    for future in as_completed(futures):
+                        agent_key, result = future.result()
+                        if result and "devops_doc" in result:
+                            devops_doc = result["devops_doc"]
+
+            # Tier 3: observability, performance_doc (parallel)
+            tier3_keys = [k for k in ("observability", "performance_doc") if k not in skip_planning_agents]
+            if tier3_keys:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = []
+                    if "observability" in tier3_keys and agents.get("observability"):
+                        futures.append(executor.submit(
+                            lambda: _run_tier3_observability(agents, arch_overview, infra_doc, devops_doc, requirements, plan_dir)
+                        ))
+                    if "performance_doc" in tier3_keys and agents.get("performance_doc"):
+                        futures.append(executor.submit(
+                            lambda: _run_tier3_performance_doc(agents, spec_content, arch_overview, requirements, plan_dir)
+                        ))
+                    for f in as_completed(futures):
+                        try:
+                            f.result()
+                        except Exception as e:
+                            logger.debug("Tier 3 planning skipped: %s", e)
 
         # Planning consolidation: master plan, risk register, ship checklist
         try:

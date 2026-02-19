@@ -10,6 +10,9 @@ from .planning_graph import (
     Phase,
     compile_planning_graph_to_task_assignment,
 )
+from .spec_analysis_merger import SpecAnalysisMerger
+from .spec_chunk_analyzer import SpecChunkAnalyzer
+from .task_generator_agent import TaskGeneratorAgent
 
 __all__ = [
     "PlanningEdge",
@@ -20,4 +23,7 @@ __all__ = [
     "EdgeType",
     "Phase",
     "compile_planning_graph_to_task_assignment",
+    "SpecChunkAnalyzer",
+    "SpecAnalysisMerger",
+    "TaskGeneratorAgent",
 ]

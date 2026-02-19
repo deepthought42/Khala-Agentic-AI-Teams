@@ -9,11 +9,11 @@ A multi-agent system that simulates a real software engineering team with a mix 
 | **Spec Intake** | Discovery | Spec validator | Validates spec, REQ-IDs, glossary, assumptions |
 | **Project Planning Agent** | Discovery | Spec reviewer | Reviews `initial_spec.md`, produces features/functionality overview; used by Tech Lead and Architecture |
 | **Architecture Expert** | Design | System designer | Designs system architecture from requirements; output used by all other agents |
-| **Tech Lead** | Design | Staff-level orchestrator | Uses initial_spec to generate full build plan; distributes work by dependency; tracks progress; triggers documentation |
+| **Tech Lead** | Design | Staff-level orchestrator | Uses initial_spec to generate full build plan; distributes work by dependency; tracks progress; triggers documentation (uses Spec Chunk Analyzer, Spec Analysis Merger, Task Generator for large specs) |
 | **Git Setup Agent** | Setup | Repo setup | Creates `work_path/backend` and `work_path/frontend` clones/branches; ensures `development` branch |
 | **Backend Expert** | Implementation | Backend engineer | Implements solutions in Python or Java; runs autonomous workflow with quality gates |
 | **Frontend Expert** (via Frontend Engineering Team) | Implementation | Frontend sub-orchestration | UX Designer, UI Designer, Design System, Frontend Architect, Feature Implementation, UX Engineer, Accessibility, Security, Performance Engineer, QA, Build/Release, Code Review – full pipeline per task |
-| **Code Review Agent** | Quality | Code reviewer | Reviews code against spec, standards, and acceptance criteria |
+| **Code Review Agent** | Quality | Code reviewer | Reviews code against spec, standards, and acceptance criteria (uses Chunk Reviewer + Coordinator for large codebases) |
 | **QA Expert** | Quality | Quality assurance | Reviews for bugs; produces integration/unit tests and README content (persisted to repo) |
 | **Cybersecurity Expert** | Quality | Security specialist | Reviews code for security flaws per task (backend and frontend); remediates vulnerabilities |
 | **Accessibility Expert** | Quality | A11y specialist | Reviews frontend for WCAG 2.2 compliance |
@@ -188,7 +188,7 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | `SW_LLM_MAX_RETRIES` | Max retries for 429/5xx errors | `4` |
 | `SW_LLM_BACKOFF_BASE` | Base seconds for exponential backoff | `2` |
 | `SW_LLM_BACKOFF_MAX_SECONDS` | Max backoff seconds | `60` |
-| `SW_LLM_MAX_CONCURRENCY` | Max concurrent LLM calls | `2` |
+| `SW_LLM_MAX_CONCURRENCY` | Max concurrent LLM calls (default 4; set 4–6 for faster runs with parallel planning and backend+frontend workers; lower to 2 if GPU/memory limited) | `4` |
 | `SW_LLM_MAX_TOKENS` | Max tokens to generate; if unset, uses model's num_ctx from Ollama /api/show | (model num_ctx) |
 
 Example with Ollama:
@@ -199,6 +199,32 @@ python -m agent_implementations.run_team
 ```
 
 Ensure Ollama is running with the model (e.g. `ollama run qwen2.5-coder`).
+
+**Iteration caps (environment variables):** Lowering these can speed runs but may reduce refinement.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SW_MAX_ALIGNMENT_ITERATIONS` | Max Tech Lead ↔ Architecture alignment loops | `6` |
+| `SW_MAX_CONFORMANCE_RETRIES` | Max spec conformance retries | `4` |
+| `SW_MAX_REVIEW_ITERATIONS` | Max code review → fix rounds (backend) | `40` |
+| `SW_MAX_CLARIFICATION_ROUNDS` | Max clarification rounds (backend) | `10` |
+| `SW_MAX_SAME_BUILD_FAILURES` | Stop if build fails identically N times (backend) | `6` |
+| `SW_MAX_CODE_REVIEW_ITERATIONS` | Max code review rounds (frontend) | `20` |
+| `SW_MAX_CLARIFICATION_REFINEMENTS` | Max clarification refinements (frontend) | `20` |
+
+**Faster runs:** Set `SW_SKIP_PLANNING_AGENTS=observability,performance_doc` to skip specific planning agents, or `SW_MINIMAL_PLANNING=1` to skip all domain planning (spec → Tech Lead ↔ Architecture → consolidation → execution).
+
+### Faster runs summary
+
+- **Parallel planning:** Domain planning agents (API Contract, Data Arch, UI/UX, Infra, etc.) run in dependency tiers with internal parallelism (Tier 1 → Tier 2 → Tier 3).
+- **LLM concurrency:** Default `SW_LLM_MAX_CONCURRENCY=4`; set 4–6 for faster runs when GPU/memory allows.
+- **Skip planning:** `SW_SKIP_PLANNING_AGENTS` or `SW_MINIMAL_PLANNING=1` for time-sensitive runs.
+- **Iteration caps:** Lower `SW_MAX_*` env vars to reduce refinement rounds (may reduce quality).
+
+### Future improvements (design only)
+
+- **Task-aware context truncation:** Prefer files relevant to the current task (route/component from description) within `MAX_EXISTING_CODE_CHARS`; risks dropping critical files if heuristics fail.
+- **Parallel backend/frontend tasks:** Run multiple backend (or frontend) tasks concurrently via clone-per-worker or branch-per-task with serialized merges; high complexity, only if profiling shows task execution dominates after planning is parallelized.
 
 ## API
 
@@ -322,7 +348,7 @@ software_engineering_team/
 ├── qa_agent/
 ├── integration_agent/   # Full-stack API contract validation
 ├── acceptance_verifier_agent/
-├── code_review_agent/
+├── code_review_agent/     # Chunk Reviewer + Coordinator for large code; single-call for small
 ├── dbc_comments_agent/
 ├── documentation_agent/
 ├── planning_team/           # All planning agents and infrastructure
@@ -349,7 +375,10 @@ software_engineering_team/
 │   ├── performance_planning_agent/
 │   ├── performance_planning_doc_agent/
 │   ├── documentation_planning_agent/
-│   └── quality_gate_planning_agent/
+│   ├── quality_gate_planning_agent/
+│   ├── spec_chunk_analyzer/      # Tech Lead: analyzes spec chunks
+│   ├── spec_analysis_merger/     # Tech Lead: merges chunk analyses
+│   └── task_generator_agent/     # Tech Lead: fallback task plan from merged analysis
 ├── agent_implementations/
 │   ├── run_team.py   # CLI orchestration script
 │   └── run_api_server.py
