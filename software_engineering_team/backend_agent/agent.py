@@ -1843,7 +1843,7 @@ class BackendExpertAgent:
         validated_files = {}
         code = ""
         tests = ""
-        for attempt in range(2):
+        for attempt in range(4):
             data = self.llm.complete_json(prompt, temperature=0.2)
 
             code = data.get("code", "")
@@ -1881,11 +1881,21 @@ class BackendExpertAgent:
             for warn in validation_warnings:
                 logger.warning("Backend output validation: %s", warn)
 
-            # Guard: 0 files and 0 code -> retry once with explicit rejection message
+            # Guard: 0 files and 0 code -> retry up to 3 times with explicit rejection message
             total_chars = sum(len(c or "") for c in (validated_files or {}).values()) + len(code or "")
-            if not data.get("needs_clarification", False) and total_chars == 0 and attempt == 0:
+            if not data.get("needs_clarification", False) and total_chars == 0 and attempt < 3:
+                response_preview = ""
+                if data.get("content"):
+                    response_preview = (str(data["content"]) or "")[:200]
+                elif data:
+                    response_preview = str(data)[:200]
                 logger.warning(
-                    "Backend: produced no files and no code (failure_class=empty_completion); re-prompting once",
+                    "Backend: produced no files and no code (failure_class=empty_completion); re-prompting (attempt %d/4) | prompt_len=%d response_len=%d raw_keys=%s content_preview=%s",
+                    attempt + 1,
+                    len(prompt),
+                    len(str(data)) if data else 0,
+                    list(raw_files.keys()) if raw_files else [],
+                    response_preview,
                 )
                 # If files were rejected by validation, surface those errors so the LLM can fix filenames
                 if raw_files and validation_warnings:
@@ -1910,8 +1920,10 @@ class BackendExpertAgent:
                     )
                 elif code:
                     logger.warning("Backend: returned 'code' but no 'files' dict. Code will be written as fallback.")
-                elif attempt == 0:
-                    logger.error("Backend: produced no files and no code. Task may have failed.")
+                else:
+                    logger.error(
+                        "Backend: produced no files and no code after 4 attempts (failure_class=empty_completion). Task failed.",
+                    )
             break
 
         summary = data.get("summary", "")

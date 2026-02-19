@@ -1,4 +1,4 @@
 from .agent import DevOpsExpertAgent
-from .models import DevOpsInput, DevOpsOutput
+from .models import DevOpsInput, DevOpsOutput, DevOpsWorkflowResult
 
-__all__ = ["DevOpsExpertAgent", "DevOpsInput", "DevOpsOutput"]
+__all__ = ["DevOpsExpertAgent", "DevOpsInput", "DevOpsOutput", "DevOpsWorkflowResult"]

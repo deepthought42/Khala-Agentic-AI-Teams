@@ -488,6 +488,53 @@ def _run_build_verification(
         logger.info("Build verification passed for backend task %s", task_id)
         return True, ""
 
+    elif agent_type == "devops":
+        # Validate YAML files and run docker build if Dockerfile exists
+        import yaml
+        from shared.command_runner import run_command
+
+        errors: list[str] = []
+        # Validate .github/workflows/*.yml
+        workflows_dir = repo_path / ".github" / "workflows"
+        if workflows_dir.exists():
+            for yml_file in workflows_dir.glob("*.yml"):
+                try:
+                    content = yml_file.read_text(encoding="utf-8", errors="replace")
+                    yaml.safe_load(content)
+                except yaml.YAMLError as e:
+                    errors.append(f"YAML parse error in {yml_file.relative_to(repo_path)}: {e}")
+                except Exception as e:
+                    errors.append(f"Error reading {yml_file.relative_to(repo_path)}: {e}")
+        # Validate top-level *.yml and *.yaml
+        for pattern in ("*.yml", "*.yaml"):
+            for yml_file in repo_path.glob(pattern):
+                if yml_file.name.startswith("."):
+                    continue
+                try:
+                    content = yml_file.read_text(encoding="utf-8", errors="replace")
+                    yaml.safe_load(content)
+                except yaml.YAMLError as e:
+                    errors.append(f"YAML parse error in {yml_file.name}: {e}")
+                except Exception as e:
+                    errors.append(f"Error reading {yml_file.name}: {e}")
+        if errors:
+            return False, "\n".join(errors[:10])
+
+        # Docker build if Dockerfile exists
+        dockerfile = repo_path / "Dockerfile"
+        if dockerfile.exists():
+            result = run_command(
+                ["docker", "build", "-t", "devops-verify", "."],
+                cwd=repo_path,
+                timeout=120,
+            )
+            if not result.success:
+                logger.warning("Docker build failed for task %s: %s", task_id, result.error_summary[:200])
+                return False, result.error_summary
+
+        logger.info("Build verification passed for devops task %s", task_id)
+        return True, ""
+
     return True, ""
 
 
@@ -614,6 +661,7 @@ def _run_backend_frontend_workers(
             tech_lead.trigger_devops_for_backend(
                 devops_agent, backend_dir, architecture, spec_content,
                 existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                build_verifier=_run_build_verification,
             )
 
     def _frontend_worker() -> None:
@@ -720,6 +768,7 @@ def _run_backend_frontend_workers(
                 tech_lead.trigger_devops_for_frontend(
                     devops_agent, frontend_dir, architecture, spec_content,
                     existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                    build_verifier=_run_build_verification,
                 )
 
     logger.info("Running with parallel workers: 1 backend task, 1 frontend task at a time")
@@ -1265,12 +1314,14 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             tech_lead.trigger_devops_for_backend(
                 devops_agent, backend_dir, architecture, spec_content,
                 existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                build_verifier=_run_build_verification,
             )
         if devops_agent and frontend_dir.is_dir() and (frontend_dir / ".git").exists():
             existing_pipeline = _read_repo_code(frontend_dir, [".yml", ".yaml"])
             tech_lead.trigger_devops_for_frontend(
                 devops_agent, frontend_dir, architecture, spec_content,
                 existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                build_verifier=_run_build_verification,
             )
 
         # Persist failed task details and retryable state in job store
@@ -1369,6 +1420,12 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                 current_task=None,
             )
         else:
+            logger.info("")
+            logger.info("=" * 72)
+            logger.info("  SOFTWARE ENGINEERING TEAM: DELIVERY COMPLETE")
+            logger.info("  Job %s finished. All tasks executed. Artifacts in work path.", job_id)
+            logger.info("=" * 72)
+            logger.info("")
             update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, current_task=None)
 
     except Exception as e:
@@ -1465,20 +1522,22 @@ def run_failed_tasks(job_id: str) -> None:
                 continue
             if task.assignee == "devops":
                 try:
-                    from devops_agent.models import DevOpsInput
                     existing_pipeline = _read_repo_code(path, [".yml", ".yaml"])
-                    result = agents["devops"].run(DevOpsInput(
+                    workflow_result = agents["devops"].run_workflow(
+                        repo_path=path,
                         task_description=task.description,
                         requirements=_task_requirements(task),
                         architecture=architecture,
                         existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
                         tech_stack=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
-                    ))
-                    ok, msg = write_agent_output(path, result, subdir="devops")
-                    if ok:
+                        build_verifier=_run_build_verification,
+                        task_id=task_id,
+                        subdir="devops",
+                    )
+                    if workflow_result.success:
                         completed.add(task_id)
                     else:
-                        failed_retry[task_id] = f"Write failed: {msg}"
+                        failed_retry[task_id] = workflow_result.failure_reason or "DevOps workflow failed"
                 except Exception as e:
                     failed_retry[task_id] = f"DevOps failed: {e}"
 
@@ -1528,12 +1587,14 @@ def run_failed_tasks(job_id: str) -> None:
             tech_lead.trigger_devops_for_backend(
                 devops_agent, backend_dir, architecture, spec_content,
                 existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                build_verifier=_run_build_verification,
             )
         if devops_agent and frontend_dir.is_dir() and (frontend_dir / ".git").exists():
             existing_pipeline = _read_repo_code(frontend_dir, [".yml", ".yaml"])
             tech_lead.trigger_devops_for_frontend(
                 devops_agent, frontend_dir, architecture, spec_content,
                 existing_pipeline=existing_pipeline if existing_pipeline != "# No code files found" else None,
+                build_verifier=_run_build_verification,
             )
 
         failed_details = [
@@ -1549,6 +1610,12 @@ def run_failed_tasks(job_id: str) -> None:
                 current_task=None,
             )
         else:
+            logger.info("")
+            logger.info("=" * 72)
+            logger.info("  SOFTWARE ENGINEERING TEAM: DELIVERY COMPLETE (retry run finished)")
+            logger.info("  Job %s finished. All retried tasks executed.", job_id)
+            logger.info("=" * 72)
+            logger.info("")
             update_job(job_id, failed_tasks=failed_details, status=JOB_STATUS_COMPLETED, current_task=None)
 
     except Exception as e:

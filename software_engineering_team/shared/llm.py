@@ -25,6 +25,7 @@ ENV_LLM_MAX_RETRIES = "SW_LLM_MAX_RETRIES"  # max retries for temporary errors (
 ENV_LLM_BACKOFF_BASE = "SW_LLM_BACKOFF_BASE"  # base seconds for exponential backoff (default 2)
 ENV_LLM_BACKOFF_MAX = "SW_LLM_BACKOFF_MAX_SECONDS"  # max backoff seconds (default 60)
 ENV_LLM_MAX_CONCURRENCY = "SW_LLM_MAX_CONCURRENCY"  # max concurrent complete_json calls (default 2)
+ENV_LLM_MAX_TOKENS = "SW_LLM_MAX_TOKENS"  # max tokens to generate; if unset, uses model's num_ctx from Ollama /api/show
 
 logger = logging.getLogger(__name__)
 
@@ -597,6 +598,50 @@ class OllamaLLMClient(LLMClient):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._model_num_ctx: int | None = None  # cached from /api/show
+
+    def _fetch_model_num_ctx(self) -> int:
+        """Fetch model's num_ctx from Ollama /api/show. Cached per client. Fallback 16384 on failure."""
+        if self._model_num_ctx is not None:
+            return self._model_num_ctx
+        try:
+            url = f"{self.base_url}/api/show"
+            with httpx.Client(timeout=min(30, self.timeout)) as client:
+                resp = client.post(url, json={"model": self.model})
+            if resp.status_code != 200:
+                logger.warning(
+                    "Ollama /api/show returned %s for model %s; using max_tokens=16384",
+                    resp.status_code,
+                    self.model,
+                )
+                self._model_num_ctx = 16384
+                return self._model_num_ctx
+            data = resp.json()
+            # parameters is a string like "temperature 0.7\nnum_ctx 8192\n..."
+            params_str = data.get("parameters") or ""
+            match = re.search(r"num_ctx\s+(\d+)", params_str, re.IGNORECASE)
+            if match:
+                ctx = int(match.group(1))
+                self._model_num_ctx = max(2048, ctx)  # ensure minimum 2048
+                logger.info("Ollama model %s num_ctx=%s; using as max_tokens", self.model, self._model_num_ctx)
+                return self._model_num_ctx
+            # Try model_info.parameter_size or details for fallback
+            for path in ("model_info", "details"):
+                obj = data.get(path)
+                if isinstance(obj, dict):
+                    ctx = obj.get("num_ctx") or obj.get("context_length")
+                    if ctx is not None:
+                        self._model_num_ctx = max(2048, int(ctx))
+                        logger.info("Ollama model %s context=%s; using as max_tokens", self.model, self._model_num_ctx)
+                        return self._model_num_ctx
+        except Exception as e:
+            logger.warning(
+                "Could not fetch Ollama model info for %s: %s; using max_tokens=16384",
+                self.model,
+                e,
+            )
+        self._model_num_ctx = 16384
+        return self._model_num_ctx
 
     def _repair_json(self, s: str) -> str:
         """Attempt tolerant JSON repair for common LLM output issues."""
@@ -701,9 +746,12 @@ class OllamaLLMClient(LLMClient):
             "no explanatory text, no Markdown, no code fences. "
             "If you use a code block, put only the JSON object inside it with no surrounding text."
         )
+        env_max = os.environ.get(ENV_LLM_MAX_TOKENS)
+        max_tokens = int(env_max) if env_max else self._fetch_model_num_ctx()
         payload = {
             "model": self.model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},

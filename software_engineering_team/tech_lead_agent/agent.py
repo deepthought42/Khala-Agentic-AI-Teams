@@ -957,14 +957,16 @@ class TechLeadAgent:
         architecture,
         spec_content: str,
         existing_pipeline: str | None = None,
+        build_verifier=None,
     ) -> bool:
         """
         Trigger the DevOps agent to add containerization and deployment for the backend repo.
         Writes Dockerfile, CI/CD, etc. into the backend repository.
+        When build_verifier is provided, uses run_workflow (plan -> generate -> verify -> fix loop).
         Returns True if run and write succeeded, False otherwise (non-blocking).
         """
         from pathlib import Path
-        from devops_agent.models import DevOpsInput
+        from devops_agent.models import DevOpsInput, TargetRepo
         from shared.repo_writer import write_agent_output
 
         path = Path(repo_path).resolve()
@@ -973,13 +975,31 @@ class TechLeadAgent:
             return False
         logger.info("Tech Lead: triggering DevOps for backend repo (containerize and deploy)")
         try:
+            if build_verifier:
+                workflow_result = devops_agent.run_workflow(
+                    repo_path=path,
+                    task_description="Add containerization and deployment for the backend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Backend is Python/FastAPI.",
+                    requirements="Dockerfile for Python/FastAPI (pip install, uvicorn). CI/CD: install deps, run tests (pytest), build image. Make repo self-contained for build and deploy.",
+                    architecture=architecture,
+                    existing_pipeline=existing_pipeline if existing_pipeline and existing_pipeline != "# No code files found" else None,
+                    tech_stack=["Python", "FastAPI", "PostgreSQL", "Docker"],
+                    target_repo=TargetRepo.BACKEND,
+                    build_verifier=build_verifier,
+                    task_id="devops-backend",
+                    subdir="",
+                )
+                if workflow_result.success:
+                    logger.info("Tech Lead: DevOps for backend completed (workflow)")
+                else:
+                    logger.warning("Tech Lead: DevOps for backend workflow failed: %s", workflow_result.failure_reason)
+                return workflow_result.success
             result = devops_agent.run(DevOpsInput(
                 task_description="Add containerization and deployment for the backend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Backend is Python/FastAPI.",
                 requirements="Dockerfile for Python/FastAPI (pip install, uvicorn). CI/CD: install deps, run tests (pytest), build image. Make repo self-contained for build and deploy.",
                 architecture=architecture,
                 existing_pipeline=existing_pipeline if existing_pipeline and existing_pipeline != "# No code files found" else None,
                 tech_stack=["Python", "FastAPI", "PostgreSQL", "Docker"],
-                target_repo="backend",
+                target_repo=TargetRepo.BACKEND,
             ))
             if result.needs_clarification and result.clarification_requests:
                 logger.warning("Tech Lead: DevOps (backend) requested clarification (non-blocking): %s", result.clarification_requests[:1])
@@ -1001,14 +1021,16 @@ class TechLeadAgent:
         architecture,
         spec_content: str,
         existing_pipeline: str | None = None,
+        build_verifier=None,
     ) -> bool:
         """
         Trigger the DevOps agent to add containerization and deployment for the frontend repo.
         Writes Dockerfile, CI/CD, etc. into the frontend repository.
+        When build_verifier is provided, uses run_workflow (plan -> generate -> verify -> fix loop).
         Returns True if run and write succeeded, False otherwise (non-blocking).
         """
         from pathlib import Path
-        from devops_agent.models import DevOpsInput
+        from devops_agent.models import DevOpsInput, TargetRepo
         from shared.repo_writer import write_agent_output
 
         path = Path(repo_path).resolve()
@@ -1017,13 +1039,31 @@ class TechLeadAgent:
             return False
         logger.info("Tech Lead: triggering DevOps for frontend repo (containerize and deploy)")
         try:
+            if build_verifier:
+                workflow_result = devops_agent.run_workflow(
+                    repo_path=path,
+                    task_description="Add containerization and deployment for the frontend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Frontend is Angular/Node.",
+                    requirements="Dockerfile: multi-stage build (npm ci, ng build; serve with nginx or Node). CI/CD: install deps, run tests, build image. Make repo self-contained for build and deploy.",
+                    architecture=architecture,
+                    existing_pipeline=existing_pipeline if existing_pipeline and existing_pipeline != "# No code files found" else None,
+                    tech_stack=["Angular", "Node", "Docker"],
+                    target_repo=TargetRepo.FRONTEND,
+                    build_verifier=build_verifier,
+                    task_id="devops-frontend",
+                    subdir="",
+                )
+                if workflow_result.success:
+                    logger.info("Tech Lead: DevOps for frontend completed (workflow)")
+                else:
+                    logger.warning("Tech Lead: DevOps for frontend workflow failed: %s", workflow_result.failure_reason)
+                return workflow_result.success
             result = devops_agent.run(DevOpsInput(
                 task_description="Add containerization and deployment for the frontend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Frontend is Angular/Node.",
                 requirements="Dockerfile: multi-stage build (npm ci, ng build; serve with nginx or Node). CI/CD: install deps, run tests, build image. Make repo self-contained for build and deploy.",
                 architecture=architecture,
                 existing_pipeline=existing_pipeline if existing_pipeline and existing_pipeline != "# No code files found" else None,
                 tech_stack=["Angular", "Node", "Docker"],
-                target_repo="frontend",
+                target_repo=TargetRepo.FRONTEND,
             ))
             if result.needs_clarification and result.clarification_requests:
                 logger.warning("Tech Lead: DevOps (frontend) requested clarification (non-blocking): %s", result.clarification_requests[:1])

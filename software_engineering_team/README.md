@@ -4,23 +4,24 @@ A multi-agent system that simulates a real software engineering team with a mix 
 
 ## Team Structure
 
-| Agent | Role | Expertise |
-|-------|------|------------|
-| **Tech Lead** | Staff-level orchestrator | Uses initial_spec to generate full build plan; distributes work by dependency; tracks progress; triggers documentation |
-| **Project Planning Agent** | Spec reviewer | Reviews `initial_spec.md`, produces features/functionality overview; used by Tech Lead and Architecture |
-| **Git Setup Agent** | Repo setup | Creates `work_path/backend` and `work_path/frontend` clones/branches; ensures `development` branch |
-| **Architecture Expert** | System designer | Designs system architecture from requirements; output used by all other agents |
-| **DevOps Expert** | Infrastructure specialist | CI/CD pipelines, IaC (Terraform, etc.), Docker, networking |
-| **Cybersecurity Expert** | Security specialist | Reviews code for security flaws per task (backend and frontend); remediates vulnerabilities |
-| **Backend Expert** | Backend engineer | Implements solutions in Python or Java; runs autonomous workflow with quality gates |
-| **Frontend Expert** (via Frontend Engineering Team) | Frontend sub-orchestration | UX Designer, UI Designer, Design System, Frontend Architect, Feature Implementation, UX Engineer, Accessibility, Security, Performance Engineer, QA, Build/Release, Code Review – full pipeline per task |
-| **QA Expert** | Quality assurance | Reviews for bugs; produces integration/unit tests and README content (persisted to repo) |
-| **Code Review Agent** | Code reviewer | Reviews code against spec, standards, and acceptance criteria |
-| **Acceptance Verifier** | Criteria checker | Verifies each task acceptance criterion is satisfied with evidence |
-| **Integration Agent** | Full-stack validator | Validates backend-frontend API contract alignment after workers complete |
-| **Accessibility Expert** | A11y specialist | Reviews frontend for WCAG 2.2 compliance |
-| **DbC Comments Agent** | Design by Contract | Adds pre/postconditions and invariants to code |
-| **Documentation Agent** | Technical writer | Updates README and project docs |
+| Agent | Phase | Role | Expertise |
+|-------|-------|------|------------|
+| **Spec Intake** | Discovery | Spec validator | Validates spec, REQ-IDs, glossary, assumptions |
+| **Project Planning Agent** | Discovery | Spec reviewer | Reviews `initial_spec.md`, produces features/functionality overview; used by Tech Lead and Architecture |
+| **Architecture Expert** | Design | System designer | Designs system architecture from requirements; output used by all other agents |
+| **Tech Lead** | Design | Staff-level orchestrator | Uses initial_spec to generate full build plan; distributes work by dependency; tracks progress; triggers documentation |
+| **Git Setup Agent** | Setup | Repo setup | Creates `work_path/backend` and `work_path/frontend` clones/branches; ensures `development` branch |
+| **Backend Expert** | Implementation | Backend engineer | Implements solutions in Python or Java; runs autonomous workflow with quality gates |
+| **Frontend Expert** (via Frontend Engineering Team) | Implementation | Frontend sub-orchestration | UX Designer, UI Designer, Design System, Frontend Architect, Feature Implementation, UX Engineer, Accessibility, Security, Performance Engineer, QA, Build/Release, Code Review – full pipeline per task |
+| **Code Review Agent** | Quality | Code reviewer | Reviews code against spec, standards, and acceptance criteria |
+| **QA Expert** | Quality | Quality assurance | Reviews for bugs; produces integration/unit tests and README content (persisted to repo) |
+| **Cybersecurity Expert** | Quality | Security specialist | Reviews code for security flaws per task (backend and frontend); remediates vulnerabilities |
+| **Accessibility Expert** | Quality | A11y specialist | Reviews frontend for WCAG 2.2 compliance |
+| **Acceptance Verifier** | Quality | Criteria checker | Verifies each task acceptance criterion is satisfied with evidence |
+| **DbC Comments Agent** | Quality | Design by Contract | Adds pre/postconditions and invariants to code |
+| **Integration Agent** | Integration/release | Full-stack validator | Validates backend-frontend API contract alignment after workers complete |
+| **DevOps Expert** | Integration/release | Infrastructure specialist | CI/CD pipelines, IaC (Terraform, etc.), Docker, networking |
+| **Documentation Agent** | Integration/release | Technical writer | Updates README and project docs |
 
 ## Coding Standards
 
@@ -35,6 +36,80 @@ All agents enforce these rules for produced code:
 | **README** | Must include build, run, test, and deploy instructions |
 | **Git Branching** | Work on `development` branch; PR to merge into `main`. Tech Lead creates `development` if missing |
 | **Commit Messages** | Conventional Commits format: `type(scope): description` (feat, fix, docs, test, ci, etc.) |
+
+## Sub-teams and SDLC
+
+Agents are grouped by **SDLC phase** and **who consumes whose output**. Execution is driven by **task assignee** (`backend`, `frontend`, `devops`, `git_setup`). QA and Security are **not** task assignees; they are invoked **inside** backend and frontend workflows (per task) and in a final full-codebase security pass.
+
+### Six SDLC Phases
+
+| Phase | Sub-team | Agents |
+|-------|----------|--------|
+| **Discovery** | planning_team (intake) | Spec Intake, Project Planning |
+| **Design** | planning_team | Architecture Expert, Tech Lead, domain planning agents (API Contract, Data Architecture, UI/UX, Frontend Architecture, Infrastructure, DevOps Planning, QA Test Strategy, Security Planning, Observability, Performance Doc), planning consolidation |
+| **Setup** | top-level | Git Setup |
+| **Implementation** | backend | Backend Expert |
+| **Implementation** | frontend_team | UX Designer, UI Designer, Design System, Frontend Architect, Feature Agent, UX Engineer, Performance Engineer, Build/Release |
+| **Quality** | quality gates (cross-cutting) | Code Review, QA Expert, Cybersecurity Expert, Accessibility Expert, Acceptance Verifier, DbC Comments |
+| **Integration / release** | top-level | Integration Agent, DevOps Expert, Documentation Agent |
+
+**Planning team sub-groups:** Within `planning_team/`, **Discovery** (intake) = Spec Intake, Project Planning. **Design** = Architecture, Tech Lead, and all domain planning agents. The Tech Lead uses planning graph agents (backend, frontend, data, test, performance, documentation, quality-gate planning) internally when creating task details and aligning with Architecture.
+
+**Accessibility:** Lives under `frontend_team/` but is conceptually part of the **Quality** phase—it reviews frontend code for WCAG 2.2 compliance and is invoked per frontend task.
+
+### SDLC Flow Diagram
+
+```mermaid
+flowchart LR
+  subgraph discovery [Discovery]
+    SpecIntake
+    ProjectPlanning
+  end
+
+  subgraph design [Design and planning]
+    Architecture
+    TechLead
+    DomainPlanning[API Contract, Data Arch, UI/UX, etc.]
+  end
+
+  subgraph setup [Setup]
+    GitSetup
+  end
+
+  subgraph implementation [Implementation]
+    Backend[Backend worker]
+    Frontend[Frontend worker]
+  end
+
+  subgraph quality [Quality and review]
+    CodeReview
+    QA
+    Security
+    Accessibility
+    AcceptanceVerifier
+    DbcComments
+  end
+
+  subgraph integration [Integration and release]
+    IntegrationAgent
+    DevOps
+    Documentation
+  end
+
+  discovery --> design
+  design --> setup
+  setup --> implementation
+  implementation --> quality
+  quality --> integration
+```
+
+### Per-Task Workflow Gates
+
+**Backend:** build verification → code review → acceptance verifier → security → QA → DbC → Tech Lead review → documentation
+
+**Frontend:** design (optional, skipped for lightweight tasks) → implementation → build → code review → QA → accessibility → security → acceptance verifier → DbC → Tech Lead → documentation
+
+**Frontend internal pipeline order:** UX Designer → UI Designer → Design System → Frontend Architect → Feature Implementation → UX Engineer → Performance Engineer → Build/Release
 
 ## Plan folder
 
@@ -114,6 +189,7 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | `SW_LLM_BACKOFF_BASE` | Base seconds for exponential backoff | `2` |
 | `SW_LLM_BACKOFF_MAX_SECONDS` | Max backoff seconds | `60` |
 | `SW_LLM_MAX_CONCURRENCY` | Max concurrent LLM calls | `2` |
+| `SW_LLM_MAX_TOKENS` | Max tokens to generate; if unset, uses model's num_ctx from Ollama /api/show | (model num_ctx) |
 
 Example with Ollama:
 ```bash
@@ -230,6 +306,8 @@ software_engineering_team/
 ├── devops_agent/
 ├── security_agent/
 ├── backend_agent/
+├── quality_gates/        # Cross-cutting review agents (Code Review, QA, Security, Acceptance Verifier, DbC)
+├── integration_team/      # Post-execution agents (Integration, DevOps, Documentation)
 ├── frontend_team/         # All frontend engineering agents
 │   ├── feature_agent/    # FrontendExpertAgent (implementation)
 │   ├── accessibility_agent/
