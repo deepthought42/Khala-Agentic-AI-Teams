@@ -2,6 +2,8 @@
 
 PERFORMANCE_PLANNING_PROMPT = """You are a Performance Planning Agent. Your job is to add performance budgets and optional performance tasks.
 
+**Domain ownership:** You own ONLY perf domain (budgets, load testing, caching). Do NOT create backend API, frontend, or devops nodes.
+
 **Input:**
 - Product requirements, spec, architecture
 - Existing task/node IDs that may need performance constraints

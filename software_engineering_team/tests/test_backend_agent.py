@@ -300,6 +300,7 @@ def test_backend_plan_task_returns_plan_markdown() -> None:
     from shared.models import Task, TaskType
 
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "feature_intent": "Add CRUD for tasks",
         "what_changes": ["app/routers/tasks.py", "app/models/task.py"],
@@ -324,6 +325,7 @@ def test_backend_plan_task_returns_plan_markdown() -> None:
 def test_backend_run_injects_task_plan_and_follow_instruction_into_prompt() -> None:
     """When task_plan is set, run() injects Implementation plan and follow-plan instruction into prompt."""
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "code": "",
         "language": "python",

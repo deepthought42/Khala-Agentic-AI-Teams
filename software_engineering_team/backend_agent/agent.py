@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from shared.context_sizing import compute_existing_code_chars
 from shared.llm import LLMClient
 from shared.models import SystemArchitecture, Task, TaskUpdate
 from shared.prompt_utils import build_problem_solving_header, log_llm_prompt
@@ -115,7 +116,7 @@ def _int_env(name: str, default: int, min_val: int = 1) -> int:
 MAX_REVIEW_ITERATIONS = _int_env("SW_MAX_REVIEW_ITERATIONS", 20)
 MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 6)  # Stop if build fails identically this many times
 MAX_CLARIFICATION_ROUNDS = _int_env("SW_MAX_CLARIFICATION_ROUNDS", 20)
-MAX_EXISTING_CODE_CHARS = 40_000
+
 # Patterns that indicate pytest failed due to missing /test-generic-error route or
 # exception handler re-raising (test client gets exception instead of response).
 # When matched, we give the agent a targeted suggestion instead of generic "fix errors".
@@ -403,7 +404,7 @@ class BackendExpertAgent:
             context_parts.extend([
                 "",
                 "**Project Specification:**",
-                _truncate_for_context(spec_content, 15_000),
+                _truncate_for_context(spec_content, compute_spec_content_chars(self.llm)),
             ])
         if architecture:
             context_parts.extend([
@@ -416,7 +417,7 @@ class BackendExpertAgent:
             context_parts.extend([
                 "",
                 "**Existing codebase:**",
-                _truncate_for_context(existing_code, 25_000),
+                _truncate_for_context(existing_code, compute_existing_code_chars(self.llm)),
             ])
         prompt = BACKEND_PLANNING_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         log_llm_prompt(logger, "Backend", "planning", (task.description or "")[:80], prompt)
@@ -543,9 +544,12 @@ class BackendExpertAgent:
         result: Optional[BackendOutput] = None
 
         # Handle clarification sub-loop (separate from the review loop)
+        from shared.context_sizing import compute_existing_code_chars
+
         for clar_round in range(MAX_CLARIFICATION_ROUNDS + 1):
+            max_code_chars = compute_existing_code_chars(self.llm)
             existing_code = _truncate_for_context(
-                _read_repo_code(repo_path), MAX_EXISTING_CODE_CHARS
+                _read_repo_code(repo_path), max_code_chars
             )
             # Per-task planning: produce implementation plan before first code gen
             plan_text = self._plan_task(
@@ -575,7 +579,7 @@ class BackendExpertAgent:
                     requirements=_task_requirements_with_test_expectations(current_task, repo_path),
                     user_story=getattr(current_task, "user_story", "") or "",
                     spec_content=_truncate_for_context(
-                        spec_content, MAX_EXISTING_CODE_CHARS
+                        spec_content, max_code_chars
                     ),
                     architecture=architecture,
                     language="python",
@@ -891,7 +895,7 @@ class BackendExpertAgent:
                 task=current_task,
                 architecture=architecture,
                 existing_code=_truncate_for_context(
-                    _read_repo_code(repo_path), MAX_EXISTING_CODE_CHARS
+                    _read_repo_code(repo_path), compute_existing_code_chars(self.llm)
                 ),
             )
             record.code_review_approved = review_result.approved
@@ -1356,7 +1360,7 @@ class BackendExpertAgent:
 
         try:
             codebase_summary = _truncate_for_context(
-                _read_repo_code(repo_path), MAX_EXISTING_CODE_CHARS
+                _read_repo_code(repo_path), compute_existing_code_chars(self.llm)
             )
             new_tasks = tech_lead.review_progress(
                 task_update=task_update,
@@ -1458,7 +1462,7 @@ class BackendExpertAgent:
                 requirements=_task_requirements_with_test_expectations(current_task, repo_path),
                 user_story=getattr(current_task, "user_story", "") or "",
                 spec_content=_truncate_for_context(
-                    spec_content, MAX_EXISTING_CODE_CHARS
+                    spec_content, compute_existing_code_chars(self.llm)
                 ),
                 architecture=architecture,
                 language="python",
@@ -1495,9 +1499,11 @@ class BackendExpertAgent:
         Postconditions:
             - Returns a ``CodeReviewOutput`` with ``approved`` and ``issues``.
         """
-        from code_review_agent.models import CodeReviewInput, MAX_CODE_REVIEW_CHARS
+        from shared.context_sizing import compute_code_review_total_chars
+        from code_review_agent.models import CodeReviewInput
 
-        code_capped = _truncate_for_context(code, MAX_CODE_REVIEW_CHARS)
+        max_chars = compute_code_review_total_chars(code_review_agent.llm)
+        code_capped = _truncate_for_context(code, max_chars)
         return code_review_agent.run(
             CodeReviewInput(
                 code=code_capped,

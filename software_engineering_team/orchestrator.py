@@ -176,11 +176,6 @@ def _read_repo_code(repo_path: Path, extensions: List[str] = None) -> str:
     return "\n\n".join(parts) if parts else "# No code files found"
 
 
-# Max chars to pass to agents for context (avoid token limits)
-MAX_EXISTING_CODE_CHARS = 40000
-MAX_API_SPEC_CHARS = 20000
-
-
 def _truncate_for_context(text: str, max_chars: int) -> str:
     """Truncate text for agent context, with truncation notice."""
     if not text or len(text) <= max_chars:
@@ -443,10 +438,13 @@ def _run_tech_lead_review(
     (or to the queue provided via append_task_id_fn when running in a worker).
     After review, the Tech Lead triggers the Documentation Agent if available.
     """
+    from shared.context_sizing import compute_existing_code_chars
+
     completed_tasks = [t for tid, t in all_tasks.items() if tid in completed]
     remaining_ids = set(execution_queue)
     remaining_tasks = [t for tid, t in all_tasks.items() if tid in remaining_ids]
-    codebase_summary = _truncate_for_context(_read_repo_code(repo_path), MAX_EXISTING_CODE_CHARS)
+    max_code_chars = compute_existing_code_chars(tech_lead.llm)
+    codebase_summary = _truncate_for_context(_read_repo_code(repo_path), max_code_chars)
 
     new_tasks = tech_lead.review_progress(
         task_update=task_update,
@@ -496,9 +494,12 @@ def _run_code_review(
     Run the code review agent on the given code.
     Returns the CodeReviewOutput.
     """
-    from code_review_agent.models import CodeReviewInput, MAX_CODE_REVIEW_CHARS
+    from shared.context_sizing import compute_code_review_total_chars
+    from code_review_agent.models import CodeReviewInput
 
-    code_capped = _truncate_for_context(code_to_review, MAX_CODE_REVIEW_CHARS)
+    llm = agents["code_review"].llm
+    max_chars = compute_code_review_total_chars(llm)
+    code_capped = _truncate_for_context(code_to_review, max_chars)
     review_input = CodeReviewInput(
         code=code_capped,
         spec_content=spec_content,
@@ -974,20 +975,53 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         plan_dir = ensure_plan_dir(path)
         logger.info("Plan folder ensured at %s", plan_dir)
 
-        # 1b. Spec Intake and Validation (optional): validate spec, produce REQ-IDs, glossary, assumptions
+        # 1b. Spec Intake and Validation: normalize spec into structured form for faster planning
+        # When SW_ENFORCE_STRUCTURED_SPEC=1, fail if spec is too long or intake fails
+        MAX_SPEC_CHARS_STRUCTURED = 60000
+        enforce_structured_spec = (os.environ.get("SW_ENFORCE_STRUCTURED_SPEC") or "").strip().lower() in ("1", "true", "yes")
+        spec_content_for_planning = spec_content  # fallback to full spec if no intake
+        spec_intake_open_questions: List[str] = []
+        spec_intake_assumptions: List[str] = []
         spec_intake_agent = agents.get("spec_intake")
         if spec_intake_agent:
+            if enforce_structured_spec and len(spec_content) > MAX_SPEC_CHARS_STRUCTURED:
+                msg = (
+                    f"SW_ENFORCE_STRUCTURED_SPEC: spec too long ({len(spec_content)} chars, max {MAX_SPEC_CHARS_STRUCTURED}). "
+                    "Shorten the spec or increase MAX_SPEC_CHARS_STRUCTURED."
+                )
+                logger.error(msg)
+                update_job(job_id, status=JOB_STATUS_FAILED, error=msg)
+                return
             try:
-                from planning_team.spec_intake_agent import SpecIntakeInput, validated_spec_to_requirements
+                from planning_team.spec_intake_agent import (
+                    SpecIntakeInput,
+                    build_compact_spec_for_planning,
+                    validated_spec_to_requirements,
+                )
                 spec_intake_output = spec_intake_agent.run(SpecIntakeInput(
                     spec_content=spec_content,
                     plan_dir=plan_dir,
                 ))
                 requirements = validated_spec_to_requirements(spec_intake_output)
-                logger.info("Spec Intake: success, %s REQ-IDs", len(spec_intake_output.acceptance_criteria_index))
+                spec_content_for_planning = build_compact_spec_for_planning(spec_intake_output)
+                spec_intake_open_questions = spec_intake_output.open_questions or []
+                spec_intake_assumptions = spec_intake_output.assumptions or []
+                logger.info(
+                    "Spec Intake: success, %s REQ-IDs, %s open questions, compact spec %s chars (was %s)",
+                    len(spec_intake_output.acceptance_criteria_index),
+                    len(spec_intake_open_questions),
+                    len(spec_content_for_planning),
+                    len(spec_content),
+                )
             except LLMRateLimitError:
+                if enforce_structured_spec:
+                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                    return
                 logger.warning("Spec Intake skipped (LLM rate limit); using parsed requirements")
             except Exception as e:
+                if enforce_structured_spec:
+                    update_job(job_id, status=JOB_STATUS_FAILED, error=f"Spec Intake required but failed: {e}")
+                    return
                 logger.warning("Spec Intake failed (using parsed requirements): %s", e)
         update_job(job_id, requirements_title=requirements.title)
 
@@ -996,11 +1030,13 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         project_planning_agent = agents.get("project_planning")
         if project_planning_agent:
             try:
+                from shared.context_sizing import compute_repo_summary_chars
                 from planning_team.project_planning_agent.models import ProjectPlanningInput, build_fallback_overview_from_requirements
-                repo_summary = _truncate_for_context(_read_repo_code(path), 2000)
+                max_repo_chars = compute_repo_summary_chars(project_planning_agent.llm)
+                repo_summary = _truncate_for_context(_read_repo_code(path), max_repo_chars)
                 pp_input = ProjectPlanningInput(
                     requirements=requirements,
-                    spec_content=spec_content,
+                    spec_content=spec_content_for_planning,
                     repo_state_summary=repo_summary if repo_summary != "# No code files found" else None,
                     plan_dir=plan_dir,
                 )
@@ -1076,17 +1112,29 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         from tech_lead_agent.models import TechLeadInput
         from planning_team.planning_review import check_tasks_architecture_alignment, check_spec_conformance
 
+        from shared.context_sizing import compute_existing_code_chars
+
         arch_agent = agents["architecture"]
         tech_lead = agents["tech_lead"]
-        existing_code = _truncate_for_context(_read_repo_code(path), MAX_EXISTING_CODE_CHARS)
-        MAX_ALIGNMENT_ITERATIONS = int(os.environ.get("SW_MAX_ALIGNMENT_ITERATIONS") or "20")
-        MAX_CONFORMANCE_RETRIES = int(os.environ.get("SW_MAX_CONFORMANCE_RETRIES") or "20")
+        max_code_chars = compute_existing_code_chars(tech_lead.llm)
+        existing_code = _truncate_for_context(_read_repo_code(path), max_code_chars)
+
+        minimal_planning = (os.environ.get("SW_MINIMAL_PLANNING") or "").strip().lower() in ("1", "true", "yes")
+        fast_start_planning = (os.environ.get("SW_FAST_START_PLANNING") or "").strip().lower() in ("1", "true", "yes")
+        if fast_start_planning:
+            minimal_planning = True
+            logger.info("Fast-start planning mode: minimal planning, 1 alignment/conformance iteration")
+        tech_lead_minimal_planning = minimal_planning
+
+        MAX_ALIGNMENT_ITERATIONS = int(os.environ.get("SW_MAX_ALIGNMENT_ITERATIONS") or ("1" if fast_start_planning else "5"))
+        MAX_CONFORMANCE_RETRIES = int(os.environ.get("SW_MAX_CONFORMANCE_RETRIES") or ("1" if fast_start_planning else "3"))
 
         assignment = None
         architecture = None
         conformance_retries = 0
         conformance_issues_from_last: List[str] = []
         tech_lead_output = None
+        enable_planning_cache = (os.environ.get("SW_ENABLE_PLANNING_CACHE") or "").strip().lower() in ("1", "true", "yes")
 
         while True:
             # Step 2: Detailed tasks from spec + features doc (and architecture if we have it from a previous iteration)
@@ -1100,11 +1148,14 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     requirements=requirements,
                     architecture=architecture,
                     repo_path=str(path),
-                    spec_content=spec_content,
+                    spec_content=spec_content_for_planning,
                     existing_codebase=existing_code if existing_code != "# No code files found" else None,
                     project_overview=project_overview,
                     alignment_feedback=alignment_feedback if alignment_feedback else None,
                     conformance_issues=conformance_issues if conformance_issues else None,
+                    minimal_planning=tech_lead_minimal_planning,
+                    open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
+                    assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
                 ))
             except LLMRateLimitError:
                 logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
@@ -1146,13 +1197,54 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             except Exception as e:
                 logger.warning("Failed to write plan/architecture.md: %s", e)
 
+            # Planning cache: reuse assignment when spec+arch+project unchanged (first iteration only)
+            if enable_planning_cache and conformance_retries == 0 and not alignment_feedback:
+                from shared.planning_cache import (
+                    compute_planning_cache_key,
+                    get_cached_plan,
+                    set_cached_plan,
+                )
+                from shared.models import TaskAssignment
+                cache_key = compute_planning_cache_key(
+                    spec_content_for_planning,
+                    architecture.overview if architecture else "",
+                    project_overview,
+                )
+                cached = get_cached_plan(plan_dir, cache_key)
+                if cached and cached.get("assignment"):
+                    try:
+                        assignment = TaskAssignment(**cached["assignment"])
+                        tech_lead_output = type("TechLeadOutput", (), {
+                            "assignment": assignment,
+                            "requirement_task_mapping": cached.get("requirement_task_mapping") or [],
+                            "summary": cached.get("summary") or "cached",
+                        })()
+                        logger.info("Using cached planning result (skipping alignment/conformance)")
+                        break
+                    except Exception as cache_err:
+                        logger.warning("Planning cache load failed, continuing: %s", cache_err)
+
             # Step 4: Loop until tasks and architecture align
             alignment_iterations = 0
+            alignment_early_exit = int(os.environ.get("SW_ALIGNMENT_EARLY_EXIT_THRESHOLD") or "2")
             while alignment_iterations < MAX_ALIGNMENT_ITERATIONS:
                 aligned, alignment_feedback = check_tasks_architecture_alignment(assignment, architecture, llm)
                 if aligned:
                     logger.info("Tasks and architecture aligned (iteration %s)", alignment_iterations + 1)
                     break
+                # Early exit: few minor issues and we've done at least one iteration
+                if alignment_iterations >= 1 and len(alignment_feedback) <= alignment_early_exit:
+                    has_critical = any(
+                        kw in " ".join(alignment_feedback).lower()
+                        for kw in ("missing", "no task", "no corresponding", "critical", "required")
+                    )
+                    if not has_critical:
+                        logger.info(
+                            "Alignment: early exit (iteration %s, %s minor issues below threshold)",
+                            alignment_iterations + 1,
+                            len(alignment_feedback),
+                        )
+                        break
                 logger.warning("Tasks and architecture not aligned (iteration %s/%s): %s", alignment_iterations + 1, MAX_ALIGNMENT_ITERATIONS, alignment_feedback[:3])
                 alignment_iterations += 1
                 if alignment_iterations >= MAX_ALIGNMENT_ITERATIONS:
@@ -1164,10 +1256,13 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         requirements=requirements,
                         architecture=architecture,
                         repo_path=str(path),
-                        spec_content=spec_content,
+                        spec_content=spec_content_for_planning,
                         existing_codebase=existing_code if existing_code != "# No code files found" else None,
                         project_overview=project_overview,
                         alignment_feedback=alignment_feedback,
+                        minimal_planning=tech_lead_minimal_planning,
+                        open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
+                        assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
                     ))
                 except LLMRateLimitError:
                     update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
@@ -1198,10 +1293,39 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     pass
 
             # Step 5: Conformance review (tasks + architecture vs initial_spec)
-            conformant, conformance_issues_from_last = check_spec_conformance(spec_content, assignment, architecture, llm)
+            conformant, conformance_issues_from_last = check_spec_conformance(spec_content_for_planning, assignment, architecture, llm)
             if conformant:
                 logger.info("Tasks and architecture conform to initial spec; proceeding to execution")
+                if enable_planning_cache and architecture:
+                    try:
+                        from shared.planning_cache import compute_planning_cache_key, set_cached_plan
+                        cache_key = compute_planning_cache_key(
+                            spec_content_for_planning,
+                            architecture.overview,
+                            project_overview,
+                        )
+                        set_cached_plan(
+                            plan_dir,
+                            cache_key,
+                            assignment,
+                            getattr(tech_lead_output, "requirement_task_mapping", None) or [],
+                            getattr(tech_lead_output, "summary", "") or "",
+                        )
+                    except Exception as cache_err:
+                        logger.warning("Planning cache store failed: %s", cache_err)
                 break
+            conformance_early_exit = int(os.environ.get("SW_CONFORMANCE_EARLY_EXIT_THRESHOLD") or "2")
+            if len(conformance_issues_from_last) <= conformance_early_exit:
+                has_critical_conformance = any(
+                    kw in " ".join(conformance_issues_from_last).lower()
+                    for kw in ("missing", "violates", "wrong scope", "critical", "required")
+                )
+                if not has_critical_conformance:
+                    logger.info(
+                        "Conformance: early exit (%s minor issues below threshold)",
+                        len(conformance_issues_from_last),
+                    )
+                    break
             logger.warning("Spec conformance failed (%d issues); re-running planning with feedback", len(conformance_issues_from_last))
             conformance_retries += 1
             if conformance_retries > MAX_CONFORMANCE_RETRIES:
@@ -1222,7 +1346,6 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
         skip_env = (os.environ.get("SW_SKIP_PLANNING_AGENTS") or "").strip()
         if skip_env:
             skip_planning_agents = {k.strip() for k in skip_env.split(",") if k.strip()}
-        minimal_planning = (os.environ.get("SW_MINIMAL_PLANNING") or "").strip().lower() in ("1", "true", "yes")
         if minimal_planning:
             skip_planning_agents = {
                 "api_contract", "data_architecture", "ui_ux", "infrastructure",
@@ -1268,7 +1391,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             _run_tier2_agent,
                             key,
                             agents,
-                            spec_content,
+                            spec_content_for_planning,
                             arch_overview,
                             plan_dir,
                             requirements,
@@ -1295,7 +1418,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         ))
                     if "performance_doc" in tier3_keys and agents.get("performance_doc"):
                         futures.append(executor.submit(
-                            lambda: _run_tier3_performance_doc(agents, spec_content, arch_overview, requirements, plan_dir)
+                            lambda: _run_tier3_performance_doc(agents, spec_content_for_planning, arch_overview, requirements, plan_dir)
                         ))
                     for f in as_completed(futures):
                         try:
@@ -1513,12 +1636,14 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     repo_name,
                 )
                 try:
+                    from shared.context_sizing import compute_existing_code_chars
+                    max_code_chars = compute_existing_code_chars(doc_agent.llm)
                     codebase_content = _truncate_for_context(
                         _read_repo_code(
                             repo_dir,
                             [".py"] if repo_name == "backend" else [".ts", ".tsx", ".html", ".scss"],
                         ),
-                        MAX_EXISTING_CODE_CHARS,
+                        max_code_chars,
                     )
                     doc_agent.run_full_workflow(
                         repo_path=repo_dir,

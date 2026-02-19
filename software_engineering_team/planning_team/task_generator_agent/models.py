@@ -42,3 +42,11 @@ class TaskGeneratorInput(BaseModel):
     alignment_feedback: Optional[List[str]] = None
     conformance_issues: Optional[List[str]] = None
     repo_path: str = Field(default="")
+    open_questions: Optional[List[str]] = Field(
+        None,
+        description="Open questions from Spec Intake; resolve with enterprise-informed defaults and emit tasks",
+    )
+    assumptions: Optional[List[str]] = Field(
+        None,
+        description="Assumptions from Spec Intake; may extend when resolving open questions",
+    )

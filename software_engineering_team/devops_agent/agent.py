@@ -55,10 +55,12 @@ class DevOpsExpertAgent:
         if getattr(input_data, "task_plan", None) and input_data.task_plan:
             context_parts.extend(["", "**Implementation plan:**", input_data.task_plan])
         if getattr(input_data, "build_errors", None) and input_data.build_errors:
+            from shared.context_sizing import compute_build_errors_chars
+            max_errors = compute_build_errors_chars(self.llm)
             context_parts.extend([
                 "",
                 "**Build/validation errors to fix:** The previous output failed verification. Fix these issues:",
-                input_data.build_errors[:6000],
+                input_data.build_errors[:max_errors],
             ])
 
         prompt = DEVOPS_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
@@ -107,6 +109,7 @@ class DevOpsExpertAgent:
         No feature branch; writes directly to repo_path. On verification failure,
         re-generates with build_errors and retries up to max_iterations.
         """
+        from shared.context_sizing import compute_build_errors_chars
         from shared.repo_writer import write_agent_output, NO_FILES_TO_WRITE_MSG
 
         path = Path(repo_path).resolve()
@@ -193,7 +196,7 @@ class DevOpsExpertAgent:
                     tech_stack=tech_stack,
                     target_repo=target_repo,
                     task_plan=plan_text if plan_text else None,
-                    build_errors=build_errors[:6000],
+                    build_errors=build_errors[:compute_build_errors_chars(self.llm)],
                 )
             )
             if result.needs_clarification and result.clarification_requests:

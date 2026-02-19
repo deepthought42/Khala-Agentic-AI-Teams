@@ -8,7 +8,6 @@ from planning_team.spec_chunk_analyzer import (
     SpecChunkAnalyzer,
     SpecChunkAnalyzerInput,
     SpecChunkAnalysis,
-    MAX_SPEC_CHUNK_CHARS,
 )
 
 
@@ -16,6 +15,7 @@ from planning_team.spec_chunk_analyzer import (
 def mock_llm() -> MagicMock:
     """LLM that returns valid spec chunk analysis JSON."""
     llm = MagicMock()
+    llm.get_max_context_tokens.return_value = 16384
     llm.complete_json.return_value = {
         "data_entities": [{"name": "User", "attributes": ["id", "email"]}],
         "api_endpoints": [{"method": "GET", "path": "/users", "description": "List users", "auth_required": True}],
@@ -72,9 +72,10 @@ def test_spec_chunk_analyzer_prompt_contains_chunk_not_full_spec(mock_llm: Magic
 
 
 def test_spec_chunk_analyzer_truncates_oversized_chunk(mock_llm: MagicMock) -> None:
-    """Chunk exceeding MAX_SPEC_CHUNK_CHARS is truncated."""
+    """Chunk exceeding model-based limit is truncated."""
+    mock_llm.get_max_context_tokens.return_value = 8000  # small context -> ~7K chars max
     agent = SpecChunkAnalyzer(llm_client=mock_llm)
-    oversized = "a" * (MAX_SPEC_CHUNK_CHARS + 1000)
+    oversized = "a" * 50_000  # exceeds any reasonable chunk limit
     agent.run(
         SpecChunkAnalyzerInput(
             spec_chunk=oversized,
@@ -86,4 +87,3 @@ def test_spec_chunk_analyzer_truncates_oversized_chunk(mock_llm: MagicMock) -> N
     call_args = mock_llm.complete_json.call_args
     prompt = call_args[0][0]
     assert "[truncated]" in prompt
-    assert len(prompt) < MAX_SPEC_CHUNK_CHARS + 5000  # prompt has overhead

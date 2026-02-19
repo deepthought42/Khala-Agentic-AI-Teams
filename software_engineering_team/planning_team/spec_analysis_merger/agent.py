@@ -53,7 +53,9 @@ class SpecAnalysisMerger:
         prompt = SPEC_ANALYSIS_MERGER_PROMPT
         prompt += "\n\n---\n\n**Chunk analyses to merge:**\n\n" + chunks_text
         if spec_outline:
-            prompt += "\n\n---\n\n**Spec outline (section structure):**\n" + spec_outline[:2000]
+            from shared.context_sizing import compute_spec_outline_chars
+            max_outline = compute_spec_outline_chars(self.llm)
+            prompt += "\n\n---\n\n**Spec outline (section structure):**\n" + spec_outline[:max_outline]
 
         logger.info(
             "SpecAnalysisMerger: merging %d chunk analyses",

@@ -5,16 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from shared.context_sizing import (
+    compute_code_review_chunk_chars,
+    compute_code_review_total_chars,
+)
 from shared.llm import LLMClient
 
 from .coordinator import run_coordinator
-from .models import (
-    CodeReviewInput,
-    CodeReviewIssue,
-    CodeReviewOutput,
-    MAX_CODE_REVIEW_CHARS,
-    MAX_CODE_REVIEW_CHARS_SINGLE_CALL,
-)
+from .models import CodeReviewInput, CodeReviewIssue, CodeReviewOutput
 from .prompts import CODE_REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -35,15 +33,17 @@ class CodeReviewAgent:
     def run(self, input_data: CodeReviewInput) -> CodeReviewOutput:
         """Review code and return approval or issues."""
         code = input_data.code or ""
-        if len(code) > MAX_CODE_REVIEW_CHARS_SINGLE_CALL:
+        single_call_limit = compute_code_review_chunk_chars(self.llm)
+        if len(code) > single_call_limit:
             logger.info(
-                "CodeReview: code size %s exceeds single-call limit %s, using coordinator",
+                "CodeReview: code size %s exceeds single-call limit %s (model context), using coordinator",
                 len(code),
-                MAX_CODE_REVIEW_CHARS_SINGLE_CALL,
+                single_call_limit,
             )
-            if len(code) > MAX_CODE_REVIEW_CHARS:
-                code = code[:MAX_CODE_REVIEW_CHARS] + (
-                    f"\n\n... [truncated for code review, {len(code) - MAX_CODE_REVIEW_CHARS} more chars]"
+            max_total = compute_code_review_total_chars(self.llm)
+            if len(code) > max_total:
+                code = code[:max_total] + (
+                    f"\n\n... [truncated for code review, {len(code) - max_total} more chars]"
                 )
                 input_data = CodeReviewInput(
                     code=code,
@@ -56,13 +56,14 @@ class CodeReviewAgent:
                     existing_codebase=input_data.existing_codebase,
                 )
             return run_coordinator(self.llm, input_data)
-        if len(code) > MAX_CODE_REVIEW_CHARS:
+        max_total = compute_code_review_total_chars(self.llm)
+        if len(code) > max_total:
             logger.info(
-                "CodeReview: truncating code from %s to %s chars for review",
+                "CodeReview: truncating code from %s to %s chars for review (model context)",
                 len(code),
-                MAX_CODE_REVIEW_CHARS,
+                max_total,
             )
-            code = code[:MAX_CODE_REVIEW_CHARS] + f"\n\n... [truncated for code review, {len(code) - MAX_CODE_REVIEW_CHARS} more chars]"
+            code = code[:max_total] + f"\n\n... [truncated for code review, {len(code) - max_total} more chars]"
 
         logger.info(
             "CodeReview: reviewing %s chars of %s code | task=%s | has_spec=%s | has_architecture=%s | acceptance_criteria=%s",

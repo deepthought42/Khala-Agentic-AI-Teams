@@ -2,6 +2,8 @@
 
 DATA_PLANNING_PROMPT = """You are a Data Planning Agent. Your job is to add data-related tasks when the project involves significant data modeling, migrations, or analytics.
 
+**Domain ownership:** You own ONLY data domain (schemas, migrations, ETL, data flows). Do NOT create backend API, frontend, devops, or QA nodes.
+
 **Input:**
 - Product requirements, spec, architecture
 

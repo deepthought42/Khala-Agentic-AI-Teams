@@ -5,16 +5,15 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from shared.context_sizing import (
+    compute_code_review_arch_overview_chars,
+    compute_code_review_chunk_chars,
+    compute_code_review_existing_codebase_chars,
+    compute_code_review_spec_excerpt_chars,
+)
 from shared.llm import LLMClient
 
-from .models import (
-    ChunkReviewInput,
-    ChunkReviewOutput,
-    MAX_ARCH_OVERVIEW_CHARS,
-    MAX_CHARS_PER_CHUNK,
-    MAX_EXISTING_CODEBASE_EXCERPT_CHARS,
-    MAX_SPEC_EXCERPT_CHARS,
-)
+from .models import ChunkReviewInput, ChunkReviewOutput
 from .prompts import CODE_REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -48,11 +47,15 @@ def _run_chunk_review(llm: LLMClient, input_data: ChunkReviewInput) -> dict:
     """
     Review one chunk of code. Returns dict with approved, issues, summary.
     """
-    code_chunk = _truncate(input_data.code_chunk, MAX_CHARS_PER_CHUNK)
-    spec_excerpt = _truncate(input_data.spec_excerpt, MAX_SPEC_EXCERPT_CHARS)
-    architecture_overview = _truncate(input_data.architecture_overview, MAX_ARCH_OVERVIEW_CHARS)
+    max_chunk_chars = compute_code_review_chunk_chars(llm)
+    max_spec = compute_code_review_spec_excerpt_chars(llm)
+    max_arch = compute_code_review_arch_overview_chars(llm)
+    max_existing = compute_code_review_existing_codebase_chars(llm)
+    code_chunk = _truncate(input_data.code_chunk, max_chunk_chars)
+    spec_excerpt = _truncate(input_data.spec_excerpt, max_spec)
+    architecture_overview = _truncate(input_data.architecture_overview, max_arch)
     existing_codebase_excerpt = _truncate(
-        input_data.existing_codebase_excerpt or "", MAX_EXISTING_CODEBASE_EXCERPT_CHARS
+        input_data.existing_codebase_excerpt or "", max_existing
     )
 
     context_parts = [

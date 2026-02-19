@@ -6,19 +6,16 @@ import logging
 import re
 from typing import List, Tuple
 
+from shared.context_sizing import (
+    compute_code_review_arch_overview_chars,
+    compute_code_review_chunk_chars,
+    compute_code_review_existing_codebase_chars,
+    compute_code_review_spec_excerpt_chars,
+)
 from shared.llm import LLMClient
 
 from .chunk_reviewer import ChunkReviewAgent
-from .models import (
-    ChunkReviewInput,
-    CodeReviewInput,
-    CodeReviewIssue,
-    CodeReviewOutput,
-    MAX_ARCH_OVERVIEW_CHARS,
-    MAX_CHARS_PER_CHUNK,
-    MAX_EXISTING_CODEBASE_EXCERPT_CHARS,
-    MAX_SPEC_EXCERPT_CHARS,
-)
+from .models import ChunkReviewInput, CodeReviewInput, CodeReviewIssue, CodeReviewOutput
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +43,7 @@ def parse_code_into_file_blocks(code: str) -> List[Tuple[str, str]]:
     return blocks
 
 
-def build_chunks(
-    blocks: List[Tuple[str, str]], max_chars: int = MAX_CHARS_PER_CHUNK
-) -> List[Tuple[List[str], str]]:
+def build_chunks(blocks: List[Tuple[str, str]], max_chars: int) -> List[Tuple[List[str], str]]:
     """
     Group file blocks into chunks so each chunk is ≤ max_chars.
     Returns list of (list_of_paths, combined_content).
@@ -88,18 +83,18 @@ def run_coordinator(llm: LLMClient, input_data: CodeReviewInput) -> CodeReviewOu
     Split code into chunks, review each chunk, and merge results deterministically.
     """
     code = input_data.code or ""
-    spec_content = _truncate(input_data.spec_content or "", MAX_SPEC_EXCERPT_CHARS)
+    max_spec = compute_code_review_spec_excerpt_chars(llm)
+    max_arch = compute_code_review_arch_overview_chars(llm)
+    max_existing = compute_code_review_existing_codebase_chars(llm)
+    spec_content = _truncate(input_data.spec_content or "", max_spec)
     arch_overview = ""
     if input_data.architecture:
-        arch_overview = _truncate(
-            input_data.architecture.overview or "", MAX_ARCH_OVERVIEW_CHARS
-        )
-    existing_codebase = _truncate(
-        input_data.existing_codebase or "", MAX_EXISTING_CODEBASE_EXCERPT_CHARS
-    )
+        arch_overview = _truncate(input_data.architecture.overview or "", max_arch)
+    existing_codebase = _truncate(input_data.existing_codebase or "", max_existing)
 
+    max_chars_per_chunk = compute_code_review_chunk_chars(llm)
     blocks = parse_code_into_file_blocks(code)
-    chunks = build_chunks(blocks)
+    chunks = build_chunks(blocks, max_chars=max_chars_per_chunk)
 
     logger.info(
         "CodeReviewCoordinator: %s blocks -> %s chunks",

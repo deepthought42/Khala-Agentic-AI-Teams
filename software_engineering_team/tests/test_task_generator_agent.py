@@ -24,6 +24,7 @@ def requirements() -> ProductRequirements:
 def mock_llm() -> MagicMock:
     """LLM returning valid task plan (matches DummyLLMClient pattern)."""
     llm = MagicMock()
+    llm.get_max_context_tokens.return_value = 16384
     llm.complete_json.return_value = {
         "spec_clarification_needed": False,
         "tasks": [
@@ -88,6 +89,7 @@ def test_task_generator_respects_spec_clarification(
 ) -> None:
     """When LLM returns spec_clarification_needed, pass through without validation."""
     llm = MagicMock()
+    llm.get_max_context_tokens.return_value = 16384
     llm.complete_json.return_value = {
         "spec_clarification_needed": True,
         "clarification_questions": ["What auth method?"],
@@ -104,3 +106,92 @@ def test_task_generator_respects_spec_clarification(
     )
     assert result["spec_clarification_needed"] is True
     assert "clarification_questions" in result
+
+
+def test_task_generator_includes_open_questions_in_context(
+    requirements: ProductRequirements,
+    mock_llm: MagicMock,
+) -> None:
+    """Open questions from Spec Intake are included in the prompt context."""
+    agent = TaskGeneratorAgent(llm_client=mock_llm)
+    merged = '{"data_entities":[{"name":"Task"}],"api_endpoints":[],"total_deliverable_count":1}'
+    agent.run(
+        TaskGeneratorInput(
+            requirements=requirements,
+            merged_spec_analysis=merged,
+            open_questions=["What is the target availability SLA for the API?"],
+            assumptions=["Assume JWT auth"],
+        )
+    )
+    call_args = mock_llm.complete_json.call_args
+    assert call_args is not None
+    prompt = call_args[0][0]
+    assert "OPEN QUESTIONS" in prompt
+    assert "target availability SLA" in prompt
+    assert "Assumptions from Spec Intake" in prompt
+    assert "JWT auth" in prompt
+
+
+def test_task_generator_tolerates_resolved_questions_in_output(
+    requirements: ProductRequirements,
+) -> None:
+    """When LLM returns resolved_questions, parsing and validation still succeed."""
+    llm = MagicMock()
+    llm.get_max_context_tokens.return_value = 16384
+    llm.complete_json.return_value = {
+        "spec_clarification_needed": False,
+        "tasks": [
+            {
+                "id": "git-setup",
+                "title": "Initialize Git",
+                "type": "git_setup",
+                "description": "Create development branch. Ensure clean status. Verify branch exists.",
+                "user_story": "As a developer, I want a dev branch.",
+                "assignee": "devops",
+                "requirements": "Create dev branch.",
+                "acceptance_criteria": ["Branch exists", "Clean status", "From main"],
+                "dependencies": [],
+            },
+            {
+                "id": "devops-sla-monitoring",
+                "title": "Define SLOs and monitoring for API availability",
+                "type": "devops",
+                "description": "Implement metrics and alerts for 99.9% availability target. Configure health checks and escalation.",
+                "user_story": "As an operator, I want SLO monitoring so that we meet availability targets.",
+                "assignee": "devops",
+                "requirements": "SLO definitions, metrics, alerts, runbooks.",
+                "acceptance_criteria": ["SLOs documented", "Alerts configured", "Runbook exists"],
+                "dependencies": ["git-setup"],
+            },
+        ],
+        "execution_order": ["git-setup", "devops-sla-monitoring"],
+        "rationale": "Plan with SLA resolution.",
+        "summary": "2 tasks including SLA monitoring.",
+        "requirement_task_mapping": [{"spec_item": "CRUD for tasks", "task_ids": ["devops-sla-monitoring"]}],
+        "clarification_questions": [],
+        "resolved_questions": [
+            {
+                "question": "What is the target availability SLA?",
+                "category": "sla-availability",
+                "decision": "99.9% with multi-AZ and error budget",
+                "justification": "Cost-sensitive default for customer-facing API; aligns with typical cloud managed service SLAs.",
+                "linked_task_ids": ["devops-sla-monitoring"],
+            },
+        ],
+    }
+    agent = TaskGeneratorAgent(llm_client=llm)
+    result = agent.run(
+        TaskGeneratorInput(
+            requirements=requirements,
+            merged_spec_analysis='{"data_entities":[],"total_deliverable_count":1}',
+            open_questions=["What is the target availability SLA?"],
+        )
+    )
+    assert "resolved_questions" in result
+    resolved = result["resolved_questions"]
+    assert len(resolved) == 1
+    assert resolved[0]["decision"] == "99.9% with multi-AZ and error budget"
+    assert resolved[0]["justification"]
+    assert "devops-sla-monitoring" in resolved[0]["linked_task_ids"]
+    assignment = parse_assignment_from_data(result)
+    assert len(assignment.tasks) == 2

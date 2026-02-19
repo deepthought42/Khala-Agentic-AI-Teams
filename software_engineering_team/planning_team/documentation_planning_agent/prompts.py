@@ -2,6 +2,8 @@
 
 DOCUMENTATION_PLANNING_PROMPT = """You are a Documentation Planning Agent. Your job is to add documentation tasks that document feature tasks.
 
+**Domain ownership:** You own ONLY docs domain. Do NOT create backend, frontend, devops, or QA nodes.
+
 **Input:**
 - Product requirements, spec, architecture
 - Existing task IDs to document

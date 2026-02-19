@@ -94,6 +94,14 @@ class LLMClient(ABC):
             return str(result["text"])
         return json.dumps(result)
 
+    def get_max_context_tokens(self) -> int:
+        """
+        Return the model's maximum context size in tokens.
+        Used to compute chunk sizes for analysis. Default 16384.
+        Override in implementations that can query the model (e.g. Ollama).
+        """
+        return 16384
+
 
 # Words to strip when extracting a component/module name from a task description.
 # These are verbs and filler words that describe the task, not the thing being built.
@@ -642,6 +650,10 @@ class OllamaLLMClient(LLMClient):
             )
         self._model_num_ctx = 16384
         return self._model_num_ctx
+
+    def get_max_context_tokens(self) -> int:
+        """Return model's num_ctx from Ollama /api/show (cached)."""
+        return self._fetch_model_num_ctx()
 
     def _repair_json(self, s: str) -> str:
         """Attempt tolerant JSON repair for common LLM output issues."""

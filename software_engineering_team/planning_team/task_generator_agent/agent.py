@@ -10,13 +10,13 @@ from shared.llm import LLMClient
 from shared.task_parsing import parse_assignment_from_data
 from shared.task_validation import validate_assignment
 
-from .models import (
-    MAX_ARCH_DOC_CHARS,
-    MAX_EXISTING_CODE_CHARS,
-    MAX_FEATURES_DOC_CHARS,
-    MAX_SPEC_TRUNCATED_CHARS,
-    TaskGeneratorInput,
+from shared.context_sizing import (
+    compute_task_generator_arch_chars,
+    compute_task_generator_existing_chars,
+    compute_task_generator_features_chars,
+    compute_task_generator_spec_chars,
 )
+from .models import TaskGeneratorInput
 from .prompts import TASK_GENERATOR_CONTEXT_NOTE
 
 logger = logging.getLogger(__name__)
@@ -45,10 +45,14 @@ class TaskGeneratorAgent:
 
         reqs = input_data.requirements
         merged = input_data.merged_spec_analysis
-        codebase = (input_data.codebase_analysis or "")[:50000]  # cap
-        spec_trunc = (input_data.spec_content_truncated or "")[:MAX_SPEC_TRUNCATED_CHARS]
-        existing = (input_data.existing_codebase or "")[:MAX_EXISTING_CODE_CHARS]
-        features = (input_data.features_doc or "")[:MAX_FEATURES_DOC_CHARS]
+        max_codebase = compute_task_generator_spec_chars(self.llm)
+        max_spec = compute_task_generator_spec_chars(self.llm)
+        max_existing = compute_task_generator_existing_chars(self.llm)
+        max_features = compute_task_generator_features_chars(self.llm)
+        codebase = (input_data.codebase_analysis or "")[:max_codebase]
+        spec_trunc = (input_data.spec_content_truncated or "")[:max_spec]
+        existing = (input_data.existing_codebase or "")[:max_existing]
+        features = (input_data.features_doc or "")[:max_features]
 
         context_parts = [
             TASK_GENERATOR_CONTEXT_NOTE,
@@ -60,6 +64,19 @@ class TaskGeneratorAgent:
             *[f"- {c}" for c in reqs.constraints],
             f"**Priority:** {reqs.priority}",
         ]
+
+        if input_data.open_questions:
+            context_parts.extend([
+                "",
+                "**OPEN QUESTIONS (resolve with enterprise-informed best-practice defaults; see Step 0 in instructions):**",
+                *[f"- {q}" for q in input_data.open_questions],
+            ])
+        if input_data.assumptions:
+            context_parts.extend([
+                "",
+                "**Assumptions from Spec Intake (may extend when resolving open questions):**",
+                *[f"- {a}" for a in input_data.assumptions],
+            ])
 
         if input_data.project_overview:
             po = input_data.project_overview
@@ -130,7 +147,8 @@ class TaskGeneratorAgent:
 
         if input_data.architecture:
             arch = input_data.architecture
-            arch_doc = (arch.architecture_document or "")[:MAX_ARCH_DOC_CHARS]
+            max_arch = compute_task_generator_arch_chars(self.llm)
+            arch_doc = (arch.architecture_document or "")[:max_arch]
             context_parts.extend([
                 "",
                 "**System Architecture:**",

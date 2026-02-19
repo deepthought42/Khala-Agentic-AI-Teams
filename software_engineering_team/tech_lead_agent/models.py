@@ -50,6 +50,18 @@ class TechLeadInput(BaseModel):
         None,
         description="Non-compliances with initial spec from conformance review; address these when re-planning",
     )
+    minimal_planning: bool = Field(
+        default=False,
+        description="When True, skip multi-planner pipeline and use TaskGenerator only (faster, less detailed)",
+    )
+    open_questions: Optional[List[str]] = Field(
+        None,
+        description="Open questions from Spec Intake needing resolution; Tech Lead resolves with best-practice defaults",
+    )
+    assumptions: Optional[List[str]] = Field(
+        None,
+        description="Assumptions from Spec Intake; Tech Lead may extend when resolving open questions",
+    )
 
 
 class TechLeadOutput(BaseModel):

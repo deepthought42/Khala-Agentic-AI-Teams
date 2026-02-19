@@ -9,7 +9,7 @@ from code_review_agent.coordinator import (
     parse_code_into_file_blocks,
     run_coordinator,
 )
-from code_review_agent.models import CodeReviewInput, MAX_CHARS_PER_CHUNK
+from code_review_agent.models import CodeReviewInput
 
 
 def test_parse_code_into_file_blocks_single_file():
@@ -63,12 +63,13 @@ def test_build_chunks_groups_files_under_limit():
 
 def test_run_coordinator_with_large_code_uses_chunk_reviewer():
     """Coordinator with 2-3 files >30K chars produces one CodeReviewOutput."""
-    # Build code that exceeds single-call limit
+    # Build code that exceeds single-call limit (model context ~22K chars default)
     file1 = "### app/main.py ###\n" + ("x" * 20_000)
     file2 = "### app/models.py ###\n" + ("y" * 20_000)
     code = file1 + "\n\n" + file2
 
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.side_effect = [
         {"approved": True, "issues": [], "summary": "Chunk 1 OK"},
         {"approved": True, "issues": [], "summary": "Chunk 2 OK"},
@@ -95,6 +96,7 @@ def test_run_coordinator_merges_issues_and_rejects_if_critical():
     code = file1
 
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": False,
         "issues": [
@@ -124,10 +126,11 @@ def test_run_coordinator_merges_issues_and_rejects_if_critical():
 
 
 def test_code_review_agent_uses_coordinator_when_code_exceeds_single_call_limit():
-    """CodeReviewAgent.run uses coordinator when code > MAX_CODE_REVIEW_CHARS_SINGLE_CALL."""
+    """CodeReviewAgent.run uses coordinator when code exceeds model-based single-call limit."""
     code = "### app/main.py ###\n" + ("x" * 25_000)
 
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": True,
         "issues": [],

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from shared.context_sizing import compute_spec_chunk_chars
 from shared.llm import LLMClient
 
-from .models import MAX_SPEC_CHUNK_CHARS, SpecChunkAnalysis, SpecChunkAnalyzerInput
+from .models import SpecChunkAnalysis, SpecChunkAnalyzerInput
 from .prompts import SPEC_CHUNK_ANALYZER_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -26,13 +27,14 @@ class SpecChunkAnalyzer:
     def run(self, input_data: SpecChunkAnalyzerInput) -> SpecChunkAnalysis:
         """Analyze one spec chunk and return structured analysis."""
         spec_chunk = input_data.spec_chunk
-        if len(spec_chunk) > MAX_SPEC_CHUNK_CHARS:
+        max_chunk_chars = compute_spec_chunk_chars(self.llm)
+        if len(spec_chunk) > max_chunk_chars:
             logger.warning(
-                "SpecChunkAnalyzer: truncating chunk from %s to %s chars",
+                "SpecChunkAnalyzer: truncating chunk from %s to %s chars (model context)",
                 len(spec_chunk),
-                MAX_SPEC_CHUNK_CHARS,
+                max_chunk_chars,
             )
-            spec_chunk = spec_chunk[:MAX_SPEC_CHUNK_CHARS] + "\n\n... [truncated]"
+            spec_chunk = spec_chunk[:max_chunk_chars] + "\n\n... [truncated]"
 
         header = input_data.requirements_header or {}
         header_parts = [

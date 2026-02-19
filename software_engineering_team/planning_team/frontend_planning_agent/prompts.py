@@ -1,7 +1,9 @@
 """Prompts for the Frontend Planning agent."""
 
-FRONTEND_PLANNING_PROMPT = """You are a Frontend Planning Agent. Your job is to convert frontend-related slices of the architecture and requirements into a structured plan (PlanningGraph) with nodes and edges.
+from planning_team.plan_patterns import FRONTEND_PATTERN_HINTS, PLAN_PATTERNS_LIBRARY
 
+FRONTEND_PLANNING_PROMPT = """You are a Frontend Planning Agent. Your job is to convert frontend-related slices of the architecture and requirements into a structured plan (PlanningGraph) with nodes and edges.
+""" + PLAN_PATTERNS_LIBRARY + FRONTEND_PATTERN_HINTS + """
 **Input:**
 - Product requirements and spec
 - System architecture (UI components, API contracts)
@@ -21,6 +23,8 @@ Produce frontend-specific planning nodes and edges. Each node has:
 - parent_id: for hierarchy (optional)
 
 Edges have from_id, to_id, type: "blocks" | "relates_to" | "loads_from"
+
+**Domain ownership:** You own ONLY frontend. Do NOT create backend, devops, QA, or documentation nodes. Other planners handle those.
 
 **Rules:**
 - Emit TASK and SUBTASK nodes for pages, components, routing, state management, API integration

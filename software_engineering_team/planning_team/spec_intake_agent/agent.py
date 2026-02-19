@@ -129,6 +129,7 @@ class SpecIntakeAgent:
             assumptions=assumptions,
             open_questions=open_questions,
             summary=data.get("summary") or "",
+            compact_summary=data.get("compact_summary") or "",
         )
 
         # Write artifacts to plan_dir

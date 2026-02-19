@@ -5,13 +5,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from code_review_agent.agent import CodeReviewAgent
-from code_review_agent.models import CodeReviewInput, MAX_CODE_REVIEW_CHARS
+from code_review_agent.models import CodeReviewInput
 
 
 def test_code_review_agent_truncates_long_code_before_llm_call():
-    """When code exceeds MAX_CODE_REVIEW_CHARS, agent truncates so request body stays under limit."""
-    long_code = "x" * (MAX_CODE_REVIEW_CHARS + 50_000)
+    """When code exceeds model-based limit, agent truncates so request body stays under limit."""
+    long_code = "x" * 250_000  # exceeds typical model context
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": True,
         "issues": [],
@@ -32,13 +33,14 @@ def test_code_review_agent_truncates_long_code_before_llm_call():
     for call in mock_llm.complete_json.call_args_list:
         prompt = call[0][0]
         assert long_code not in prompt
-        assert "x" * (MAX_CODE_REVIEW_CHARS + 1) not in prompt
+        assert len(prompt) < 300_000  # truncated, not full 250K
 
 
 def test_code_review_agent_small_code_uses_single_call():
-    """When code <= MAX_CODE_REVIEW_CHARS_SINGLE_CALL, agent uses single LLM call."""
+    """When code fits in model context, agent uses single LLM call."""
     small_code = "### app/main.py ###\ndef foo(): pass"
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": True,
         "issues": [],

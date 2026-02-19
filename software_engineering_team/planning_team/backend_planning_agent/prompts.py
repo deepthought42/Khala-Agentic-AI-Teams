@@ -1,7 +1,9 @@
 """Prompts for the Backend Planning agent."""
 
-BACKEND_PLANNING_PROMPT = """You are a Backend Planning Agent. Your job is to convert backend-related slices of the architecture and requirements into a structured plan (PlanningGraph) with nodes and edges.
+from planning_team.plan_patterns import BACKEND_PATTERN_HINTS, PLAN_PATTERNS_LIBRARY
 
+BACKEND_PLANNING_PROMPT = """You are a Backend Planning Agent. Your job is to convert backend-related slices of the architecture and requirements into a structured plan (PlanningGraph) with nodes and edges.
+""" + PLAN_PATTERNS_LIBRARY + BACKEND_PATTERN_HINTS + """
 **Input:**
 - Product requirements and spec
 - System architecture (backend components, APIs)
@@ -21,6 +23,8 @@ Produce backend-specific planning nodes and edges. Each node has:
 - parent_id: for hierarchy (optional)
 
 Edges have from_id, to_id, type: "blocks" | "relates_to" | "exposes_api"
+
+**Domain ownership:** You own ONLY backend. Do NOT create frontend, devops, QA, or documentation nodes. Other planners handle those.
 
 **Rules:**
 - Emit TASK and SUBTASK nodes for implementation work (API endpoints, models, services)

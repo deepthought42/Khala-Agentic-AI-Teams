@@ -46,9 +46,6 @@ def _int_env(name: str, default: int, min_val: int = 1) -> int:
 MAX_CODE_REVIEW_ITERATIONS = _int_env("SW_MAX_CODE_REVIEW_ITERATIONS", 20)
 MAX_CLARIFICATION_REFINEMENTS = _int_env("SW_MAX_CLARIFICATION_REFINEMENTS", 20)
 MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 3)
-MAX_EXISTING_CODE_CHARS = 40_000
-MAX_API_SPEC_CHARS = 20_000
-
 # Frontend-specific checklists for shared agents
 FRONTEND_SECURITY_CHECKLIST = (
     "Frontend Security checklist: CSP posture, safe token storage (httpOnly cookies, secure storage), "
@@ -223,8 +220,11 @@ class FrontendOrchestratorAgent:
         design_system_output: Optional[DesignSystemOutput] = None
         architect_output: Optional[FrontendArchitectOutput] = None
 
+        from shared.context_sizing import compute_spec_content_chars
+
         use_lightweight = _is_lightweight_task(task)
-        spec_truncated = _truncate_for_context(spec_content, MAX_EXISTING_CODE_CHARS)
+        max_spec = compute_spec_content_chars(self.feature_agent.llm)
+        spec_truncated = _truncate_for_context(spec_content, max_spec)
 
         if not use_lightweight:
             logger.info("[%s] Frontend team: running design phase (UX -> UI -> Design System)", task_id)
@@ -449,9 +449,12 @@ class FrontendOrchestratorAgent:
 
             suggested_tests_from_qa = None
             code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-            existing_code_ctx = _truncate_for_context(code_on_branch, MAX_EXISTING_CODE_CHARS)
-            from code_review_agent.models import MAX_CODE_REVIEW_CHARS, CodeReviewInput
-            code_for_review = _truncate_for_context(code_on_branch, MAX_CODE_REVIEW_CHARS)
+            from shared.context_sizing import compute_code_review_total_chars, compute_existing_code_chars
+            max_code = compute_existing_code_chars(self.feature_agent.llm)
+            max_review = compute_code_review_total_chars(self.feature_agent.llm)
+            existing_code_ctx = _truncate_for_context(code_on_branch, max_code)
+            from code_review_agent.models import CodeReviewInput
+            code_for_review = _truncate_for_context(code_on_branch, max_review)
 
             task_reqs_with_checklist = _task_requirements(current_task)
             if FRONTEND_CODE_REVIEW_CHECKLIST:
@@ -625,7 +628,7 @@ class FrontendOrchestratorAgent:
                     )
                     codebase_summary = _truncate_for_context(
                         _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"]),
-                        MAX_EXISTING_CODE_CHARS,
+                        compute_existing_code_chars(self.feature_agent.llm),
                     )
                     new_tasks = tech_lead.review_progress(
                         task_update=task_update,

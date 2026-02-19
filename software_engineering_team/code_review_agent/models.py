@@ -6,23 +6,10 @@ from pydantic import BaseModel, Field
 
 from shared.models import SystemArchitecture
 
-# Max chars of code to send to the code review LLM (avoids HTTP 400 "request body too large")
-MAX_CODE_REVIEW_CHARS = 150_000
-
-# When code exceeds this, use chunked review via coordinator
-MAX_CODE_REVIEW_CHARS_SINGLE_CALL = 30_000
-
-# Per-chunk limits for ChunkReviewAgent
-MAX_CHARS_PER_CHUNK = 28_000
-MAX_SPEC_EXCERPT_CHARS = 8_000
-MAX_ARCH_OVERVIEW_CHARS = 2_000
-MAX_EXISTING_CODEBASE_EXCERPT_CHARS = 4_000
-
-
 class ChunkReviewInput(BaseModel):
     """Input for reviewing one chunk of code (used by ChunkReviewAgent)."""
 
-    code_chunk: str = Field(description="Code to review (one or more files, ≤MAX_CHARS_PER_CHUNK)")
+    code_chunk: str = Field(description="Code to review (one or more files, sized per model context)")
     file_path_or_label: str = Field(
         default="",
         description="File path(s) in this chunk for issue reporting",

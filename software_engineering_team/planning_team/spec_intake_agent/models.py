@@ -51,6 +51,46 @@ class SpecIntakeOutput(BaseModel):
         description="Open questions that need stakeholder clarification",
     )
     summary: str = Field(default="", description="Brief summary of validation outcome")
+    compact_summary: str = Field(
+        default="",
+        description="Single paragraph ~200 chars for downstream planning context",
+    )
+
+
+def build_compact_spec_for_planning(output: SpecIntakeOutput, max_chars: int = 4000) -> str:
+    """
+    Build a compact, structured spec string from SpecIntakeOutput for downstream planning agents.
+    Keeps only essential fields to reduce context size and speed up planning.
+    """
+    reqs = output.requirements
+    lines = [
+        f"# {reqs.title}",
+        "",
+        "## Goal",
+        (reqs.description or "")[:500] + ("..." if len(reqs.description or "") > 500 else ""),
+        "",
+    ]
+    if output.compact_summary:
+        lines.extend(["## Summary", output.compact_summary, ""])
+    if output.acceptance_criteria_index:
+        lines.extend(["## Requirements", ""])
+        for item in output.acceptance_criteria_index:
+            lines.append(f"- **{item.id}:** {item.statement}")
+        lines.append("")
+    if reqs.constraints:
+        lines.extend(["## Constraints", ""])
+        for c in reqs.constraints:
+            lines.append(f"- {c}")
+        lines.append("")
+    if output.open_questions:
+        lines.extend(["## Open Questions", ""])
+        for q in output.open_questions[:5]:  # cap at 5
+            lines.append(f"- {q}")
+        lines.append("")
+    result = "\n".join(lines)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n\n... [truncated for planning context]"
+    return result
 
 
 def validated_spec_to_requirements(output: SpecIntakeOutput) -> ProductRequirements:

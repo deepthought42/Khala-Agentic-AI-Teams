@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from planning_team.planning_graph import (
@@ -14,6 +15,7 @@ from planning_team.planning_graph import (
     compile_planning_graph_to_task_assignment,
 )
 from planning_team.spec_analysis_merger import SpecAnalysisMerger, SpecAnalysisMergerInput
+from shared.context_sizing import compute_spec_chunk_chars
 from planning_team.spec_chunk_analyzer import SpecChunkAnalyzer, SpecChunkAnalyzerInput
 from planning_team.spec_chunking import chunk_spec_by_size
 from planning_team.task_generator_agent import TaskGeneratorAgent, TaskGeneratorInput
@@ -59,8 +61,13 @@ class TechLeadAgent:
 
     def _analyze_spec_chunked(self, spec_content: str, reqs) -> str:
         """Step 2: Chunk spec, analyze each chunk, merge results."""
-        logger.info("Tech Lead: Step 2/3 - Analyzing spec in chunks (%s chars)", len(spec_content))
-        chunks = chunk_spec_by_size(spec_content, max_chars=12000, overlap=500)
+        max_chunk_chars = compute_spec_chunk_chars(self.llm)
+        logger.info(
+            "Tech Lead: Step 2/3 - Analyzing spec in chunks (%s chars, max %s chars/chunk)",
+            len(spec_content),
+            max_chunk_chars,
+        )
+        chunks = chunk_spec_by_size(spec_content, max_chars=max_chunk_chars, overlap=500)
         if not chunks:
             return "{}"
 
@@ -72,8 +79,9 @@ class TechLeadAgent:
             "constraints": reqs.constraints,
             "priority": reqs.priority,
         }
-        chunk_results = []
-        for i, chunk in enumerate(chunks):
+
+        def _analyze_chunk(args):
+            i, chunk = args
             analysis = chunk_analyzer.run(
                 SpecChunkAnalyzerInput(
                     spec_chunk=chunk,
@@ -82,9 +90,15 @@ class TechLeadAgent:
                     requirements_header=header,
                 )
             )
-            chunk_results.append(
-                analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()
-            )
+            return i, analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()
+
+        max_workers = min(4, len(chunks))
+        chunk_results = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_analyze_chunk, (i, ch)): i for i, ch in enumerate(chunks)}
+            for future in as_completed(futures):
+                idx, result = future.result()
+                chunk_results[idx] = result
 
         merger = SpecAnalysisMerger(self.llm)
         merged = merger.run(SpecAnalysisMergerInput(chunk_results=chunk_results))
@@ -114,7 +128,7 @@ class TechLeadAgent:
             logger.info("Tech Lead: skipping planning pipeline (no architecture)")
             return None
 
-        logger.info("Tech Lead: running planning pipeline (Backend + Frontend planners)")
+        logger.info("Tech Lead: running planning pipeline (Backend + Frontend planners in parallel)")
         backend_planner = BackendPlanningAgent(self.llm)
         frontend_planner = FrontendPlanningAgent(self.llm)
 
@@ -126,8 +140,6 @@ class TechLeadAgent:
             codebase_analysis=codebase_analysis or None,
             spec_analysis=spec_analysis or None,
         )
-        backend_output = backend_planner.run(backend_input)
-
         frontend_input = FrontendPlanningInput(
             requirements=reqs,
             architecture=arch,
@@ -135,9 +147,13 @@ class TechLeadAgent:
             project_overview=project_overview,
             codebase_analysis=codebase_analysis or None,
             spec_analysis=spec_analysis or None,
-            backend_planning_summary=backend_output.summary,
+            backend_planning_summary="",  # Run in parallel; alignment via merged graph
         )
-        frontend_output = frontend_planner.run(frontend_input)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            backend_future = executor.submit(backend_planner.run, backend_input)
+            frontend_future = executor.submit(frontend_planner.run, frontend_input)
+            backend_output = backend_future.result()
+            frontend_output = frontend_future.result()
 
         merged = PlanningGraph()
 
@@ -339,43 +355,67 @@ class TechLeadAgent:
         arch_doc = (arch.architecture_document or "") if arch else ""
         existing_codebase = input_data.existing_codebase or ""
 
-        # ── Step 1: Codebase analysis ──
+        # ── Step 1 & 2: Codebase and spec analysis (parallel when both needed) ──
         codebase_analysis = ""
-        if existing_codebase:
+        spec_analysis = ""
+        needs_codebase = bool(existing_codebase)
+        needs_spec = bool(spec_content)
+        if needs_codebase and needs_spec:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                cb_future = executor.submit(self._analyze_codebase, existing_codebase)
+                spec_future = executor.submit(self._analyze_spec_chunked, spec_content, reqs)
+                codebase_analysis = cb_future.result()
+                spec_analysis = spec_future.result()
+            logger.info(
+                "Tech Lead: codebase (%s chars) and spec analysis (%s chars) complete (parallel)",
+                len(codebase_analysis),
+                len(spec_analysis),
+            )
+        elif needs_codebase:
             codebase_analysis = self._analyze_codebase(existing_codebase)
             logger.info("Tech Lead: codebase analysis complete (%s chars)", len(codebase_analysis))
-
-        # ── Step 2: Spec analysis (chunked) ──
-        spec_analysis = ""
-        if spec_content:
+        elif needs_spec:
             spec_analysis = self._analyze_spec_chunked(spec_content, reqs)
             logger.info("Tech Lead: spec analysis complete (%s chars)", len(spec_analysis))
 
-        # ── Step 2b: Try planning pipeline (Backend + Frontend planners) ──
-        pipeline_output = self._run_planning_pipeline(input_data, codebase_analysis, spec_analysis)
-        if pipeline_output is not None:
-            return pipeline_output
+        # ── Step 2b: Try planning pipeline (Backend + Frontend planners) unless minimal_planning ──
+        if not getattr(input_data, "minimal_planning", False):
+            pipeline_output = self._run_planning_pipeline(input_data, codebase_analysis, spec_analysis)
+            if pipeline_output is not None:
+                return pipeline_output
+        else:
+            logger.info("Tech Lead: minimal_planning=True, skipping planning pipeline")
 
-        # ── Step 3: Task generation via TaskGeneratorAgent (fallback with capped inputs) ──
+        # ── Step 3: Task generation via TaskGeneratorAgent (fallback with model-based limits) ──
         logger.info("Tech Lead: Step 3/3 - Generating task plan via TaskGeneratorAgent")
-        po = getattr(input_data, "project_overview", None) or {}
-        features_doc = (po.get("features_and_functionality_doc") or "")[:15000]
-        if len(po.get("features_and_functionality_doc") or "") > 15000:
-            features_doc += "..."
+        from shared.context_sizing import (
+            compute_task_generator_existing_chars,
+            compute_task_generator_features_chars,
+            compute_task_generator_spec_chars,
+        )
 
+        po = getattr(input_data, "project_overview", None) or {}
+        max_features = compute_task_generator_features_chars(self.llm)
+        features_doc_raw = po.get("features_and_functionality_doc") or ""
+        features_doc = features_doc_raw[:max_features] + ("..." if len(features_doc_raw) > max_features else "")
+
+        max_spec = compute_task_generator_spec_chars(self.llm)
+        max_existing = compute_task_generator_existing_chars(self.llm)
         task_gen = TaskGeneratorAgent(self.llm)
         task_gen_input = TaskGeneratorInput(
             requirements=reqs,
             merged_spec_analysis=spec_analysis,
             codebase_analysis=codebase_analysis,
-            spec_content_truncated=spec_content[:20000],
-            existing_codebase=existing_codebase[:20000],
+            spec_content_truncated=spec_content[:max_spec],
+            existing_codebase=existing_codebase[:max_existing],
             project_overview=po if po else None,
             features_doc=features_doc,
             architecture=arch,
             alignment_feedback=getattr(input_data, "alignment_feedback", None),
             conformance_issues=getattr(input_data, "conformance_issues", None),
             repo_path=input_data.repo_path or "",
+            open_questions=getattr(input_data, "open_questions", None),
+            assumptions=getattr(input_data, "assumptions", None),
         )
         data = task_gen.run(task_gen_input)
 
@@ -414,7 +454,11 @@ class TechLeadAgent:
         Refine a task based on specialist clarification requests.
         Returns an updated Task with more detailed description, requirements, and acceptance criteria.
         """
+        from shared.context_sizing import compute_spec_excerpt_chars
+
         logger.info("Tech Lead: refining task %s with %s clarification requests", task.id, len(clarification_requests))
+        max_spec = compute_spec_excerpt_chars(self.llm)
+        spec_excerpt = (spec_content or "")[:max_spec] + ("..." if len(spec_content or "") > max_spec else "")
         context_parts = [
             f"**Task ID:** {task.id}",
             f"**Current description:** {task.description}",
@@ -425,7 +469,7 @@ class TechLeadAgent:
             *[f"- {q}" for q in clarification_requests],
             "",
             "**Spec (excerpt):**",
-            (spec_content or "")[:8000] + ("..." if len(spec_content or "") > 8000 else ""),
+            spec_excerpt,
         ]
         if architecture:
             context_parts.extend([
@@ -461,6 +505,8 @@ class TechLeadAgent:
         Evaluate QA feedback and create fix tasks if the delivered code does not meet spec.
         Returns a list of new Task objects (may be empty).
         """
+        from shared.context_sizing import compute_spec_excerpt_chars
+
         logger.info("Tech Lead: evaluating QA feedback for task %s", task.id)
         qa_bugs = getattr(qa_result, "bugs_found", []) or []
         bugs_text = "\n".join(
@@ -469,6 +515,8 @@ class TechLeadAgent:
             f"Recommendation: {getattr(b, 'recommendation', b.get('recommendation', ''))}"
             for b in qa_bugs
         )
+        max_spec = compute_spec_excerpt_chars(self.llm)
+        spec_excerpt = (spec_content or "")[:max_spec] + ("..." if len(spec_content or "") > max_spec else "")
         context_parts = [
             f"**Completed task:** id={task.id}, assignee={task.assignee}, description={task.description}",
             f"**QA approved:** {getattr(qa_result, 'approved', True)}",
@@ -476,7 +524,7 @@ class TechLeadAgent:
             bugs_text or "None",
             "",
             "**Spec (excerpt):**",
-            (spec_content or "")[:12000] + ("..." if len(spec_content or "") > 12000 else ""),
+            spec_excerpt,
         ]
         if architecture:
             context_parts.extend(["", "**Architecture:**", architecture.overview])
@@ -523,16 +571,20 @@ class TechLeadAgent:
         """
         if not completed_code_task_ids:
             return False
+        from shared.context_sizing import compute_requirement_mapping_chars, compute_spec_excerpt_chars
+
         logger.info("Tech Lead: evaluating if security review should run (%s completed code tasks)", len(completed_code_task_ids))
+        max_spec = compute_spec_excerpt_chars(self.llm)
+        max_mapping = compute_requirement_mapping_chars(self.llm)
         context_parts = [
             "**Completed backend/frontend task IDs:**",
             ", ".join(completed_code_task_ids),
             "",
             "**Spec:**",
-            (spec_content or "")[:8000] + ("..." if len(spec_content or "") > 8000 else ""),
+            (spec_content or "")[:max_spec] + ("..." if len(spec_content or "") > max_spec else ""),
             "",
             "**Requirement-task mapping:**",
-            str(requirement_task_mapping)[:2000],
+            str(requirement_task_mapping)[:max_mapping],
         ]
         prompt = TECH_LEAD_SHOULD_RUN_SECURITY_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         data = self.llm.complete_json(prompt, temperature=0.1)
@@ -603,10 +655,13 @@ class TechLeadAgent:
             ])
 
         if codebase_summary:
+            from shared.context_sizing import compute_existing_code_chars
+            max_code = compute_existing_code_chars(self.llm)
+            code_excerpt = codebase_summary[:max_code] + ("..." if len(codebase_summary) > max_code else "")
             context_parts.extend([
                 "",
                 "**Current codebase state:**",
-                codebase_summary[:8000] + ("..." if len(codebase_summary) > 8000 else ""),
+                code_excerpt,
             ])
 
         prompt = TECH_LEAD_REVIEW_PROGRESS_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
@@ -709,6 +764,9 @@ class TechLeadAgent:
             should_update = force_docs_because_readme_empty
             rationale = ""
             if not force_docs_because_readme_empty:
+                from shared.context_sizing import compute_spec_excerpt_chars
+                max_code = compute_spec_excerpt_chars(self.llm)
+                code_excerpt = (codebase_summary or "")[:max_code] + ("..." if len(codebase_summary or "") > max_code else "")
                 context_parts = [
                     f"**Task ID:** {task_update.task_id}",
                     f"**Agent type:** {task_update.agent_type}",
@@ -717,7 +775,7 @@ class TechLeadAgent:
                     f"**Files changed:** {', '.join(task_update.files_changed) if task_update.files_changed else 'None reported'}",
                     "",
                     "**Current codebase state (excerpt):**",
-                    (codebase_summary or "")[:4000] + ("..." if len(codebase_summary or "") > 4000 else ""),
+                    code_excerpt,
                 ]
                 if readme_missing_or_empty:
                     context_parts.insert(0, "**Repository README.md:** missing or empty (you MUST set should_update_docs to true).")

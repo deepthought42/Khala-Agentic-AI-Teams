@@ -17,6 +17,8 @@ Produce test planning nodes. Each node has:
 - acceptance_criteria: 3-5 items
 - metadata.verifies: task ID this test verifies
 
+**Domain ownership:** You own ONLY test/QA tasks. Create test nodes that verify existing_task_ids. Do NOT create backend API, frontend UI, or devops nodes.
+
 **Rules:**
 - Create test tasks that verify the existing_task_ids. Use "verifies" edges (type: "verifies") from test task to feature task.
 - Backend: pytest for APIs, services. Frontend: unit tests for components, Playwright/Cypress for E2E.
