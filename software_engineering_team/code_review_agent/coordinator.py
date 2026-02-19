@@ -8,8 +8,9 @@ from typing import List, Tuple
 
 from shared.llm import LLMClient
 
-from .chunk_reviewer import review_chunk
+from .chunk_reviewer import ChunkReviewAgent
 from .models import (
+    ChunkReviewInput,
     CodeReviewInput,
     CodeReviewIssue,
     CodeReviewOutput,
@@ -106,16 +107,16 @@ def run_coordinator(llm: LLMClient, input_data: CodeReviewInput) -> CodeReviewOu
         len(chunks),
     )
 
+    chunk_reviewer = ChunkReviewAgent(llm)
     all_issues: List[CodeReviewIssue] = []
     all_approved = True
     summaries: List[str] = []
 
     for paths, chunk_content in chunks:
         paths_label = ", ".join(p for p in paths if p)
-        result = review_chunk(
-            llm=llm,
+        chunk_input = ChunkReviewInput(
             code_chunk=chunk_content,
-            file_paths_label=paths_label,
+            file_path_or_label=paths_label,
             task_description=input_data.task_description or "",
             task_requirements=input_data.task_requirements or "",
             acceptance_criteria=input_data.acceptance_criteria or [],
@@ -123,9 +124,10 @@ def run_coordinator(llm: LLMClient, input_data: CodeReviewInput) -> CodeReviewOu
             architecture_overview=arch_overview,
             existing_codebase_excerpt=existing_codebase or None,
         )
-        all_approved = all_approved and result.get("approved", False)
-        summaries.append(result.get("summary", ""))
-        for i in result.get("issues") or []:
+        chunk_output = chunk_reviewer.run(chunk_input)
+        all_approved = all_approved and chunk_output.approved
+        summaries.append(chunk_output.summary)
+        for i in chunk_output.issues:
             if isinstance(i, dict):
                 all_issues.append(
                     CodeReviewIssue(

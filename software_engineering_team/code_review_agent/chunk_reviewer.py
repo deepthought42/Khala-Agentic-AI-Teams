@@ -115,3 +115,29 @@ def _run_chunk_review(llm: LLMClient, input_data: ChunkReviewInput) -> dict:
         "issues": issues,
         "summary": str(data.get("summary", "")),
     }
+
+
+def review_chunk(
+    llm: LLMClient,
+    code_chunk: str,
+    file_paths_label: str,
+    task_description: str,
+    task_requirements: str,
+    acceptance_criteria: List[str],
+    spec_excerpt: str,
+    architecture_overview: str,
+    existing_codebase_excerpt: Optional[str],
+) -> dict:
+    """Legacy function: review one chunk. Prefer ChunkReviewAgent.run(ChunkReviewInput(...))."""
+    inp = ChunkReviewInput(
+        code_chunk=code_chunk,
+        file_path_or_label=file_paths_label,
+        task_description=task_description,
+        task_requirements=task_requirements,
+        acceptance_criteria=acceptance_criteria,
+        spec_excerpt=spec_excerpt,
+        architecture_overview=architecture_overview,
+        existing_codebase_excerpt=existing_codebase_excerpt,
+    )
+    result = _run_chunk_review(llm, inp)
+    return result

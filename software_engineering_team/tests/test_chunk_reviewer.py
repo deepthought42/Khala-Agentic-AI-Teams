@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from code_review_agent.chunk_reviewer import review_chunk
+from code_review_agent.chunk_reviewer import ChunkReviewAgent, review_chunk
+from code_review_agent.models import ChunkReviewInput
 
 
 def test_review_chunk_returns_approved_issues_summary():
@@ -70,3 +71,40 @@ def test_review_chunk_includes_file_path_in_issues():
     assert len(result["issues"]) == 1
     assert result["issues"][0]["file_path"] == "app/main.py"
     assert result["issues"][0]["description"] == "Use snake_case"
+
+
+def test_chunk_review_agent_run_returns_chunk_review_output():
+    """ChunkReviewAgent.run(ChunkReviewInput) returns ChunkReviewOutput with file_path in issues."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "approved": False,
+        "issues": [
+            {
+                "severity": "major",
+                "category": "structure",
+                "file_path": "app/models.py",
+                "description": "Missing docstring",
+                "suggestion": "Add docstring",
+            }
+        ],
+        "summary": "One issue found.",
+    }
+
+    agent = ChunkReviewAgent(llm=mock_llm)
+    inp = ChunkReviewInput(
+        code_chunk="### app/models.py ###\nclass User: pass",
+        file_path_or_label="app/models.py",
+        task_description="Add model",
+        task_requirements="",
+        acceptance_criteria=[],
+        spec_excerpt="",
+        architecture_overview="",
+        existing_codebase_excerpt=None,
+    )
+    result = agent.run(inp)
+
+    assert result.approved is False
+    assert len(result.issues) == 1
+    assert result.issues[0]["file_path"] == "app/models.py"
+    assert result.issues[0]["description"] == "Missing docstring"
+    assert "One issue" in result.summary
