@@ -776,6 +776,7 @@ class OllamaLLMClient(LLMClient):
         _EXPECTED_KEYS = frozenset({
             "files", "summary", "code", "overview", "issues", "approved", "components",
             "architecture_document", "diagrams", "decisions",
+            "tasks", "execution_order",  # Task Generator / Tech Lead output
         })
         for block_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
             block = block_match.group(1).strip()
@@ -811,6 +812,19 @@ class OllamaLLMClient(LLMClient):
                 return {"files": extracted}
         except Exception as e:
             logger.debug("Heuristic file extraction failed: %s", e)
+
+        # Try extracting task assignment (Tech Lead / Task Generator) from raw content
+        try:
+            from shared.llm_response_utils import extract_task_assignment_from_content
+            task_data = extract_task_assignment_from_content(text)
+            if task_data:
+                logger.info(
+                    "Recovered task assignment from raw content (%d tasks)",
+                    len(task_data.get("tasks") or []),
+                )
+                return task_data
+        except Exception as e:
+            logger.debug("Task assignment extraction from content failed: %s", e)
 
         # Final fallback: raw content wrapper. Callers should defensively use .get().
         # Models that frequently ignore JSON-only instructions may need a different model or pre-processing.

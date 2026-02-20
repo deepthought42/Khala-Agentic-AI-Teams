@@ -1443,35 +1443,47 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             if conformance_retries > 0 and conformance_issues:
                 logger.info("Re-running task generation with %d spec conformance issues", len(conformance_issues))
 
-            try:
-                tech_lead_output = tech_lead.run(TechLeadInput(
-                    requirements=requirements,
-                    architecture=architecture,
-                    repo_path=str(path),
-                    spec_content=spec_content_for_planning,
-                    existing_codebase=existing_code if existing_code != "# No code files found" else None,
-                    project_overview=project_overview,
-                    alignment_feedback=alignment_feedback if alignment_feedback else None,
-                    conformance_issues=conformance_issues if conformance_issues else None,
-                    minimal_planning=tech_lead_minimal_planning,
-                    open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
-                    assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
-                ))
-            except LLMRateLimitError:
-                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
-                update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
-                return
-            if tech_lead_output.spec_clarification_needed:
-                questions = tech_lead_output.clarification_questions or []
-                error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
-                if len(questions) > 5:
-                    error_msg += f" (+{len(questions) - 5} more)"
-                logger.warning(error_msg)
-                update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
-                return
-            assignment = tech_lead_output.assignment
+            tech_lead_output = None
+            assignment = None
+            tech_lead_retries = 2  # initial run + 1 retry when 0 tasks
+            for tech_lead_attempt in range(tech_lead_retries):
+                try:
+                    tech_lead_output = tech_lead.run(TechLeadInput(
+                        requirements=requirements,
+                        architecture=architecture,
+                        repo_path=str(path),
+                        spec_content=spec_content_for_planning,
+                        existing_codebase=existing_code if existing_code != "# No code files found" else None,
+                        project_overview=project_overview,
+                        alignment_feedback=alignment_feedback if alignment_feedback else None,
+                        conformance_issues=conformance_issues if conformance_issues else None,
+                        minimal_planning=tech_lead_minimal_planning,
+                        open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
+                        assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
+                    ))
+                except LLMRateLimitError:
+                    logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+                    return
+                if tech_lead_output.spec_clarification_needed:
+                    questions = tech_lead_output.clarification_questions or []
+                    error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
+                    if len(questions) > 5:
+                        error_msg += f" (+{len(questions) - 5} more)"
+                    logger.warning(error_msg)
+                    update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
+                    return
+                assignment = tech_lead_output.assignment
+                if assignment and assignment.tasks:
+                    break
+                if tech_lead_attempt < tech_lead_retries - 1:
+                    logger.warning(
+                        "Tech Lead produced no tasks (attempt %d/%d); retrying",
+                        tech_lead_attempt + 1,
+                        tech_lead_retries,
+                    )
             if not assignment or not assignment.tasks:
-                logger.error("Tech Lead produced no tasks; failing job")
+                logger.error("Tech Lead produced no tasks after %d attempts; failing job", tech_lead_retries)
                 update_job(job_id, status=JOB_STATUS_FAILED, error="Tech Lead produced no tasks")
                 return
 

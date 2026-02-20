@@ -433,6 +433,29 @@ class TechLeadAgent:
             )
 
         assignment = parse_assignment_from_data(data)
+
+        # Resilience: when 0 tasks (e.g. LLM returned raw content wrapper), try to recover
+        if not assignment.tasks and data.get("content"):
+            from shared.llm_response_utils import extract_task_assignment_from_content
+            recovered = extract_task_assignment_from_content(data["content"])
+            if recovered:
+                logger.info("Tech Lead: recovered task assignment from raw content")
+                data = recovered
+                assignment = parse_assignment_from_data(data)
+
+        # Retry task generation once when we still have 0 tasks
+        if not assignment.tasks:
+            logger.warning("Tech Lead: got 0 tasks from Task Generator, retrying once")
+            data = task_gen.run(task_gen_input)
+            if not data.get("spec_clarification_needed"):
+                assignment = parse_assignment_from_data(data)
+                if not assignment.tasks and data.get("content"):
+                    from shared.llm_response_utils import extract_task_assignment_from_content
+                    recovered = extract_task_assignment_from_content(data["content"])
+                    if recovered:
+                        logger.info("Tech Lead: recovered task assignment from raw content on retry")
+                        assignment = parse_assignment_from_data(recovered)
+
         mapping = data.get("requirement_task_mapping") or []
         logger.info("Tech Lead: assigned %s tasks in order %s", len(assignment.tasks), assignment.execution_order)
         return TechLeadOutput(

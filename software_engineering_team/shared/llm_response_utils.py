@@ -3,13 +3,73 @@ Utilities for parsing LLM responses when structured JSON parsing fails.
 
 When the LLM returns raw content (e.g. {"content": "..."}), extract file paths
 and bodies from markdown code blocks so agents can still produce files.
+Also extracts task assignments when Tech Lead / Task Generator return raw content.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Dict
+from typing import Any, Dict, Optional
+
+
+def extract_task_assignment_from_content(content: str) -> Optional[Dict[str, Any]]:
+    """
+    When LLM returns raw content wrapper {"content": "..."}, try to extract
+    a task assignment dict (tasks, execution_order, etc.) from the text.
+    Returns None if nothing usable found.
+    """
+    if not content or not content.strip():
+        return None
+    stripped = content.strip()
+
+    # Find first { and match braces to get a complete JSON object
+    start = stripped.find("{")
+    if start == -1:
+        return None
+
+    # Try all top-level {...} objects (greedy match from each {)
+    i = start
+    while i < len(stripped):
+        if stripped[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        end = -1
+        for j in range(i, len(stripped)):
+            if stripped[j] == "{":
+                depth += 1
+            elif stripped[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end == -1:
+            i += 1
+            continue
+        try:
+            parsed = json.loads(stripped[i : end + 1])
+            if isinstance(parsed, dict):
+                tasks = parsed.get("tasks")
+                if isinstance(tasks, list) and len(tasks) > 0:
+                    return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        i += 1
+
+    # Try JSON inside markdown code block
+    json_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)```", content, re.IGNORECASE)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group(1).strip())
+            if isinstance(parsed, dict):
+                tasks = parsed.get("tasks")
+                if isinstance(tasks, list) and len(tasks) > 0:
+                    return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return None
 
 
 # Extensions we treat as file paths (backend + frontend)

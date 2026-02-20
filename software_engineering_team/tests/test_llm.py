@@ -239,3 +239,35 @@ def test_get_llm_for_agent_cache_returns_same_instance() -> None:
         client1 = get_llm_for_agent("backend")
         client2 = get_llm_for_agent("backend")
     assert client1 is client2
+
+
+def test_extract_task_assignment_from_content_recovers_tasks() -> None:
+    """When LLM returns raw content with embedded JSON, extract_task_assignment_from_content recovers it."""
+    from shared.llm_response_utils import extract_task_assignment_from_content
+
+    content = '''Here is the task plan:
+
+```json
+{
+  "tasks": [
+    {"id": "git-setup", "type": "git_setup", "title": "Setup", "assignee": "devops"},
+    {"id": "backend-1", "type": "backend", "title": "API", "assignee": "backend"}
+  ],
+  "execution_order": ["git-setup", "backend-1"],
+  "rationale": "Standard order"
+}
+```
+'''
+    result = extract_task_assignment_from_content(content)
+    assert result is not None
+    assert len(result.get("tasks", [])) == 2
+    assert result["execution_order"] == ["git-setup", "backend-1"]
+
+
+def test_extract_task_assignment_from_content_returns_none_for_empty() -> None:
+    """extract_task_assignment_from_content returns None when no tasks in content."""
+    from shared.llm_response_utils import extract_task_assignment_from_content
+
+    assert extract_task_assignment_from_content("") is None
+    assert extract_task_assignment_from_content("No JSON here") is None
+    assert extract_task_assignment_from_content('{"other": "data"}') is None
