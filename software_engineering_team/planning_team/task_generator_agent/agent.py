@@ -65,11 +65,21 @@ class TaskGeneratorAgent:
             f"**Priority:** {reqs.priority}",
         ]
 
-        if input_data.open_questions:
+        resolved = input_data.resolved_questions or []
+        resolved_question_texts = {r.get("question", "") for r in resolved if isinstance(r, dict)}
+        remaining_open = [q for q in (input_data.open_questions or []) if q not in resolved_question_texts]
+
+        if resolved:
+            context_parts.extend([
+                "",
+                "**USER-PROVIDED RESOLUTIONS (use these exactly – do NOT override with defaults):**",
+                *[f"- **{r.get('question', '')}** → {r.get('answer', '')} (category: {r.get('category', 'other')})" for r in resolved if isinstance(r, dict)],
+            ])
+        if remaining_open:
             context_parts.extend([
                 "",
                 "**OPEN QUESTIONS (resolve with enterprise-informed best-practice defaults; see Step 0 in instructions):**",
-                *[f"- {q}" for q in input_data.open_questions],
+                *[f"- {q}" for q in remaining_open],
             ])
         if input_data.assumptions:
             context_parts.extend([

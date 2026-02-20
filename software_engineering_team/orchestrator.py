@@ -84,24 +84,59 @@ REPAIRABLE_EXCEPTIONS = (
 )
 
 
+def _get_task_stats() -> Dict[str, Any]:
+    """Get task counts from execution tracker: completed, in_progress, queued."""
+    snap = execution_tracker.snapshot()
+    tasks = snap.get("tasks", [])
+    total = len(tasks)
+    completed = sum(1 for t in tasks if t.get("status") == "done")
+    in_progress = sum(1 for t in tasks if t.get("status") == "in_progress")
+    queued = sum(1 for t in tasks if t.get("status") == "pending")
+    percent = round((completed / total) * 100.0, 1) if total > 0 else 0.0
+    return {
+        "completed": completed,
+        "in_progress": in_progress,
+        "queued": queued,
+        "total": total,
+        "percent": percent,
+    }
+
+
 def _log_task_completion_banner(
     task_id: str,
     task_title: str,
     assignee: str,
     elapsed_seconds: float,
     log_prefix: str = "",
+    description: str = "",
 ) -> None:
     """Log a big, flashy banner when a task is considered complete."""
+    stats = _get_task_stats()
     title_display = (task_title[:50] + "...") if len(task_title) > 53 else task_title
-    header = "  ★★★  TASK COMPLETE  ★★★" + ("  [RETRY]" if log_prefix else "")
+    desc_display = (description[:56] + "...") if len(description) > 59 else (description or "-")
+    assignee_display = assignee.replace("_", " ").title()
+
+    # Progress bar (40 chars wide)
+    bar_width = 40
+    filled = int((stats["percent"] / 100.0) * bar_width) if stats["total"] > 0 else 0
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    header = "  ★★★★★  TASK COMPLETE  ★★★★★" + ("  [RETRY]" if log_prefix else "")
     logger.info("")
-    logger.info("*" * BANNER_WIDTH)
-    logger.info(header)
-    logger.info("  Task:    %s", task_id)
-    logger.info("  Title:   %s", title_display)
-    logger.info("  Assignee: %s", assignee)
-    logger.info("  Elapsed:  %.1fs", elapsed_seconds)
-    logger.info("*" * BANNER_WIDTH)
+    logger.info("╔" + "═" * (BANNER_WIDTH - 2) + "╗")
+    logger.info("║%s║", header.ljust(BANNER_WIDTH - 2))
+    logger.info("╠" + "═" * (BANNER_WIDTH - 2) + "╣")
+    logger.info("║  Task:        %-54s║", (task_id[:54] + "..") if len(task_id) > 56 else task_id)
+    logger.info("║  Title:       %-54s║", title_display)
+    logger.info("║  Description: %-54s║", desc_display)
+    logger.info("║  Assignee:    %-54s║", assignee_display)
+    logger.info("║  Elapsed:     %-54s║", f"{elapsed_seconds:.1f}s")
+    logger.info("╠" + "═" * (BANNER_WIDTH - 2) + "╣")
+    progress_line = f"  [{bar}] {stats['percent']:5.1f}%"
+    logger.info("║%-70s║", progress_line)
+    stats_line = f"  ✓ Completed: {stats['completed']}  |  ⟳ In Progress: {stats['in_progress']}  |  ◷ Queued: {stats['queued']}"
+    logger.info("║%-70s║", stats_line)
+    logger.info("╚" + "═" * (BANNER_WIDTH - 2) + "╝")
     logger.info("")
 
 
@@ -853,17 +888,26 @@ def _run_build_verification(
         if errors:
             return False, "\n".join(errors[:10])
 
-        # Docker build if Dockerfile exists
+        # Docker build if Dockerfile exists and Docker is installed
         dockerfile = repo_path / "Dockerfile"
         if dockerfile.exists():
-            result = run_command(
-                ["docker", "build", "-t", "devops-verify", "."],
-                cwd=repo_path,
-                timeout=120,
-            )
-            if not result.success:
-                logger.warning("Docker build failed for task %s: %s", task_id, result.error_summary[:200])
-                return False, result.error_summary
+            # Check if Docker is available before attempting build
+            docker_check = run_command(["docker", "--version"], cwd=repo_path, timeout=10)
+            if not docker_check.success or "Command not found" in docker_check.stderr:
+                logger.info(
+                    "Docker not installed; skipping docker build verification for task %s. "
+                    "Dockerfile was created but cannot be verified.",
+                    task_id,
+                )
+            else:
+                result = run_command(
+                    ["docker", "build", "-t", "devops-verify", "."],
+                    cwd=repo_path,
+                    timeout=120,
+                )
+                if not result.success:
+                    logger.warning("Docker build failed for task %s: %s", task_id, result.error_summary[:200])
+                    return False, result.error_summary
 
         logger.info("Build verification passed for devops task %s", task_id)
         return True, ""
@@ -1000,6 +1044,7 @@ def _run_backend_frontend_workers(
                             assignee="backend",
                             elapsed_seconds=elapsed,
                             log_prefix=log_prefix,
+                            description=getattr(task, "description", "") or "",
                         )
                     else:
                         failed[task_id] = workflow_result.failure_reason or "Backend workflow failed"
@@ -1157,6 +1202,7 @@ def _run_backend_frontend_workers(
                             assignee="frontend",
                             elapsed_seconds=elapsed,
                             log_prefix=log_prefix,
+                            description=getattr(task, "description", "") or "",
                         )
                     else:
                         failed[task_id] = workflow_result.failure_reason or "Frontend workflow failed"
@@ -1242,13 +1288,25 @@ def _run_backend_frontend_workers(
     t_frontend.join()
 
 
-def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
+def run_orchestrator(
+    job_id: str,
+    repo_path: str | Path,
+    *,
+    spec_content_override: Optional[str] = None,
+    resolved_questions_override: Optional[List[Dict[str, Any]]] = None,
+    planning_only: bool = False,
+) -> None:
     """
     Main orchestration loop. Runs in background thread.
 
     Work path (repo_path) is the folder where work is saved; it does not need to be a git repo.
     Backend and frontend each have their own repo at work_path/backend and work_path/frontend,
     initialized by the Git Setup Agent before first use. Backend and frontend tasks run in parallel.
+
+    Optional overrides:
+    - spec_content_override: use this instead of loading spec from repo
+    - resolved_questions_override: user-provided answers from clarification; passed to Tech Lead
+    - planning_only: when True, run spec intake through conformance then stop (no execution)
     """
     path = Path(repo_path).resolve()
     backend_dir = path / "backend"
@@ -1258,9 +1316,9 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
 
         agents = _get_agents()
 
-        # 1. Read spec from work path (no git required at root)
+        # 1. Read spec from work path or use override (no git required at root)
         from spec_parser import load_spec_from_repo, parse_spec_heuristic, parse_spec_with_llm
-        spec_content = load_spec_from_repo(path)
+        spec_content = spec_content_override if spec_content_override is not None else load_spec_from_repo(path)
         try:
             requirements = parse_spec_with_llm(spec_content, get_llm_for_agent("spec_intake"))
         except LLMRateLimitError:
@@ -1460,6 +1518,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         minimal_planning=tech_lead_minimal_planning,
                         open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
                         assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
+                        resolved_questions=resolved_questions_override,
                     ))
                 except LLMRateLimitError:
                     logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
@@ -1760,6 +1819,11 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
 
         # Store execution order in job state for API polling
         update_job(job_id, execution_order=assignment.execution_order)
+        if planning_only:
+            logger.info("Planning-only run: stopping before execution (re-plan-with-clarifications)")
+            update_job(job_id, status="completed")
+            return
+
         for t in assignment.tasks:
             execution_tracker.upsert_task(
                 task_id=t.id,
@@ -1801,6 +1865,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     task_title=getattr(task, "title", "") or task_id,
                     assignee="git_setup",
                     elapsed_seconds=0.0,
+                    description=getattr(task, "description", "") or "",
                 )
                 continue
             if task.assignee == "devops":
@@ -1812,6 +1877,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     task_title=getattr(task, "title", "") or task_id,
                     assignee="devops",
                     elapsed_seconds=0.0,
+                    description=getattr(task, "description", "") or "",
                 )
                 continue
 
@@ -2126,6 +2192,7 @@ def run_failed_tasks(job_id: str) -> None:
                     task_title=getattr(task, "title", "") or task_id,
                     assignee="git_setup",
                     elapsed_seconds=0.0,
+                    description=getattr(task, "description", "") or "",
                 )
                 continue
             if task.assignee == "devops":
@@ -2151,6 +2218,7 @@ def run_failed_tasks(job_id: str) -> None:
                             task_title=getattr(task, "title", "") or task_id,
                             assignee="devops",
                             elapsed_seconds=devops_elapsed,
+                            description=getattr(task, "description", "") or "",
                         )
                     else:
                         failed_retry[task_id] = workflow_result.failure_reason or "DevOps workflow failed"

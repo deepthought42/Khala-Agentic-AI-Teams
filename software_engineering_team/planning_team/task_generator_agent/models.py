@@ -50,3 +50,7 @@ class TaskGeneratorInput(BaseModel):
         None,
         description="Assumptions from Spec Intake; may extend when resolving open questions",
     )
+    resolved_questions: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="User-provided answers from clarification chat; when set, use these instead of resolving with defaults",
+    )

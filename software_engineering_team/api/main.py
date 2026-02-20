@@ -50,6 +50,10 @@ class RunTeamRequest(BaseModel):
         ...,
         description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
     )
+    clarification_session_id: Optional[str] = Field(
+        None,
+        description="Use refined_spec and resolved_questions from this clarification session",
+    )
 
 
 class RunTeamResponse(BaseModel):
@@ -99,6 +103,15 @@ class RetryResponse(BaseModel):
     message: str = Field(default="")
 
 
+class RePlanWithClarificationsRequest(BaseModel):
+    """Request body for re-plan-with-clarifications endpoint."""
+
+    clarification_session_id: str = Field(
+        ...,
+        description="Clarification session with refined_spec and resolved_questions to use for re-planning",
+    )
+
+
 class ClarificationCreateRequest(BaseModel):
     spec_text: str = Field(..., description="Initial product/engineering specification text.")
 
@@ -130,11 +143,24 @@ class ClarificationSessionResponse(BaseModel):
     turns: List[Dict[str, str]] = Field(default_factory=list)
 
 
-def _run_orchestrator_background(job_id: str, repo_path: str) -> None:
+def _run_orchestrator_background(
+    job_id: str,
+    repo_path: str,
+    *,
+    spec_content_override: Optional[str] = None,
+    resolved_questions_override: Optional[List[Dict[str, Any]]] = None,
+    planning_only: bool = False,
+) -> None:
     """Run orchestrator in background thread."""
     try:
         from orchestrator import run_orchestrator
-        run_orchestrator(job_id, repo_path)
+        run_orchestrator(
+            job_id,
+            repo_path,
+            spec_content_override=spec_content_override,
+            resolved_questions_override=resolved_questions_override,
+            planning_only=planning_only,
+        )
     except Exception as e:
         logger.exception("Orchestrator failed")
         update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
@@ -167,7 +193,26 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
     job_id = str(uuid.uuid4())
     create_job(job_id, str(repo_path))
 
-    thread = threading.Thread(target=_run_orchestrator_background, args=(job_id, str(repo_path)))
+    spec_override: Optional[str] = None
+    resolved_override: Optional[List[Dict[str, Any]]] = None
+    if request.clarification_session_id:
+        session = clarification_store.get_session(request.clarification_session_id)
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Clarification session {request.clarification_session_id} not found",
+            )
+        spec_override = session.refined_spec or session.spec_text
+        resolved_override = session.resolved_questions or []
+
+    thread = threading.Thread(
+        target=_run_orchestrator_background,
+        args=(job_id, str(repo_path)),
+        kwargs={
+            "spec_content_override": spec_override,
+            "resolved_questions_override": resolved_override,
+        },
+    )
     thread.daemon = True
     thread.start()
 
@@ -248,6 +293,72 @@ def retry_failed_tasks(job_id: str) -> RetryResponse:
         status="running",
         retrying_tasks=failed_ids,
         message=f"Retrying {len(failed_ids)} failed tasks. Poll GET /run-team/{job_id} for status.",
+    )
+
+
+def _run_replan_background(
+    job_id: str,
+    repo_path: str,
+    spec_content_override: str,
+    resolved_questions_override: List[Dict[str, Any]],
+) -> None:
+    """Run orchestrator in planning-only mode with clarification overrides."""
+    try:
+        from orchestrator import run_orchestrator
+        run_orchestrator(
+            job_id,
+            repo_path,
+            spec_content_override=spec_content_override,
+            resolved_questions_override=resolved_questions_override,
+            planning_only=True,
+        )
+    except Exception as e:
+        logger.exception("Re-plan orchestrator failed")
+        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
+
+
+@app.post(
+    "/run-team/{job_id}/re-plan-with-clarifications",
+    response_model=RunTeamResponse,
+    summary="Re-plan with clarifications",
+    description="Re-run the planning phase (spec intake through conformance) using refined_spec and "
+    "resolved_questions from a clarification session. Does not re-run execution. "
+    "Use when user has provided clarification answers after a run completed.",
+)
+def re_plan_with_clarifications(job_id: str, request: RePlanWithClarificationsRequest) -> RunTeamResponse:
+    """Re-run planning phase with clarification session data."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("status") == "running":
+        raise HTTPException(status_code=409, detail="Job is still running")
+
+    repo_path = data.get("repo_path")
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="Job has no repo_path")
+
+    session = clarification_store.get_session(request.clarification_session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Clarification session {request.clarification_session_id} not found",
+        )
+
+    spec_override = session.refined_spec or session.spec_text
+    resolved_override = session.resolved_questions or []
+
+    thread = threading.Thread(
+        target=_run_replan_background,
+        args=(job_id, str(repo_path), spec_override, resolved_override),
+    )
+    thread.daemon = True
+    thread.start()
+
+    return RunTeamResponse(
+        job_id=job_id,
+        status="running",
+        message="Re-planning started. Poll GET /run-team/{job_id} for status.",
     )
 
 

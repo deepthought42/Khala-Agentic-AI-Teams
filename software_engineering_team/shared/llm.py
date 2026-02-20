@@ -57,6 +57,7 @@ AGENT_DEFAULT_MODELS: dict[str, str] = {
     "tech_lead": "glm-5:cloud",
     "architecture": "glm-5:cloud",
     "spec_intake": "glm-5:cloud",
+    "spec_clarification": "glm-5:cloud",
     "project_planning": "glm-5:cloud",
     "integration": "glm-5:cloud",
     "api_contract": "qwen3.5:397b-cloud",

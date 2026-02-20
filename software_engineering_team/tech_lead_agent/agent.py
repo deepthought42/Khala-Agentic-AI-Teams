@@ -416,6 +416,7 @@ class TechLeadAgent:
             repo_path=input_data.repo_path or "",
             open_questions=getattr(input_data, "open_questions", None),
             assumptions=getattr(input_data, "assumptions", None),
+            resolved_questions=getattr(input_data, "resolved_questions", None),
         )
         data = task_gen.run(task_gen_input)
 
