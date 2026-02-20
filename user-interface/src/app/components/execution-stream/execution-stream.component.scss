@@ -1,0 +1,16 @@
+.stream-container {
+  padding: 1rem;
+}
+
+.events {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.event {
+  font-size: 0.75rem;
+  margin: 0.25rem 0;
+  padding: 0.25rem;
+  background: #f5f5f5;
+  border-radius: 4px;
+}

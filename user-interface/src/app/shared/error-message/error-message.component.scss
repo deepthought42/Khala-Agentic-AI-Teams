@@ -1,0 +1,17 @@
+.error-container {
+  padding: 1rem;
+}
+
+.error-card {
+  border-left: 4px solid var(--mat-warn-500, #f44336);
+}
+
+.error-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+
+  p {
+    margin: 0.25rem 0 0;
+  }
+}

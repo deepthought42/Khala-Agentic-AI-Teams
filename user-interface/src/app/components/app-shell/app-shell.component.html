@@ -1,0 +1,50 @@
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<mat-sidenav-container class="sidenav-container">
+  <mat-sidenav
+    #drawer
+    class="sidenav"
+    fixedInViewport
+    [attr.aria-label]="'Main navigation'"
+    [mode]="'side'"
+    [opened]="true"
+  >
+    <mat-toolbar color="primary">
+      <span>Agents UI</span>
+    </mat-toolbar>
+    <nav mat-nav-list [attr.aria-label]="'Agent features'">
+      <a mat-list-item routerLink="/blogging" routerLinkActive="active" [attr.aria-current]="isActive('/blogging') ? 'page' : null">
+        <mat-icon matListItemIcon>article</mat-icon>
+        <span matListItemTitle>Blogging</span>
+      </a>
+      <a mat-list-item routerLink="/software-engineering" routerLinkActive="active" [attr.aria-current]="isActive('/software-engineering') ? 'page' : null">
+        <mat-icon matListItemIcon>code</mat-icon>
+        <span matListItemTitle>Software Engineering</span>
+      </a>
+      <a mat-list-item routerLink="/market-research" routerLinkActive="active" [attr.aria-current]="isActive('/market-research') ? 'page' : null">
+        <mat-icon matListItemIcon>analytics</mat-icon>
+        <span matListItemTitle>Market Research</span>
+      </a>
+      <a mat-list-item routerLink="/soc2-compliance" routerLinkActive="active" [attr.aria-current]="isActive('/soc2-compliance') ? 'page' : null">
+        <mat-icon matListItemIcon>security</mat-icon>
+        <span matListItemTitle>SOC2 Compliance</span>
+      </a>
+      <a mat-list-item routerLink="/social-marketing" routerLinkActive="active" [attr.aria-current]="isActive('/social-marketing') ? 'page' : null">
+        <mat-icon matListItemIcon>campaign</mat-icon>
+        <span matListItemTitle>Social Marketing</span>
+      </a>
+    </nav>
+  </mat-sidenav>
+  <mat-sidenav-content>
+    <mat-toolbar color="primary">
+      <button mat-icon-button (click)="drawer.toggle()" [attr.aria-label]="'Toggle navigation menu'">
+        <mat-icon>menu</mat-icon>
+      </button>
+      <span>Strands Agents</span>
+      <span class="spacer"></span>
+      <app-api-status-widget />
+    </mat-toolbar>
+    <main class="content" id="main-content" role="main" tabindex="-1">
+      <router-outlet />
+    </main>
+  </mat-sidenav-content>
+</mat-sidenav-container>

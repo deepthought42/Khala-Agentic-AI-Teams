@@ -1,0 +1,17 @@
+.widget {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+
+  .label {
+    font-size: 0.75rem;
+    margin-right: 0.25rem;
+  }
+
+  .status .icon {
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+  }
+}

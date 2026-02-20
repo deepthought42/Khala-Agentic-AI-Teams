@@ -1,0 +1,74 @@
+import {
+  HttpInterceptorFn,
+  HttpErrorResponse,
+  HttpStatusCode,
+} from '@angular/common/http';
+import { inject } from '@angular/core';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { catchError, throwError } from 'rxjs';
+
+/**
+ * HTTP interceptor that catches API errors and displays user-friendly messages via MatSnackBar.
+ * Re-throws the error so callers can still handle it.
+ */
+export const errorHandlerInterceptor: HttpInterceptorFn = (req, next) => {
+  const snackBar = inject(MatSnackBar);
+
+  return next(req).pipe(
+    catchError((err: unknown) => {
+      const message = formatErrorMessage(err);
+      snackBar.open(message, 'Close', {
+        duration: 6000,
+        horizontalPosition: 'end',
+        verticalPosition: 'top',
+      });
+      return throwError(() => err);
+    })
+  );
+};
+
+function formatErrorMessage(err: unknown): string {
+  if (!(err instanceof HttpErrorResponse)) {
+    return 'An unexpected error occurred.';
+  }
+
+  const status = err.status;
+  const statusText = err.statusText ?? 'Unknown error';
+
+  switch (status) {
+    case HttpStatusCode.NotFound:
+      return `Not found: ${err.url ?? statusText}`;
+    case HttpStatusCode.BadRequest:
+      return formatValidationError(err) ?? `Bad request: ${statusText}`;
+    case HttpStatusCode.Unauthorized:
+      return 'Unauthorized. Please check your credentials.';
+    case HttpStatusCode.Forbidden:
+      return 'Access forbidden.';
+    case HttpStatusCode.InternalServerError:
+      return `Server error: ${formatServerError(err)}`;
+    case HttpStatusCode.ServiceUnavailable:
+      return 'Service temporarily unavailable. Please try again later.';
+    case 0:
+      return 'Network error. Please check your connection and that the API is running.';
+    default:
+      return `Error ${status}: ${formatServerError(err)}`;
+  }
+}
+
+function formatValidationError(err: HttpErrorResponse): string | null {
+  const detail = err.error?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d: { msg?: string }) => d.msg)
+      .filter(Boolean);
+    return msgs.length > 0 ? msgs.join('; ') : null;
+  }
+  return null;
+}
+
+function formatServerError(err: HttpErrorResponse): string {
+  const detail = err.error?.detail;
+  if (typeof detail === 'string') return detail;
+  return err.error?.message ?? err.message ?? err.statusText ?? 'Unknown error';
+}

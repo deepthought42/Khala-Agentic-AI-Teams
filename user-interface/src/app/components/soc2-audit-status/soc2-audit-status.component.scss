@@ -1,0 +1,10 @@
+.error {
+  color: var(--mat-warn-500, #f44336);
+}
+
+.report {
+  white-space: pre-wrap;
+  font-size: 0.875rem;
+  max-height: 400px;
+  overflow-y: auto;
+}

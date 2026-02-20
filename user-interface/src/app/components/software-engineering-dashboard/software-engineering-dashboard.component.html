@@ -1,0 +1,50 @@
+<h1>Software Engineering Team API</h1>
+<p>Run team, job status, clarification sessions, execution tasks.</p>
+
+<div class="header-row">
+  <app-health-indicator [healthCheck]="healthCheck" label="Software Engineering API" />
+</div>
+
+@if (loading) {
+  <app-loading-spinner message="Processing..." />
+}
+
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<mat-tab-group>
+  <mat-tab label="Run Team">
+    <div class="tab-content">
+      <app-run-team-form (submitRequest)="onRunTeamSubmit($event)" />
+      @if (jobId) {
+        <app-job-status [jobId]="jobId" (statusChange)="jobStatus = $event" />
+        <app-retry-failed
+          [jobId]="jobId"
+          [hasFailedTasks]="(jobStatus?.failed_tasks?.length ?? 0) > 0"
+          [disabled]="loading"
+          (retry)="onRetryFailed()"
+        />
+        <app-re-plan-with-clarifications
+          [jobId]="jobId"
+          [disabled]="loading"
+          (submitRequest)="onRePlanSubmit($event)"
+        />
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Clarification">
+    <div class="tab-content">
+      <app-clarification-sessions (submitRequest)="onClarificationSessionCreate($event)" />
+      @if (clarificationSessionId) {
+        <app-clarification-chat [sessionId]="clarificationSessionId" />
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Execution">
+    <div class="tab-content">
+      <app-execution-tasks />
+      <app-execution-stream />
+    </div>
+  </mat-tab>
+</mat-tab-group>

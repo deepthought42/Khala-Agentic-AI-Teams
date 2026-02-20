@@ -1,0 +1,149 @@
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+import type {
+  RunTeamRequest,
+  RunTeamResponse,
+  JobStatusResponse,
+  RetryResponse,
+  RePlanWithClarificationsRequest,
+  ClarificationCreateRequest,
+  ClarificationResponse,
+  ClarificationMessageRequest,
+  ClarificationSessionResponse,
+  HealthResponse,
+} from '../models';
+
+/**
+ * Service for Software Engineering Team API endpoints.
+ * Base URL from environment.softwareEngineeringApiUrl (default port 8000).
+ */
+@Injectable({ providedIn: 'root' })
+export class SoftwareEngineeringApiService {
+  private readonly http = inject(HttpClient);
+  private readonly baseUrl = environment.softwareEngineeringApiUrl;
+
+  /**
+   * POST /run-team
+   */
+  runTeam(request: RunTeamRequest): Observable<RunTeamResponse> {
+    return this.http.post<RunTeamResponse>(
+      `${this.baseUrl}/run-team`,
+      request
+    );
+  }
+
+  /**
+   * GET /run-team/{job_id}
+   */
+  getJobStatus(jobId: string): Observable<JobStatusResponse> {
+    return this.http.get<JobStatusResponse>(
+      `${this.baseUrl}/run-team/${jobId}`
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/retry-failed
+   */
+  retryFailed(jobId: string): Observable<RetryResponse> {
+    return this.http.post<RetryResponse>(
+      `${this.baseUrl}/run-team/${jobId}/retry-failed`,
+      {}
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/re-plan-with-clarifications
+   */
+  rePlanWithClarifications(
+    jobId: string,
+    request: RePlanWithClarificationsRequest
+  ): Observable<RunTeamResponse> {
+    return this.http.post<RunTeamResponse>(
+      `${this.baseUrl}/run-team/${jobId}/re-plan-with-clarifications`,
+      request
+    );
+  }
+
+  /**
+   * POST /clarification/sessions
+   */
+  createClarificationSession(
+    request: ClarificationCreateRequest
+  ): Observable<ClarificationResponse> {
+    return this.http.post<ClarificationResponse>(
+      `${this.baseUrl}/clarification/sessions`,
+      request
+    );
+  }
+
+  /**
+   * POST /clarification/sessions/{session_id}/messages
+   */
+  sendClarificationMessage(
+    sessionId: string,
+    request: ClarificationMessageRequest
+  ): Observable<ClarificationResponse> {
+    return this.http.post<ClarificationResponse>(
+      `${this.baseUrl}/clarification/sessions/${sessionId}/messages`,
+      request
+    );
+  }
+
+  /**
+   * GET /clarification/sessions/{session_id}
+   */
+  getClarificationSession(
+    sessionId: string
+  ): Observable<ClarificationSessionResponse> {
+    return this.http.get<ClarificationSessionResponse>(
+      `${this.baseUrl}/clarification/sessions/${sessionId}`
+    );
+  }
+
+  /**
+   * GET /execution/tasks
+   */
+  getExecutionTasks(): Observable<Record<string, unknown>> {
+    return this.http.get<Record<string, unknown>>(
+      `${this.baseUrl}/execution/tasks`
+    );
+  }
+
+  /**
+   * GET /execution/stream - SSE stream.
+   * Returns an Observable that emits parsed event data.
+   */
+  getExecutionStream(): Observable<Record<string, unknown>> {
+    return new Observable((subscriber) => {
+      const url = `${this.baseUrl}/execution/stream`;
+      const eventSource = new EventSource(url);
+
+      eventSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data) as Record<string, unknown>;
+          subscriber.next(data);
+        } catch {
+          subscriber.next({ raw: e.data });
+        }
+      };
+
+      eventSource.onerror = (err) => {
+        eventSource.close();
+        subscriber.error(err);
+      };
+
+      return () => {
+        eventSource.close();
+      };
+    });
+  }
+
+  /**
+   * GET /health
+   */
+  health(): Observable<HealthResponse> {
+    return this.http.get<HealthResponse>(`${this.baseUrl}/health`);
+  }
+}

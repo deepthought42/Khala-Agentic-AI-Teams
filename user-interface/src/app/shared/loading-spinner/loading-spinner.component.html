@@ -1,0 +1,6 @@
+<div class="spinner-container" [attr.aria-busy]="true" [attr.aria-label]="message ?? 'Loading'">
+  <mat-spinner [diameter]="diameter"></mat-spinner>
+  @if (message) {
+    <p class="message">{{ message }}</p>
+  }
+</div>
