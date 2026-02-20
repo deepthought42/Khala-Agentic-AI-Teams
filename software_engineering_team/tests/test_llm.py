@@ -158,9 +158,9 @@ def test_extract_json_unparseable_returns_raw_content_wrapper() -> None:
 
 
 def test_qwen3_coder_next_uses_known_context_size() -> None:
-    """qwen3-coder-next uses known context size 262144 without /api/show call."""
+    """qwen3-coder-next uses known effective context 242144 (256K - 20K) without /api/show call."""
     client = OllamaLLMClient(model="qwen3-coder-next", base_url="http://localhost:9999", timeout=5)
-    assert client.get_max_context_tokens() == 262144
+    assert client.get_max_context_tokens() == 242144
 
 
 def test_qwen35_397b_uses_known_context_size() -> None:

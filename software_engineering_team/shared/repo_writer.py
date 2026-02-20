@@ -21,8 +21,8 @@ NO_FILES_TO_WRITE_MSG = "No files to write"
 
 # Maximum length for any single path segment (directory or filename without extension)
 MAX_SEGMENT_LENGTH = 30
-# Test files (test_*.py) may have longer descriptive names; allow up to 45 chars
-MAX_TEST_FILE_SEGMENT_LENGTH = 45
+# Test files (test_*.py) may have longer descriptive names; allow up to 60 chars
+MAX_TEST_FILE_SEGMENT_LENGTH = 60
 
 # Pattern that matches names with 4+ hyphenated words (likely a sentence, not a component name)
 _SENTENCE_NAME_RE = re.compile(r"^[a-z]+-[a-z]+-[a-z]+-[a-z]+")
@@ -101,13 +101,15 @@ def _validate_paths(files: Dict[str, str], subdir: str = "") -> Tuple[Dict[str, 
                 )
                 bad = True
                 break
-            if _SENTENCE_NAME_SNAKE_RE.match(name_part):
-                warnings.append(
-                    f"REJECTED: path segment '{seg}' looks like a sentence (5+ underscored words), "
-                    f"not a proper module name: '{path}'"
-                )
-                bad = True
-                break
+            # Exempt test files from sentence-like snake pattern (e.g. test_task_crud_qa.py)
+            if not (name_part.startswith("test_") and seg.endswith(".py")):
+                if _SENTENCE_NAME_SNAKE_RE.match(name_part):
+                    warnings.append(
+                        f"REJECTED: path segment '{seg}' looks like a sentence (5+ underscored words), "
+                        f"not a proper module name: '{path}'"
+                    )
+                    bad = True
+                    break
             if _VERB_PREFIX_RE.match(name_part):
                 warnings.append(
                     f"REJECTED: path segment '{seg}' starts with a verb "

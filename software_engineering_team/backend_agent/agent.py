@@ -1,5 +1,3 @@
-MAX_EXISTING_CODE_CHARS = 10000
-
 from __future__ import annotations
 
 import logging
@@ -23,12 +21,13 @@ from .models import (
 from .prompts import BACKEND_PLANNING_PROMPT, BACKEND_PROMPT
 from shared.task_plan import TaskPlan
 
+MAX_EXISTING_CODE_CHARS = 10000
 logger = logging.getLogger(__name__)
 
 # Validation constants
 MAX_PATH_SEGMENT_LENGTH = 30
-# Test files (test_*.py) may have longer descriptive names; allow up to 45 chars
-MAX_TEST_FILE_SEGMENT_LENGTH = 45
+# Test files (test_*.py) may have longer descriptive names; allow up to 60 chars
+MAX_TEST_FILE_SEGMENT_LENGTH = 60
 BAD_NAME_PATTERN = re.compile(r"^[a-z]+-[a-z]+-[a-z]+-[a-z]+")  # 4+ hyphenated words = likely sentence
 BAD_NAME_SNAKE_PATTERN = re.compile(r"^[a-z]+_[a-z]+_[a-z]+_[a-z]+_[a-z]+")  # 5+ underscored words = likely sentence
 VERB_PREFIX_PATTERN = re.compile(
@@ -80,10 +79,12 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
                 warnings.append(f"Path segment looks like a sentence (4+ hyphenated words): '{seg}' in '{path}'")
                 bad_segment = True
                 break
-            if BAD_NAME_SNAKE_PATTERN.match(name_part):
-                warnings.append(f"Path segment looks like a sentence (5+ underscored words): '{seg}' in '{path}'")
-                bad_segment = True
-                break
+            # Exempt test files from sentence-like snake pattern (e.g. test_task_crud_qa.py)
+            if not (name_part.startswith("test_") and seg.endswith(".py")):
+                if BAD_NAME_SNAKE_PATTERN.match(name_part):
+                    warnings.append(f"Path segment looks like a sentence (5+ underscored words): '{seg}' in '{path}'")
+                    bad_segment = True
+                    break
             if VERB_PREFIX_PATTERN.match(name_part):
                 warnings.append(f"Path segment starts with a verb (task description as name): '{seg}' in '{path}'")
                 bad_segment = True
@@ -133,6 +134,78 @@ EXCEPTION_HANDLER_TEST_PATTERNS = (
 # Scanned from tests/ via client.get("/...") or similar.
 _TEST_ROUTE_PATTERNS = ("/test-generic-error",)
 
+# Regex to extract HTTP paths from TestClient calls: client.get("/path"), client.post("/tasks", ...)
+_CLIENT_ROUTE_RE = re.compile(
+    r'client\.(?:get|post|patch|put|delete)\s*\(\s*["\']([^"\']+)["\']'
+)
+
+
+def _extract_routes_from_tests(repo_path: Path) -> List[str]:
+    """Extract all HTTP paths referenced in test files (client.get/post/etc)."""
+    tests_dir = repo_path / "tests"
+    if not tests_dir.exists() or not tests_dir.is_dir():
+        return []
+    found: List[str] = []
+    for f in tests_dir.rglob("test_*.py"):
+        if not f.is_file():
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            for match in _CLIENT_ROUTE_RE.finditer(content):
+                path = match.group(1).strip()
+                if path and path not in found:
+                    found.append(path)
+        except Exception:
+            pass
+    return found
+
+
+def _extract_routes_from_main(content: str) -> List[str]:
+    """Extract HTTP paths from FastAPI app (e.g. @app.get('/path'), include_router(prefix='...'))."""
+    paths: List[str] = []
+    # @app.get("/path"), @router.post("/path")
+    for match in re.finditer(
+        r'@(?:app|router)\.(?:get|post|patch|put|delete)\s*\(\s*["\']([^"\']+)["\']',
+        content,
+    ):
+        paths.append(match.group(1))
+    # include_router(router, prefix="/path")
+    for match in re.finditer(
+        r'include_router\s*\([^)]*prefix\s*=\s*["\']([^"\']+)["\']',
+        content,
+    ):
+        paths.append(match.group(1))
+    return paths
+
+
+def _check_test_endpoint_compatibility(
+    repo_path: Path, main_content: str | None = None
+) -> List[str]:
+    """
+    Return list of routes that tests reference but are missing from main.py.
+    If main_content is None, read from repo_path/app/main.py.
+    """
+    refs = _extract_routes_from_tests(repo_path)
+    if not refs:
+        return []
+    if main_content is None:
+        main_file = repo_path / "app" / "main.py"
+        if not main_file.exists():
+            main_file = repo_path / "main.py"
+        if not main_file.exists():
+            return refs
+        try:
+            main_content = main_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return refs
+    # Check if each referenced path (or its base segment) appears in main
+    missing: List[str] = []
+    for ref in refs:
+        ref_base = "/" + ref.strip("/").split("/")[0] if ref.startswith("/") else ref
+        if ref not in main_content and ref_base not in main_content:
+            missing.append(ref)
+    return missing
+
 
 def _test_routes_referenced_in_tests(repo_path: Path) -> List[str]:
     """Scan tests/ for routes that tests call (e.g. client.get(\"/test-generic-error\"))."""
@@ -169,20 +242,31 @@ def _test_routes_missing_from_main_py(repo_path: Path, files: Dict[str, str]) ->
     return missing
 
 
-def _build_code_review_issues_for_missing_test_routes() -> List[Dict[str, Any]]:
+def _build_code_review_issues_for_missing_test_routes(
+    missing_routes: List[str] | None = None,
+) -> List[Dict[str, Any]]:
     """Build code_review_issues for pre-write check: tests reference routes missing from main.py."""
-    suggestion = (
-        "Tests expect the route `/test-generic-error` and a generic "
-        "exception handler that returns a JSONResponse (e.g. status_code=500). "
-        "Preserve this route in `app/main.py` and ensure the handler does not "
-        "re-raise; otherwise the test client gets an exception and the test fails."
-    )
+    routes = missing_routes or list(_TEST_ROUTE_PATTERNS)
+    if "/test-generic-error" in routes and len(routes) == 1:
+        suggestion = (
+            "Tests expect the route `/test-generic-error` and a generic "
+            "exception handler that returns a JSONResponse (e.g. status_code=500). "
+            "Preserve this route in `app/main.py` and ensure the handler does not "
+            "re-raise; otherwise the test client gets an exception and the test fails."
+        )
+    else:
+        routes_str = ", ".join(routes)
+        suggestion = (
+            f"Tests reference routes that do not exist in app/main.py: {routes_str}. "
+            "Add these routes to app/main.py (or include the appropriate router). "
+            "Ensure each route returns a proper HTTP response (not an unhandled exception)."
+        )
     return [
         {
             "severity": "critical",
             "category": "build",
             "file_path": "app/main.py",
-            "description": "Pre-write check: tests reference /test-generic-error but app/main.py does not include it.",
+            "description": f"Pre-flight check: tests reference {routes} but app/main.py does not include them.",
             "suggestion": suggestion,
         }
     ]
@@ -521,6 +605,8 @@ class BackendExpertAgent:
         """
         from shared.git_utils import (
             DEVELOPMENT_BRANCH,
+            abort_merge,
+            branch_has_commits_ahead_of,
             checkout_branch,
             create_feature_branch,
             delete_branch,
@@ -556,6 +642,25 @@ class BackendExpertAgent:
             )
         branch_name = f"feature/{task_id}" if not task_id.startswith("feature/") else task_id
         logger.info("[%s] WORKFLOW   Branch created: %s", task_id, branch_name)
+
+        # ── Step 1b: Sync with development (accumulative updates) ───────────
+        # Merge development into feature branch so we see any work from parallel
+        # or previously completed tasks. Enables task dependencies.
+        sync_ok, sync_msg = merge_branch(repo_path, DEVELOPMENT_BRANCH, branch_name)
+        if sync_ok:
+            if "Already up to date" not in sync_msg:
+                logger.info(
+                    "[%s] WORKFLOW   Synced with development: %s",
+                    task_id,
+                    sync_msg[:80],
+                )
+        else:
+            logger.warning(
+                "[%s] WORKFLOW   Sync with development failed (non-blocking): %s",
+                task_id,
+                sync_msg,
+            )
+            abort_merge(repo_path)  # Clean up any partial merge state
 
         # ── Step 2: Generate initial code ───────────────────────────────────
         logger.info("[%s] WORKFLOW Step 2/9: Generating backend code", task_id)
@@ -712,7 +817,54 @@ class BackendExpertAgent:
             )
             record = ReviewIterationRecord(iteration=iteration)
 
-            # ─── 4a. Build verification ─────────────────────────────────
+            # ─── 4a. Pre-flight: test endpoint compatibility ─────────────
+            missing_routes = _check_test_endpoint_compatibility(repo_path)
+            if missing_routes:
+                logger.warning(
+                    "[%s] WORKFLOW   [%d] Pre-flight: tests reference %s but main.py missing; regenerating",
+                    task_id,
+                    iteration,
+                    missing_routes,
+                )
+                result = self._regenerate_with_issues(
+                    repo_path=repo_path,
+                    current_task=current_task,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    code_review_issues=_build_code_review_issues_for_missing_test_routes(
+                        missing_routes
+                    ),
+                )
+                for _ in range(MAX_SAME_BUILD_FAILURES):
+                    main_from_files = (
+                        result.files.get("app/main.py", "")
+                        or result.files.get("main.py", "")
+                    )
+                    still_missing = _check_test_endpoint_compatibility(
+                        repo_path, main_content=main_from_files
+                    )
+                    if not still_missing:
+                        break
+                    result = self._regenerate_with_issues(
+                        repo_path=repo_path,
+                        current_task=current_task,
+                        spec_content=spec_content,
+                        architecture=architecture,
+                        code_review_issues=_build_code_review_issues_for_missing_test_routes(
+                            still_missing
+                        ),
+                    )
+                ok, write_msg = write_agent_output(repo_path, result, subdir="")
+                if not ok:
+                    logger.warning(
+                        "[%s] WORKFLOW   [%d] Write failed after pre-flight fix: %s",
+                        task_id,
+                        iteration,
+                        write_msg,
+                    )
+                continue  # Re-run from build verification
+
+            # ─── 4b. Build verification ─────────────────────────────────
             logger.info(
                 "[%s] WORKFLOW   [%d] Build verification...",
                 task_id,
@@ -896,7 +1048,7 @@ class BackendExpertAgent:
                         )
                     continue
 
-            # ─── 4b. Code review ────────────────────────────────────────
+            # ─── 4c. Code review ────────────────────────────────────────
             logger.info(
                 "[%s] WORKFLOW   [%d] Code review...",
                 task_id,
@@ -984,7 +1136,7 @@ class BackendExpertAgent:
                 iteration,
             )
 
-            # ─── 4b2. Acceptance criteria verification (optional) ───────
+            # ─── 4d. Acceptance criteria verification (optional) ───────────
             if acceptance_verifier_agent and getattr(current_task, "acceptance_criteria", None):
                 code_for_verify = _read_repo_code(repo_path)
                 if code_for_verify and code_for_verify != "# No code files found":
@@ -1044,7 +1196,7 @@ class BackendExpertAgent:
                             )
                         continue  # Re-run from build verification
 
-            # ─── 4c. Security review ────────────────────────────────────
+            # ─── 4e. Security review ─────────────────────────────────────
             logger.info(
                 "[%s] WORKFLOW   [%d] Triggering Security review...",
                 task_id,
@@ -1149,7 +1301,7 @@ class BackendExpertAgent:
                         issue.get("description", "")[:120],
                     )
 
-            # ─── 4e. DBC comments review ────────────────────────────────
+            # ─── 4g. DBC comments review ─────────────────────────────────
             logger.info(
                 "[%s] WORKFLOW   [%d] Triggering DBC comments review...",
                 task_id,
@@ -1312,7 +1464,71 @@ class BackendExpertAgent:
             )
 
         if repeated_build_failure_reason is not None:
+            # Emergency merge: attempt to merge partial work even when build failed repeatedly
+            if branch_has_commits_ahead_of(repo_path, branch_name, DEVELOPMENT_BRANCH):
+                logger.info(
+                    "[%s] WORKFLOW   Attempting emergency merge of partial work despite build failures",
+                    task_id,
+                )
+                merge_ok, merge_msg = merge_branch(
+                    repo_path, branch_name, DEVELOPMENT_BRANCH
+                )
+                if merge_ok:
+                    logger.info(
+                        "[%s] WORKFLOW   Emergency merge successful; partial work preserved on %s",
+                        task_id,
+                        DEVELOPMENT_BRANCH,
+                    )
+                    failure_reason = (
+                        f"{repeated_build_failure_reason} "
+                        "(Partial work merged to development.)"
+                    )
+                else:
+                    logger.warning(
+                        "[%s] WORKFLOW   Emergency merge failed: %s",
+                        task_id,
+                        merge_msg,
+                    )
+                    failure_reason = repeated_build_failure_reason
+            else:
+                failure_reason = repeated_build_failure_reason
             checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+            # Graceful degradation: notify Tech Lead so it can create follow-up fix task
+            if tech_lead is not None:
+                try:
+                    task_update = TaskUpdate(
+                        task_id=task_id,
+                        agent_type="backend",
+                        status="failed",
+                        summary=result.summary if result else "",
+                        files_changed=list((result.files or {}).keys()) if result else [],
+                        needs_followup=True,
+                    )
+                    codebase_summary = _truncate_for_context(
+                        _read_repo_code(repo_path), compute_existing_code_chars(self.llm)
+                    )
+                    new_tasks = tech_lead.review_progress(
+                        task_update=task_update,
+                        spec_content=spec_content,
+                        architecture=architecture,
+                        completed_tasks=completed_tasks or [],
+                        remaining_tasks=remaining_tasks or [],
+                        codebase_summary=codebase_summary,
+                    )
+                    if new_tasks and append_task_fn is not None:
+                        for nt in new_tasks:
+                            append_task_fn(nt)
+                        logger.info(
+                            "[%s] WORKFLOW   Tech Lead created %d follow-up tasks from build failure",
+                            task_id,
+                            len(new_tasks),
+                        )
+                except Exception as tl_err:
+                    logger.warning(
+                        "[%s] WORKFLOW   Tech Lead notification failed (non-blocking): %s",
+                        task_id,
+                        tl_err,
+                    )
             return BackendWorkflowResult(
                 task_id=task_id,
                 success=False,
@@ -1320,7 +1536,8 @@ class BackendExpertAgent:
                 iterations_used=len(review_history),
                 review_history=review_history,
                 summary=result.summary if result else "",
-                failure_reason=repeated_build_failure_reason,
+                failure_reason=failure_reason,
+                needs_followup=True,
             )
 
         # ── Step 7: Merge feature branch into development ───────────────────
@@ -1961,20 +2178,38 @@ class BackendExpertAgent:
                     prompt = prompt + empty_retry_prompt
                 continue
 
-            # If all files were rejected but we have code, that's a problem (no retry)
+            # If all files were rejected but we have code, use code as fallback
             if not validated_files and not data.get("needs_clarification", False):
                 if raw_files:
                     logger.error(
-                        "Backend: ALL %d files were rejected by validation. Raw filenames: %s",
+                        "Backend: ALL %d files were rejected by validation. Raw filenames: %s. Validation warnings: %s",
                         len(raw_files),
                         list(raw_files.keys()),
+                        validation_warnings,
                     )
                 elif code:
-                    logger.warning("Backend: returned 'code' but no 'files' dict. Code will be written as fallback.")
+                    logger.warning(
+                        "Backend: returned 'code' but no 'files' dict. Using code as app/main.py fallback."
+                    )
+                    validated_files = {"app/main.py": code}
                 else:
                     logger.error(
-                        "Backend: produced no files and no code after 4 attempts (failure_class=empty_completion). Task failed.",
+                        "Backend: produced no files and no code after 4 attempts (failure_class=empty_completion). "
+                        "Injecting minimal stub to allow workflow to progress; Tech Lead should create follow-up task.",
                     )
+                    # Stub fallback: minimal file so write_agent_output doesn't fail
+                    validated_files = {
+                        "app/main.py": (
+                            '"""Stub - LLM produced no files after 4 attempts. '
+                            "Tech Lead should create follow-up task.\n"
+                            '"""\n'
+                            "from fastapi import FastAPI\n\n"
+                            "app = FastAPI()\n\n"
+                            '@app.get("/health")\n'
+                            "def health():\n"
+                            '    return {"status": "ok"}\n'
+                        ),
+                    }
             break
 
         summary = data.get("summary", "")

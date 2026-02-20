@@ -132,3 +132,7 @@ class BackendWorkflowResult(BaseModel):
     )
     summary: str = Field(default="", description="Final summary of what was implemented")
     failure_reason: str = Field(default="", description="Reason for failure if success is False")
+    needs_followup: bool = Field(
+        default=False,
+        description="When True, Tech Lead should consider creating a follow-up fix task",
+    )

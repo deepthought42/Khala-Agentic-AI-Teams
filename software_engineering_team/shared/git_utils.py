@@ -149,6 +149,20 @@ def write_files_and_commit(
     return True, "Committed"
 
 
+def branch_has_commits_ahead_of(
+    repo_path: str | Path, branch: str, base: str
+) -> bool:
+    """
+    Return True if branch has commits not in base.
+    Used to check if there is work to merge before attempting emergency merge.
+    """
+    path = Path(repo_path).resolve()
+    if not (path / ".git").exists():
+        return False
+    code, out = _run_git(path, ["git", "log", "--oneline", f"{base}..{branch}"])
+    return code == 0 and bool((out or "").strip())
+
+
 def merge_branch(repo_path: str | Path, source_branch: str, target_branch: str) -> Tuple[bool, str]:
     """
     Checkout target_branch and merge source_branch into it.
@@ -164,6 +178,17 @@ def merge_branch(repo_path: str | Path, source_branch: str, target_branch: str) 
     if code != 0:
         return False, f"Merge failed: {out}"
     return True, f"Merged {source_branch} into {target_branch}"
+
+
+def abort_merge(repo_path: str | Path) -> Tuple[bool, str]:
+    """Abort an in-progress merge. Returns (success, message)."""
+    path = Path(repo_path).resolve()
+    if not (path / ".git").exists():
+        return False, "Not a git repository"
+    code, out = _run_git(path, ["git", "merge", "--abort"])
+    if code != 0:
+        return False, f"Merge abort failed: {out}"
+    return True, "Merge aborted"
 
 
 def delete_branch(repo_path: str | Path, branch: str) -> Tuple[bool, str]:

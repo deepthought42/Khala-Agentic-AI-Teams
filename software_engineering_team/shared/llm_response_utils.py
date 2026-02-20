@@ -138,6 +138,8 @@ def heuristic_extract_files_from_content(content: str, extensions: tuple = (".py
     When extract_files_from_content returns nothing, try to recover files by splitting on path-like
     lines or "File:" / "path:" headers. Used so backend/frontend have something to write instead of
     failing with zero files.
+
+    Also parses markdown headers like ## app/main.py or ### path/to/file.ext as file delimiters.
     """
     if not content or not content.strip():
         return {}
@@ -149,7 +151,13 @@ def heuristic_extract_files_from_content(content: str, extensions: tuple = (".py
         line = lines[i]
         stripped = line.strip()
         path_candidate: str | None = None
-        if re.match(r"^(?:File|path|filepath)\s*:\s*\S+", stripped, re.IGNORECASE):
+        # Markdown file headers: ## app/main.py or ### path/to/file.ext
+        md_header_match = re.match(r"^#{1,6}\s+(.+)$", stripped)
+        if md_header_match:
+            header_content = md_header_match.group(1).strip()
+            if _looks_like_path(header_content) and any(header_content.endswith(ext) for ext in path_exts):
+                path_candidate = header_content
+        elif re.match(r"^(?:File|path|filepath)\s*:\s*\S+", stripped, re.IGNORECASE):
             # "File: app/main.py" or "path: src/foo.ts"
             match = re.search(r":\s*(\S+)", stripped)
             if match:

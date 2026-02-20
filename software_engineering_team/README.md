@@ -190,7 +190,7 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | `SW_LLM_BACKOFF_MAX_SECONDS` | Max backoff seconds | `60` |
 | `SW_LLM_MAX_CONCURRENCY` | Max concurrent LLM calls (default 4; set 4–6 for faster runs with parallel planning and backend+frontend workers; lower to 2 if GPU/memory limited) | `4` |
 | `SW_LLM_MAX_TOKENS` | Max tokens to generate; if unset, uses min(context size, 32768) so APIs that cap output (e.g. 32K) work | 32768 (capped) |
-| `SW_LLM_CONTEXT_SIZE` | Context window in tokens; if unset, uses known model table or Ollama /api/show. For qwen3-coder-next:cloud, qwen3.5:397b: 262144 | (model-dependent) |
+| `SW_LLM_CONTEXT_SIZE` | Context window in tokens; if unset, uses known model table or Ollama /api/show. Effective context = max minus largest agent reservation. qwen3-coder-next:cloud, qwen3.5:397b-cloud: 256K max (242K effective). minimax-m2.5:cloud, glm-5:cloud: 198K max (178K/80K effective). If tech_lead planning fails on large specs with glm-5, set `SW_LLM_CONTEXT_SIZE=198000` | (model-dependent) |
 | `SW_ENABLE_PLANNING_CACHE` | Reuse cached TaskAssignment when spec and architecture unchanged; set to `0` or `false` to disable | `1` (enabled) |
 
 **Per-agent model configuration:** Each agent can use a different model. Set `SW_LLM_MODEL_<agent_key>` to override (e.g. `SW_LLM_MODEL_backend`, `SW_LLM_MODEL_tech_lead`). Model resolution order: per-agent env var → `SW_LLM_MODEL` (global fallback) → recommended default for that agent → `qwen3-coder-next:cloud`.
@@ -201,7 +201,7 @@ Recommended defaults (all :cloud versions) when no overrides are set:
 |-------|--------|
 | qwen3-coder-next:cloud | backend, frontend, code_review, repair, devops, dbc_comments |
 | glm-5:cloud | tech_lead, architecture, spec_intake, project_planning, integration |
-| qwen3.5:cloud | api_contract, data_architecture, ui_ux, frontend_architecture, infrastructure, devops_planning, qa_test_strategy, security_planning, observability, acceptance_verifier, documentation |
+| qwen3.5:397b-cloud | api_contract, data_architecture, ui_ux, frontend_architecture, infrastructure, devops_planning, qa_test_strategy, security_planning, observability, acceptance_verifier, documentation |
 | minimax-m2.5:cloud | qa, security, accessibility |
 
 Example: `export SW_LLM_MODEL_tech_lead=glm-5:cloud` overrides only the Tech Lead; other agents use their defaults or `SW_LLM_MODEL`.

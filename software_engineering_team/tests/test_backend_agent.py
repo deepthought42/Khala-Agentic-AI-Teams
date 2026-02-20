@@ -285,14 +285,16 @@ def test_backend_agent_content_fallback_extracts_file_from_code_block() -> None:
     assert any("main" in path or "app" in path for path in result.files)
 
 
-def test_backend_agent_content_fallback_no_code_blocks_does_not_crash() -> None:
-    """When LLM returns only content with no code blocks, agent completes without crash (empty_completion path)."""
+def test_backend_agent_content_fallback_no_code_blocks_injects_stub() -> None:
+    """When LLM returns only content with no code blocks, agent injects minimal stub (empty_completion path)."""
     mock_llm = MagicMock()
     mock_llm.complete_json.return_value = {"content": "no code blocks here at all"}
     agent = BackendExpertAgent(llm_client=mock_llm)
     result = agent.run(BackendInput(task_description="Add", requirements=""))
-    assert result.files == {}
-    assert result.summary == "" or result.summary is not None
+    # Stub fallback: minimal app/main.py so workflow can progress
+    assert "app/main.py" in result.files
+    assert "FastAPI" in result.files["app/main.py"]
+    assert "/health" in result.files["app/main.py"]
 
 
 def test_backend_plan_task_returns_plan_markdown() -> None:

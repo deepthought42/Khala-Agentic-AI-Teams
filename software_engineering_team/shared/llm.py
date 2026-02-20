@@ -31,18 +31,19 @@ ENV_LLM_CONTEXT_SIZE = "SW_LLM_CONTEXT_SIZE"  # context window in tokens; if uns
 # Default cap for max_tokens (max output length) in API requests. Many APIs limit output to 32K even when context is 256K.
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
-# Known model context sizes (from Ollama model info). Used when /api/show fails or returns wrong value.
-# 256K = 262144. qwen3.5:397b and qwen3-coder-next: 256K native context.
+# Model max context (tokens). Effective context = max - largest agent reservation.
+# 198K = 198000 (minimax, glm-5). 256K = 262144 (qwen models).
+# Largest reservations: tech_lead 118K (glm-5), coding/review 20K (qwen3-coder, qwen3.5).
 KNOWN_MODEL_CONTEXT: dict[str, int] = {
     "qwen3.5:397b": 262144,
-    "qwen3.5:397b-cloud": 262144,
-    "qwen3.5:cloud": 262144,
-    "qwen3-coder-next": 262144,
-    "qwen3-coder-next:cloud": 262144,
-    "qwen3-coder:480b-cloud": 262144,
-    "qwen3-coder:480b": 262144,
-    "glm-5:cloud": 262144,
-    "minimax-m2.5:cloud": 262144,
+    "qwen3.5:397b-cloud": 242144,  # 256K - 20K
+    "qwen3.5:cloud": 242144,  # keep for overrides; 256K - 20K
+    "qwen3-coder-next": 242144,
+    "qwen3-coder-next:cloud": 242144,  # 256K - 20K
+    "qwen3-coder:480b-cloud": 242144,
+    "qwen3-coder:480b": 242144,
+    "glm-5:cloud": 80_000,  # 198K - 118K (tech_lead)
+    "minimax-m2.5:cloud": 178_000,  # 198K - 20K
 }
 
 # Recommended default model per agent (all :cloud versions). Used when SW_LLM_MODEL_<agent_key> and SW_LLM_MODEL are unset.
@@ -58,17 +59,17 @@ AGENT_DEFAULT_MODELS: dict[str, str] = {
     "spec_intake": "glm-5:cloud",
     "project_planning": "glm-5:cloud",
     "integration": "glm-5:cloud",
-    "api_contract": "qwen3.5:cloud",
-    "data_architecture": "qwen3.5:cloud",
-    "ui_ux": "qwen3.5:cloud",
-    "frontend_architecture": "qwen3.5:cloud",
-    "infrastructure": "qwen3.5:cloud",
-    "devops_planning": "qwen3.5:cloud",
-    "qa_test_strategy": "qwen3.5:cloud",
-    "security_planning": "qwen3.5:cloud",
-    "observability": "qwen3.5:cloud",
-    "acceptance_verifier": "qwen3.5:cloud",
-    "documentation": "qwen3.5:cloud",
+    "api_contract": "qwen3.5:397b-cloud",
+    "data_architecture": "qwen3.5:397b-cloud",
+    "ui_ux": "qwen3.5:397b-cloud",
+    "frontend_architecture": "qwen3.5:397b-cloud",
+    "infrastructure": "qwen3.5:397b-cloud",
+    "devops_planning": "qwen3.5:397b-cloud",
+    "qa_test_strategy": "qwen3.5:397b-cloud",
+    "security_planning": "qwen3.5:397b-cloud",
+    "observability": "qwen3.5:397b-cloud",
+    "acceptance_verifier": "qwen3.5:397b-cloud",
+    "documentation": "qwen3.5:397b-cloud",
     "qa": "minimax-m2.5:cloud",
     "security": "minimax-m2.5:cloud",
     "accessibility": "minimax-m2.5:cloud",
@@ -797,11 +798,19 @@ class OllamaLLMClient(LLMClient):
             from shared.llm_response_utils import extract_files_from_content, heuristic_extract_files_from_content
             extracted = extract_files_from_content(text)
             if not extracted:
-                extracted = heuristic_extract_files_from_content(text, (".py", ".ts", ".html", ".scss", ".css", ".json"))
+                # Try heuristic with broad extensions (backend + frontend + config)
+                extracted = heuristic_extract_files_from_content(
+                    text,
+                    (".py", ".ts", ".html", ".scss", ".css", ".json", ".yaml", ".yml", ".java"),
+                )
             if isinstance(extracted, dict) and extracted:
+                logger.info(
+                    "Recovered %d files from raw content via heuristic extraction",
+                    len(extracted),
+                )
                 return {"files": extracted}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Heuristic file extraction failed: %s", e)
 
         # Final fallback: raw content wrapper. Callers should defensively use .get().
         # Models that frequently ignore JSON-only instructions may need a different model or pre-processing.
