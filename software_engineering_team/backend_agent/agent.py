@@ -1,4 +1,4 @@
-"""Backend Expert agent: Python/Java implementation and autonomous workflow."""
+MAX_EXISTING_CODE_CHARS = 10000
 
 from __future__ import annotations
 
@@ -307,6 +307,23 @@ def _is_repo_setup_task(task: Any) -> bool:
     )
 
 
+def _is_openapi_spec_task(task: Any) -> bool:
+    """True if task description is about creating an OpenAPI specification file.
+
+    Detects tasks that explicitly ask for a static OpenAPI spec file, as opposed to
+    general API tasks where FastAPI's auto-generation may suffice.
+    """
+    desc = (getattr(task, "description", None) or "").lower()
+    title = (getattr(task, "title", None) or "").lower()
+    combined = f"{desc} {title}"
+    return (
+        ("openapi" in combined and ("spec" in combined or "specification" in combined or "yaml" in combined or "file" in combined))
+        or "api specification" in combined
+        or "api contract" in combined
+        or ("swagger" in combined and ("spec" in combined or "file" in combined))
+    )
+
+
 def _truncate_for_context(text: str, max_chars: int) -> str:
     """Truncate text for agent context, with truncation notice."""
     if not text or len(text) <= max_chars:
@@ -318,12 +335,14 @@ MAX_OPENAPI_SPEC_CHARS = 100_000  # 100KB limit for OpenAPI spec context
 
 
 def _read_openapi_spec_from_repo(repo_path: Path) -> Optional[str]:
-    """Read existing OpenAPI spec from repo (openapi.yaml, openapi.json, docs/openapi.yaml).
+    """Read existing OpenAPI spec from repo (app/openapi.yaml, openapi.yaml, docs/openapi.yaml).
 
     Returns truncated content or None if not found. Used to pass existing spec as api_spec
     so the backend agent can extend/align with it.
     """
     candidates = [
+        repo_path / "app" / "openapi.yaml",
+        repo_path / "app" / "openapi.json",
         repo_path / "openapi.yaml",
         repo_path / "openapi.json",
         repo_path / "docs" / "openapi.yaml",
@@ -1839,6 +1858,24 @@ class BackendExpertAgent:
             if input_data.suggested_tests_from_qa.get("integration_tests"):
                 tests_block.extend(["", "**Integration tests:**", "```", input_data.suggested_tests_from_qa["integration_tests"], "```"])
             context_parts.extend(tests_block)
+
+        # Explicit guidance for OpenAPI spec tasks
+        task_desc_lower = (input_data.task_description or "").lower()
+        if (
+            ("openapi" in task_desc_lower and ("spec" in task_desc_lower or "specification" in task_desc_lower or "yaml" in task_desc_lower))
+            or "api specification" in task_desc_lower
+            or "api contract" in task_desc_lower
+        ):
+            context_parts.extend([
+                "",
+                "**CRITICAL - OpenAPI Spec Task:**",
+                "This task requires creating a **static OpenAPI spec file**. You MUST:",
+                "1. Create `app/openapi.yaml` with the complete OpenAPI 3.0 specification",
+                "2. Include all paths, request/response schemas, security definitions, and error responses",
+                "3. Do NOT rely solely on FastAPI's auto-generated /openapi.json",
+                "4. The `app/openapi.yaml` file MUST be included in your 'files' output",
+                "5. Also update any referenced schema files (e.g., app/schemas/error.py) to match the spec",
+            ])
 
         prompt = BACKEND_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         mode = "problem_solving" if has_issues else "initial"

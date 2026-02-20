@@ -116,3 +116,21 @@ Return a single JSON object with:
 - "summary": string -- brief description of what was updated (or "no changes needed")
 
 Respond with valid JSON only. No explanatory text outside JSON."""
+
+
+DOCUMENTATION_FINAL_REVIEW_SUFFIX = """
+
+**FINAL COMPREHENSIVE REVIEW MODE:**
+This is the end-of-project documentation pass. All development tasks are complete.
+You MUST produce complete, comprehensive documentation. Do NOT return empty content.
+- README must be fully populated with all required sections
+- CONTRIBUTORS must list all agents/tasks that contributed to this repository
+- If any section is incomplete, fill it in based on the codebase
+- readme_changed and contributors_changed should be true when content is generated
+"""
+
+DOCUMENTATION_CONTRIBUTORS_FINAL_REVIEW_SUFFIX = """
+
+**FINAL REVIEW:** You have a list of all completed task IDs. CONTRIBUTORS.md MUST be updated
+to include all contributing agents and tasks. Set contributors_changed to true.
+"""

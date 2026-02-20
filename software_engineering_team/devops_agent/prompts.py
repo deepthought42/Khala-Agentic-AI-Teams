@@ -4,7 +4,7 @@ from shared.coding_standards import CODING_STANDARDS
 
 DEVOPS_PLANNING_PROMPT = """You are an expert DevOps engineer. Before implementing a task, you produce a concise implementation plan.
 
-**Your task:** Review the task, requirements, architecture, and existing pipeline. Produce a structured plan that will guide the implementation step.
+**Your task:** Review the task, requirements, architecture, existing pipeline, and codebase context (when provided). Analyze dependencies (requirements.txt, package.json), entry points, and existing CI to produce a plan that avoids conflicts and matches the actual project structure.
 
 **Output format:** Return a single JSON object with exactly these keys (all strings; keep each under ~200 words):
 - "feature_intent": What the DevOps deliverable is meant to achieve (1-2 sentences, e.g. "Containerize the backend for build and deploy")

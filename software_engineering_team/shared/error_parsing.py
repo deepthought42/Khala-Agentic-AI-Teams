@@ -29,6 +29,11 @@ class FailureClass(str, Enum):
     PYTEST_COLLECTION = "pytest_collection"
     NG_BUILD_ERROR = "ng_build_error"
     ENVIRONMENT = "environment"
+    DOCKER_BUILD_ERROR = "docker_build_error"
+    DOCKERFILE_SYNTAX = "dockerfile_syntax"
+    YAML_PARSE_ERROR = "yaml_parse_error"
+    GITHUB_ACTIONS_ERROR = "github_actions_error"
+    TERRAFORM_ERROR = "terraform_error"
     UNKNOWN = "unknown"
 
 
@@ -87,6 +92,21 @@ INTERPRETATION_401 = (
     "The test expected a successful response (e.g. 200) but got 401. The endpoint requires "
     "authentication; the test request is missing or has invalid auth. Fix the test to send "
     "the required auth header or use an authenticated test client."
+)
+
+# DevOps playbooks
+PLAYBOOK_DOCKER_BUILD = (
+    "Fix the Docker build: ensure all COPY paths exist (e.g. requirements.txt, package.json), "
+    "use valid base image tags (e.g. python:3.11-slim), and fix any RUN command failures. "
+    "For 'file not found', verify the file exists in the build context and path is correct."
+)
+PLAYBOOK_YAML_SYNTAX = (
+    "Fix YAML syntax: check indentation (use spaces, not tabs), ensure colons have spaces after "
+    "them, and that strings with special characters are quoted. Validate with a YAML linter."
+)
+PLAYBOOK_GHA_WORKFLOW = (
+    "Fix GitHub Actions workflow: use valid action versions (e.g. actions/checkout@v4), ensure "
+    "'jobs' has at least one job with 'runs-on' and 'steps'. Check that 'on' trigger is valid."
 )
 
 
@@ -365,6 +385,121 @@ def parse_ng_build_failure(stdout: str, stderr: str) -> List[ParsedFailure]:
     return failures
 
 
+def parse_devops_failure(build_errors: str) -> List[ParsedFailure]:
+    """
+    Parse DevOps build/verification errors into structured failures.
+
+    Handles:
+    - YAML parse errors (pipeline, docker-compose)
+    - Docker build errors (COPY failed, invalid base image, RUN failures)
+    - GitHub Actions workflow issues
+    """
+    text = build_errors or ""
+    failures: List[ParsedFailure] = []
+
+    # YAML parse error (from orchestrator or yaml.safe_load)
+    yaml_match = re.search(
+        r"YAML parse error (?:in\s+)?([^\s:]+)?\s*:?\s*(.+)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    yamlerror_in_text = "YAMLError" in text or "yaml.YAMLError" in text
+    if yaml_match or ("yaml" in text.lower() and "parse" in text.lower()) or yamlerror_in_text:
+        file_path = yaml_match.group(1).strip() if yaml_match and yaml_match.group(1) else None
+        msg = yaml_match.group(2).strip()[:300] if yaml_match and yaml_match.group(2) else "YAML parse error"
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.YAML_PARSE_ERROR,
+                file_path=file_path,
+                message=msg,
+                raw_excerpt=text[:2000],
+                suggestion="Fix YAML syntax: indentation, colons, and quoting.",
+                playbook_hint=PLAYBOOK_YAML_SYNTAX,
+            )
+        )
+        return failures
+
+    # Docker build: COPY failed, file not found
+    copy_match = re.search(
+        r"COPY failed: ([^:]+): ([^\n]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if copy_match:
+        src, err = copy_match.group(1).strip(), copy_match.group(2).strip()
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.DOCKER_BUILD_ERROR,
+                message=f"COPY failed: {src} - {err}",
+                raw_excerpt=text[:2000],
+                suggestion=f"Ensure '{src}' exists in the build context. Check path and .dockerignore.",
+                playbook_hint=PLAYBOOK_DOCKER_BUILD,
+            )
+        )
+        return failures
+
+    # Docker: failed to solve, invalid reference
+    solve_match = re.search(
+        r"(?:failed to solve|error|invalid reference)[:\s]+(.{1,200})",
+        text,
+        re.IGNORECASE,
+    )
+    if solve_match:
+        msg = solve_match.group(1).strip()
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.DOCKER_BUILD_ERROR,
+                message=f"Docker build failed: {msg}",
+                raw_excerpt=text[:2000],
+                suggestion="Fix the Dockerfile: valid base image, correct paths, working RUN commands.",
+                playbook_hint=PLAYBOOK_DOCKER_BUILD,
+            )
+        )
+        return failures
+
+    # Docker: RUN command failed
+    run_match = re.search(
+        r"(?:The command|RUN)[^`]*`[^`]+` (?:returned|failed)[^.]*\.?\s*(.+)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if run_match:
+        detail = run_match.group(1).strip()[:200] if run_match.group(1) else ""
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.DOCKER_BUILD_ERROR,
+                message=f"RUN command failed: {detail}",
+                raw_excerpt=text[:2000],
+                suggestion="Fix the failing RUN step: check package names, install commands, and paths.",
+                playbook_hint=PLAYBOOK_DOCKER_BUILD,
+            )
+        )
+        return failures
+
+    # Generic Docker build error
+    if "docker" in text.lower() and ("error" in text.lower() or "failed" in text.lower()):
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.DOCKER_BUILD_ERROR,
+                message="Docker build failed",
+                raw_excerpt=text[:2000],
+                suggestion="Fix the Dockerfile and build context. Check COPY paths and RUN commands.",
+                playbook_hint=PLAYBOOK_DOCKER_BUILD,
+            )
+        )
+        return failures
+
+    if not failures:
+        failures.append(
+            ParsedFailure(
+                failure_class=FailureClass.UNKNOWN,
+                message="Unrecognized DevOps failure",
+                raw_excerpt=text[:2000] if text else "",
+            )
+        )
+    return failures
+
+
 def parse_command_failure(
     command_kind: str,
     stdout: str,
@@ -373,12 +508,14 @@ def parse_command_failure(
     """
     Parse command output based on command kind.
 
-    command_kind: "pytest" | "ng_build" | "py_compile"
+    command_kind: "pytest" | "ng_build" | "py_compile" | "devops"
     """
     if command_kind == "pytest":
         return parse_pytest_failure(stdout, stderr)
     if command_kind in ("ng_build", "ng"):
         return parse_ng_build_failure(stdout, stderr)
+    if command_kind == "devops":
+        return parse_devops_failure((stdout or "") + "\n" + (stderr or ""))
     return [
         ParsedFailure(
             failure_class=FailureClass.UNKNOWN,

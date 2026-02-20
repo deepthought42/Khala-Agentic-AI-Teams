@@ -1,11 +1,12 @@
 """Unit tests for the DevOps Expert agent."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from devops_agent.agent import DevOpsExpertAgent
+from devops_agent.agent import DevOpsExpertAgent, _gather_codebase_context
 
 
 def test_devops_run_workflow_calls_plan_task_without_error() -> None:
@@ -17,7 +18,7 @@ def test_devops_run_workflow_calls_plan_task_without_error() -> None:
     mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.side_effect = [
         {"feature_intent": "Containerize", "what_changes": ["Dockerfile"], "algorithms_data_structures": "", "tests_needed": ""},
-        {"pipeline_yaml": "", "dockerfile": "FROM node:20", "summary": "Done", "needs_clarification": False, "clarification_requests": []},
+        {"pipeline_yaml": "", "dockerfile": "FROM node:20\nCMD [\"node\"]", "summary": "Done", "needs_clarification": False, "clarification_requests": []},
     ]
     agent = DevOpsExpertAgent(llm_client=mock_llm)
     build_verifier = MagicMock(return_value=(True, ""))
@@ -60,3 +61,16 @@ def test_devops_plan_task_returns_plan_markdown() -> None:
     assert ".github/workflows/ci.yml" in plan_text
     assert "Multi-stage" in plan_text or "Docker" in plan_text
     assert "docker build" in plan_text or "YAML" in plan_text
+
+
+def test_gather_codebase_context_includes_deps() -> None:
+    """_gather_codebase_context includes requirements.txt and package.json when present."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        (path / "requirements.txt").write_text("fastapi==0.100.0\nuvicorn")
+        (path / "package.json").write_text('{"name": "app", "scripts": {"start": "ng serve"}}')
+        ctx = _gather_codebase_context(path)
+    assert "requirements.txt" in ctx
+    assert "fastapi" in ctx
+    assert "package.json" in ctx
+    assert "ng serve" in ctx

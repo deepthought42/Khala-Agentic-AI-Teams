@@ -79,6 +79,14 @@ class DocumentationInput(BaseModel):
         default=True,
         description="Whether the repo has a devops/ folder (write devops/README.md only if true)",
     )
+    is_final_review: bool = Field(
+        default=False,
+        description="If true, use final comprehensive review mode (emphasize completeness)",
+    )
+    completed_task_ids: Optional[List[str]] = Field(
+        default=None,
+        description="List of completed task IDs for CONTRIBUTORS (final review only)",
+    )
 
 
 class DocumentationOutput(BaseModel):

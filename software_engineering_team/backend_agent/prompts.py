@@ -128,9 +128,10 @@ BACKEND_PROMPT = """You are a Senior Backend Software Engineer. You implement pr
    - REST APIs must expose an OpenAPI 3.0 spec usable by cloud API gateways and by clients for type/code generation.
    - Keep FastAPI's default /openapi.json (and optionally /docs, /redoc). Do not disable openapi_url.
    - Use tags, summary, description, and response_model (and request body schemas) on all routes so the generated spec is complete (paths, methods, request/response schemas).
-   - Optionally: add a static openapi.yaml (or docs/openapi.yaml) in the repo, e.g. by documenting in README how to export the spec (GET /openapi.json or a small script), or by including the file in "files" when creating/updating the API. This supports gateways that import a file and clients that generate types from a file.
-   - In README, document where the spec is (e.g. GET /openapi.json) and that it can be used for API gateway configuration and client code/type generation.
-   - When modifying an existing API: if the repo already contains openapi.yaml or docs/openapi.yaml, extend or update it to match the new routes/schemas rather than removing it (unless the task is to replace the API entirely).
+   - **When the task explicitly asks to create an OpenAPI spec file (e.g. "Create OpenAPI spec", "OpenAPI specification", "API contract"):** You MUST create a static `app/openapi.yaml` file with the complete spec. Do NOT rely solely on FastAPI's auto-generation. Include the file in your "files" output with all paths, schemas, security definitions, and error responses.
+   - For general API tasks: Optionally add a static openapi.yaml to support gateways that import a file and clients that generate types from a file.
+   - In README, document where the spec is (e.g. GET /openapi.json or app/openapi.yaml) and that it can be used for API gateway configuration and client code/type generation.
+   - When modifying an existing API: if the repo already contains openapi.yaml, app/openapi.yaml, or docs/openapi.yaml, extend or update it to match the new routes/schemas rather than removing it (unless the task is to replace the API entirely).
 
 6. **Build configuration and app entry point (REQUIRED when your changes affect them):**
    - When you add or remove any dependency (any import from PyPI or third-party package), you **must** update `requirements.txt` in the "files" dict with the new dependency and version. If the project uses `pyproject.toml`, update that as well.

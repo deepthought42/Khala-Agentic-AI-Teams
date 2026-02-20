@@ -18,7 +18,12 @@ from shared.git_utils import (
 from shared.llm import LLMClient
 
 from .models import DocumentationInput, DocumentationOutput, DocumentationStatus
-from .prompts import DOCUMENTATION_CONTRIBUTORS_PROMPT, DOCUMENTATION_README_PROMPT
+from .prompts import (
+    DOCUMENTATION_CONTRIBUTORS_FINAL_REVIEW_SUFFIX,
+    DOCUMENTATION_CONTRIBUTORS_PROMPT,
+    DOCUMENTATION_FINAL_REVIEW_SUFFIX,
+    DOCUMENTATION_README_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,31 @@ MAX_WORKFLOW_SECONDS = 300
 
 # Maximum characters of codebase content to send to the LLM
 MAX_CODEBASE_CHARS = 40000
+
+# Exclude these dirs when reading repo code (frontend)
+_READ_REPO_EXCLUDE_PARTS = {"node_modules", "dist", ".angular"}
+
+
+def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str:
+    """Read code files from repo, concatenated. Excludes .git and frontend build dirs."""
+    if extensions is None:
+        extensions = [".py", ".ts", ".tsx", ".java", ".yml", ".yaml", ".html", ".scss"]
+    use_frontend_exclusions = bool(set(extensions) & {".ts", ".tsx", ".html", ".scss"})
+    parts: List[str] = []
+    for f in repo_path.rglob("*"):
+        if ".git" in f.parts:
+            continue
+        if use_frontend_exclusions and _READ_REPO_EXCLUDE_PARTS & set(f.parts):
+            continue
+        if f.is_file() and f.suffix in extensions:
+            try:
+                parts.append(
+                    f"### {f.relative_to(repo_path)} ###\n"
+                    f"{f.read_text(encoding='utf-8', errors='replace')}"
+                )
+            except Exception:
+                pass
+    return "\n\n".join(parts) if parts else "# No code files found"
 
 
 class DocumentationAgent:
@@ -75,9 +105,10 @@ class DocumentationAgent:
             Exception: If LLM calls fail (handled internally, returns partial output)
         """
         logger.info(
-            "Documentation: generating docs for task %s (agent=%s)",
+            "Documentation: generating docs for task %s (agent=%s, is_final_review=%s)",
             input_data.task_id,
             input_data.agent_type,
+            getattr(input_data, "is_final_review", False),
         )
 
         # Truncate codebase if too large
@@ -181,7 +212,10 @@ class DocumentationAgent:
                 "---",
             ])
 
-            prompt = DOCUMENTATION_README_PROMPT + "\n\n---\n\n" + "\n".join(readme_context)
+            readme_prompt = DOCUMENTATION_README_PROMPT
+            if getattr(input_data, "is_final_review", False):
+                readme_prompt = readme_prompt + DOCUMENTATION_FINAL_REVIEW_SUFFIX
+            prompt = readme_prompt + "\n\n---\n\n" + "\n".join(readme_context)
             data = self.llm.complete_json(prompt, temperature=0.2)
 
             readme_content = data.get("readme_content", "")
@@ -209,6 +243,12 @@ class DocumentationAgent:
                     logger.info("Documentation: README.md did not exist, forcing creation")
                 readme_changed = True
 
+            if readme_changed and not readme_content and not input_data.existing_readme:
+                logger.warning(
+                    "Documentation: LLM returned readme_changed=true but empty readme_content; "
+                    "README will not be written"
+                )
+
         except Exception as e:
             logger.warning("Documentation: README generation failed: %s", e)
             readme_summary = f"README update skipped due to error: {e}"
@@ -224,6 +264,10 @@ class DocumentationAgent:
                 f"**Agent type:** {input_data.agent_type}",
                 f"**Task summary:** {input_data.task_summary}",
             ]
+            if getattr(input_data, "completed_task_ids", None):
+                contrib_context.append(
+                    f"**All completed tasks (for CONTRIBUTORS):** {', '.join(input_data.completed_task_ids)}"
+                )
 
             if input_data.existing_contributors:
                 contrib_context.extend([
@@ -245,7 +289,10 @@ class DocumentationAgent:
                     (input_data.spec_content or "")[:4000],
                 ])
 
-            prompt = DOCUMENTATION_CONTRIBUTORS_PROMPT + "\n\n---\n\n" + "\n".join(contrib_context)
+            contrib_prompt = DOCUMENTATION_CONTRIBUTORS_PROMPT
+            if getattr(input_data, "is_final_review", False):
+                contrib_prompt = contrib_prompt + DOCUMENTATION_CONTRIBUTORS_FINAL_REVIEW_SUFFIX
+            prompt = contrib_prompt + "\n\n---\n\n" + "\n".join(contrib_context)
             data = self.llm.complete_json(prompt, temperature=0.2)
 
             contributors_content = data.get("contributors_content", "")
@@ -299,6 +346,8 @@ class DocumentationAgent:
         architecture: Any,
         codebase_content: str,
         on_status: Optional[Callable[[DocumentationStatus, str], None]] = None,
+        is_final_review: bool = False,
+        completed_task_ids: Optional[List[str]] = None,
     ) -> DocumentationOutput:
         """
         End-to-end documentation workflow: branch, generate, commit, merge, cleanup.
@@ -389,6 +438,8 @@ class DocumentationAgent:
                 has_frontend_folder=frontend_dir.is_dir(),
                 has_backend_folder=backend_dir.is_dir(),
                 has_devops_folder=devops_dir.is_dir(),
+                is_final_review=is_final_review,
+                completed_task_ids=completed_task_ids,
             )
 
             result = self.run(input_data)
@@ -417,11 +468,25 @@ class DocumentationAgent:
                 files_to_write["CONTRIBUTORS.md"] = result.contributors_content
 
             if not files_to_write:
-                logger.info("DocAgent [%s]: no documentation changes needed", task_id)
+                logger.info(
+                    "DocAgent [%s]: no documentation changes needed (readme_changed=%s, contributors_changed=%s, "
+                    "readme_content_len=%d, contributors_content_len=%d)",
+                    task_id,
+                    result.readme_changed,
+                    result.contributors_changed,
+                    len(result.readme_content or ""),
+                    len(result.contributors_content or ""),
+                )
                 _update(DocumentationStatus.COMPLETE, "no changes")
                 self._cleanup_branch(path, branch_name)
                 return result
 
+            logger.info(
+                "DocAgent [%s]: writing %d file(s): %s",
+                task_id,
+                len(files_to_write),
+                list(files_to_write.keys()),
+            )
             _update(DocumentationStatus.COMMITTING)
             ok, msg = write_files_and_commit(
                 path,
@@ -475,6 +540,54 @@ class DocumentationAgent:
             return DocumentationOutput(
                 summary=f"Documentation update failed: {e}",
             )
+
+    def run_final_review(
+        self,
+        repo_path: str | Path,
+        repo_name: str,
+        spec_content: str,
+        architecture: Any,
+        completed_task_ids: List[str],
+        on_status: Optional[Callable[[DocumentationStatus, str], None]] = None,
+    ) -> DocumentationOutput:
+        """
+        Run comprehensive documentation review after all tasks complete.
+        Reads the codebase, generates full README and CONTRIBUTORS, and commits.
+        """
+        path = Path(repo_path).resolve()
+        task_id = f"final-docs-{repo_name}"
+        logger.info(
+            "DocAgent [%s]: starting final comprehensive documentation review (%d tasks completed)",
+            task_id,
+            len(completed_task_ids),
+        )
+        try:
+            from shared.context_sizing import compute_existing_code_chars
+            extensions = [".py"] if repo_name == "backend" else [".ts", ".tsx", ".html", ".scss"]
+            raw_code = _read_repo_code(path, extensions)
+            max_chars = compute_existing_code_chars(self.llm)
+            codebase_content = raw_code
+            if len(raw_code) > max_chars:
+                codebase_content = (
+                    raw_code[:max_chars]
+                    + f"\n\n... [truncated, {len(raw_code) - max_chars} more chars]"
+                )
+        except Exception as e:
+            logger.warning("DocAgent [%s]: failed to read codebase: %s", task_id, e)
+            return DocumentationOutput(summary=f"Final review skipped: could not read codebase ({e})")
+
+        return self.run_full_workflow(
+            repo_path=path,
+            task_id=task_id,
+            task_summary="Final comprehensive documentation review: all tasks complete. Document the full project.",
+            agent_type=repo_name,
+            spec_content=spec_content,
+            architecture=architecture,
+            codebase_content=codebase_content,
+            on_status=on_status,
+            is_final_review=True,
+            completed_task_ids=completed_task_ids,
+        )
 
     def _cleanup_branch(self, repo_path: Path, branch_name: str) -> None:
         """

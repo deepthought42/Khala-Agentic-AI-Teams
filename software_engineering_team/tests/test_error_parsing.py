@@ -5,6 +5,7 @@ from shared.error_parsing import (
     ParsedFailure,
     build_agent_feedback,
     get_failure_class_tag,
+    parse_devops_failure,
     parse_ng_build_failure,
     parse_pytest_failure,
 )
@@ -221,3 +222,21 @@ E         -401
     assert failures[0].failing_tests is not None
     assert len(failures[0].failing_tests) == 1
     assert "test_auth_middleware" in failures[0].failing_tests[0]
+
+
+def test_parse_devops_docker_copy_failed():
+    """parse_devops_failure detects COPY failed errors."""
+    err = "COPY failed: requirements.txt: No such file or directory"
+    failures = parse_devops_failure(err)
+    assert len(failures) == 1
+    assert failures[0].failure_class == FailureClass.DOCKER_BUILD_ERROR
+    assert "COPY failed" in failures[0].message
+    assert "requirements.txt" in failures[0].suggestion
+
+
+def test_parse_devops_yaml_error():
+    """parse_devops_failure detects YAML parse errors."""
+    err = "YAML parse error in .github/workflows/ci.yml: mapping values are not allowed here"
+    failures = parse_devops_failure(err)
+    assert len(failures) == 1
+    assert failures[0].failure_class == FailureClass.YAML_PARSE_ERROR

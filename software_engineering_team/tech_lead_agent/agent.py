@@ -752,8 +752,14 @@ class TechLeadAgent:
         try:
             path = Path(repo_path).resolve()
             readme_file = path / "README.md"
+            readme_content = (
+                readme_file.read_text(encoding="utf-8", errors="replace").strip()
+                if readme_file.exists()
+                else ""
+            )
+            # Force docs update when README is missing, empty, or minimal (< 100 chars)
             readme_missing_or_empty = (
-                not readme_file.exists() or not readme_file.read_text(encoding="utf-8", errors="replace").strip()
+                not readme_file.exists() or not readme_content or len(readme_content) < 100
             )
             force_docs_because_readme_empty = (
                 readme_missing_or_empty
@@ -790,13 +796,16 @@ class TechLeadAgent:
                 should_update,
                 task_update.task_id,
                 rationale[:100] if rationale else "N/A",
-                " (forced: README missing or empty)" if force_docs_because_readme_empty else "",
+                " (forced: README missing, empty, or minimal)" if force_docs_because_readme_empty else "",
             )
 
             if not should_update:
                 logger.info(
-                    "Tech Lead: skipping documentation update for task %s (should_update_docs=false)",
+                    "Tech Lead: skipping documentation update for task %s (should_update_docs=false, "
+                    "README exists=%s, README len=%d chars)",
                     task_update.task_id,
+                    readme_file.exists(),
+                    len(readme_content),
                 )
                 return
 

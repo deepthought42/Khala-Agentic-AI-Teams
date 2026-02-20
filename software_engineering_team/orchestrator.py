@@ -1928,38 +1928,48 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                     if sec_result.vulnerabilities:
                         logger.warning("Security (frontend) found %s vulnerabilities", len(sec_result.vulnerabilities))
 
-        # Final documentation pass: ensure README exists in backend and frontend repos if missing/empty
+        # Final documentation pass: always run comprehensive documentation review for each repo
         doc_agent = agents.get("documentation")
         if doc_agent and completed_code_task_ids:
+            logger.info(
+                "Final documentation pass: starting (completed_code_tasks=%d)",
+                len(completed_code_task_ids),
+            )
             for repo_name, repo_dir in [("backend", backend_dir), ("frontend", frontend_dir)]:
                 if not repo_dir.is_dir() or not (repo_dir / ".git").exists():
                     continue
-                readme_path = repo_dir / "README.md"
-                if readme_path.exists() and readme_path.read_text(encoding="utf-8", errors="replace").strip():
-                    continue
                 logger.info(
-                    "Final documentation pass: %s repo README missing or empty, running Documentation Agent",
+                    "Final documentation pass: running comprehensive documentation review for %s repo",
                     repo_name,
                 )
                 try:
-                    from shared.context_sizing import compute_existing_code_chars
-                    max_code_chars = compute_existing_code_chars(doc_agent.llm)
-                    codebase_content = _truncate_for_context(
-                        _read_repo_code(
-                            repo_dir,
-                            [".py"] if repo_name == "backend" else [".ts", ".tsx", ".html", ".scss"],
-                        ),
-                        max_code_chars,
-                    )
-                    doc_agent.run_full_workflow(
-                        repo_path=repo_dir,
-                        task_id=f"final-docs-{repo_name}",
-                        task_summary="Update all project documentation; ensure README and key sections exist.",
-                        agent_type=repo_name,
-                        spec_content=spec_content,
-                        architecture=architecture,
-                        codebase_content=codebase_content,
-                    )
+                    if hasattr(doc_agent, "run_final_review"):
+                        doc_agent.run_final_review(
+                            repo_path=repo_dir,
+                            repo_name=repo_name,
+                            spec_content=spec_content,
+                            architecture=architecture,
+                            completed_task_ids=completed_code_task_ids,
+                        )
+                    else:
+                        from shared.context_sizing import compute_existing_code_chars
+                        max_code_chars = compute_existing_code_chars(doc_agent.llm)
+                        codebase_content = _truncate_for_context(
+                            _read_repo_code(
+                                repo_dir,
+                                [".py"] if repo_name == "backend" else [".ts", ".tsx", ".html", ".scss"],
+                            ),
+                            max_code_chars,
+                        )
+                        doc_agent.run_full_workflow(
+                            repo_path=repo_dir,
+                            task_id=f"final-docs-{repo_name}",
+                            task_summary="Final comprehensive documentation review: update all project documentation, README, and CONTRIBUTORS.",
+                            agent_type=repo_name,
+                            spec_content=spec_content,
+                            architecture=architecture,
+                            codebase_content=codebase_content,
+                        )
                 except Exception as doc_err:
                     logger.warning(
                         "Final documentation pass failed for %s repo (non-blocking): %s",
