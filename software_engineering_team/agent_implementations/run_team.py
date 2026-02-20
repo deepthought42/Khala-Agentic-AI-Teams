@@ -20,7 +20,7 @@ import _path_setup  # noqa: F401
 import logging
 from pathlib import Path
 
-from shared.llm import DummyLLMClient, OllamaLLMClient
+from shared.llm import get_llm_client
 from shared.models import ProductRequirements, TaskType
 from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
@@ -34,9 +34,8 @@ from qa_agent import QAExpertAgent, QAInput
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# Use DummyLLMClient for testing without an LLM; switch to OllamaLLMClient for real runs
-USE_DUMMY = False
-LLM = DummyLLMClient() if USE_DUMMY else OllamaLLMClient(model="qwen2.5-coder", timeout=1800.0)
+# Uses get_llm_client() which reads SW_LLM_PROVIDER, SW_LLM_MODEL (default: qwen3-coder-next:cloud)
+LLM = get_llm_client()
 
 # Example product requirements
 REQUIREMENTS = ProductRequirements(

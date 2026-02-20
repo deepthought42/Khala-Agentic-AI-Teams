@@ -25,7 +25,23 @@ ENV_LLM_MAX_RETRIES = "SW_LLM_MAX_RETRIES"  # max retries for temporary errors (
 ENV_LLM_BACKOFF_BASE = "SW_LLM_BACKOFF_BASE"  # base seconds for exponential backoff (default 2)
 ENV_LLM_BACKOFF_MAX = "SW_LLM_BACKOFF_MAX_SECONDS"  # max backoff seconds (default 60)
 ENV_LLM_MAX_CONCURRENCY = "SW_LLM_MAX_CONCURRENCY"  # max concurrent complete_json calls (default 2)
-ENV_LLM_MAX_TOKENS = "SW_LLM_MAX_TOKENS"  # max tokens to generate; if unset, uses model's num_ctx from Ollama /api/show
+ENV_LLM_MAX_TOKENS = "SW_LLM_MAX_TOKENS"  # max tokens to generate; if unset, min(context_size, 32768)
+ENV_LLM_CONTEXT_SIZE = "SW_LLM_CONTEXT_SIZE"  # context window in tokens; if unset, uses known model or Ollama /api/show
+
+# Default cap for max_tokens (max output length) in API requests. Many APIs limit output to 32K even when context is 256K.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
+# Known model context sizes (from Ollama model info). Used when /api/show fails or returns wrong value.
+# 256K = 262144. qwen3.5:397b and qwen3-coder-next: 256K native context.
+KNOWN_MODEL_CONTEXT: dict[str, int] = {
+    "qwen3.5:397b": 262144,
+    "qwen3.5:397b-cloud": 262144,
+    "qwen3.5:cloud": 262144,
+    "qwen3-coder-next": 262144,
+    "qwen3-coder-next:cloud": 262144,
+    "qwen3-coder:480b-cloud": 262144,
+    "qwen3-coder:480b": 262144,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +83,7 @@ def get_llm_config_summary() -> str:
     """
     provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
     if provider == "ollama":
-        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder:480b-cloud"
+        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder-next:cloud"
         base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
         return f"provider={provider}, model={model}, base_url={base_url}"
     return f"provider={provider}"
@@ -609,8 +625,20 @@ class OllamaLLMClient(LLMClient):
         self._model_num_ctx: int | None = None  # cached from /api/show
 
     def _fetch_model_num_ctx(self) -> int:
-        """Fetch model's num_ctx from Ollama /api/show. Cached per client. Fallback 16384 on failure."""
+        """Fetch model's num_ctx from env, known model table, or Ollama /api/show. Cached per client. Fallback 16384 on failure."""
         if self._model_num_ctx is not None:
+            return self._model_num_ctx
+        env_ctx = os.environ.get(ENV_LLM_CONTEXT_SIZE)
+        if env_ctx:
+            try:
+                self._model_num_ctx = max(2048, int(env_ctx))
+                logger.info("LLM context size from %s: %s", ENV_LLM_CONTEXT_SIZE, self._model_num_ctx)
+                return self._model_num_ctx
+            except ValueError:
+                pass
+        if self.model in KNOWN_MODEL_CONTEXT:
+            self._model_num_ctx = KNOWN_MODEL_CONTEXT[self.model]
+            logger.info("LLM model %s: using known context size %s", self.model, self._model_num_ctx)
             return self._model_num_ctx
         try:
             url = f"{self.base_url}/api/show"
@@ -759,7 +787,13 @@ class OllamaLLMClient(LLMClient):
             "If you use a code block, put only the JSON object inside it with no surrounding text."
         )
         env_max = os.environ.get(ENV_LLM_MAX_TOKENS)
-        max_tokens = int(env_max) if env_max else self._fetch_model_num_ctx()
+        if env_max:
+            max_tokens = int(env_max)
+        else:
+            # Use context size but cap at DEFAULT_MAX_OUTPUT_TOKENS; many APIs limit output to 32K.
+            max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
+        # Cap at DEFAULT_MAX_OUTPUT_TOKENS so we never exceed typical API output limits (e.g. 32768)
+        max_tokens = min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
         payload = {
             "model": self.model,
             "temperature": temperature,
@@ -822,8 +856,17 @@ class OllamaLLMClient(LLMClient):
                             raise last_error
 
                         if 400 <= status < 500:
+                            err_text = response.text[:500]
+                            if status == 404 and ("not found" in err_text.lower() or "model" in err_text.lower()):
+                                raise LLMPermanentError(
+                                    f"LLM model not found (404). The API at {self.base_url} does not have model "
+                                    f"'{self.model}'. Set SW_LLM_MODEL to a model your API supports (e.g. "
+                                    "export SW_LLM_MODEL=llama3.2 for Ollama, or your provider's model id). "
+                                    f"Original: {err_text[:200]}",
+                                    status_code=status,
+                                )
                             raise LLMPermanentError(
-                                f"LLM client error {status}: {response.text[:300]}",
+                                f"LLM client error {status}: {err_text}",
                                 status_code=status,
                             )
 
@@ -901,13 +944,13 @@ def get_llm_client() -> Union["DummyLLMClient", "OllamaLLMClient"]:
 
     Environment variables:
     - SW_LLM_PROVIDER: "ollama" (default) or "dummy"
-    - SW_LLM_MODEL: model name for ollama (default: qwen3-coder:480b-cloud)
+    - SW_LLM_MODEL: model name for ollama (default: qwen3-coder-next:cloud)
     - SW_LLM_BASE_URL: ollama base URL (default: http://127.0.0.1:11434)
     - SW_LLM_TIMEOUT: timeout in seconds (default: 1800)
     """
     provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
     if provider == "ollama":
-        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder:480b-cloud"
+        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder-next:cloud"
         base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
         try:
             timeout = float(os.environ.get(ENV_LLM_TIMEOUT) or "1800")

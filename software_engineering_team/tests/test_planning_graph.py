@@ -13,6 +13,8 @@ from planning_team.planning_graph import (
     EdgeType,
     Phase,
     compile_planning_graph_to_task_assignment,
+    ensure_dict,
+    ensure_str_list,
 )
 from shared.models import TaskType
 
@@ -150,3 +152,48 @@ def test_compile_preserves_user_story_when_provided():
     assignment = compile_planning_graph_to_task_assignment(g)
     assert len(assignment.tasks) == 1
     assert assignment.tasks[0].user_story == custom_story
+
+
+def test_ensure_str_list_handles_malformed_inputs():
+    """ensure_str_list coerces None, string, and non-list values to List[str]."""
+    assert ensure_str_list(None) == []
+    assert ensure_str_list("") == []
+    assert ensure_str_list("single") == ["single"]
+    assert ensure_str_list(["a", "b"]) == ["a", "b"]
+    assert ensure_str_list([]) == []
+    assert ensure_str_list(123) == []
+
+
+def test_ensure_dict_handles_malformed_inputs():
+    """ensure_dict coerces None and non-dict values to Dict."""
+    assert ensure_dict(None) == {}
+    assert ensure_dict({}) == {}
+    assert ensure_dict({"a": 1}) == {"a": 1}
+    assert ensure_dict("invalid") == {}
+
+
+def test_planning_node_from_malformed_llm_dict():
+    """PlanningNode can be built from LLM dict with inputs/outputs/acceptance_criteria as string or null."""
+    n = {
+        "id": "frontend-task-list",
+        "inputs": "api",  # LLM sometimes returns string instead of list
+        "outputs": None,
+        "acceptance_criteria": "one item",  # string instead of list
+        "metadata": "invalid",  # non-dict
+    }
+    node = PlanningNode(
+        id=n["id"],
+        domain=PlanningDomain.FRONTEND,
+        kind=PlanningNodeKind.TASK,
+        summary=n.get("summary", ""),
+        details=n.get("details", ""),
+        inputs=ensure_str_list(n.get("inputs")),
+        outputs=ensure_str_list(n.get("outputs")),
+        acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),
+        metadata=ensure_dict(n.get("metadata")),
+    )
+    assert node.id == "frontend-task-list"
+    assert node.inputs == ["api"]
+    assert node.outputs == []
+    assert node.acceptance_criteria == ["one item"]
+    assert node.metadata == {}

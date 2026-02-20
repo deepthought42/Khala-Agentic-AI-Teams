@@ -12,6 +12,8 @@ from planning_team.planning_graph import (
     PlanningGraph,
     PlanningNode,
     PlanningNodeKind,
+    ensure_dict,
+    ensure_str_list,
 )
 from shared.llm import LLMClient
 from shared.models import ProductRequirements, SystemArchitecture
@@ -33,7 +35,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
             kind = PlanningNodeKind(kind_str)
         except ValueError:
             kind = PlanningNodeKind.TASK
-        meta = dict(n.get("metadata") or {})
+        meta = ensure_dict(n.get("metadata"))
         user_story = (n.get("user_story") or meta.get("user_story") or "").strip()
         if user_story:
             meta["user_story"] = user_story
@@ -43,9 +45,9 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
             kind=kind,
             summary=n.get("summary", ""),
             details=n.get("details", ""),
-            inputs=n.get("inputs", []),
-            outputs=n.get("outputs", []),
-            acceptance_criteria=n.get("acceptance_criteria", []),
+            inputs=ensure_str_list(n.get("inputs")),
+            outputs=ensure_str_list(n.get("outputs")),
+            acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),
             parent_id=n.get("parent_id"),
             metadata=meta,
         )

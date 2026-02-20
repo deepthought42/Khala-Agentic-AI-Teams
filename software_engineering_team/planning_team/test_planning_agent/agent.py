@@ -12,6 +12,8 @@ from planning_team.planning_graph import (
     PlanningGraph,
     PlanningNode,
     PlanningNodeKind,
+    ensure_dict,
+    ensure_str_list,
 )
 from shared.llm import LLMClient
 from shared.models import ProductRequirements, SystemArchitecture
@@ -44,8 +46,8 @@ def _parse_graph_from_llm_output(data: Dict[str, Any], existing_task_ids: list) 
             kind=kind,
             summary=n.get("summary", ""),
             details=n.get("details", ""),
-            acceptance_criteria=n.get("acceptance_criteria", []),
-            metadata=n.get("metadata", {}),
+            acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),
+            metadata=ensure_dict(n.get("metadata")),
         )
         graph.add_node(node)
     for e in data.get("edges") or []:

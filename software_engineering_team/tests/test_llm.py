@@ -152,3 +152,15 @@ def test_extract_json_unparseable_returns_raw_content_wrapper() -> None:
     text = "no code blocks or json here at all"
     result = client._extract_json(text)
     assert result == {"content": text}
+
+
+def test_qwen3_coder_next_uses_known_context_size() -> None:
+    """qwen3-coder-next uses known context size 262144 without /api/show call."""
+    client = OllamaLLMClient(model="qwen3-coder-next", base_url="http://localhost:9999", timeout=5)
+    assert client.get_max_context_tokens() == 262144
+
+
+def test_qwen35_397b_uses_known_context_size() -> None:
+    """qwen3.5:397b uses known context size 262144 without /api/show call."""
+    client = OllamaLLMClient(model="qwen3.5:397b", base_url="http://localhost:9999", timeout=5)
+    assert client.get_max_context_tokens() == 262144

@@ -1534,7 +1534,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                             len(alignment_feedback),
                         )
                         break
-                logger.warning("Tasks and architecture not aligned (iteration %s/%s): %s", alignment_iterations + 1, MAX_ALIGNMENT_ITERATIONS, alignment_feedback[:3])
+                logger.info("Tasks and architecture not aligned (iteration %s/%s): %s", alignment_iterations + 1, MAX_ALIGNMENT_ITERATIONS, alignment_feedback[:3])
                 alignment_iterations += 1
                 if alignment_iterations >= MAX_ALIGNMENT_ITERATIONS:
                     logger.warning("Max alignment iterations reached; proceeding with current plan")
@@ -1615,7 +1615,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
                         len(conformance_issues_from_last),
                     )
                     break
-            logger.warning("Spec conformance failed (%d issues); re-running planning with feedback", len(conformance_issues_from_last))
+            logger.info("Spec conformance failed (%d issues); re-running planning with feedback", len(conformance_issues_from_last))
             conformance_retries += 1
             if conformance_retries > MAX_CONFORMANCE_RETRIES:
                 logger.warning("Max conformance retries reached; proceeding with current plan")

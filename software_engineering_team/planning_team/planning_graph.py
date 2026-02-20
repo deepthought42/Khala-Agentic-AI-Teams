@@ -18,6 +18,29 @@ from shared.models import Task, TaskAssignment, TaskStatus, TaskType
 logger = logging.getLogger(__name__)
 
 
+def ensure_str_list(val: Any) -> List[str]:
+    """Coerce LLM output to List[str] for PlanningNode list fields. Handles string, None, list, iterable."""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val] if val.strip() else []
+    if isinstance(val, list):
+        return [str(x) for x in val if x is not None]
+    try:
+        return [str(x) for x in val if x is not None]
+    except (TypeError, ValueError):
+        return []
+
+
+def ensure_dict(val: Any) -> Dict[str, Any]:
+    """Coerce LLM output to Dict for PlanningNode metadata. Handles None, non-dict."""
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return dict(val)
+    return {}
+
+
 class PlanningDomain(str, Enum):
     """Domain that owns a planning node."""
 
@@ -134,6 +157,64 @@ def _domain_to_assignee(domain: PlanningDomain) -> str:
     return domain.value
 
 
+def _find_cycle(edges: List[tuple], node_ids: set) -> Optional[List[str]]:
+    """Find a cycle in the directed graph. Returns cycle path (e.g. [a,b,c,a]) or None."""
+    from_to: Dict[str, List[str]] = {}
+    for a, b in edges:
+        if a in node_ids and b in node_ids:
+            from_to.setdefault(a, []).append(b)
+    visited: set = set()
+    rec_stack: set = set()
+    path: List[str] = []
+    cycle_path: List[str] = []
+
+    def dfs(u: str) -> bool:
+        visited.add(u)
+        rec_stack.add(u)
+        path.append(u)
+        for v in from_to.get(u, []):
+            if v not in visited:
+                if dfs(v):
+                    return True
+            elif v in rec_stack:
+                idx = path.index(v)
+                cycle_path.extend(path[idx:] + [v])
+                return True
+        path.pop()
+        rec_stack.discard(u)
+        return False
+
+    for nid in node_ids:
+        if nid not in visited and dfs(nid):
+            return cycle_path
+    return None
+
+
+def _break_cycles_in_blocks_edges(
+    edges: List[PlanningEdge],
+    nodes: Dict[str, PlanningNode],
+) -> List[tuple]:
+    """Return BLOCKS edges as (from_id, to_id) tuples with cycles broken by removing one edge per cycle."""
+    node_ids = set(nodes.keys())
+    blocks_edges = [
+        (e.from_id, e.to_id)
+        for e in edges
+        if e.type == EdgeType.BLOCKS and e.from_id in node_ids and e.to_id in node_ids
+    ]
+    blocks_list = list(blocks_edges)  # mutable copy
+    while True:
+        cycle = _find_cycle(blocks_list, node_ids)
+        if not cycle or len(cycle) < 3:
+            break
+        # Remove one edge from the cycle: (cycle[-2], cycle[-1])
+        edge_to_remove = (cycle[-2], cycle[-1])
+        if edge_to_remove in blocks_list:
+            blocks_list.remove(edge_to_remove)
+        else:
+            break
+    return blocks_list
+
+
 def _topological_order(
     nodes: Dict[str, PlanningNode],
     edges: List[PlanningEdge],
@@ -142,14 +223,16 @@ def _topological_order(
     """
     Compute execution order respecting BLOCKS edges.
     Uses Kahn's algorithm. Optionally interleaves backend/frontend for domain balance.
+    Breaks cycles in BLOCKS edges by removing one edge per cycle.
     """
+    # Break cycles so topological sort succeeds for all nodes
+    blocks_edges = _break_cycles_in_blocks_edges(edges, nodes)
     # Build adjacency: from_id -> [to_id] for BLOCKS edges
     blocks_from: Dict[str, List[str]] = {nid: [] for nid in nodes}
     blocks_to: Dict[str, List[str]] = {nid: [] for nid in nodes}
-    for e in edges:
-        if e.type == EdgeType.BLOCKS and e.from_id in nodes and e.to_id in nodes:
-            blocks_from[e.from_id].append(e.to_id)
-            blocks_to[e.to_id].append(e.from_id)
+    for from_id, to_id in blocks_edges:
+        blocks_from[from_id].append(to_id)
+        blocks_to[to_id].append(from_id)
 
     # In-degree = number of BLOCKS predecessors
     in_degree = {nid: len(blocks_to[nid]) for nid in nodes}
@@ -204,11 +287,11 @@ def _topological_order(
                 if in_degree[succ] == 0:
                     queue.append(succ)
 
-    # Append any executable nodes not reached (cycles or disconnected)
+    # Append any executable nodes not reached (disconnected; cycles are broken above)
     for nid in executable_ids:
         if nid not in result:
             result.append(nid)
-            logger.warning("PlanningGraph: node %s not in topological order (cycle or disconnected)", nid)
+            logger.info("PlanningGraph: node %s not in topological order (disconnected)", nid)
 
     return result
 

@@ -11,6 +11,7 @@ from planning_team.planning_graph import (
     PlanningGraph,
     PlanningNode,
     PlanningNodeKind,
+    ensure_str_list,
 )
 from shared.llm import LLMClient
 from shared.models import ProductRequirements, SystemArchitecture
@@ -57,7 +58,7 @@ class PerformancePlanningAgent:
                 kind=PlanningNodeKind.TASK,
                 summary=n.get("summary", ""),
                 details=n.get("details", ""),
-                acceptance_criteria=n.get("acceptance_criteria", []),
+                acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),
                 performance_budget=n.get("performance_budget"),
             ))
         logger.info("Performance Planning: %s budgets, %s new nodes", len(node_budgets), len(graph.nodes))

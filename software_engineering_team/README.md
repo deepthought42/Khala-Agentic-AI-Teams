@@ -182,24 +182,25 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SW_LLM_PROVIDER` | `dummy` or `ollama` | `dummy` |
-| `SW_LLM_MODEL` | Model name for Ollama | `qwen2.5-coder` |
+| `SW_LLM_MODEL` | Model name for Ollama | `qwen3-coder-next:cloud` |
 | `SW_LLM_BASE_URL` | Ollama API base URL | `http://127.0.0.1:11434` |
 | `SW_LLM_TIMEOUT` | Timeout in seconds | `1800` |
 | `SW_LLM_MAX_RETRIES` | Max retries for 429/5xx errors | `4` |
 | `SW_LLM_BACKOFF_BASE` | Base seconds for exponential backoff | `2` |
 | `SW_LLM_BACKOFF_MAX_SECONDS` | Max backoff seconds | `60` |
 | `SW_LLM_MAX_CONCURRENCY` | Max concurrent LLM calls (default 4; set 4–6 for faster runs with parallel planning and backend+frontend workers; lower to 2 if GPU/memory limited) | `4` |
-| `SW_LLM_MAX_TOKENS` | Max tokens to generate; if unset, uses model's num_ctx from Ollama /api/show | (model num_ctx) |
+| `SW_LLM_MAX_TOKENS` | Max tokens to generate; if unset, uses min(context size, 32768) so APIs that cap output (e.g. 32K) work | 32768 (capped) |
+| `SW_LLM_CONTEXT_SIZE` | Context window in tokens; if unset, uses known model table or Ollama /api/show. For qwen3-coder-next:cloud, qwen3.5:397b: 262144 | (model-dependent) |
 | `SW_ENABLE_PLANNING_CACHE` | Reuse cached TaskAssignment when spec and architecture unchanged; set to `0` or `false` to disable | `1` (enabled) |
 
 Example with Ollama:
 ```bash
 export SW_LLM_PROVIDER=ollama
-export SW_LLM_MODEL=qwen2.5-coder
+export SW_LLM_MODEL=qwen3-coder-next:cloud
 python -m agent_implementations.run_team
 ```
 
-Ensure Ollama is running with the model (e.g. `ollama run qwen2.5-coder`).
+Ensure Ollama is running with the model (e.g. `ollama run qwen3-coder-next:cloud`). If you use a different API (OpenRouter, Together, etc.) or get a "model not found" error, set `SW_LLM_MODEL` to a model your API supports (e.g. `export SW_LLM_MODEL=llama3.2` for Ollama, or your provider's model id).
 
 **Iteration caps (environment variables):** Lowering these can speed runs but may reduce refinement.
 

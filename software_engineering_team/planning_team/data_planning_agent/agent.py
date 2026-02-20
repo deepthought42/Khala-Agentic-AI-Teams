@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict
 
 from planning_team.planning_graph import (
+    ensure_str_list,
     EdgeType,
     PlanningDomain,
     PlanningEdge,
@@ -38,7 +39,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
             kind=PlanningNodeKind.TASK,
             summary=n.get("summary", ""),
             details=n.get("details", ""),
-            acceptance_criteria=n.get("acceptance_criteria", []),
+            acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),
         ))
     for e in data.get("edges") or []:
         if not isinstance(e, dict) or not e.get("from_id") or not e.get("to_id"):
