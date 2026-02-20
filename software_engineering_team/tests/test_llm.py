@@ -8,11 +8,14 @@ import httpx
 import pytest
 
 from shared.llm import (
+    DummyLLMClient,
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
     OLLAMA_WEEKLY_LIMIT_MESSAGE,
     OllamaLLMClient,
+    _clear_client_cache_for_testing,
+    get_llm_for_agent,
 )
 
 
@@ -164,3 +167,75 @@ def test_qwen35_397b_uses_known_context_size() -> None:
     """qwen3.5:397b uses known context size 262144 without /api/show call."""
     client = OllamaLLMClient(model="qwen3.5:397b", base_url="http://localhost:9999", timeout=5)
     assert client.get_max_context_tokens() == 262144
+
+
+# ---------------------------------------------------------------------------
+# get_llm_for_agent tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_llm_for_agent_dummy_provider_returns_dummy_client() -> None:
+    """When SW_LLM_PROVIDER=dummy, get_llm_for_agent returns DummyLLMClient."""
+    with patch.dict(os.environ, {"SW_LLM_PROVIDER": "dummy"}, clear=False):
+        client = get_llm_for_agent("backend")
+    assert isinstance(client, DummyLLMClient)
+
+
+def test_get_llm_for_agent_per_agent_env_overrides() -> None:
+    """SW_LLM_MODEL_<agent_key> overrides global and default."""
+    _clear_client_cache_for_testing()
+    with patch.dict(
+        os.environ,
+        {
+            "SW_LLM_PROVIDER": "ollama",
+            "SW_LLM_MODEL_backend": "custom-model",
+            "SW_LLM_MODEL": "global-model",
+        },
+        clear=False,
+    ):
+        client = get_llm_for_agent("backend")
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "custom-model"
+
+
+def test_get_llm_for_agent_global_fallback() -> None:
+    """When no per-agent env, SW_LLM_MODEL is used."""
+    _clear_client_cache_for_testing()
+    with patch.dict(
+        os.environ,
+        {"SW_LLM_PROVIDER": "ollama", "SW_LLM_MODEL": "glm-5:cloud"},
+        clear=False,
+    ):
+        client = get_llm_for_agent("backend")
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "glm-5:cloud"
+
+
+def test_get_llm_for_agent_uses_default_when_no_env() -> None:
+    """When no env overrides, agent default (e.g. qwen3-coder-next:cloud for backend) is used."""
+    _clear_client_cache_for_testing()
+    with patch.dict(
+        os.environ,
+        {
+            "SW_LLM_PROVIDER": "ollama",
+            "SW_LLM_MODEL": "",
+            "SW_LLM_MODEL_backend": "",
+        },
+        clear=False,
+    ):
+        client = get_llm_for_agent("backend")
+    assert isinstance(client, OllamaLLMClient)
+    assert client.model == "qwen3-coder-next:cloud"
+
+
+def test_get_llm_for_agent_cache_returns_same_instance() -> None:
+    """Two calls for same agent with same config return the same cached client instance."""
+    _clear_client_cache_for_testing()
+    with patch.dict(
+        os.environ,
+        {"SW_LLM_PROVIDER": "ollama", "SW_LLM_MODEL_backend": "cached-model"},
+        clear=False,
+    ):
+        client1 = get_llm_for_agent("backend")
+        client2 = get_llm_for_agent("backend")
+    assert client1 is client2

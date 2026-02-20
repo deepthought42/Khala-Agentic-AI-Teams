@@ -176,6 +176,7 @@ def test_run_orchestrator_uses_fallback_overview_when_planning_raises(tmp_path: 
         summary="",
         requirement_task_mapping=[],
     )
+    mock_tech_lead.llm.get_max_context_tokens.return_value = 262144
 
     mock_agents = {
         "project_planning": mock_project_planning,

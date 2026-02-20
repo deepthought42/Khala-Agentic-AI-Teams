@@ -48,6 +48,7 @@ from shared.llm import (
     LLMRateLimitError,
     LLMTemporaryError,
     OLLAMA_WEEKLY_LIMIT_MESSAGE,
+    get_llm_for_agent,
 )
 from shared.job_store import (
     JOB_STATUS_AGENT_CRASH,
@@ -236,8 +237,9 @@ def _log_task_breakdown(
     logger.info("")
 
 
-def _get_agents(llm):
-    """Lazy init agents including the code review, documentation, and DbC comments agents."""
+def _get_agents():
+    """Lazy init agents including the code review, documentation, and DbC comments agents.
+    Each agent uses get_llm_for_agent(key) for per-agent model configuration."""
     from frontend_team.accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
     from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
     from backend_agent import BackendExpertAgent, BackendInput
@@ -267,32 +269,32 @@ def _get_agents(llm):
     from repair_agent import RepairExpertAgent, RepairInput
 
     return {
-        "spec_intake": SpecIntakeAgent(llm),
-        "project_planning": ProjectPlanningAgent(llm),
-        "architecture": ArchitectureExpertAgent(llm),
-        "api_contract": ApiContractPlanningAgent(llm),
-        "data_architecture": DataArchitectureAgent(llm),
-        "ui_ux": UiUxDesignAgent(llm),
-        "frontend_architecture": FrontendArchitectureAgent(llm),
-        "infrastructure": InfrastructurePlanningAgent(llm),
-        "devops_planning": DevOpsPlanningAgent(llm),
-        "qa_test_strategy": QaTestStrategyAgent(llm),
-        "security_planning": SecurityPlanningAgent(llm),
-        "observability": ObservabilityPlanningAgent(llm),
-        "integration": IntegrationAgent(llm),
-        "acceptance_verifier": AcceptanceVerifierAgent(llm),
-        "tech_lead": TechLeadAgent(llm),
-        "devops": DevOpsExpertAgent(llm),
-        "backend": BackendExpertAgent(llm),
-        "frontend": FrontendExpertAgent(llm),
-        "security": CybersecurityExpertAgent(llm),
-        "qa": QAExpertAgent(llm),
-        "accessibility": AccessibilityExpertAgent(llm),
-        "code_review": CodeReviewAgent(llm),
-        "dbc_comments": DbcCommentsAgent(llm),
-        "documentation": DocumentationAgent(llm),
+        "spec_intake": SpecIntakeAgent(get_llm_for_agent("spec_intake")),
+        "project_planning": ProjectPlanningAgent(get_llm_for_agent("project_planning")),
+        "architecture": ArchitectureExpertAgent(get_llm_for_agent("architecture")),
+        "api_contract": ApiContractPlanningAgent(get_llm_for_agent("api_contract")),
+        "data_architecture": DataArchitectureAgent(get_llm_for_agent("data_architecture")),
+        "ui_ux": UiUxDesignAgent(get_llm_for_agent("ui_ux")),
+        "frontend_architecture": FrontendArchitectureAgent(get_llm_for_agent("frontend_architecture")),
+        "infrastructure": InfrastructurePlanningAgent(get_llm_for_agent("infrastructure")),
+        "devops_planning": DevOpsPlanningAgent(get_llm_for_agent("devops_planning")),
+        "qa_test_strategy": QaTestStrategyAgent(get_llm_for_agent("qa_test_strategy")),
+        "security_planning": SecurityPlanningAgent(get_llm_for_agent("security_planning")),
+        "observability": ObservabilityPlanningAgent(get_llm_for_agent("observability")),
+        "integration": IntegrationAgent(get_llm_for_agent("integration")),
+        "acceptance_verifier": AcceptanceVerifierAgent(get_llm_for_agent("acceptance_verifier")),
+        "tech_lead": TechLeadAgent(get_llm_for_agent("tech_lead")),
+        "devops": DevOpsExpertAgent(get_llm_for_agent("devops")),
+        "backend": BackendExpertAgent(get_llm_for_agent("backend")),
+        "frontend": FrontendExpertAgent(get_llm_for_agent("frontend")),
+        "security": CybersecurityExpertAgent(get_llm_for_agent("security")),
+        "qa": QAExpertAgent(get_llm_for_agent("qa")),
+        "accessibility": AccessibilityExpertAgent(get_llm_for_agent("accessibility")),
+        "code_review": CodeReviewAgent(get_llm_for_agent("code_review")),
+        "dbc_comments": DbcCommentsAgent(get_llm_for_agent("dbc_comments")),
+        "documentation": DocumentationAgent(get_llm_for_agent("documentation")),
         "git_setup": GitSetupAgent(),
-        "repair": RepairExpertAgent(llm),
+        "repair": RepairExpertAgent(get_llm_for_agent("repair")),
     }
 
 
@@ -1243,15 +1245,13 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
     try:
         update_job(job_id, status=JOB_STATUS_RUNNING)
 
-        from shared.llm import get_llm_client
-        llm = get_llm_client()
-        agents = _get_agents(llm)
+        agents = _get_agents()
 
         # 1. Read spec from work path (no git required at root)
         from spec_parser import load_spec_from_repo, parse_spec_heuristic, parse_spec_with_llm
         spec_content = load_spec_from_repo(path)
         try:
-            requirements = parse_spec_with_llm(spec_content, llm)
+            requirements = parse_spec_with_llm(spec_content, get_llm_for_agent("spec_intake"))
         except LLMRateLimitError:
             logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
             update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
@@ -1517,7 +1517,7 @@ def run_orchestrator(job_id: str, repo_path: str | Path) -> None:
             alignment_iterations = 0
             alignment_early_exit = int(os.environ.get("SW_ALIGNMENT_EARLY_EXIT_THRESHOLD") or "2")
             while alignment_iterations < MAX_ALIGNMENT_ITERATIONS:
-                aligned, alignment_feedback = check_tasks_architecture_alignment(assignment, architecture, llm)
+                aligned, alignment_feedback = check_tasks_architecture_alignment(assignment, architecture, tech_lead.llm)
                 if aligned:
                     logger.info("Tasks and architecture aligned (iteration %s)", alignment_iterations + 1)
                     break
@@ -2028,9 +2028,7 @@ def run_failed_tasks(job_id: str) -> None:
     try:
         update_job(job_id, status=JOB_STATUS_RUNNING, failed_tasks=[], error=None)
 
-        from shared.llm import get_llm_client
-        llm = get_llm_client()
-        agents = _get_agents(llm)
+        agents = _get_agents()
 
         # Reconstruct task objects from stored data
         all_tasks: Dict[str, Task] = {}

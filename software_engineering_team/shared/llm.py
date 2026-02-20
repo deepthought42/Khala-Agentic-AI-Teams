@@ -41,7 +41,42 @@ KNOWN_MODEL_CONTEXT: dict[str, int] = {
     "qwen3-coder-next:cloud": 262144,
     "qwen3-coder:480b-cloud": 262144,
     "qwen3-coder:480b": 262144,
+    "glm-5:cloud": 262144,
+    "minimax-m2.5:cloud": 262144,
 }
+
+# Recommended default model per agent (all :cloud versions). Used when SW_LLM_MODEL_<agent_key> and SW_LLM_MODEL are unset.
+AGENT_DEFAULT_MODELS: dict[str, str] = {
+    "backend": "qwen3-coder-next:cloud",
+    "frontend": "qwen3-coder-next:cloud",
+    "code_review": "qwen3-coder-next:cloud",
+    "repair": "qwen3-coder-next:cloud",
+    "devops": "qwen3-coder-next:cloud",
+    "dbc_comments": "qwen3-coder-next:cloud",
+    "tech_lead": "glm-5:cloud",
+    "architecture": "glm-5:cloud",
+    "spec_intake": "glm-5:cloud",
+    "project_planning": "glm-5:cloud",
+    "integration": "glm-5:cloud",
+    "api_contract": "qwen3.5:cloud",
+    "data_architecture": "qwen3.5:cloud",
+    "ui_ux": "qwen3.5:cloud",
+    "frontend_architecture": "qwen3.5:cloud",
+    "infrastructure": "qwen3.5:cloud",
+    "devops_planning": "qwen3.5:cloud",
+    "qa_test_strategy": "qwen3.5:cloud",
+    "security_planning": "qwen3.5:cloud",
+    "observability": "qwen3.5:cloud",
+    "acceptance_verifier": "qwen3.5:cloud",
+    "documentation": "qwen3.5:cloud",
+    "qa": "minimax-m2.5:cloud",
+    "security": "minimax-m2.5:cloud",
+    "accessibility": "minimax-m2.5:cloud",
+}
+
+# Cache for OllamaLLMClient instances keyed by (model, base_url, timeout)
+_client_cache: dict[tuple[str, str, float], "OllamaLLMClient"] = {}
+_client_cache_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -936,6 +971,47 @@ class OllamaLLMClient(LLMClient):
             raise
         except (KeyError, IndexError, TypeError) as e:
             raise LLMPermanentError(f"Unexpected response format from LLM: {e}") from e
+
+
+def get_llm_for_agent(agent_key: str) -> Union["DummyLLMClient", "OllamaLLMClient"]:
+    """
+    Create or return cached LLM client for the given agent.
+
+    Model resolution order:
+    1. SW_LLM_MODEL_<agent_key> (e.g. SW_LLM_MODEL_backend)
+    2. SW_LLM_MODEL (global fallback)
+    3. AGENT_DEFAULT_MODELS[agent_key] (recommended default)
+    4. qwen3-coder-next:cloud (hardcoded fallback)
+
+    When SW_LLM_PROVIDER=dummy, returns DummyLLMClient regardless of model config.
+    OllamaLLMClient instances are cached by (model, base_url, timeout).
+    """
+    provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
+    if provider == "dummy":
+        return DummyLLMClient()
+
+    per_agent = os.environ.get(f"SW_LLM_MODEL_{agent_key}")
+    global_model = os.environ.get(ENV_LLM_MODEL)
+    default_model = AGENT_DEFAULT_MODELS.get(agent_key)
+    model = (per_agent or global_model or default_model or "qwen3-coder-next:cloud").strip()
+
+    base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
+    try:
+        timeout = float(os.environ.get(ENV_LLM_TIMEOUT) or "1800")
+    except ValueError:
+        timeout = 1800.0
+
+    cache_key = (model, base_url, timeout)
+    with _client_cache_lock:
+        if cache_key not in _client_cache:
+            _client_cache[cache_key] = OllamaLLMClient(model=model, base_url=base_url, timeout=timeout)
+        return _client_cache[cache_key]
+
+
+def _clear_client_cache_for_testing() -> None:
+    """Clear the per-agent client cache. For use in tests only."""
+    with _client_cache_lock:
+        _client_cache.clear()
 
 
 def get_llm_client() -> Union["DummyLLMClient", "OllamaLLMClient"]:

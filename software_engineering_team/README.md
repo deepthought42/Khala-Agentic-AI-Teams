@@ -193,6 +193,19 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | `SW_LLM_CONTEXT_SIZE` | Context window in tokens; if unset, uses known model table or Ollama /api/show. For qwen3-coder-next:cloud, qwen3.5:397b: 262144 | (model-dependent) |
 | `SW_ENABLE_PLANNING_CACHE` | Reuse cached TaskAssignment when spec and architecture unchanged; set to `0` or `false` to disable | `1` (enabled) |
 
+**Per-agent model configuration:** Each agent can use a different model. Set `SW_LLM_MODEL_<agent_key>` to override (e.g. `SW_LLM_MODEL_backend`, `SW_LLM_MODEL_tech_lead`). Model resolution order: per-agent env var → `SW_LLM_MODEL` (global fallback) → recommended default for that agent → `qwen3-coder-next:cloud`.
+
+Recommended defaults (all :cloud versions) when no overrides are set:
+
+| Model | Agents |
+|-------|--------|
+| qwen3-coder-next:cloud | backend, frontend, code_review, repair, devops, dbc_comments |
+| glm-5:cloud | tech_lead, architecture, spec_intake, project_planning, integration |
+| qwen3.5:cloud | api_contract, data_architecture, ui_ux, frontend_architecture, infrastructure, devops_planning, qa_test_strategy, security_planning, observability, acceptance_verifier, documentation |
+| minimax-m2.5:cloud | qa, security, accessibility |
+
+Example: `export SW_LLM_MODEL_tech_lead=glm-5:cloud` overrides only the Tech Lead; other agents use their defaults or `SW_LLM_MODEL`.
+
 Example with Ollama:
 ```bash
 export SW_LLM_PROVIDER=ollama
