@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        SPEC_FILE: ${SPEC_FILE:-docker/default_initial_spec.md}
     container_name: strands-agents
     privileged: true
     volumes:
