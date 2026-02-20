@@ -4,7 +4,11 @@ LLM client abstraction for software engineering team agents.
 
 from __future__ import annotations
 
+import logging
 import os
+import random
+import threading
+import time
 from abc import ABC, abstractmethod
 import json
 import re
@@ -17,6 +21,107 @@ ENV_LLM_PROVIDER = "SW_LLM_PROVIDER"  # "dummy" or "ollama"
 ENV_LLM_MODEL = "SW_LLM_MODEL"  # model name for ollama
 ENV_LLM_BASE_URL = "SW_LLM_BASE_URL"  # ollama base URL
 ENV_LLM_TIMEOUT = "SW_LLM_TIMEOUT"  # timeout in seconds
+ENV_LLM_MAX_RETRIES = "SW_LLM_MAX_RETRIES"  # max retries for temporary errors (default 4)
+ENV_LLM_BACKOFF_BASE = "SW_LLM_BACKOFF_BASE"  # base seconds for exponential backoff (default 2)
+ENV_LLM_BACKOFF_MAX = "SW_LLM_BACKOFF_MAX_SECONDS"  # max backoff seconds (default 60)
+ENV_LLM_MAX_CONCURRENCY = "SW_LLM_MAX_CONCURRENCY"  # max concurrent complete_json calls (default 2)
+ENV_LLM_MAX_TOKENS = "SW_LLM_MAX_TOKENS"  # max tokens to generate; if unset, min(context_size, 32768)
+ENV_LLM_CONTEXT_SIZE = "SW_LLM_CONTEXT_SIZE"  # context window in tokens; if unset, uses known model or Ollama /api/show
+
+# Default cap for max_tokens (max output length) in API requests. Many APIs limit output to 32K even when context is 256K.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
+# Known model context sizes (from Ollama model info). Used when /api/show fails or returns wrong value.
+# 256K = 262144. qwen3.5:397b and qwen3-coder-next: 256K native context.
+KNOWN_MODEL_CONTEXT: dict[str, int] = {
+    "qwen3.5:397b": 262144,
+    "qwen3.5:397b-cloud": 262144,
+    "qwen3.5:cloud": 262144,
+    "qwen3-coder-next": 262144,
+    "qwen3-coder-next:cloud": 262144,
+    "qwen3-coder:480b-cloud": 262144,
+    "qwen3-coder:480b": 262144,
+    "glm-5:cloud": 262144,
+    "minimax-m2.5:cloud": 262144,
+}
+
+# Recommended default model per agent (all :cloud versions). Used when SW_LLM_MODEL_<agent_key> and SW_LLM_MODEL are unset.
+AGENT_DEFAULT_MODELS: dict[str, str] = {
+    "backend": "qwen3-coder-next:cloud",
+    "frontend": "qwen3-coder-next:cloud",
+    "code_review": "qwen3-coder-next:cloud",
+    "repair": "qwen3-coder-next:cloud",
+    "devops": "qwen3-coder-next:cloud",
+    "dbc_comments": "qwen3-coder-next:cloud",
+    "tech_lead": "glm-5:cloud",
+    "architecture": "glm-5:cloud",
+    "spec_intake": "glm-5:cloud",
+    "project_planning": "glm-5:cloud",
+    "integration": "glm-5:cloud",
+    "api_contract": "qwen3.5:cloud",
+    "data_architecture": "qwen3.5:cloud",
+    "ui_ux": "qwen3.5:cloud",
+    "frontend_architecture": "qwen3.5:cloud",
+    "infrastructure": "qwen3.5:cloud",
+    "devops_planning": "qwen3.5:cloud",
+    "qa_test_strategy": "qwen3.5:cloud",
+    "security_planning": "qwen3.5:cloud",
+    "observability": "qwen3.5:cloud",
+    "acceptance_verifier": "qwen3.5:cloud",
+    "documentation": "qwen3.5:cloud",
+    "qa": "minimax-m2.5:cloud",
+    "security": "minimax-m2.5:cloud",
+    "accessibility": "minimax-m2.5:cloud",
+}
+
+# Cache for OllamaLLMClient instances keyed by (model, base_url, timeout)
+_client_cache: dict[tuple[str, str, float], "OllamaLLMClient"] = {}
+_client_cache_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
+
+# Message used when Ollama 429 indicates weekly usage limit exceeded (for logging and job state)
+OLLAMA_WEEKLY_LIMIT_MESSAGE = "Ollama LLM usage limit exceeded for week"
+
+
+# ---------------------------------------------------------------------------
+# Domain-specific exceptions for LLM errors
+# ---------------------------------------------------------------------------
+
+
+class LLMError(Exception):
+    """Base exception for LLM-related errors."""
+
+    def __init__(self, message: str, *, status_code: int | None = None, cause: Exception | None = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.cause = cause
+
+
+class LLMRateLimitError(LLMError):
+    """Raised when the LLM returns 429 Too Many Requests and retries are exhausted."""
+
+
+class LLMTemporaryError(LLMError):
+    """Raised when the LLM returns 5xx or network errors and retries are exhausted."""
+
+
+class LLMPermanentError(LLMError):
+    """Raised for 4xx errors (except 429) or malformed responses. Do not retry."""
+
+
+def get_llm_config_summary() -> str:
+    """
+    Return a short summary of the effective LLM provider and model from env vars.
+    Used for prominent logging at startup and on each request.
+    """
+    provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
+    if provider == "ollama":
+        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder-next:cloud"
+        base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
+        return f"provider={provider}, model={model}, base_url={base_url}"
+    return f"provider={provider}"
 
 
 class LLMClient(ABC):
@@ -39,6 +144,76 @@ class LLMClient(ABC):
         if isinstance(result, dict) and len(result) == 1 and "text" in result:
             return str(result["text"])
         return json.dumps(result)
+
+    def get_max_context_tokens(self) -> int:
+        """
+        Return the model's maximum context size in tokens.
+        Used to compute chunk sizes for analysis. Default 16384.
+        Override in implementations that can query the model (e.g. Ollama).
+        """
+        return 16384
+
+
+# Words to strip when extracting a component/module name from a task description.
+# These are verbs and filler words that describe the task, not the thing being built.
+_STRIP_VERBS = {
+    "implement", "create", "build", "add", "setup", "set", "up", "configure",
+    "make", "define", "develop", "write", "design", "establish", "generate",
+    "fetches", "displays", "handles", "manages", "processes", "returns",
+    "provides", "supports", "includes", "enables", "renders",
+}
+_STRIP_FILLERS = {
+    "the", "that", "with", "using", "which", "for", "and", "a", "an", "to",
+    "of", "in", "on", "by", "from", "into", "as", "via", "its", "all",
+    "application", "system", "project", "based", "proper", "production",
+    "quality", "complete", "full", "new", "existing",
+    "angular", "react", "vue", "spring", "fastapi", "flask", "django",
+}
+_STRIP_SUFFIXES = {
+    "component", "service", "module", "endpoint", "endpoints", "middleware",
+    "guard", "pipe", "directive", "interceptor", "controller", "repository",
+}
+
+
+def _extract_name_from_hint(hint: str, separator: str = "-", max_length: int = 25) -> str:
+    """
+    Extract a short, meaningful name from a task description hint.
+
+    Strips leading verbs, filler words, and generic suffixes to produce
+    a 1-3 word noun phrase suitable for file/folder names.
+
+    Args:
+        hint: Task description text (e.g. "Implement the UserFormComponent using reactive forms")
+        separator: Word separator for the output ("-" for kebab-case, "_" for snake_case)
+        max_length: Maximum length of the resulting name
+
+    Returns:
+        A short name like "user-form" or "user_form"
+
+    Examples:
+        >>> _extract_name_from_hint("Implement the UserFormComponent using Angular reactive forms")
+        'user-form'
+        >>> _extract_name_from_hint("Create user registration endpoint with email validation", "_")
+        'user_registration'
+        >>> _extract_name_from_hint("Build the task list component with pagination")
+        'task-list'
+    """
+    # Split PascalCase/camelCase words (e.g. "UserFormComponent" -> "User Form Component")
+    expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", hint)
+    # Normalize to lowercase words
+    words = re.sub(r"[^a-z0-9\s]+", " ", expanded.lower()).split()
+    # Strip verbs, fillers, and generic suffixes
+    filtered = [
+        w for w in words
+        if w not in _STRIP_VERBS and w not in _STRIP_FILLERS and w not in _STRIP_SUFFIXES
+    ]
+    # Take first 3 meaningful words
+    name_words = filtered[:3] if filtered else words[:2]
+    result = separator.join(name_words)
+    # Truncate to max_length
+    if len(result) > max_length:
+        result = result[:max_length].rstrip(separator)
+    return result or f"item{separator}1"
 
 
 class DummyLLMClient(LLMClient):
@@ -72,9 +247,14 @@ class DummyLLMClient(LLMClient):
                 "overview": "API backend + WebApp frontend (Dummy architecture).",
                 "architecture_document": "# System Architecture (Dummy)\n\nPlaceholder architecture.",
                 "components": [{"name": "API", "type": "backend"}, {"name": "WebApp", "type": "frontend"}],
+                "diagrams": {
+                    "client_server_architecture": "graph LR\n  Browser-->API\n  API-->DB",
+                    "frontend_code_structure": "graph TD\n  App-->Components\n  App-->Services",
+                },
+                "decisions": [{"decision": "Use REST API", "context": "Standard web stack", "consequences": "Simple integration"}],
             }
         # Tech Lead codebase analysis prompt (Step 1 of multi-step planning)
-        if "codebase audit" in lowered and "files_inventory" in lowered:
+        elif "codebase audit" in lowered and "files_inventory" in lowered:
             return {
                 "files_inventory": [
                     {"path": "initial_spec.md", "language": "markdown", "purpose": "Project specification", "key_exports": []},
@@ -87,7 +267,7 @@ class DummyLLMClient(LLMClient):
                 "summary": "The repository contains only the project specification (initial_spec.md). No application code, infrastructure, or tests exist yet. The entire application needs to be built from scratch according to the spec.",
             }
         # Tech Lead spec analysis prompt (Step 2 of multi-step planning)
-        if "deep analysis" in lowered and "total_deliverable_count" in lowered:
+        elif "deep analysis" in lowered and "total_deliverable_count" in lowered:
             return {
                 "data_entities": [{"name": "User", "attributes": ["id", "email", "password_hash", "created_at"], "relationships": [], "validation_rules": ["email must be valid", "password required"]}],
                 "api_endpoints": [
@@ -119,13 +299,13 @@ class DummyLLMClient(LLMClient):
                 "summary": "The spec requires a full-stack authentication application with user registration, login, token refresh, and protected routes. The backend needs FastAPI with JWT auth, the frontend needs Angular with login/registration/dashboard screens, and DevOps needs Docker and CI/CD.",
             }
         # Tech Lead evaluate QA prompt (create fix tasks from QA feedback)
-        if "qa agent has reviewed code" in lowered and "fix tasks" in lowered:
+        elif "qa agent has reviewed code" in lowered and "fix tasks" in lowered:
             return {"tasks": [], "rationale": "QA approved; no fix tasks needed (dummy)."}
         # Tech Lead should run security prompt
-        if "run security review now" in lowered and "90%" in lowered:
+        elif "run security review now" in lowered and "90%" in lowered:
             return {"run_security": False, "rationale": "Code coverage not yet at 90% (dummy)."}
         # Tech Lead review progress prompt
-        if "reviewing the progress" in lowered and "spec_compliance_pct" in lowered:
+        elif "reviewing the progress" in lowered and "spec_compliance_pct" in lowered:
             return {
                 "tasks": [],
                 "spec_compliance_pct": 50,
@@ -133,7 +313,7 @@ class DummyLLMClient(LLMClient):
                 "rationale": "Progress review complete. Current tasks cover the planned scope (dummy).",
             }
         # Tech Lead refine task prompt (clarification)
-        if "clarification questions from specialist" in lowered:
+        elif "clarification questions from specialist" in lowered:
             return {
                 "title": "Refined Task Title",
                 "description": "Refined task description with additional details from spec. The implementation should follow Angular best practices using standalone components and reactive forms. All public methods must have JSDoc documentation. Error states must be handled with user-friendly messages.",
@@ -142,7 +322,7 @@ class DummyLLMClient(LLMClient):
                 "acceptance_criteria": ["Criterion 1: Component renders without errors", "Criterion 2: User interactions trigger correct API calls", "Criterion 3: Error states display meaningful messages"],
             }
         # Tech Lead prompt asks for tasks + execution_order – return granular plan with descriptive IDs
-        if ("execution_order" in lowered or "task_assignments" in lowered) and "tasks" in lowered:
+        elif ("execution_order" in lowered or "task_assignments" in lowered) and "tasks" in lowered:
             return {
                 "tasks": [
                     {
@@ -288,8 +468,8 @@ class DummyLLMClient(LLMClient):
                 ],
                 "clarification_questions": [],
             }
-        # Code review agent - must come before generic backend/frontend matches
-        if "senior code reviewer" in lowered and ("approved" in lowered or "issues" in lowered):
+        # Code review agent
+        elif "senior code reviewer" in lowered and ("approved" in lowered or "issues" in lowered):
             return {
                 "approved": True,
                 "issues": [],
@@ -297,13 +477,54 @@ class DummyLLMClient(LLMClient):
                 "spec_compliance_notes": "Code aligns with task requirements and acceptance criteria.",
                 "suggested_commit_message": "",
             }
-        if "security" in lowered and "vulnerabilities" in lowered:
+        elif "security" in lowered and "vulnerabilities" in lowered:
             return {
                 "vulnerabilities": [],
                 "summary": "No security issues found (dummy)",
             }
+        elif "accessibility" in lowered and "wcag" in lowered and "issues" in lowered:
+            return {
+                "issues": [],
+                "summary": "No WCAG 2.2 accessibility issues found (dummy)",
+            }
+        # Backend agent – generate unique files per task based on task hint and counter
+        # NOTE: Uses the agent's unique role identifier from BACKEND_PROMPT to avoid
+        # matching DevOps/Frontend prompts that share CODING_STANDARDS keywords.
+        elif "senior backend software engineer" in lowered:
+            # Derive a short module name from the task hint (e.g. "user_registration")
+            slug = _extract_name_from_hint(task_hint, separator="_", max_length=25) or f"module_{counter}"
+            class_prefix = slug.title().replace("_", "")
+            return {
+                "code": f'"""\nBackend module: {task_hint}\nGenerated as task #{counter}\n"""\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom pydantic import BaseModel\n\nrouter = APIRouter(prefix="/api", tags=["{slug}"])\n\n\nclass {class_prefix}Request(BaseModel):\n    """Request model for {task_hint}."""\n    name: str\n\n\nclass {class_prefix}Response(BaseModel):\n    """Response model for {task_hint}."""\n    id: int\n    name: str\n\n\n@router.get("/{slug}")\ndef list_items():\n    """List all items for {task_hint}."""\n    return []\n\n\n@router.post("/{slug}", status_code=201)\ndef create_item(data: {class_prefix}Request):\n    """Create item for {task_hint}."""\n    return {class_prefix}Response(id=1, name=data.name)\n',
+                "language": "python",
+                "summary": f"Backend implementation for: {task_hint}",
+                "files": {
+                    f"app/routers/{slug}.py": f'"""\nBackend module: {task_hint}\n"""\nfrom fastapi import APIRouter, HTTPException\nfrom pydantic import BaseModel\n\nrouter = APIRouter(prefix="/api", tags=["{slug}"])\n\n\nclass ItemRequest(BaseModel):\n    name: str\n\n\n@router.get("/{slug}")\ndef list_items():\n    return []\n\n\n@router.post("/{slug}", status_code=201)\ndef create_item(data: ItemRequest):\n    return {{"id": 1, "name": data.name}}\n',
+                    f"tests/test_{slug}.py": f'"""Tests for {task_hint}."""\nimport pytest\n\n\ndef test_{slug}_list():\n    """Test list endpoint returns empty list."""\n    assert [] == []\n\n\ndef test_{slug}_create():\n    """Test create returns correct structure."""\n    result = {{"id": 1, "name": "test"}}\n    assert result["id"] == 1\n',
+                },
+                "tests": f'"""Tests for {task_hint}."""\nimport pytest\n\n\ndef test_{slug}():\n    assert True\n',
+                "suggested_commit_message": f"feat(api): implement {slug.replace('_', ' ')}",
+            }
+        # Frontend agent – generate unique Angular files per task based on task hint and counter
+        # NOTE: Uses the agent's unique role identifier from FRONTEND_PROMPT to avoid
+        # matching DevOps prompts that share CODING_STANDARDS keywords.
+        elif "senior frontend software engineer" in lowered:
+            # Derive a short component name from the task hint (e.g. "user-form")
+            slug = _extract_name_from_hint(task_hint, separator="-", max_length=25) or f"component-{counter}"
+            class_name = "".join(w.capitalize() for w in slug.split("-")) + "Component"
+            selector = f"app-{slug}"
+            return {
+                "code": f"import {{ Component, OnInit }} from '@angular/core';\nimport {{ CommonModule }} from '@angular/common';\n\n/**\n * {class_name}\n * Implements: {task_hint}\n * Generated as task #{counter}\n */\n@Component({{\n  selector: '{selector}',\n  standalone: true,\n  imports: [CommonModule],\n  template: `\n    <div class=\"{slug}-container\">\n      <h2>{task_hint}</h2>\n      <p>Component implementation placeholder</p>\n    </div>\n  `,\n  styles: [`\n    .{slug}-container {{\n      padding: 16px;\n      max-width: 1200px;\n      margin: 0 auto;\n    }}\n  `]\n}})\nexport class {class_name} implements OnInit {{\n  /** Initialize the component and load data. */\n  ngOnInit(): void {{\n    console.log('{class_name} initialized');\n  }}\n}}\n",
+                "summary": f"Frontend component for: {task_hint}",
+                "files": {
+                    f"src/app/components/{slug}/{slug}.component.ts": f"import {{ Component, OnInit }} from '@angular/core';\nimport {{ CommonModule }} from '@angular/common';\n\n@Component({{\n  selector: '{selector}',\n  standalone: true,\n  imports: [CommonModule],\n  template: `<div class=\"{slug}\"><h2>{task_hint}</h2></div>`,\n}})\nexport class {class_name} implements OnInit {{\n  ngOnInit(): void {{\n    console.log('{class_name} initialized');\n  }}\n}}\n",
+                    f"src/app/components/{slug}/{slug}.component.spec.ts": f"import {{ ComponentFixture, TestBed }} from '@angular/core/testing';\nimport {{ {class_name} }} from './{slug}.component';\n\ndescribe('{class_name}', () => {{\n  let component: {class_name};\n  let fixture: ComponentFixture<{class_name}>;\n\n  beforeEach(async () => {{\n    await TestBed.configureTestingModule({{\n      imports: [{class_name}],\n    }}).compileComponents();\n    fixture = TestBed.createComponent({class_name});\n    component = fixture.componentInstance;\n    fixture.detectChanges();\n  }});\n\n  it('should create', () => {{\n    expect(component).toBeTruthy();\n  }});\n}});\n",
+                },
+                "components": [class_name],
+                "suggested_commit_message": f"feat(ui): add {slug} component",
+            }
         # DevOps agent – generate unique content per task using counter
-        if "devops" in lowered or "pipeline" in lowered:
+        elif "devops" in lowered or "pipeline" in lowered:
             return {
                 "pipeline_yaml": f"# CI Pipeline (task #{counter})\nname: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo 'Build step {counter}'",
                 "iac_content": f"# Infrastructure as Code (task #{counter})\nresource \"docker_image\" \"app\" {{\n  name = \"app:latest\"\n}}",
@@ -312,37 +533,38 @@ class DummyLLMClient(LLMClient):
                 "summary": f"DevOps configuration generated for: {task_hint[:60]}",
                 "suggested_commit_message": f"ci: add devops configuration (task #{counter})",
             }
-        # Backend agent – generate unique files per task based on task hint and counter
-        if "backend" in lowered and "language" in lowered and ("code" in lowered or "files" in lowered):
-            # Derive a module name from the task hint for unique filenames
-            slug = re.sub(r"[^a-z0-9]+", "_", task_hint.lower())[:40].strip("_") or f"module_{counter}"
+        # Documentation agent - README prompt
+        elif "technical writer" in lowered and "readme_content" in lowered and "readme_changed" in lowered:
             return {
-                "code": f'"""\nBackend module: {task_hint}\nGenerated as task #{counter}\n"""\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom pydantic import BaseModel\n\nrouter = APIRouter(prefix="/api", tags=["{slug}"])\n\n\nclass {slug.title().replace("_", "")}Request(BaseModel):\n    """Request model for {task_hint}."""\n    name: str\n\n\nclass {slug.title().replace("_", "")}Response(BaseModel):\n    """Response model for {task_hint}."""\n    id: int\n    name: str\n\n\n@router.get("/{slug}")\ndef list_items():\n    """List all items for {task_hint}."""\n    return []\n\n\n@router.post("/{slug}", status_code=201)\ndef create_item(data: {slug.title().replace("_", "")}Request):\n    """Create item for {task_hint}."""\n    return {slug.title().replace("_", "")}Response(id=1, name=data.name)\n',
-                "language": "python",
-                "summary": f"Backend implementation for: {task_hint}",
-                "files": {
-                    f"{slug}.py": f'"""\nBackend module: {task_hint}\n"""\nfrom fastapi import APIRouter, HTTPException\nfrom pydantic import BaseModel\n\nrouter = APIRouter(prefix="/api", tags=["{slug}"])\n\n\nclass ItemRequest(BaseModel):\n    name: str\n\n\n@router.get("/{slug}")\ndef list_items():\n    return []\n\n\n@router.post("/{slug}", status_code=201)\ndef create_item(data: ItemRequest):\n    return {{"id": 1, "name": data.name}}\n',
-                    f"tests/test_{slug}.py": f'"""Tests for {task_hint}."""\nimport pytest\n\n\ndef test_{slug}_list():\n    """Test list endpoint returns empty list."""\n    assert [] == []\n\n\ndef test_{slug}_create():\n    """Test create returns correct structure."""\n    result = {{"id": 1, "name": "test"}}\n    assert result["id"] == 1\n',
-                },
-                "tests": f'"""Tests for {task_hint}."""\nimport pytest\n\n\ndef test_{slug}():\n    assert True\n',
-                "suggested_commit_message": f"feat(api): implement {slug.replace('_', ' ')}",
+                "readme_content": f"# Project\n\nAuto-generated documentation (task #{counter}).\n\n## Prerequisites\n\n- Python 3.11+\n- Node 18+\n- Docker\n\n## Installation\n\n```bash\npip install -r requirements.txt\n```\n\n## Running\n\n```bash\nuvicorn main:app --reload\n```\n\n## Testing\n\n```bash\npytest\n```\n\n## Deployment\n\nSee docker-compose.yml\n",
+                "readme_changed": True,
+                "summary": f"Updated README with project setup and usage instructions (task #{counter})",
+                "suggested_commit_message": f"docs(readme): update project documentation (task #{counter})",
             }
-        # Frontend agent – generate unique Angular files per task based on task hint and counter
-        if "frontend" in lowered and "angular" in lowered and "component" in lowered:
-            slug = re.sub(r"[^a-z0-9]+", "-", task_hint.lower())[:40].strip("-") or f"component-{counter}"
-            class_name = "".join(w.capitalize() for w in slug.split("-")) + "Component"
-            selector = f"app-{slug}"
+        # Documentation agent - contributors prompt
+        elif "contributors.md" in lowered and "contributors_content" in lowered and "contributors_changed" in lowered:
             return {
-                "code": f"import {{ Component, OnInit }} from '@angular/core';\nimport {{ CommonModule }} from '@angular/common';\n\n/**\n * {class_name}\n * Implements: {task_hint}\n * Generated as task #{counter}\n */\n@Component({{\n  selector: '{selector}',\n  standalone: true,\n  imports: [CommonModule],\n  template: `\n    <div class=\"{slug}-container\">\n      <h2>{task_hint}</h2>\n      <p>Component implementation placeholder</p>\n    </div>\n  `,\n  styles: [`\n    .{slug}-container {{\n      padding: 16px;\n      max-width: 1200px;\n      margin: 0 auto;\n    }}\n  `]\n}})\nexport class {class_name} implements OnInit {{\n  /** Initialize the component and load data. */\n  ngOnInit(): void {{\n    console.log('{class_name} initialized');\n  }}\n}}\n",
-                "summary": f"Frontend component for: {task_hint}",
-                "files": {
-                    f"{slug}/{slug}.component.ts": f"import {{ Component, OnInit }} from '@angular/core';\nimport {{ CommonModule }} from '@angular/common';\n\n@Component({{\n  selector: '{selector}',\n  standalone: true,\n  imports: [CommonModule],\n  template: `<div class=\"{slug}\"><h2>{task_hint}</h2></div>`,\n}})\nexport class {class_name} implements OnInit {{\n  ngOnInit(): void {{\n    console.log('{class_name} initialized');\n  }}\n}}\n",
-                    f"{slug}/{slug}.component.spec.ts": f"import {{ ComponentFixture, TestBed }} from '@angular/core/testing';\nimport {{ {class_name} }} from './{slug}.component';\n\ndescribe('{class_name}', () => {{\n  let component: {class_name};\n  let fixture: ComponentFixture<{class_name}>;\n\n  beforeEach(async () => {{\n    await TestBed.configureTestingModule({{\n      imports: [{class_name}],\n    }}).compileComponents();\n    fixture = TestBed.createComponent({class_name});\n    component = fixture.componentInstance;\n    fixture.detectChanges();\n  }});\n\n  it('should create', () => {{\n    expect(component).toBeTruthy();\n  }});\n}});\n",
-                },
-                "components": [class_name],
-                "suggested_commit_message": f"feat(ui): add {slug} component",
+                "contributors_content": f"# Contributors\n\n| Agent | Role | Contributions |\n|-------|------|---------------|\n| Backend Agent | Backend Engineer | API endpoints, data models |\n| Frontend Agent | Frontend Engineer | Angular components, UI |\n| DevOps Agent | Infrastructure | Docker, CI/CD |\n| Documentation Agent | Technical Writer | README, docs |\n",
+                "contributors_changed": True,
+                "summary": f"Updated contributors list (task #{counter})",
             }
-        if "integration_test" in lowered or "readme_content" in lowered or ("bugs_found" in lowered and "test_plan" in lowered):
+        # Tech Lead trigger documentation prompt
+        elif "documentation update needed" in lowered and "should_update_docs" in lowered:
+            return {
+                "should_update_docs": True,
+                "rationale": "Task completed with code changes that affect project setup or usage (dummy).",
+            }
+        # DbC Comments agent
+        elif "design by contract" in lowered and "comments_added" in lowered and "already_compliant" in lowered:
+            return {
+                "files": {},
+                "comments_added": 0,
+                "comments_updated": 0,
+                "already_compliant": True,
+                "summary": "All code fully complies with Design by Contract principles. Excellent documentation!",
+                "suggested_commit_message": "docs(dbc): verify Design by Contract compliance",
+            }
+        elif "integration_test" in lowered or "readme_content" in lowered or ("bugs_found" in lowered and "test_plan" in lowered):
             return {
                 "bugs_found": [],
                 "integration_tests": "# Dummy integration test",
@@ -355,7 +577,7 @@ class DummyLLMClient(LLMClient):
                 "approved": True,
             }
         # Spec parsing prompt
-        if "acceptance_criteria" in lowered and "specification" in lowered:
+        elif "acceptance_criteria" in lowered and "specification" in lowered:
             return {
                 "title": "Software Project",
                 "description": "Project specification (parsed from initial_spec.md).",
@@ -363,7 +585,63 @@ class DummyLLMClient(LLMClient):
                 "constraints": [],
                 "priority": "medium",
             }
+        # Integration agent – validate backend-frontend API contract
+        elif "integration expert" in lowered and "backend code" in lowered and "frontend code" in lowered:
+            return {
+                "issues": [],
+                "passed": True,
+                "summary": "Backend and frontend API contract aligned (dummy).",
+                "fix_task_suggestions": [],
+            }
+        # Acceptance verifier agent – per-criterion verification
+        elif "acceptance criteria verifier" in lowered and "per_criterion" in lowered:
+            return {
+                "per_criterion": [
+                    {"criterion": "Criterion 1", "satisfied": True, "evidence": "Code implements the requirement."},
+                    {"criterion": "Criterion 2", "satisfied": True, "evidence": "Code implements the requirement."},
+                ],
+                "all_satisfied": True,
+                "summary": "All acceptance criteria satisfied (dummy).",
+            }
         return {"output": "Dummy response", "status": "ok"}
+
+
+def _parse_retry_config() -> tuple[int, float, float]:
+    """Parse retry-related environment variables. Returns (max_retries, backoff_base, backoff_max)."""
+    try:
+        max_retries = int(os.environ.get(ENV_LLM_MAX_RETRIES) or "4")
+    except ValueError:
+        max_retries = 4
+    try:
+        backoff_base = float(os.environ.get(ENV_LLM_BACKOFF_BASE) or "2")
+    except ValueError:
+        backoff_base = 2.0
+    try:
+        backoff_max = float(os.environ.get(ENV_LLM_BACKOFF_MAX) or "60")
+    except ValueError:
+        backoff_max = 60.0
+    return max_retries, backoff_base, backoff_max
+
+
+def _get_llm_concurrency_limit() -> int:
+    """Return max concurrent complete_json calls from env (default 4)."""
+    try:
+        return max(1, int(os.environ.get(ENV_LLM_MAX_CONCURRENCY) or "4"))
+    except ValueError:
+        return 4
+
+
+# Module-level semaphore for Ollama LLM concurrency (shared across client instances)
+_ollama_semaphore: threading.BoundedSemaphore | None = None
+
+
+def _get_ollama_semaphore() -> threading.BoundedSemaphore:
+    """Lazily create the global Ollama concurrency semaphore."""
+    global _ollama_semaphore
+    if _ollama_semaphore is None:
+        limit = _get_llm_concurrency_limit()
+        _ollama_semaphore = threading.BoundedSemaphore(limit)
+    return _ollama_semaphore
 
 
 class OllamaLLMClient(LLMClient):
@@ -379,6 +657,74 @@ class OllamaLLMClient(LLMClient):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._model_num_ctx: int | None = None  # cached from /api/show
+
+    def _fetch_model_num_ctx(self) -> int:
+        """Fetch model's num_ctx from env, known model table, or Ollama /api/show. Cached per client. Fallback 16384 on failure."""
+        if self._model_num_ctx is not None:
+            return self._model_num_ctx
+        env_ctx = os.environ.get(ENV_LLM_CONTEXT_SIZE)
+        if env_ctx:
+            try:
+                self._model_num_ctx = max(2048, int(env_ctx))
+                logger.info("LLM context size from %s: %s", ENV_LLM_CONTEXT_SIZE, self._model_num_ctx)
+                return self._model_num_ctx
+            except ValueError:
+                pass
+        if self.model in KNOWN_MODEL_CONTEXT:
+            self._model_num_ctx = KNOWN_MODEL_CONTEXT[self.model]
+            logger.info("LLM model %s: using known context size %s", self.model, self._model_num_ctx)
+            return self._model_num_ctx
+        try:
+            url = f"{self.base_url}/api/show"
+            with httpx.Client(timeout=min(30, self.timeout)) as client:
+                resp = client.post(url, json={"model": self.model})
+            if resp.status_code != 200:
+                logger.warning(
+                    "Ollama /api/show returned %s for model %s; using max_tokens=16384",
+                    resp.status_code,
+                    self.model,
+                )
+                self._model_num_ctx = 16384
+                return self._model_num_ctx
+            data = resp.json()
+            # parameters is a string like "temperature 0.7\nnum_ctx 8192\n..."
+            params_str = data.get("parameters") or ""
+            match = re.search(r"num_ctx\s+(\d+)", params_str, re.IGNORECASE)
+            if match:
+                ctx = int(match.group(1))
+                self._model_num_ctx = max(2048, ctx)  # ensure minimum 2048
+                logger.info("Ollama model %s num_ctx=%s; using as max_tokens", self.model, self._model_num_ctx)
+                return self._model_num_ctx
+            # Try model_info.parameter_size or details for fallback
+            for path in ("model_info", "details"):
+                obj = data.get(path)
+                if isinstance(obj, dict):
+                    ctx = obj.get("num_ctx") or obj.get("context_length")
+                    if ctx is not None:
+                        self._model_num_ctx = max(2048, int(ctx))
+                        logger.info("Ollama model %s context=%s; using as max_tokens", self.model, self._model_num_ctx)
+                        return self._model_num_ctx
+        except Exception as e:
+            logger.warning(
+                "Could not fetch Ollama model info for %s: %s; using max_tokens=16384",
+                self.model,
+                e,
+            )
+        self._model_num_ctx = 16384
+        return self._model_num_ctx
+
+    def get_max_context_tokens(self) -> int:
+        """Return model's num_ctx from Ollama /api/show (cached)."""
+        return self._fetch_model_num_ctx()
+
+    def _repair_json(self, s: str) -> str:
+        """Attempt tolerant JSON repair for common LLM output issues."""
+        # Remove trailing commas before ] or }
+        s = re.sub(r",\s*([}\]])", r"\1", s)
+        # Fix unescaped newlines in strings (replace with \n)
+        # Be cautious: only fix obvious cases
+        return s
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         if "---DRAFT---" in text:
@@ -391,35 +737,281 @@ class OllamaLLMClient(LLMClient):
         try:
             return json.loads(text)
         except Exception:
-            pass
+            logger.debug("Primary JSON parse failed; attempting repair")
+        repaired = self._repair_json(text)
+        try:
+            return json.loads(repaired)
+        except Exception:
+            logger.debug("Repaired JSON parse failed; attempting object extraction fallback")
         obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if obj_match:
+            raw = obj_match.group(0)
             try:
-                return json.loads(obj_match.group(0))
+                return json.loads(raw)
             except Exception:
-                pass
-        raise ValueError(f"Could not parse JSON from response: {text!r}")
+                try:
+                    return json.loads(self._repair_json(raw))
+                except Exception:
+                    logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
+        # Retry once after stripping common leading/trailing noise
+        stripped = text.strip()
+        for pattern in (
+            r"^(?:Here(?:'s| is) (?:the )?JSON:?)\s*",
+            r"^(?:The (?:response|output|result) is:?)\s*",
+            r"^(?:JSON:?)\s*",
+            r"^\s*```(?:json)?\s*",
+            r"\s*```\s*$",
+        ):
+            stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE).strip()
+        if stripped and stripped != text.strip():
+            obj_match2 = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
+            if obj_match2:
+                try:
+                    return json.loads(obj_match2.group(0))
+                except Exception:
+                    pass
+
+        # Try every markdown code block: parse each as JSON and use first that yields a useful dict
+        _EXPECTED_KEYS = frozenset({
+            "files", "summary", "code", "overview", "issues", "approved", "components",
+            "architecture_document", "diagrams", "decisions",
+        })
+        for block_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+            block = block_match.group(1).strip()
+            if not block:
+                continue
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
+                    return parsed
+            except Exception:
+                try:
+                    parsed = json.loads(self._repair_json(block))
+                    if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
+                        return parsed
+                except Exception:
+                    continue
+
+        # If still no JSON, try extracting files from raw content so backend/frontend get usable output
+        try:
+            from shared.llm_response_utils import extract_files_from_content, heuristic_extract_files_from_content
+            extracted = extract_files_from_content(text)
+            if not extracted:
+                extracted = heuristic_extract_files_from_content(text, (".py", ".ts", ".html", ".scss", ".css", ".json"))
+            if isinstance(extracted, dict) and extracted:
+                return {"files": extracted}
+        except Exception:
+            pass
+
+        # Final fallback: raw content wrapper. Callers should defensively use .get().
+        # Models that frequently ignore JSON-only instructions may need a different model or pre-processing.
+        logger.warning(
+            "Could not parse structured JSON from LLM response; returning raw content wrapper | failure_class=json_parse_failure",
+        )
+        return {"content": text.strip()}
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
+        max_retries, backoff_base, backoff_max = _parse_retry_config()
+        sem = _get_ollama_semaphore()
+
+        logger.info("LLM request: provider=ollama model=%s base_url=%s", self.model, self.base_url)
+        # If the model uses a code block, put only the JSON object inside it with no surrounding text.
         system_message = (
             "You are a strict JSON generator. Respond with a single valid JSON object only, "
-            "no explanatory text, no Markdown, no code fences."
+            "no explanatory text, no Markdown, no code fences. "
+            "If you use a code block, put only the JSON object inside it with no surrounding text."
         )
+        env_max = os.environ.get(ENV_LLM_MAX_TOKENS)
+        if env_max:
+            max_tokens = int(env_max)
+        else:
+            # Use context size but cap at DEFAULT_MAX_OUTPUT_TOKENS; many APIs limit output to 32K.
+            max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
+        # Cap at DEFAULT_MAX_OUTPUT_TOKENS so we never exceed typical API output limits (e.g. 32768)
+        max_tokens = min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
         payload = {
             "model": self.model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
             ],
         }
         url = f"{self.base_url}/v1/chat/completions"
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        return self._extract_json(content)
+
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                with sem:
+                    with httpx.Client(timeout=self.timeout) as client:
+                        response = client.post(url, json=payload)
+                        status = response.status_code
+
+                        if status == 200:
+                            try:
+                                data = response.json()
+                            except json.JSONDecodeError as e:
+                                raise LLMPermanentError(f"Malformed LLM response (invalid JSON): {e}") from e
+                            content = self._parse_response_content(data)
+                            return self._extract_json(content)
+
+                        if status == 429:
+                            last_error = LLMRateLimitError(
+                                f"LLM rate limited (429) after {attempt + 1} attempt(s)",
+                                status_code=429,
+                            )
+                            retry_after = response.headers.get("Retry-After")
+                            if retry_after and retry_after.isdigit():
+                                wait = min(float(retry_after), backoff_max)
+                            else:
+                                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                            if attempt < max_retries:
+                                logger.warning(
+                                    "LLM 429 rate limit, retrying in %.1fs (attempt %d/%d)",
+                                    wait, attempt + 1, max_retries + 1,
+                                )
+                                time.sleep(wait)
+                                continue
+                            raise last_error
+
+                        if 500 <= status < 600:
+                            last_error = LLMTemporaryError(
+                                f"LLM server error {status} after {attempt + 1} attempt(s): {response.text[:200]}",
+                                status_code=status,
+                            )
+                            if attempt < max_retries:
+                                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                                logger.warning(
+                                    "LLM 5xx error, retrying in %.1fs (attempt %d/%d)",
+                                    wait, attempt + 1, max_retries + 1,
+                                )
+                                time.sleep(wait)
+                                continue
+                            raise last_error
+
+                        if 400 <= status < 500:
+                            err_text = response.text[:500]
+                            if status == 404 and ("not found" in err_text.lower() or "model" in err_text.lower()):
+                                raise LLMPermanentError(
+                                    f"LLM model not found (404). The API at {self.base_url} does not have model "
+                                    f"'{self.model}'. Set SW_LLM_MODEL to a model your API supports (e.g. "
+                                    "export SW_LLM_MODEL=llama3.2 for Ollama, or your provider's model id). "
+                                    f"Original: {err_text[:200]}",
+                                    status_code=status,
+                                )
+                            raise LLMPermanentError(
+                                f"LLM client error {status}: {err_text}",
+                                status_code=status,
+                            )
+
+                        raise LLMPermanentError(
+                            f"Unexpected LLM response status {status}: {response.text[:200]}",
+                            status_code=status,
+                        )
+            except (LLMPermanentError, LLMRateLimitError, LLMTemporaryError):
+                raise
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response else None
+                if status == 429:
+                    last_error = LLMRateLimitError(str(e), status_code=429, cause=e)
+                    if attempt < max_retries:
+                        wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                        logger.warning("LLM 429, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                        time.sleep(wait)
+                        continue
+                    raise last_error
+                if status and 500 <= status < 600:
+                    last_error = LLMTemporaryError(str(e), status_code=status, cause=e)
+                    if attempt < max_retries:
+                        wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                        logger.warning("LLM 5xx, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                        time.sleep(wait)
+                        continue
+                    raise last_error
+                if status and 400 <= status < 500:
+                    raise LLMPermanentError(str(e), status_code=status, cause=e)
+                raise LLMPermanentError(str(e), status_code=status, cause=e)
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:
+                last_error = LLMTemporaryError(
+                    f"LLM connection/timeout error: {e}",
+                    cause=e,
+                )
+                if attempt < max_retries:
+                    wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                    logger.warning(
+                        "LLM connection error, retrying in %.1fs (attempt %d/%d): %s",
+                        wait, attempt + 1, max_retries + 1, e,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise last_error
+
+        if last_error:
+            raise last_error
+        raise LLMTemporaryError("LLM request failed after all retries")
+
+    def _parse_response_content(self, data: dict) -> str:
+        """Extract content from Ollama/OpenAI-compatible response. Raises LLMPermanentError if malformed."""
+        try:
+            choices = data.get("choices")
+            if not choices or not isinstance(choices, list):
+                raise LLMPermanentError("Unexpected response format from LLM: missing or invalid 'choices'")
+            first = choices[0]
+            if not isinstance(first, dict):
+                raise LLMPermanentError("Unexpected response format from LLM: invalid choice object")
+            msg = first.get("message")
+            if not msg or not isinstance(msg, dict):
+                raise LLMPermanentError("Unexpected response format from LLM: missing or invalid 'message'")
+            content = msg.get("content")
+            if content is None:
+                raise LLMPermanentError("Unexpected response format from LLM: missing 'content'")
+            return str(content)
+        except LLMPermanentError:
+            raise
+        except (KeyError, IndexError, TypeError) as e:
+            raise LLMPermanentError(f"Unexpected response format from LLM: {e}") from e
+
+
+def get_llm_for_agent(agent_key: str) -> Union["DummyLLMClient", "OllamaLLMClient"]:
+    """
+    Create or return cached LLM client for the given agent.
+
+    Model resolution order:
+    1. SW_LLM_MODEL_<agent_key> (e.g. SW_LLM_MODEL_backend)
+    2. SW_LLM_MODEL (global fallback)
+    3. AGENT_DEFAULT_MODELS[agent_key] (recommended default)
+    4. qwen3-coder-next:cloud (hardcoded fallback)
+
+    When SW_LLM_PROVIDER=dummy, returns DummyLLMClient regardless of model config.
+    OllamaLLMClient instances are cached by (model, base_url, timeout).
+    """
+    provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
+    if provider == "dummy":
+        return DummyLLMClient()
+
+    per_agent = os.environ.get(f"SW_LLM_MODEL_{agent_key}")
+    global_model = os.environ.get(ENV_LLM_MODEL)
+    default_model = AGENT_DEFAULT_MODELS.get(agent_key)
+    model = (per_agent or global_model or default_model or "qwen3-coder-next:cloud").strip()
+
+    base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
+    try:
+        timeout = float(os.environ.get(ENV_LLM_TIMEOUT) or "1800")
+    except ValueError:
+        timeout = 1800.0
+
+    cache_key = (model, base_url, timeout)
+    with _client_cache_lock:
+        if cache_key not in _client_cache:
+            _client_cache[cache_key] = OllamaLLMClient(model=model, base_url=base_url, timeout=timeout)
+        return _client_cache[cache_key]
+
+
+def _clear_client_cache_for_testing() -> None:
+    """Clear the per-agent client cache. For use in tests only."""
+    with _client_cache_lock:
+        _client_cache.clear()
 
 
 def get_llm_client() -> Union["DummyLLMClient", "OllamaLLMClient"]:
@@ -427,18 +1019,21 @@ def get_llm_client() -> Union["DummyLLMClient", "OllamaLLMClient"]:
     Create LLM client from environment configuration.
 
     Environment variables:
-    - SW_LLM_PROVIDER: "dummy" (default) or "ollama"
-    - SW_LLM_MODEL: model name for ollama (default: deepseek-r1)
+    - SW_LLM_PROVIDER: "ollama" (default) or "dummy"
+    - SW_LLM_MODEL: model name for ollama (default: qwen3-coder-next:cloud)
     - SW_LLM_BASE_URL: ollama base URL (default: http://127.0.0.1:11434)
     - SW_LLM_TIMEOUT: timeout in seconds (default: 1800)
     """
-    provider = (os.environ.get(ENV_LLM_PROVIDER) or "dummy").lower().strip()
+    provider = (os.environ.get(ENV_LLM_PROVIDER) or "ollama").lower().strip()
     if provider == "ollama":
-        model = os.environ.get(ENV_LLM_MODEL) or "deepseek-r1"
+        model = os.environ.get(ENV_LLM_MODEL) or "qwen3-coder-next:cloud"
         base_url = os.environ.get(ENV_LLM_BASE_URL) or "http://127.0.0.1:11434"
         try:
             timeout = float(os.environ.get(ENV_LLM_TIMEOUT) or "1800")
         except ValueError:
             timeout = 1800.0
-        return OllamaLLMClient(model=model, base_url=base_url, timeout=timeout)
+        client = OllamaLLMClient(model=model, base_url=base_url, timeout=timeout)
+        logger.info("LLM config: %s", get_llm_config_summary())
+        return client
+    logger.info("LLM config: %s", get_llm_config_summary())
     return DummyLLMClient()

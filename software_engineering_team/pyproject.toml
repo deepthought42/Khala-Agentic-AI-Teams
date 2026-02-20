@@ -17,13 +17,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pytest-cov"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 # Show logs during tests: -v shows INFO, or use: pytest --log-cli-level=INFO
 addopts = "-v"
+
+[tool.coverage.run]
+source = ["shared", "frontend_team"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "shared/models.py",
+    "shared/git_utils.py",
+    "shared/repo_writer.py",
+    "shared/llm.py",
+    "shared/job_store.py",
+    "shared/coding_standards.py",
+    "shared/logging_config.py",
+    "shared/task_validation.py",
+    "shared/development_plan_writer.py",
+    "shared/__init__.py",
+]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -34,7 +55,7 @@ include = [
     "devops_agent*",
     "security_agent*",
     "backend_agent*",
-    "frontend_agent*",
+    "frontend_team*",
     "qa_agent*",
 ]
 namespaces = false

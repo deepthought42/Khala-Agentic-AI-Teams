@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from shared.llm import LLMClient
+from shared.prompt_utils import log_llm_prompt
+from shared.task_plan import TaskPlan
 
-from .models import DevOpsInput, DevOpsOutput
-from .prompts import DEVOPS_PROMPT
+from .models import DevOpsInput, DevOpsOutput, DevOpsWorkflowResult
+from .prompts import DEVOPS_PLANNING_PROMPT, DEVOPS_PROMPT
 
 logger = logging.getLogger(__name__)
+
+MAX_WORKFLOW_ITERATIONS = 20
 
 
 class DevOpsExpertAgent:
@@ -21,6 +26,50 @@ class DevOpsExpertAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+
+    def _plan_task(
+        self,
+        *,
+        task_description: str,
+        requirements: str,
+        architecture: Optional[Any] = None,
+        existing_pipeline: Optional[str] = None,
+        target_repo: Optional[Any] = None,
+    ) -> str:
+        """Produce an implementation plan for the DevOps task. Returns plan markdown or empty string on failure."""
+        context_parts = [
+            f"**Task:** {task_description}",
+            f"**Requirements:** {requirements}",
+        ]
+        if architecture:
+            context_parts.extend([
+                "",
+                "**Architecture:**",
+                getattr(architecture, "overview", str(architecture)),
+                *[
+                    f"- {c.name} ({c.type}): {getattr(c, 'technology', None) or 'TBD'}"
+                    for c in getattr(architecture, "components", [])
+                ],
+            ])
+        if existing_pipeline:
+            context_parts.extend(["", "**Existing Pipeline:**", existing_pipeline])
+        if target_repo is not None:
+            repo_val = target_repo.value if hasattr(target_repo, "value") else target_repo
+            context_parts.extend([
+                "",
+                "**Target repo:**",
+                f"target_repo={repo_val}",
+            ])
+        context = "\n".join(context_parts)
+        prompt = DEVOPS_PLANNING_PROMPT + "\n\n---\n\n" + context
+        log_llm_prompt(logger, "DevOps", "planning", (task_description or "")[:80], prompt)
+        try:
+            data = self.llm.complete_json(prompt, temperature=0.2)
+            plan = TaskPlan.from_llm_json(data)
+            return plan.to_markdown()
+        except Exception as e:
+            logger.warning("DevOps planning step failed, proceeding without plan: %s", e)
+            return ""
 
     def run(self, input_data: DevOpsInput) -> DevOpsOutput:
         """Create or extend CI/CD, IaC, and Docker configurations."""
@@ -40,6 +89,23 @@ class DevOpsExpertAgent:
             context_parts.extend(["", "**Existing Pipeline:**", input_data.existing_pipeline])
         if input_data.tech_stack:
             context_parts.extend(["", "**Tech Stack:**", ", ".join(input_data.tech_stack)])
+        if getattr(input_data, "target_repo", None):
+            repo_val = input_data.target_repo.value if hasattr(input_data.target_repo, "value") else input_data.target_repo
+            context_parts.extend([
+                "",
+                "**Target repo:** You are producing containerization and deployment artifacts for this application repo only.",
+                f"- target_repo={repo_val}",
+            ])
+        if getattr(input_data, "task_plan", None) and input_data.task_plan:
+            context_parts.extend(["", "**Implementation plan:**", input_data.task_plan])
+        if getattr(input_data, "build_errors", None) and input_data.build_errors:
+            from shared.context_sizing import compute_build_errors_chars
+            max_errors = compute_build_errors_chars(self.llm)
+            context_parts.extend([
+                "",
+                "**Build/validation errors to fix:** The previous output failed verification. Fix these issues:",
+                input_data.build_errors[:max_errors],
+            ])
 
         prompt = DEVOPS_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         data = self.llm.complete_json(prompt, temperature=0.2)
@@ -64,4 +130,135 @@ class DevOpsExpertAgent:
             suggested_commit_message=data.get("suggested_commit_message", ""),
             needs_clarification=needs_clarification,
             clarification_requests=clarification_requests,
+        )
+
+    def run_workflow(
+        self,
+        *,
+        repo_path: Path,
+        task_description: str,
+        requirements: str,
+        architecture: Optional[Any] = None,
+        existing_pipeline: Optional[str] = None,
+        target_repo: Optional[Any] = None,
+        tech_stack: Optional[list[str]] = None,
+        build_verifier: Callable[..., Tuple[bool, str]],
+        task_id: str = "devops",
+        subdir: str = "",
+        max_iterations: int = MAX_WORKFLOW_ITERATIONS,
+    ) -> DevOpsWorkflowResult:
+        """
+        Execute the DevOps workflow: plan -> generate -> write -> verify -> fix loop.
+
+        No feature branch; writes directly to repo_path. On verification failure,
+        re-generates with build_errors and retries up to max_iterations.
+        """
+        from shared.context_sizing import compute_build_errors_chars
+        from shared.repo_writer import write_agent_output, NO_FILES_TO_WRITE_MSG
+
+        path = Path(repo_path).resolve()
+        if subdir:
+            path_for_verify = path / subdir
+        else:
+            path_for_verify = path
+
+        logger.info(
+            "DevOps WORKFLOW: starting for task_id=%s, path=%s, subdir=%s",
+            task_id,
+            path,
+            subdir or "(root)",
+        )
+
+        # Step 1: Plan
+        plan_text = self._plan_task(
+            task_description=task_description,
+            requirements=requirements,
+            architecture=architecture,
+            existing_pipeline=existing_pipeline,
+            target_repo=target_repo.value if target_repo and hasattr(target_repo, "value") else (target_repo or None),
+        )
+        if plan_text:
+            plan_dir = path / "plan"
+            if plan_dir.exists() and plan_dir.is_dir():
+                try:
+                    plan_file = plan_dir / f"devops_{task_id}.md"
+                    plan_file.write_text(
+                        f"# DevOps task plan: {task_id}\n\n{plan_text}",
+                        encoding="utf-8",
+                    )
+                    logger.info("DevOps WORKFLOW: persisted plan to %s", plan_file)
+                except Exception as e:
+                    logger.warning("DevOps: failed to persist plan (non-blocking): %s", e)
+
+        # Step 2: Generate initial output
+        result = self.run(
+            DevOpsInput(
+                task_description=task_description,
+                requirements=requirements,
+                architecture=architecture,
+                existing_pipeline=existing_pipeline,
+                tech_stack=tech_stack,
+                target_repo=target_repo,
+                task_plan=plan_text if plan_text else None,
+            )
+        )
+        if result.needs_clarification and result.clarification_requests:
+            return DevOpsWorkflowResult(
+                success=False,
+                failure_reason=f"Clarification requested: {result.clarification_requests[0][:200]}",
+                iterations=1,
+            )
+
+        # Step 3: Write
+        ok, write_msg = write_agent_output(path, result, subdir=subdir)
+        if not ok:
+            return DevOpsWorkflowResult(
+                success=False,
+                failure_reason=write_msg or NO_FILES_TO_WRITE_MSG,
+                iterations=1,
+            )
+
+        # Steps 4-5: Verify and fix loop
+        for iteration in range(1, max_iterations + 1):
+            build_ok, build_errors = build_verifier(path_for_verify, "devops", task_id)
+            if build_ok:
+                logger.info("DevOps WORKFLOW: verification passed after %d iteration(s)", iteration)
+                return DevOpsWorkflowResult(success=True, iterations=iteration)
+
+            # Fix pass
+            logger.warning(
+                "DevOps WORKFLOW: iteration %d/%d verification failed, re-generating with errors",
+                iteration,
+                max_iterations,
+            )
+            result = self.run(
+                DevOpsInput(
+                    task_description=task_description,
+                    requirements=requirements,
+                    architecture=architecture,
+                    existing_pipeline=existing_pipeline,
+                    tech_stack=tech_stack,
+                    target_repo=target_repo,
+                    task_plan=plan_text if plan_text else None,
+                    build_errors=build_errors[:compute_build_errors_chars(self.llm)],
+                )
+            )
+            if result.needs_clarification and result.clarification_requests:
+                return DevOpsWorkflowResult(
+                    success=False,
+                    failure_reason=f"Clarification requested during fix: {result.clarification_requests[0][:200]}",
+                    iterations=iteration + 1,
+                )
+            ok, write_msg = write_agent_output(path, result, subdir=subdir)
+            if not ok:
+                return DevOpsWorkflowResult(
+                    success=False,
+                    failure_reason=f"Write failed on fix iteration: {write_msg}",
+                    iterations=iteration + 1,
+                )
+
+        return DevOpsWorkflowResult(
+            success=False,
+            failure_reason=f"Verification failed after {max_iterations} iterations",
+            iterations=max_iterations,
         )

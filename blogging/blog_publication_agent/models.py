@@ -99,6 +99,32 @@ def _slugify(text: str) -> str:
     return slug[:80].rstrip("-") or "untitled"
 
 
+class PublishingPack(BaseModel):
+    """SEO and packaging output for publish-ready content."""
+
+    title_options: List[str] = Field(
+        default_factory=list,
+        description="Alternative title options for A/B testing.",
+    )
+    meta_description: Optional[str] = Field(
+        None,
+        description="Meta description for SEO (155 chars or less).",
+    )
+    header_polish: Optional[str] = Field(
+        None,
+        description="Polished H1/H2 suggestions.",
+    )
+    internal_links: List[str] = Field(
+        default_factory=list,
+        description="Suggested internal links.",
+    )
+    snippet_copy: Optional[str] = Field(
+        None,
+        description="Social snippet or preview copy.",
+    )
+    tags: List[str] = Field(default_factory=list, description="Suggested tags.")
+
+
 class PublicationMetadata(BaseModel):
     """Persisted metadata for a publication submission."""
 

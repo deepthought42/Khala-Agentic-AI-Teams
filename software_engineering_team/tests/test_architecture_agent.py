@@ -1,8 +1,13 @@
 """Tests for Architecture Expert agent."""
 
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 
 from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
+from shared.development_plan_writer import write_architecture_plan
 from shared.llm import DummyLLMClient
 from shared.models import ProductRequirements
 
@@ -50,3 +55,45 @@ def test_architecture_agent_with_existing_architecture(requirements: ProductRequ
         )
     )
     assert result.architecture.components
+
+
+def test_architecture_agent_produces_diagrams(requirements: ProductRequirements) -> None:
+    """Architecture Expert returns diagrams when using DummyLLMClient."""
+    llm = DummyLLMClient()
+    agent = ArchitectureExpertAgent(llm_client=llm)
+    result = agent.run(
+        ArchitectureInput(requirements=requirements, technology_preferences=["Python", "FastAPI"])
+    )
+    assert result.architecture.diagrams
+    assert "client_server_architecture" in result.architecture.diagrams
+    assert "frontend_code_structure" in result.architecture.diagrams
+
+
+def test_write_architecture_plan_includes_mermaid_diagrams(requirements: ProductRequirements) -> None:
+    """Written architecture plan contains Diagrams section and Mermaid code blocks."""
+    llm = DummyLLMClient()
+    agent = ArchitectureExpertAgent(llm_client=llm)
+    result = agent.run(
+        ArchitectureInput(requirements=requirements, technology_preferences=["Python", "FastAPI"])
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = write_architecture_plan(Path(tmpdir), result.architecture)
+        content = path.read_text()
+    assert "## Diagrams" in content
+    assert "```mermaid" in content
+
+
+def test_architecture_agent_builds_synthetic_when_parse_fails(requirements: ProductRequirements) -> None:
+    """When LLM returns raw wrapper (parse failure), agent builds synthetic architecture."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {"content": "Here is some non-JSON text from the model"}
+    agent = ArchitectureExpertAgent(llm_client=mock_llm)
+    result = agent.run(
+        ArchitectureInput(requirements=requirements, technology_preferences=["Python", "FastAPI"])
+    )
+    assert result.architecture.overview
+    assert "Task Manager API" in result.architecture.overview
+    assert len(result.architecture.components) >= 1
+    assert result.architecture.diagrams
+    assert "client_server_architecture" in result.architecture.diagrams
+    assert "security_architecture" in result.architecture.diagrams

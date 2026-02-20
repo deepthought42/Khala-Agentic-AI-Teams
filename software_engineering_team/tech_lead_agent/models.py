@@ -38,6 +38,30 @@ class TechLeadInput(BaseModel):
         None,
         description="Existing code in the repository; Tech Lead uses this to understand current state before planning",
     )
+    project_overview: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Project overview from ProjectPlanningAgent (goals, milestones, delivery strategy)",
+    )
+    alignment_feedback: Optional[List[str]] = Field(
+        None,
+        description="Feedback from planning alignment review (tasks vs architecture); address these when re-planning",
+    )
+    conformance_issues: Optional[List[str]] = Field(
+        None,
+        description="Non-compliances with initial spec from conformance review; address these when re-planning",
+    )
+    minimal_planning: bool = Field(
+        default=False,
+        description="When True, skip multi-planner pipeline and use TaskGenerator only (faster, less detailed)",
+    )
+    open_questions: Optional[List[str]] = Field(
+        None,
+        description="Open questions from Spec Intake needing resolution; Tech Lead resolves with best-practice defaults",
+    )
+    assumptions: Optional[List[str]] = Field(
+        None,
+        description="Assumptions from Spec Intake; Tech Lead may extend when resolving open questions",
+    )
 
 
 class TechLeadOutput(BaseModel):
@@ -59,4 +83,8 @@ class TechLeadOutput(BaseModel):
     clarification_questions: List[str] = Field(
         default_factory=list,
         description="Specific questions for the product owner when spec_clarification_needed is True",
+    )
+    validation_report: Optional[str] = Field(
+        default=None,
+        description="Plan validation report when using planning pipeline (coverage, cycles, etc.)",
     )

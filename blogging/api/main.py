@@ -1,10 +1,13 @@
 """
-FastAPI application exposing the research-and-review pipeline as an HTTP endpoint.
+FastAPI application exposing the research-and-review and full pipeline as HTTP endpoints.
 """
 
 from __future__ import annotations
 
 import logging
+import tempfile
+import uuid
+from pathlib import Path
 from typing import List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
@@ -16,13 +19,21 @@ from blog_research_agent.llm import OllamaLLMClient
 from blog_research_agent.models import ResearchBriefInput
 from blog_review_agent import BlogReviewAgent, BlogReviewInput
 
+try:
+    from shared.artifacts import write_artifact
+except ImportError:
+    write_artifact = None
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# Base directory for run artifacts (when work_dir is requested)
+RUN_ARTIFACTS_BASE = Path(tempfile.gettempdir()) / "blogging_runs"
+
 app = FastAPI(
     title="Blog Research & Review API",
-    description="Runs research and review agents to produce title choices and a blog outline from a brief.",
-    version="0.1.0",
+    description="Runs research and review agents. Optional full pipeline with gates and artifact persistence.",
+    version="0.2.0",
 )
 
 
@@ -164,6 +175,13 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
 
     audience_str = _format_audience(request.audience)
 
+    work_dir = None
+    if request.work_dir:
+        work_dir = Path(request.work_dir)
+    elif request.run_id:
+        work_dir = RUN_ARTIFACTS_BASE / request.run_id
+        work_dir.mkdir(parents=True, exist_ok=True)
+
     brief_input = ResearchBriefInput(
         brief=brief_text,
         audience=audience_str or None,
@@ -189,6 +207,17 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
         logger.exception("Review agent failed")
         raise HTTPException(status_code=500, detail=f"Review failed: {e}") from e
 
+    if work_dir is not None and write_artifact is not None:
+        research_doc = research_result.compiled_document or ""
+        if not research_doc and research_result.references:
+            parts = ["## Sources\n"]
+            for ref in research_result.references:
+                parts.append(f"- **{ref.title}** ({ref.url}): {ref.summary}")
+            research_doc = "\n".join(parts)
+        write_artifact(work_dir, "research_packet.md", research_doc)
+        write_artifact(work_dir, "outline.md", review_result.outline)
+        logger.info("Persisted artifacts to %s", work_dir)
+
     llm_requests_after = _llm_client.request_count if _llm_client is not None else llm_requests_before
     logger.info(
         "Completed research-and-review pipeline with %s LLM requests",
@@ -206,6 +235,82 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
         outline=review_result.outline,
         compiled_document=research_result.compiled_document,
         notes=research_result.notes,
+    )
+
+
+class FullPipelineRequest(BaseModel):
+    """Request body for the full pipeline endpoint."""
+
+    brief: str = Field(..., description="Short description of the content topic.")
+    title_concept: Optional[str] = Field(None, description="Optional idea or angle for the title.")
+    audience: Optional[Union[AudienceDetails, str]] = Field(None, description="Audience details.")
+    tone_or_purpose: Optional[str] = Field(None, description="e.g. 'educational', 'technical deep-dive'.")
+    max_results: int = Field(20, ge=1, le=50, description="Maximum references.")
+    run_gates: bool = Field(True, description="Run validators, fact-check, and compliance gates.")
+    max_rewrite_iterations: int = Field(3, ge=1, le=10, description="Max rewrite iterations on FAIL.")
+
+
+class FullPipelineResponse(BaseModel):
+    """Response from the full pipeline endpoint."""
+
+    status: str = Field(..., description="PASS, FAIL, or NEEDS_HUMAN_REVIEW.")
+    work_dir: str = Field(..., description="Path to artifact directory.")
+    title_choices: List[TitleChoiceResponse] = Field(default_factory=list)
+    outline: str = ""
+    draft_preview: Optional[str] = Field(None, description="First 2000 chars of draft.")
+
+
+@app.post(
+    "/full-pipeline",
+    response_model=FullPipelineResponse,
+    summary="Run full blog pipeline with gates",
+    description="Runs research -> review -> draft -> validators -> compliance -> rewrite loop. Persists all artifacts.",
+)
+def full_pipeline(request: FullPipelineRequest) -> FullPipelineResponse:
+    """Run the full brand-aligned pipeline with artifact persistence and gates."""
+    import sys
+    from pathlib import Path
+    _blogging_root = Path(__file__).resolve().parent.parent
+    if str(_blogging_root) not in sys.path:
+        sys.path.insert(0, str(_blogging_root))
+    from agent_implementations.blog_writing_process_v2 import run_pipeline
+
+    run_id = str(uuid.uuid4())[:8]
+    work_dir = RUN_ARTIFACTS_BASE / run_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    brief_text = request.brief.strip()
+    if request.title_concept:
+        brief_text = f"{brief_text}. Title concept: {request.title_concept.strip()}"
+    audience_str = _format_audience(request.audience)
+
+    brief_input = ResearchBriefInput(
+        brief=brief_text,
+        audience=audience_str or None,
+        tone_or_purpose=request.tone_or_purpose,
+        max_results=request.max_results,
+    )
+
+    try:
+        research_result, review_result, draft_result, status = run_pipeline(
+            brief_input,
+            work_dir=work_dir,
+            run_gates=request.run_gates,
+            max_rewrite_iterations=request.max_rewrite_iterations,
+        )
+    except Exception as e:
+        logger.exception("Full pipeline failed")
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}") from e
+
+    return FullPipelineResponse(
+        status=status,
+        work_dir=str(work_dir),
+        title_choices=[
+            TitleChoiceResponse(title=tc.title, probability_of_success=tc.probability_of_success)
+            for tc in review_result.title_choices
+        ],
+        outline=review_result.outline,
+        draft_preview=draft_result.draft[:2000] + ("..." if len(draft_result.draft) > 2000 else ""),
     )
 
 

@@ -18,23 +18,24 @@ Or with path setup from project root:
 import _path_setup  # noqa: F401
 
 import logging
+from pathlib import Path
 
-from shared.llm import DummyLLMClient, OllamaLLMClient
+from shared.llm import get_llm_for_agent
 from shared.models import ProductRequirements, TaskType
 from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
 from devops_agent import DevOpsExpertAgent, DevOpsInput
 from security_agent import CybersecurityExpertAgent, SecurityInput
 from backend_agent import BackendExpertAgent, BackendInput
-from frontend_agent import FrontendExpertAgent, FrontendInput
+from backend_agent.agent import _read_openapi_spec_from_repo
+from frontend_team.feature_agent import FrontendExpertAgent, FrontendInput
 from qa_agent import QAExpertAgent, QAInput
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# Use DummyLLMClient for testing without an LLM; switch to OllamaLLMClient for real runs
-USE_DUMMY = True
-LLM = DummyLLMClient() if USE_DUMMY else OllamaLLMClient(model="deepseek-r1", timeout=1800.0)
+# Uses get_llm_client() which reads SW_LLM_PROVIDER, SW_LLM_MODEL (default: qwen3-coder-next:cloud)
+LLM = get_llm_client()
 
 # Example product requirements
 REQUIREMENTS = ProductRequirements(
@@ -61,7 +62,7 @@ REQUIREMENTS = ProductRequirements(
 def main() -> None:
     # 1. Architecture Expert designs the system
     logger.info("=== Architecture Expert ===")
-    arch_agent = ArchitectureExpertAgent(llm_client=LLM)
+    arch_agent = ArchitectureExpertAgent(llm_client=get_llm_for_agent("architecture"))
     arch_input = ArchitectureInput(
         requirements=REQUIREMENTS,
         technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
@@ -87,11 +88,11 @@ def main() -> None:
 
     # 3. Execute tasks by specialist
     agent_map = {
-        "devops": DevOpsExpertAgent(LLM),
-        "security": CybersecurityExpertAgent(LLM),
-        "backend": BackendExpertAgent(LLM),
-        "frontend": FrontendExpertAgent(LLM),
-        "qa": QAExpertAgent(LLM),
+        "devops": DevOpsExpertAgent(get_llm_for_agent("devops")),
+        "security": CybersecurityExpertAgent(get_llm_for_agent("security")),
+        "backend": BackendExpertAgent(get_llm_for_agent("backend")),
+        "frontend": FrontendExpertAgent(get_llm_for_agent("frontend")),
+        "qa": QAExpertAgent(get_llm_for_agent("qa")),
     }
 
     artifacts = {}
@@ -122,6 +123,7 @@ def main() -> None:
             logger.info("DevOps: %s", result.summary[:150] if result.summary else "Done")
 
         elif task.assignee == "backend":
+            api_spec = _read_openapi_spec_from_repo(Path.cwd())
             result = agent.run(
                 BackendInput(
                     task_description=task.description,
@@ -129,6 +131,7 @@ def main() -> None:
                     user_story=getattr(task, "user_story", "") or "",
                     architecture=architecture,
                     language="python",
+                    api_spec=api_spec,
                 )
             )
             logger.info("Backend: %s", result.summary[:150] if result.summary else "Done")

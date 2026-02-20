@@ -14,6 +14,12 @@ from blog_research_agent.llm import LLMClient
 from .models import CopyEditorInput, CopyEditorOutput, FeedbackItem
 from .prompts import COPY_EDITOR_PROMPT, MINIMAL_STYLE_CHECKLIST
 
+try:
+    from shared.brand_spec import BrandSpec, load_brand_spec
+except ImportError:
+    BrandSpec = None
+    load_brand_spec = None
+
 logger = logging.getLogger(__name__)
 
 # Default style guide path (Brandon Kindred brand and writing guide) relative to project root
@@ -38,6 +44,7 @@ class BlogCopyEditorAgent:
         llm_client: LLMClient,
         *,
         default_style_guide_path: Optional[str | Path] = None,
+        brand_spec_path: Optional[str | Path] = None,
     ) -> None:
         """
         Preconditions:
@@ -49,6 +56,36 @@ class BlogCopyEditorAgent:
             self.default_style_guide_path = Path(default_style_guide_path)
         else:
             self.default_style_guide_path = _DEFAULT_STYLE_GUIDE_PATH if _DEFAULT_STYLE_GUIDE_PATH.exists() else None
+        self.brand_spec_path = Path(brand_spec_path) if brand_spec_path else None
+
+    def _resolve_style_guide(
+        self,
+        style_guide: Optional[str],
+        brand_spec_path: Optional[str],
+        brand_spec: Optional[dict],
+    ) -> str:
+        """Resolve style guide text: prefer brand_spec when provided, else style_guide or default."""
+        if brand_spec and load_brand_spec:
+            try:
+                spec = BrandSpec.model_validate(brand_spec) if hasattr(BrandSpec, "model_validate") else BrandSpec.parse_obj(brand_spec)
+                return spec.to_prompt_summary()
+            except Exception:
+                pass
+        path = brand_spec_path or (self.brand_spec_path if self.brand_spec_path and self.brand_spec_path.exists() else None)
+        if path and load_brand_spec:
+            try:
+                spec = load_brand_spec(path)
+                return spec.to_prompt_summary()
+            except Exception as e:
+                logger.warning("Could not load brand spec from %s: %s", path, e)
+        if style_guide:
+            return style_guide.strip()
+        if self.default_style_guide_path and self.default_style_guide_path.exists():
+            try:
+                return _load_style_guide(self.default_style_guide_path)
+            except OSError as e:
+                logger.warning("Could not load default style guide: %s", e)
+        return MINIMAL_STYLE_CHECKLIST
 
     def run(self, copy_editor_input: CopyEditorInput) -> CopyEditorOutput:
         """
@@ -67,21 +104,12 @@ class BlogCopyEditorAgent:
                 feedback_items=[],
             )
 
-        # Resolve style guide text
-        if copy_editor_input.style_guide:
-            style_guide_text = copy_editor_input.style_guide.strip()
-        elif self.default_style_guide_path and self.default_style_guide_path.exists():
-            try:
-                style_guide_text = _load_style_guide(self.default_style_guide_path)
-            except OSError as e:
-                logger.warning(
-                    "Could not load default style guide from %s: %s",
-                    self.default_style_guide_path,
-                    e,
-                )
-                style_guide_text = MINIMAL_STYLE_CHECKLIST
-        else:
-            style_guide_text = MINIMAL_STYLE_CHECKLIST
+        # Resolve style guide text (brand_spec takes precedence when provided)
+        style_guide_text = self._resolve_style_guide(
+            copy_editor_input.style_guide,
+            copy_editor_input.brand_spec_path,
+            copy_editor_input.brand_spec,
+        )
 
         logger.info(
             "Copy editing: draft len=%s, style_guide len=%s",

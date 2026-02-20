@@ -1,3 +1,8 @@
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
 # Cache files
 __pycache__/
 *.pyc

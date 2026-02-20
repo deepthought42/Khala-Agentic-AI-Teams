@@ -20,6 +20,7 @@ class TaskType(str, Enum):
     BACKEND = "backend"
     FRONTEND = "frontend"
     QA = "qa"
+    DOCUMENTATION = "documentation"
 
 
 class TaskStatus(str, Enum):
@@ -78,7 +79,22 @@ class SystemArchitecture(BaseModel):
     )
     decisions: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Architecture decision records",
+        description="Architecture decision records (ADR-001, ADR-002, ...)",
+    )
+    tenancy_model: str = Field(
+        default="",
+        description="Tenancy model: single tenant, pooled, isolated, hybrid",
+    )
+    reliability_model: str = Field(
+        default="",
+        description="Reliability model: blast radius, failure modes, graceful degradation",
+    )
+    planning_hints: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Derived hints for planning agents (e.g. grouped backend/frontend/infra "
+            "components, important data flows, and other planning-oriented summaries."
+        ),
     )
 
 
@@ -113,6 +129,10 @@ class Task(BaseModel):
     )
     output: Optional[str] = None
     artifacts: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional arbitrary metadata (e.g. linked architecture component, user_story source).",
+    )
 
 
 class TaskUpdate(BaseModel):
@@ -147,3 +167,27 @@ class TaskAssignment(BaseModel):
         description="Ordered task IDs for execution",
     )
     rationale: str = ""
+
+
+def model_to_dict(obj: Any) -> Dict[str, Any]:
+    """
+    Convert a Pydantic model (v1 or v2) or similar object to a plain dict.
+    Supports both .model_dump() (Pydantic v2) and .dict() (Pydantic v1).
+    Uses try/except to handle edge cases where hasattr is True but the method
+    raises (e.g. proxy objects, partial implementations).
+    """
+    if obj is None:
+        return {}
+    try:
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()
+    except AttributeError:
+        pass
+    try:
+        if hasattr(obj, "dict"):
+            return obj.dict()
+    except AttributeError:
+        pass
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
+    return {}

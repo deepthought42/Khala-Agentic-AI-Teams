@@ -32,18 +32,37 @@ Produce a complete system architecture design that includes:
    - Key design decisions and rationale
    - Non-functional considerations (scalability, security, observability)
 
-4. **Decisions** – List of architecture decision records (ADR) with:
-   - decision
-   - context
-   - consequences
+4. **Diagrams** – Produce Mermaid diagrams only. Each value must be valid Mermaid syntax (no explanatory text). Do not wrap in markdown code fences; output raw Mermaid.
+
+   **Required (always produce):**
+   - client_server_architecture: Client–server view (browsers, app server(s), APIs)
+   - frontend_code_structure: Front-end code layout (modules, layers, key directories)
+   - backend_code_structure: Backend code layout (packages, layers, entrypoints)
+   - backend_infrastructure: Backend infra (servers, queues, DBs, caches)
+   - infrastructure: Overall infrastructure (hosting, networking, CI/CD)
+   - security_architecture: Security boundaries, auth flow, data protection
+
+   **Optional (include when relevant or as suggested deployment):**
+   - backend_code_architecture: Logical/component view of backend (if different from code structure)
+   - cloud_aws, cloud_gcp, cloud_digital_ocean: Deployment view for each provider (one or more)
+
+   You may add extra keys (e.g. data_flow, sequence_auth) for anything else helpful.
+
+5. **Decisions** – List of architecture decision records (ADRs) with id (ADR-001, ADR-002, ...), title, context, decision, tradeoffs, status. Each ADR documents a key architectural choice.
+
+6. **Tenancy model** – Describe the tenancy model: single tenant, pooled (shared DB with row-level isolation), isolated (separate DB per tenant), or hybrid. Include rationale.
+
+7. **Reliability model** – Describe blast radius (what fails when X fails), failure modes, and graceful degradation strategies.
 
 **Output format:**
 Return a single JSON object with:
 - "overview": string
 - "components": list of {"name", "type", "description", "technology", "dependencies", "interfaces"}
 - "architecture_document": string (full markdown)
-- "diagrams": object with diagram names as keys and description/mermaid as values
-- "decisions": list of {"decision", "context", "consequences"}
+- "diagrams": object with diagram names as keys and Mermaid source code as values (no code fences). Required keys: client_server_architecture, frontend_code_structure, backend_code_structure, backend_infrastructure, infrastructure, security_architecture. Optional: backend_code_architecture, cloud_aws, cloud_gcp, cloud_digital_ocean.
+- "decisions": list of {"id", "title", "context", "decision", "tradeoffs", "status"} (id: ADR-001, ADR-002, ...)
+- "tenancy_model": string (single tenant, pooled, isolated, hybrid, with brief rationale)
+- "reliability_model": string (blast radius, failure modes, graceful degradation)
 - "summary": string (2-3 sentence summary)
 
 Respond with valid JSON only. No explanatory text, markdown, or code fences."""

@@ -32,3 +32,13 @@ To avoid JSON escaping errors, use this format exactly:
 3. Then output the complete revised blog post in Markdown. Do not truncate. Everything after ---DRAFT--- is the draft."""
 
 MINIMAL_STYLE_REMINDER = """Style rules to follow: Write like a human mentor. Use short sentences and plain words (8th grade level). No em dashes or en dashes; use commas or separate sentences. Short paragraphs (2–4 sentences). Use headings often; make them descriptive. No corporate buzzwords, no hype. Define technical terms on first use. Prefer concrete examples. Hook at the start; recap and one practical next step at the end. Avoid emojis. Lists only when they clarify steps or comparisons."""
+
+ALLOWED_CLAIMS_INSTRUCTION = """
+ALLOWED FACTUAL CLAIMS (you MUST use only these for facts; tag each with [CLAIM:id]):
+When you use a factual claim from this list, place [CLAIM:<id>] immediately after it in the draft.
+Example: "Studies show that 80% of teams adopt CI/CD within two years [CLAIM:1]."
+Do NOT introduce new factual claims not in this list. Opinions and recommendations need not be tagged.
+---
+{claims_text}
+---
+"""

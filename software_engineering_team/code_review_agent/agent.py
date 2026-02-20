@@ -5,8 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from shared.context_sizing import (
+    compute_code_review_chunk_chars,
+    compute_code_review_total_chars,
+)
 from shared.llm import LLMClient
 
+from .coordinator import run_coordinator
 from .models import CodeReviewInput, CodeReviewIssue, CodeReviewOutput
 from .prompts import CODE_REVIEW_PROMPT
 
@@ -27,9 +32,42 @@ class CodeReviewAgent:
 
     def run(self, input_data: CodeReviewInput) -> CodeReviewOutput:
         """Review code and return approval or issues."""
+        code = input_data.code or ""
+        single_call_limit = compute_code_review_chunk_chars(self.llm)
+        if len(code) > single_call_limit:
+            logger.info(
+                "CodeReview: code size %s exceeds single-call limit %s (model context), using coordinator",
+                len(code),
+                single_call_limit,
+            )
+            max_total = compute_code_review_total_chars(self.llm)
+            if len(code) > max_total:
+                code = code[:max_total] + (
+                    f"\n\n... [truncated for code review, {len(code) - max_total} more chars]"
+                )
+                input_data = CodeReviewInput(
+                    code=code,
+                    spec_content=input_data.spec_content,
+                    task_description=input_data.task_description,
+                    task_requirements=input_data.task_requirements,
+                    acceptance_criteria=input_data.acceptance_criteria,
+                    language=input_data.language,
+                    architecture=input_data.architecture,
+                    existing_codebase=input_data.existing_codebase,
+                )
+            return run_coordinator(self.llm, input_data)
+        max_total = compute_code_review_total_chars(self.llm)
+        if len(code) > max_total:
+            logger.info(
+                "CodeReview: truncating code from %s to %s chars for review (model context)",
+                len(code),
+                max_total,
+            )
+            code = code[:max_total] + f"\n\n... [truncated for code review, {len(code) - max_total} more chars]"
+
         logger.info(
             "CodeReview: reviewing %s chars of %s code | task=%s | has_spec=%s | has_architecture=%s | acceptance_criteria=%s",
-            len(input_data.code or ""),
+            len(code),
             input_data.language,
             input_data.task_description[:80] if input_data.task_description else "",
             bool(input_data.spec_content),
@@ -79,7 +117,7 @@ class CodeReviewAgent:
             "",
             "**Code to review:**",
             "```",
-            input_data.code,
+            code,
             "```",
         ])
 
