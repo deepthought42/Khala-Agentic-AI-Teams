@@ -66,7 +66,10 @@ class ApiContractPlanningAgent:
         openapi_path = None
         if input_data.plan_dir:
             plan_path = Path(input_data.plan_dir).resolve()
-            openapi_path = _write_artifact(plan_path, "openapi.yaml", openapi_yaml)
+            # OpenAPI spec goes in backend folder root (not plan/) for backend agent to use
+            backend_dir = plan_path.parent / "backend"
+            backend_dir.mkdir(parents=True, exist_ok=True)
+            openapi_path = _write_artifact(backend_dir, "openapi.yaml", openapi_yaml)
             if error_model:
                 _write_artifact(plan_path, "api_error_model.md", "# API Error Model\n\n" + error_model)
             if versioning_policy:

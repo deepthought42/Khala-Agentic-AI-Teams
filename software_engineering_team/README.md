@@ -118,7 +118,7 @@ All planning artifacts are written to a `plan/` folder at the project root (work
 - `plan/spec_lint_report.md`, `plan/glossary.md`, `plan/assumptions_and_questions.md`, `plan/acceptance_criteria_index.md` (Spec Intake)
 - `plan/project_overview.md`, `plan/features_and_functionality.md` (Project Planning)
 - `plan/architecture.md` (Architecture)
-- `plan/openapi.yaml`, `plan/api_error_model.md`, `plan/api_versioning.md`, `plan/contract_tests_plan.md` (API Contract)
+- `backend/openapi.yaml`, `plan/api_error_model.md`, `plan/api_versioning.md`, `plan/contract_tests_plan.md` (API Contract)
 - `plan/data_schema.md`, `plan/data_architecture.md` (Data Architecture)
 - `plan/ui_ux.md` (UI/UX Design)
 - `plan/frontend_architecture.md` (Frontend Architecture)

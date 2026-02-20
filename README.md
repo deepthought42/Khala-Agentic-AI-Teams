@@ -124,6 +124,16 @@ pytest social_media_marketing_team/tests/ -v
 pytest -v --log-cli-level=INFO
 ```
 
+## Docker
+
+Run all 6 agent teams in a consistent, isolated environment with pre-installed tools (Node.js, Angular CLI, Git, Docker CLI):
+
+```bash
+docker-compose up -d
+```
+
+APIs are exposed on host ports 18000–18005 (mapped from container 8000–8005). See [docker/README.md](docker/README.md) for full documentation, environment variables, volume mounts, and troubleshooting.
+
 ## Deployment
 
 - **Port allocation:** Default ports are 8000 (blog/SW), 8010 (social media), 8011 (market research), 8020 (SOC2). Override with `--port` when running multiple services.

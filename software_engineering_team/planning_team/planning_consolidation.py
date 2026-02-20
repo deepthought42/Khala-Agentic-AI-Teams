@@ -46,7 +46,6 @@ def run_planning_consolidation(
         "project_overview.md",
         "features_and_functionality.md",
         "architecture.md",
-        "openapi.yaml",
         "data_schema.md",
         "data_architecture.md",
         "ui_ux.md",
@@ -62,6 +61,10 @@ def run_planning_consolidation(
     for f in artifact_files:
         if (plan_path / f).exists():
             sections.append(f"- [{f}]({f})")
+    # OpenAPI spec is in backend/ root (not plan/)
+    backend_openapi = plan_path.parent / "backend" / "openapi.yaml"
+    if backend_openapi.exists():
+        sections.append("- [backend/openapi.yaml](../backend/openapi.yaml)")
     sections.append("")
 
     if assignment and hasattr(assignment, "execution_order"):
