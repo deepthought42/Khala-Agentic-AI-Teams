@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
+from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
 from shared.llm import DummyLLMClient
 from shared.models import ProductRequirements
 

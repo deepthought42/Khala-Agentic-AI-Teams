@@ -294,8 +294,8 @@ Agents log progress at INFO level so you can see what’s happening at each step
 
 ```
 15:57:33 | INFO    | spec_parser | Parsing spec with LLM (1234 chars)
-15:57:33 | INFO    | architecture_agent.agent | Architecture Expert: starting design for Task Manager API
-15:57:33 | INFO    | architecture_agent.agent | Architecture Expert: done, 2 components
+15:57:33 | INFO    | architecture_expert.agent | Architecture Expert: starting design for Task Manager API
+15:57:33 | INFO    | architecture_expert.agent | Architecture Expert: done, 2 components
 15:57:33 | INFO    | tech_lead_agent.agent | Tech Lead: planning tasks for Task Manager API
 15:57:33 | INFO    | tech_lead_agent.agent | Tech Lead: assigned 2 tasks in order ['t1', 't2']
 15:57:33 | INFO    | api.main | Pipeline: Task t1 (backend) -> backend
@@ -354,7 +354,7 @@ software_engineering_team/
 ├── orchestrator.py   # Main pipeline orchestration
 ├── shared/           # LLM client, models, coding_standards, git_utils
 ├── git_setup_agent/
-├── architecture_agent/
+├── architect-agents/      # ArchitectureExpertAgent + Enterprise Orchestrator
 ├── tech_lead_agent/
 ├── devops_agent/
 ├── security_agent/

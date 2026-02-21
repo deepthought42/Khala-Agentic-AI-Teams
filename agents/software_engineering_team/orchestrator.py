@@ -33,6 +33,9 @@ import sys
 _team_dir = Path(__file__).resolve().parent
 if str(_team_dir) not in sys.path:
     sys.path.insert(0, str(_team_dir))
+_arch_dir = _team_dir / "architect-agents"
+if _arch_dir.exists() and str(_arch_dir) not in sys.path:
+    sys.path.insert(0, str(_arch_dir))
 
 from shared.git_utils import (
     DEVELOPMENT_BRANCH,
@@ -277,7 +280,7 @@ def _get_agents():
     """Lazy init agents including the code review, documentation, and DbC comments agents.
     Each agent uses get_llm_for_agent(key) for per-agent model configuration."""
     from frontend_team.accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
-    from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
+    from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
     from backend_agent import BackendExpertAgent, BackendInput
     from planning_team.project_planning_agent import ProjectPlanningAgent, ProjectPlanningInput
     from code_review_agent import CodeReviewAgent, CodeReviewInput
@@ -1466,7 +1469,29 @@ def run_orchestrator(
         # Planning process: (1) features doc done above; (2) tasks from spec + features; (3) architecture from spec + features;
         # (4) loop until tasks and architecture align; (5) conformance to spec; if non-compliant, re-run from (2) with feedback.
         features_and_functionality_doc = (project_overview.get("features_and_functionality_doc") or "").strip()
-        from architecture_agent.models import ArchitectureInput
+
+        # Optional: Run Enterprise Architect for richer architecture context (SW_USE_ENTERPRISE_ARCHITECT=true)
+        enterprise_arch_context: Optional[str] = None
+        if (os.environ.get("SW_USE_ENTERPRISE_ARCHITECT") or "").strip().lower() in ("1", "true", "yes"):
+            try:
+                if _arch_dir.exists():
+                    from integration import run_enterprise_architect
+                    ea_result = run_enterprise_architect(
+                        spec_content=spec_content_for_planning,
+                        work_path=str(path),
+                    )
+                    if ea_result.get("success") and ea_result.get("architecture_overview"):
+                        enterprise_arch_context = ea_result["architecture_overview"]
+                        logger.info(
+                            "Enterprise Architect produced architecture package at %s",
+                            ea_result.get("outputs_path", ""),
+                        )
+                    elif ea_result.get("error"):
+                        logger.warning("Enterprise Architect failed: %s", ea_result["error"])
+            except Exception as e:
+                logger.warning("Enterprise Architect integration skipped: %s", e)
+
+        from architecture_expert.models import ArchitectureInput
         from tech_lead_agent.models import TechLeadInput
         from planning_team.planning_review import check_tasks_architecture_alignment, check_spec_conformance
 
@@ -1554,6 +1579,7 @@ def run_orchestrator(
                 project_overview=project_overview,
                 features_and_functionality_doc=features_and_functionality_doc or None,
                 planning_feedback=planning_feedback_for_arch,
+                existing_architecture=enterprise_arch_context,
             )
             try:
                 arch_output = arch_agent.run(arch_input)
@@ -1648,6 +1674,7 @@ def run_orchestrator(
                 arch_input = ArchitectureInput(
                     requirements=requirements,
                     technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+                    existing_architecture=enterprise_arch_context,
                     project_overview=project_overview,
                     features_and_functionality_doc=features_and_functionality_doc or None,
                     planning_feedback=alignment_feedback,

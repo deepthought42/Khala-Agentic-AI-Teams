@@ -5,7 +5,7 @@ import pytest
 from shared.llm import DummyLLMClient
 from shared.models import ProductRequirements, SystemArchitecture
 from spec_parser import parse_spec_heuristic
-from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
+from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
 from devops_agent import DevOpsExpertAgent, DevOpsInput
 from backend_agent import BackendExpertAgent, BackendInput

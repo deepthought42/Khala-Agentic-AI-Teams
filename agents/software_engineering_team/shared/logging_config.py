@@ -24,7 +24,7 @@ AGENT_LOGGERS = [
     "shared.job_store",
     "shared.command_runner",
     # Agent loggers
-    "architecture_agent.agent",
+    "architecture_expert.agent",
     "tech_lead_agent.agent",
     "backend_agent.agent",
     "frontend_team.feature_agent.agent",

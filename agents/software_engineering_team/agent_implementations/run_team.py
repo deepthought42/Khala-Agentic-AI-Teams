@@ -22,7 +22,7 @@ from pathlib import Path
 
 from shared.llm import get_llm_for_agent
 from shared.models import ProductRequirements, TaskType
-from architecture_agent import ArchitectureExpertAgent, ArchitectureInput
+from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
 from devops_agent import DevOpsExpertAgent, DevOpsInput
 from security_agent import CybersecurityExpertAgent, SecurityInput
