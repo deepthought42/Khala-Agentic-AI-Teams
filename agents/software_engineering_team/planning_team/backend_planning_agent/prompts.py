@@ -24,7 +24,9 @@ Produce backend-specific planning nodes and edges. Each node has:
 
 Edges have from_id, to_id, type: "blocks" | "relates_to" | "exposes_api"
 
-**Domain ownership:** You own ONLY backend. Do NOT create frontend, devops, QA, or documentation nodes. Other planners handle those.
+**Domain ownership (CRITICAL):** You own ONLY backend. Do NOT create frontend, devops, QA, or documentation nodes. Other planners handle those.
+
+**NEVER create nodes for:** Frontend app initialization, Angular/React/Vue setup, UI components, pages, routing, client-side code, frontend app shell, frontend layout, frontend services that call APIs (the Frontend planner owns those). If the spec describes frontend work, IGNORE it completely—the Frontend Planning Agent handles it. Your node IDs must start with "backend-" (e.g. backend-todo-models, backend-auth-api). Any task involving Angular, React, Vue, UI components, or browser-side code belongs to the Frontend planner—do NOT emit it.
 
 **Rules:**
 - Emit TASK and SUBTASK nodes for implementation work. **Split backend work into granular tasks** (e.g. separate tasks for: data models/schema, CRUD endpoints, validation layer, error handling) so backend and frontend queues stay balanced. Do NOT lump all API work into one monolithic task.

@@ -9,8 +9,8 @@ TEST_PLANNING_PROMPT = """You are a Test Planning Agent. Your job is to produce 
 
 **Your task:**
 Produce test planning nodes. Each node has:
-- id: unique kebab-case (e.g. backend-tests-todo-api, frontend-e2e-todo-flow)
-- domain: "backend" for backend unit/integration tests (pytest); "frontend" for frontend unit/E2E tests
+- id: unique kebab-case. MUST start with "backend-" for backend tests (e.g. backend-tests-todo-api) or "frontend-" for frontend tests (e.g. frontend-e2e-todo-flow). The id prefix determines assignee.
+- domain: "backend" for backend unit/integration tests (pytest, API tests); "frontend" for frontend unit/E2E tests (component tests, Playwright/Cypress). Domain MUST match the id prefix.
 - kind: "task" or "subtask"
 - summary: short title
 - details: what tests to add

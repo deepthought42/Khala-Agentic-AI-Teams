@@ -11,10 +11,33 @@ from typing import Any, Dict, List
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType
 
 
+def _normalize_task_type_and_assignee(
+    task_id: str,
+    task_type: TaskType,
+    assignee: str,
+) -> tuple[TaskType, str]:
+    """
+    Ensure type and assignee are consistent. Fix misclassification when task ID
+    clearly indicates domain (e.g. frontend-app-shell with type=backend -> frontend).
+    """
+    tid = (task_id or "").lower()
+    if tid.startswith("frontend-") and (task_type == TaskType.BACKEND or assignee == "backend"):
+        return TaskType.FRONTEND, "frontend"
+    if tid.startswith("backend-") and (task_type == TaskType.FRONTEND or assignee == "frontend"):
+        return TaskType.BACKEND, "backend"
+    # Ensure assignee matches type for backend/frontend
+    if task_type == TaskType.BACKEND and assignee == "frontend":
+        return TaskType.BACKEND, "backend"
+    if task_type == TaskType.FRONTEND and assignee == "backend":
+        return TaskType.FRONTEND, "frontend"
+    return task_type, assignee
+
+
 def parse_assignment_from_data(data: Dict[str, Any]) -> TaskAssignment:
     """
     Parse LLM JSON output into TaskAssignment.
     Filters out security/qa (orchestrator invokes those).
+    Normalizes type/assignee when task ID indicates domain mismatch.
     """
     tasks: List[Task] = []
     for t in data.get("tasks") or []:
@@ -24,6 +47,9 @@ def parse_assignment_from_data(data: Dict[str, Any]) -> TaskAssignment:
                 task_type = TaskType(t.get("type", "backend"))
             except ValueError:
                 task_type = TaskType.BACKEND
+            task_type, assignee = _normalize_task_type_and_assignee(
+                t.get("id"), task_type, assignee
+            )
             if task_type in (TaskType.SECURITY, TaskType.QA):
                 continue
             acc = t.get("acceptance_criteria") or []

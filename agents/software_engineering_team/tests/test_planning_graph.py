@@ -211,6 +211,43 @@ def test_ensure_dict_handles_malformed_inputs():
     assert ensure_dict("invalid") == {}
 
 
+def test_compile_reclassifies_frontend_id_with_wrong_domain():
+    """When node id starts with frontend- but domain is backend, reclassify to frontend."""
+    g = PlanningGraph()
+    g.add_node(PlanningNode(
+        id="frontend-app-init",
+        domain=PlanningDomain.BACKEND,  # Misclassified by planner
+        kind=PlanningNodeKind.TASK,
+        summary="Initialize Angular frontend app",
+        details="Create Angular app shell with routing.",
+        acceptance_criteria=["App created", "Routing works"],
+    ))
+    assignment = compile_planning_graph_to_task_assignment(g)
+    assert len(assignment.tasks) == 1
+    t = assignment.tasks[0]
+    assert t.id == "frontend-app-init"
+    assert t.type == TaskType.FRONTEND
+    assert t.assignee == "frontend"
+
+
+def test_compile_data_domain_maps_to_backend_assignee():
+    """DATA and PERF domains map to backend assignee (no separate data agent)."""
+    g = PlanningGraph()
+    g.add_node(PlanningNode(
+        id="backend-schema-migrations",
+        domain=PlanningDomain.DATA,
+        kind=PlanningNodeKind.TASK,
+        summary="Database migrations",
+        details="Add Alembic migrations for schema.",
+        acceptance_criteria=["Migrations run", "Schema correct"],
+    ))
+    assignment = compile_planning_graph_to_task_assignment(g)
+    assert len(assignment.tasks) == 1
+    t = assignment.tasks[0]
+    assert t.assignee == "backend"
+    assert t.type == TaskType.BACKEND
+
+
 def test_planning_node_from_malformed_llm_dict():
     """PlanningNode can be built from LLM dict with inputs/outputs/acceptance_criteria as string or null."""
     n = {

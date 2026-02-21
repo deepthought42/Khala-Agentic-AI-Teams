@@ -21,7 +21,7 @@ from planning_team.spec_chunking import chunk_spec_by_size
 from planning_team.task_generator_agent import TaskGeneratorAgent, TaskGeneratorInput
 from shared.llm import LLMClient
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType, TaskUpdate
-from shared.task_parsing import parse_assignment_from_data
+from shared.task_parsing import _normalize_task_type_and_assignee, parse_assignment_from_data
 from shared.task_validation import validate_assignment
 
 from .models import TechLeadInput, TechLeadOutput
@@ -564,6 +564,9 @@ class TechLeadAgent:
                     task_type = TaskType(t.get("type", task.type.value))
                 except ValueError:
                     task_type = task.type
+                task_type, assignee = _normalize_task_type_and_assignee(
+                    t.get("id"), task_type, assignee
+                )
                 acc = t.get("acceptance_criteria") or []
                 if not isinstance(acc, list):
                     acc = [str(acc)] if acc else []
@@ -708,6 +711,9 @@ class TechLeadAgent:
                     task_type = TaskType(t.get("type", "backend"))
                 except ValueError:
                     task_type = TaskType.BACKEND
+                task_type, assignee = _normalize_task_type_and_assignee(
+                    t.get("id"), task_type, assignee
+                )
                 # Only allow coding tasks from progress review
                 if task_type in (TaskType.SECURITY, TaskType.QA):
                     continue

@@ -24,24 +24,73 @@ from .prompts import BACKEND_PLANNING_PROMPT
 logger = logging.getLogger(__name__)
 
 
+def _is_frontend_task(node: Dict[str, Any]) -> bool:
+    """Return True if node clearly describes frontend work (should be skipped by backend planner)."""
+    nid = (node.get("id") or "").lower()
+    summary = (node.get("summary") or "").lower()
+    details = (node.get("details") or "").lower()
+    combined = f"{nid} {summary} {details}"
+    # Node ID explicitly frontend
+    if nid.startswith("frontend-"):
+        return True
+    # Clear frontend indicators in content (avoid matching backend terms like "api component")
+    frontend_phrases = [
+        "angular app",
+        "angular frontend",
+        "react app",
+        "vue app",
+        "frontend app",
+        "initialize frontend",
+        "frontend initialization",
+        "frontend app shell",
+        "app shell",
+        "app-shell",
+        "ui component",
+        "frontend component",
+        "mat-table",
+        "mat-form",
+        "mat-button",
+        "angular routing",
+    ]
+    for phrase in frontend_phrases:
+        if phrase in combined:
+            return True
+    return False
+
+
 def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
-    """Parse LLM JSON output into PlanningGraph."""
+    """Parse LLM JSON output into PlanningGraph. Skips nodes that clearly belong to frontend."""
     graph = PlanningGraph()
     for n in data.get("nodes") or []:
         if not isinstance(n, dict) or not n.get("id"):
+            continue
+        if _is_frontend_task(n):
+            logger.warning(
+                "Backend Planning: skipping frontend task %s (summary: %s) - belongs to Frontend planner",
+                n.get("id"),
+                (n.get("summary") or "")[:60],
+            )
             continue
         kind_str = (n.get("kind") or "task").lower()
         try:
             kind = PlanningNodeKind(kind_str)
         except ValueError:
             kind = PlanningNodeKind.TASK
+        domain_str = (n.get("domain") or "backend").lower()
+        try:
+            domain = PlanningDomain(domain_str)
+        except ValueError:
+            domain = PlanningDomain.BACKEND
+        # Only allow backend, git_setup, devops from backend planner; force others to backend
+        if domain not in (PlanningDomain.BACKEND, PlanningDomain.GIT_SETUP, PlanningDomain.DEVOPS):
+            domain = PlanningDomain.BACKEND
         meta = ensure_dict(n.get("metadata"))
         user_story = (n.get("user_story") or meta.get("user_story") or "").strip()
         if user_story:
             meta["user_story"] = user_story
         node = PlanningNode(
             id=n["id"],
-            domain=PlanningDomain.BACKEND,
+            domain=domain,
             kind=kind,
             summary=n.get("summary", ""),
             details=n.get("details", ""),

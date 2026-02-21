@@ -24,11 +24,51 @@ from .prompts import FRONTEND_PLANNING_PROMPT
 logger = logging.getLogger(__name__)
 
 
+def _is_backend_task(node: Dict[str, Any]) -> bool:
+    """Return True if node clearly describes backend work (should be skipped by frontend planner)."""
+    nid = (node.get("id") or "").lower()
+    summary = (node.get("summary") or "").lower()
+    details = (node.get("details") or "").lower()
+    combined = f"{nid} {summary} {details}"
+    # Node ID explicitly backend
+    if nid.startswith("backend-"):
+        return True
+    # Clear backend indicators in content
+    backend_phrases = [
+        "api endpoint",
+        "rest api",
+        "crud api",
+        "fastapi",
+        "spring boot",
+        "express route",
+        "database model",
+        "database schema",
+        "sql migration",
+        "pydantic model",
+        "sqlalchemy",
+        "backend api",
+        "server-side",
+        "authentication middleware",
+        "jwt middleware",
+    ]
+    for phrase in backend_phrases:
+        if phrase in combined:
+            return True
+    return False
+
+
 def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
-    """Parse LLM JSON output into PlanningGraph."""
+    """Parse LLM JSON output into PlanningGraph. Skips nodes that clearly belong to backend."""
     graph = PlanningGraph()
     for n in data.get("nodes") or []:
         if not isinstance(n, dict) or not n.get("id"):
+            continue
+        if _is_backend_task(n):
+            logger.warning(
+                "Frontend Planning: skipping backend task %s (summary: %s) - belongs to Backend planner",
+                n.get("id"),
+                (n.get("summary") or "")[:60],
+            )
             continue
         kind_str = (n.get("kind") or "task").lower()
         try:

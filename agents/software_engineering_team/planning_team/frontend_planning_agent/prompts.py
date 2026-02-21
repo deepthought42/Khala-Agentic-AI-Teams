@@ -24,7 +24,9 @@ Produce frontend-specific planning nodes and edges. Each node has:
 
 Edges have from_id, to_id, type: "blocks" | "relates_to" | "loads_from"
 
-**Domain ownership:** You own ONLY frontend. Do NOT create backend, devops, QA, or documentation nodes. Other planners handle those.
+**Domain ownership (CRITICAL):** You own ONLY frontend. Do NOT create backend, devops, QA, or documentation nodes. Other planners handle those.
+
+**NEVER create nodes for:** Backend API endpoints, database models, FastAPI/Spring/Express routes, CRUD APIs, authentication middleware (server-side), migrations, or any server-side code. If the spec describes backend work, IGNORE it completely—the Backend Planning Agent handles it. Your node IDs must start with "frontend-" (e.g. frontend-app-shell, frontend-todo-list). Any task involving Python/Java APIs, database schema, or server-side logic belongs to the Backend planner—do NOT emit it.
 
 **Rules:**
 - Emit TASK and SUBTASK nodes for pages, components, routing, state management, API integration

@@ -153,7 +153,9 @@ def _domain_to_task_type(domain: PlanningDomain) -> TaskType:
 
 
 def _domain_to_assignee(domain: PlanningDomain) -> str:
-    """Map planning domain to assignee string."""
+    """Map planning domain to assignee string. DATA and PERF go to backend (no separate agent)."""
+    if domain in (PlanningDomain.DATA, PlanningDomain.PERF):
+        return "backend"
     return domain.value
 
 
@@ -341,8 +343,29 @@ def compile_planning_graph_to_task_assignment(
             )
             continue
 
-        task_type = _domain_to_task_type(node.domain)
-        assignee = _domain_to_assignee(node.domain)
+        # Reclassify domain if node ID clearly indicates wrong domain (safeguard)
+        domain = node.domain
+        nid_lower = (nid or "").lower()
+        if nid_lower.startswith("frontend-") and domain in (
+            PlanningDomain.BACKEND,
+            PlanningDomain.DATA,
+            PlanningDomain.PERF,
+        ):
+            domain = PlanningDomain.FRONTEND
+            logger.info(
+                "PlanningGraph: reclassifying %s from %s to frontend (id prefix)",
+                nid,
+                node.domain.value,
+            )
+        elif nid_lower.startswith("backend-") and domain == PlanningDomain.FRONTEND:
+            domain = PlanningDomain.BACKEND
+            logger.info(
+                "PlanningGraph: reclassifying %s from frontend to backend (id prefix)",
+                nid,
+            )
+
+        task_type = _domain_to_task_type(domain)
+        assignee = _domain_to_assignee(domain)
 
         # Skip QA and standalone security - orchestrator invokes those
         if task_type == TaskType.QA:
