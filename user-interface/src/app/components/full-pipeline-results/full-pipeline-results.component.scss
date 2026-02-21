@@ -1,0 +1,22 @@
+.title-choices {
+  margin-bottom: 1rem;
+
+  mat-chip-set {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+}
+
+.outline,
+.draft-preview {
+  white-space: pre-wrap;
+  font-size: 0.875rem;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+h3 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}

@@ -1,0 +1,33 @@
+<h1>Blogging API</h1>
+<p>Research and review pipeline, full pipeline with gates.</p>
+
+<div class="header-row">
+  <app-health-indicator [healthCheck]="healthCheck" label="Blogging API" />
+</div>
+
+@if (loading) {
+  <app-loading-spinner message="Processing..." />
+}
+
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<mat-tab-group>
+  <mat-tab label="Research and Review">
+    <div class="tab-content">
+      <app-research-review-form (submitRequest)="onResearchReviewSubmit($event)" />
+      @if (researchReviewResult) {
+        <app-research-review-results [data]="researchReviewResult" />
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Full Pipeline">
+    <div class="tab-content">
+      <app-full-pipeline-form (submitRequest)="onFullPipelineSubmit($event)" />
+      @if (fullPipelineResult) {
+        <app-full-pipeline-results [data]="fullPipelineResult" />
+      }
+    </div>
+  </mat-tab>
+</mat-tab-group>

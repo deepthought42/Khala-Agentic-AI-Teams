@@ -1,0 +1,15 @@
+@if (jobId && hasFailedTasks) {
+  <mat-card>
+    <mat-card-content>
+      <button
+        mat-raised-button
+        color="accent"
+        (click)="retry.emit()"
+        [disabled]="disabled"
+        [attr.aria-label]="'Retry failed tasks'"
+      >
+        Retry Failed Tasks
+      </button>
+    </mat-card-content>
+  </mat-card>
+}

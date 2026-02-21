@@ -1,0 +1,43 @@
+<h1>Social Media Marketing API</h1>
+<p>Campaign planning, performance ingestion, revision.</p>
+
+<div class="header-row">
+  <app-health-indicator [healthCheck]="healthCheck" label="Social Marketing API" />
+</div>
+
+@if (loading) {
+  <app-loading-spinner message="Processing..." />
+}
+
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<mat-tab-group>
+  <mat-tab label="Run">
+    <div class="tab-content">
+      <app-social-marketing-run-form (submitRequest)="onRunSubmit($event)" />
+      @if (jobId) {
+        <app-social-marketing-status [jobId]="jobId" />
+      }
+    </div>
+  </mat-tab>
+  @if (jobId) {
+    <mat-tab label="Performance">
+      <div class="tab-content">
+        <app-social-marketing-performance
+          [jobId]="jobId"
+          (submitObservations)="onPerformanceSubmit($event)"
+        />
+      </div>
+    </mat-tab>
+    <mat-tab label="Revise">
+      <div class="tab-content">
+        <app-social-marketing-revise
+          [jobId]="jobId"
+          (submitRequest)="onReviseSubmit($event)"
+        />
+      </div>
+    </mat-tab>
+  }
+</mat-tab-group>

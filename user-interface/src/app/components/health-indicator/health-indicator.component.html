@@ -1,0 +1,13 @@
+<span
+  class="health-indicator"
+  [attr.aria-label]="label + ' status: ' + status"
+  [matTooltip]="label + ': ' + (status === 'ok' ? 'Healthy' : status === 'checking' ? 'Checking...' : 'Unavailable')"
+>
+  @if (status === 'ok') {
+    <mat-icon color="primary" class="icon">check_circle</mat-icon>
+  } @else if (status === 'error') {
+    <mat-icon color="warn" class="icon">error</mat-icon>
+  } @else {
+    <mat-icon class="icon">schedule</mat-icon>
+  }
+</span>

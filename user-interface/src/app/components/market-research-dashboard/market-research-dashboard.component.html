@@ -1,0 +1,21 @@
+<h1>Market Research API</h1>
+<p>Product concept viability, user discovery, research scripts.</p>
+
+<div class="header-row">
+  <app-health-indicator [healthCheck]="healthCheck" label="Market Research API" />
+</div>
+
+@if (loading) {
+  <app-loading-spinner message="Processing..." />
+}
+
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<div class="content">
+  <app-market-research-form (submitRequest)="onSubmit($event)" />
+  @if (result) {
+    <app-market-research-results [data]="result" />
+  }
+</div>

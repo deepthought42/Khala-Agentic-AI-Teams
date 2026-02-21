@@ -1,188 +1,414 @@
 # Strands Agents
 
-This repository provides **multiple Strands-style agent systems** in a monorepo:
+**Strands Agents** is a monorepo of multi-agent systems built in the Strands style—research, orchestration, and human-in-the-loop workflows. Each team simulates specialized roles (engineers, marketers, auditors, researchers) and produces production-ready artifacts.
 
-- **Blogging** – Research, review, draft, copy-edit, and publication agents for content creation (web + arXiv research, title/outline generation, draft with style guide, copy-editor loop, platform-specific output for Medium/dev.to/Substack).
-- **Software engineering team** – Full dev team simulation from spec: architecture, Tech Lead, backend/frontend workers, DevOps, security, QA, code review, accessibility, and more. Reads `initial_spec.md` from a git repo and produces working code.
-- **Social media marketing team** – Campaign planning with collaboration agents, human approval gate, and platform specialists (LinkedIn, Facebook, Instagram, X). Produces execution-ready content plans.
-- **SOC2 compliance team** – Multi-agent SOC2 audit for a code repository: Security, Availability, Processing Integrity, Confidentiality, and Privacy TSC agents review the repo and produce a compliance report or a next-steps-for-certification document.
-- **Investment team** – Multi-asset investment organization with IPS hard constraints, strategy validation, promotion gates (`reject/revise/paper/live`), separation-of-duties, risk veto, and monitor-only safety degradation.
-- **Market research team** – Human-AI collaborative workflow for user discovery and product concept viability; transcript ingestion, UX synthesis, experiment scripts, and human approval gates.
+---
 
-## Project structure
+## Table of Contents
+
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
+- [Agent Teams](#agent-teams)
+- [User Interface](#user-interface)
+- [Build & Run](#build--run)
+- [Docker Deployment](#docker-deployment)
+- [Configuration & Environment](#configuration--environment)
+- [Testing](#testing)
+- [Deployment](#deployment)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Overview
+
+This repository provides **multiple Strands-style agent systems** in a unified monorepo:
+
+| Team | Purpose |
+|------|---------|
+| **Software Engineering Team** | Full dev team simulation: architecture, Tech Lead, backend/frontend workers, DevOps, security, QA, code review, accessibility. Reads `initial_spec.md` and produces working code. |
+| **Blogging** | Research, review, draft, copy-edit, and publication agents for content creation (web + arXiv research, title/outline, draft with style guide, copy-editor loop, platform-specific output). |
+| **Social Media Marketing** | Campaign planning with collaboration agents, human approval gate, and platform specialists (LinkedIn, Facebook, Instagram, X). Produces execution-ready content plans. |
+| **SOC2 Compliance** | Multi-agent SOC2 audit: Security, Availability, Processing Integrity, Confidentiality, Privacy TSC agents review a repo and produce a compliance report or next-steps document. |
+| **Market Research** | Human-AI collaborative workflow for user discovery and product concept viability; transcript ingestion, UX synthesis, experiment scripts, human approval gates. |
+| **Investment Team** | Multi-asset investment organization with IPS hard constraints, strategy validation, promotion gates, separation-of-duties, risk veto, and monitor-only safety degradation. |
+
+The **User Interface** is an Angular 19 application that provides interactive dashboards for all agent APIs.
+
+---
+
+## Quick Start
+
+### Option A: Docker (All 6 Agent APIs + Tools)
+
+```bash
+# Ensure Ollama is running on the host
+curl http://localhost:11434/api/tags
+
+# From project root
+cd agents
+docker-compose up -d
+
+# Verify APIs
+curl http://localhost:18000/health   # Software Engineering
+curl http://localhost:18001/health   # Blogging
+curl http://localhost:18002/health   # Market Research
+curl http://localhost:18003/health   # SOC2 Compliance
+curl http://localhost:18004/health   # Social Marketing
+curl http://localhost:18005/health   # Blog Research
+```
+
+### Option B: Local Development
+
+**1. Install dependencies**
+
+```bash
+# Python (from repo root)
+pip install -r agents/requirements.txt
+pip install -r agents/software_engineering_team/requirements.txt
+pip install -r agents/blogging/requirements.txt
+
+# Node.js for UI (use NVM - Node 22.12 recommended per .nvmrc)
+cd user-interface
+nvm use          # or: nvm install (if 22.12 not installed)
+npm ci
+```
+
+**2. Start agent APIs** (each in its own terminal)
+
+```bash
+# Software Engineering (port 8000)
+cd agents && python -m uvicorn software_engineering_team.api.main:app --host 0.0.0.0 --port 8000
+
+# Blogging (port 8001)
+cd agents && PYTHONPATH=blogging python -m uvicorn blogging.api.main:app --host 0.0.0.0 --port 8001
+
+# Market Research (port 8011)
+cd agents && python -m uvicorn market_research_team.api.main:app --host 0.0.0.0 --port 8011
+
+# SOC2 Compliance (port 8020)
+cd agents && python -m uvicorn soc2_compliance_team.api.main:app --host 0.0.0.0 --port 8020
+
+# Social Marketing (port 8010)
+cd agents && python -m uvicorn social_media_marketing_team.api.main:app --host 0.0.0.0 --port 8010
+```
+
+**3. Start the User Interface**
+
+```bash
+cd user-interface
+ng serve
+```
+
+Open **http://localhost:4200/**.
+
+---
+
+## Project Structure
 
 ```
 strands-agents/
-├── api/                         # Blog research-and-review HTTP API (port 8000)
-├── blogging/                    # Blogging agent suite (research, review, draft, copy-edit, publication)
-├── software_engineering_team/   # Full software dev team simulation
-├── social_media_marketing_team/ # Campaign planning with platform specialists
-├── soc2_compliance_team/       # SOC2 compliance audit and certification team
-├── investment_team/            # Multi-asset investment organization (IPS-first)
-├── market_research_team/       # Market research and concept viability
-└── requirements.txt            # Shared dependencies
+├── agents/                          # All agent teams (Python)
+│   ├── api/                         # Blog research-and-review HTTP API
+│   ├── blogging/                    # Blogging agent suite
+│   ├── software_engineering_team/   # Full software dev team simulation
+│   ├── social_media_marketing_team/ # Campaign planning with platform specialists
+│   ├── soc2_compliance_team/        # SOC2 compliance audit
+│   ├── investment_team/             # Multi-asset investment (IPS-first)
+│   ├── market_research_team/        # Market research and concept viability
+│   ├── docker/                      # Docker config, default spec
+│   ├── Dockerfile                   # Multi-stage image (all 6 teams)
+│   ├── docker-compose.yml           # Run all APIs in one container
+│   ├── supervisord.conf             # Process manager for container
+│   ├── entrypoint.sh
+│   └── requirements.txt
+├── user-interface/                  # Angular 19 UI
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── components/          # Feature and shared components
+│   │   │   ├── core/                # HTTP interceptor, error handling
+│   │   │   ├── models/              # TypeScript interfaces for API
+│   │   │   ├── services/            # API services
+│   │   │   └── shared/             # Loading spinner, error message
+│   │   └── environments/            # API base URLs
+│   ├── docs/                        # Architecture, API mapping, accessibility
+│   └── angular.json
+├── README.md                        # This file
+└── CONTRIBUTORS.md                  # Contribution guidelines
 ```
 
-| Directory | Description |
-|-----------|-------------|
-| [api/](api/README.md) | Blog research-and-review HTTP API; research + review pipeline only. |
-| [blogging/](blogging/README.md) | Research, review, draft, copy-editor, and publication agents. Full pipeline from brief to platform-ready posts. |
-| [software_engineering_team/](software_engineering_team/README.md) | Multi-agent dev team: architecture, Tech Lead, backend/frontend, DevOps, security, QA, code review, accessibility, documentation. |
-| [social_media_marketing_team/](social_media_marketing_team/README.md) | Cross-platform campaign planning with human approval, collaboration agents, and LinkedIn/Facebook/Instagram/X specialists. |
-| [soc2_compliance_team/](soc2_compliance_team/README.md) | SOC2 compliance audit: Security, Availability, Processing Integrity, Confidentiality, Privacy TSC agents; produces compliance report or next-steps document. |
-| [investment_team/](investment_team/README.md) | Multi-asset investment organization with IPS constraints, validation/promotion gates, and safety-first orchestration. |
-| [market_research_team/](market_research_team/README.md) | Market research and business concept viability; transcript ingestion, UX synthesis, experiment scripts, human approval gates. |
+---
 
-```mermaid
-flowchart LR
-  Root[Repository Root]
-  Blog[blogging]
-  SW[software_engineering_team]
-  Soc[social_media_marketing_team]
-  Soc2[soc2_compliance_team]
-  Inv[investment_team]
-  MR[market_research_team]
-  Root --> Blog
-  Root --> SW
-  Root --> Soc
-  Root --> Soc2
-  Root --> Inv
-  Root --> MR
-  Blog --> Research[Research]
-  Blog --> Review[Review]
-  Blog --> Draft[Draft]
-  Blog --> CopyEd[Copy Editor]
-  Blog --> Pub[Publication]
-  SW --> Orch[Orchestrator]
-  Orch --> Plan[Project Planning]
-  Orch --> Arch[Architecture]
-  Orch --> Workers[Backend Frontend DevOps ...]
-  Soc --> SMM[SMM Orchestrator]
-  SMM --> Collab[Collaboration Agents]
-  SMM --> Platform[Platform Specialists]
-  Soc2 --> TSC[TSC Agents]
-  Inv --> IPS[IPS Orchestrator]
-  MR --> UX[UX Synthesis]
-```
+## Agent Teams
 
-## Quick start
+### Software Engineering Team
 
-### Dependencies
+Multi-agent dev team: Spec Intake, Project Planning, Architecture, Tech Lead, Backend/Frontend workers, DevOps, Security, QA, Code Review, Accessibility, Integration, Documentation.
 
-Install shared dependencies from the repo root:
+- **Spec:** `initial_spec.md` at repo root
+- **Output:** Working code in `backend/` and `frontend/`, CI/CD, docs
+- **Docs:** [agents/software_engineering_team/README.md](agents/software_engineering_team/README.md)
+
+### Blogging
+
+Research → Review → Draft → Copy Editor loop → Publication. Web + arXiv research, title/outline, style-guided draft, platform-specific output (Medium, dev.to, Substack).
+
+- **API:** `POST /research-and-review`, `POST /full-pipeline`
+- **Docs:** [agents/blogging/README.md](agents/blogging/README.md)
+
+### Social Media Marketing
+
+Campaign proposal collaboration, human approval gate, concept scoring (≥70% engagement), platform specialists (LinkedIn, Facebook, Instagram, X).
+
+- **API:** `POST /social-marketing/run`, `GET /social-marketing/status/{id}`, `POST /social-marketing/revise/{id}`
+- **Docs:** [agents/social_media_marketing_team/README.md](agents/social_media_marketing_team/README.md)
+
+### SOC2 Compliance
+
+Five TSC agents (Security, Availability, Processing Integrity, Confidentiality, Privacy) + Report Writer. Produces compliance report or next-steps document.
+
+- **API:** `POST /soc2-audit/run`, `GET /soc2-audit/status/{id}`
+- **Docs:** [agents/soc2_compliance_team/README.md](agents/soc2_compliance_team/README.md)
+
+### Market Research
+
+Human-AI workflow: transcript ingestion, UX synthesis, viability recommendation, research scripts, human approval gates.
+
+- **API:** `POST /market-research/run`
+- **Docs:** [agents/market_research_team/README.md](agents/market_research_team/README.md)
+
+### Investment Team
+
+IPS-first multi-asset organization with PolicyGuardian, Validation, PromotionGate, InvestmentCommittee agents. Separation-of-duties, risk veto, monitor-only safety.
+
+- **Docs:** [agents/investment_team/README.md](agents/investment_team/README.md)
+
+---
+
+## User Interface
+
+Angular 19 standalone app with dashboards for each agent API.
+
+### Routes
+
+| Route | API |
+|-------|-----|
+| `/` | Redirects to `/blogging` |
+| `/blogging` | Blogging (research-and-review, full-pipeline) |
+| `/software-engineering` | Software Engineering Team |
+| `/market-research` | Market Research |
+| `/soc2-compliance` | SOC2 Compliance |
+| `/social-marketing` | Social Media Marketing |
+
+### Features
+
+- Forms for each API's request payload
+- Job status polling for async endpoints
+- SSE stream for Software Engineering execution
+- Health indicators per API
+- WCAG 2.2–oriented accessibility
+
+### Docs
+
+- [user-interface/docs/ARCHITECTURE.md](user-interface/docs/ARCHITECTURE.md)
+- [user-interface/docs/API_MAPPING.md](user-interface/docs/API_MAPPING.md)
+- [user-interface/docs/ACCESSIBILITY.md](user-interface/docs/ACCESSIBILITY.md)
+
+---
+
+## Build & Run
+
+### Prerequisites
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| **Python** | 3.10+ | For all agent teams |
+| **Node.js** | 22.12+ or 20.19+ | Use [NVM](https://github.com/nvm-sh/nvm); required for SE team frontend builds and UI |
+| **npm** | 10+ | |
+| **Ollama** | (optional) | For local LLM inference |
+| **Docker** | 20.10+ | For containerized deployment |
+| **Docker Compose** | v2+ | |
+
+### Build User Interface
 
 ```bash
-pip install -r requirements.txt
+cd user-interface
+npm ci
+ng build
+# Production: ng build --configuration production
+# Output: dist/user-interface/
 ```
 
-The `blogging/` and `software_engineering_team/` directories have their own `requirements.txt` for team-specific runs. See each team's README for details.
+### Run Individual Agent APIs
 
-### How to run each team
+| Team | Command | Port |
+|------|---------|------|
+| Software Engineering | `uvicorn software_engineering_team.api.main:app --host 0.0.0.0 --port 8000` | 8000 |
+| Blogging | `PYTHONPATH=blogging uvicorn blogging.api.main:app --host 0.0.0.0 --port 8001` | 8001 |
+| Market Research | `uvicorn market_research_team.api.main:app --host 0.0.0.0 --port 8011` | 8011 |
+| SOC2 Compliance | `uvicorn soc2_compliance_team.api.main:app --host 0.0.0.0 --port 8020` | 8020 |
+| Social Marketing | `uvicorn social_media_marketing_team.api.main:app --host 0.0.0.0 --port 8010` | 8010 |
+| Blog Research | `PYTHONPATH=blogging uvicorn api.main:app --host 0.0.0.0 --port 8005` | 8005 |
 
-| Team | Directory | Command | Port |
-|------|------------|---------|------|
-| **Blog research & review API** | `blogging/` | `cd blogging && python agent_implementations/run_api_server.py` | 8000 |
-| **Blog API (from root)** | repo root | `PYTHONPATH=blogging uvicorn api.main:app --reload --host 0.0.0.0 --port 8000` | 8000 |
-| **Software engineering team** | `software_engineering_team/` | See [software_engineering_team/README.md](software_engineering_team/README.md) for CLI and API | 8000 |
-| **Social media marketing** | package | `uvicorn social_media_marketing_team.api.main:app --host 0.0.0.0 --port 8010` | 8010 |
-| **Market research** | package | `uvicorn market_research_team.api.main:app --host 0.0.0.0 --port 8011` | 8011 |
-| **SOC2 compliance audit** | package | `uvicorn soc2_compliance_team.api.main:app --host 0.0.0.0 --port 8020` | 8020 |
+Run from `agents/` directory with `PYTHONPATH` set as needed.
 
-## Prerequisites
+---
 
-- **Python 3.10+**
-- **NVM + Node 22.12+** (or v20.19+) – Required for frontend builds in the software engineering team. Install [NVM](https://github.com/nvm-sh/nvm) and run `nvm install 22.12`.
-- **Ollama** (optional) – For local LLM when running software engineering team or blogging agents.
-- **API keys** – `TAVILY_API_KEY` for blogging research (web search).
+## Docker Deployment
 
-## Environment Variables
+Run all 6 agent teams in one container with pre-installed tools (Node.js, Angular CLI, Git, Docker-in-Docker).
 
-| Variable | Team | Description |
-|----------|------|-------------|
-| `TAVILY_API_KEY` | Blogging | API key for web search (Tavily). Required for research agent. |
-| `SW_LLM_PROVIDER` | Software engineering | `dummy` or `ollama` |
-| `SW_LLM_MODEL` | Software engineering | Model name (e.g. `qwen3-coder-next:cloud`) |
-| `SW_LLM_BASE_URL` | Software engineering | Ollama API base URL |
-| `SW_LLM_*` | Software engineering | See [software_engineering_team/README.md](software_engineering_team/README.md) for full LLM and iteration config. |
-
-## Testing
-
-Run tests from the repository root:
+### Quick Start
 
 ```bash
-# Run all tests
-pytest
-
-# Run specific team tests
-pytest software_engineering_team/tests/ -v
-pytest blogging/tests/ -v
-pytest market_research_team/tests/ -v
-pytest soc2_compliance_team/tests/ -v
-pytest social_media_marketing_team/tests/ -v
-
-# Run with logs
-pytest -v --log-cli-level=INFO
-```
-
-## Docker
-
-Run all 6 agent teams in a consistent, isolated environment with pre-installed tools (Node.js, Angular CLI, Git, Docker CLI):
-
-```bash
+cd agents
 docker-compose up -d
 ```
 
-APIs are exposed on host ports 18000–18005 (mapped from container 8000–8005). See [docker/README.md](docker/README.md) for full documentation, environment variables, volume mounts, and troubleshooting.
+### Port Mapping (Host → Container)
+
+| Host Port | Container Port | Team |
+|-----------|----------------|------|
+| 18000 | 8000 | Software Engineering |
+| 18001 | 8001 | Blogging |
+| 18002 | 8002 | Market Research |
+| 18003 | 8003 | SOC2 Compliance |
+| 18004 | 8004 | Social Marketing |
+| 18005 | 8005 | Blog Research |
+
+### Using the UI with Docker
+
+When APIs run in Docker, point the UI to host ports 18000–18005. Edit `user-interface/src/environments/environment.ts`:
+
+```typescript
+export const environment = {
+  production: false,
+  bloggingApiUrl: 'http://localhost:18001',
+  softwareEngineeringApiUrl: 'http://localhost:18000',
+  marketResearchApiUrl: 'http://localhost:18002',
+  soc2ComplianceApiUrl: 'http://localhost:18003',
+  socialMarketingApiUrl: 'http://localhost:18004',
+};
+```
+
+Or use the Blog Research API at 18005 for research-and-review.
+
+### Custom Spec (Software Engineering)
+
+Pass a spec file at build time:
+
+```bash
+SPEC_FILE=./my-project/initial_spec.md docker-compose build
+```
+
+Default spec: `docker/default_initial_spec.md` (Task Manager API example).
+
+### Volume Mounts
+
+| Host | Container | Purpose |
+|------|-----------|---------|
+| `./workspace` | `/workspace` | Agent output (repos, specs, artifacts) |
+
+### Full Docker Docs
+
+See [agents/docker/README.md](agents/docker/README.md) for environment variables, troubleshooting, and security notes.
+
+---
+
+## Configuration & Environment
+
+### Agent Environment Variables
+
+| Variable | Team | Description | Default |
+|----------|------|-------------|---------|
+| `TAVILY_API_KEY` | Blogging | Web search API key | Required for research |
+| `SW_LLM_PROVIDER` | Software Engineering | `dummy` or `ollama` | `dummy` |
+| `SW_LLM_MODEL` | Software Engineering | Model name | `qwen3-coder-next:cloud` |
+| `SW_LLM_BASE_URL` | Software Engineering | Ollama API URL | `http://127.0.0.1:11434` |
+| `SW_LLM_MODEL_<AGENT>` | Software Engineering | Per-agent model override | - |
+| `SOC2_LLM_PROVIDER` | SOC2 | `ollama` or `dummy` | `ollama` |
+| `SOC2_LLM_MODEL` | SOC2 | Model name | `llama3.1` |
+| `SOC2_LLM_BASE_URL` | SOC2 | Ollama API URL | `http://127.0.0.1:11434` |
+
+### UI Environment Files
+
+- **Development:** `user-interface/src/environments/environment.ts`
+- **Production:** `user-interface/src/environments/environment.prod.ts` (uses `/api/*` proxy paths)
+
+---
+
+## Testing
+
+### Python (Agents)
+
+Run tests **per team** (each team has its own `PYTHONPATH` and imports):
+
+```bash
+# From repo root - run each team's tests
+pytest agents/software_engineering_team/tests/ -v
+pytest agents/blogging/tests/ -v
+pytest agents/market_research_team/tests/ -v
+pytest agents/soc2_compliance_team/tests/ -v
+pytest agents/social_media_marketing_team/tests/ -v
+
+# Or from each team directory
+cd agents/software_engineering_team && pytest
+cd agents/blogging && pytest
+# ... etc
+
+# With logs
+pytest agents/<team>/tests/ -v --log-cli-level=INFO
+```
+
+**Note:** Running `pytest` without a path from repo root may fail due to import path differences between teams.
+
+### Angular (UI)
+
+```bash
+cd user-interface
+ng test
+```
+
+With coverage:
+
+```bash
+ng test --no-watch --code-coverage
+# Report: coverage/user-interface/index.html
+```
+
+**Note:** Tests require Chrome or ChromeHeadless. Set `CHROME_BIN` if Chrome is not in PATH.
+
+---
 
 ## Deployment
 
-- **Port allocation:** Default ports are 8000 (blog/SW), 8010 (social media), 8011 (market research), 8020 (SOC2). Override with `--port` when running multiple services.
-- **Environment:** Set all required environment variables (e.g. `TAVILY_API_KEY`, `SW_LLM_*`) before starting services.
-- **Production:** Use a process manager (e.g. systemd, supervisord) or container orchestration. Run `uvicorn` without `--reload` in production.
+### Port Allocation
 
-## Blog research & review API
+Default ports: 8000 (SE/Blog), 8010 (social), 8011 (market research), 8020 (SOC2). Override with `--port` when running multiple services.
 
-The blog API exposes the **research + review** pipeline only (title choices, outline, compiled document). The full blogging pipeline (draft, copy-editor, publication) is in [blogging/README.md](blogging/README.md).
+### Production Checklist
 
-**Start the server** (from `blogging/` directory):
+1. Set all required environment variables (e.g. `TAVILY_API_KEY`, `SW_LLM_*`).
+2. Run `uvicorn` without `--reload`.
+3. Use a process manager (systemd, supervisord) or container orchestration.
+4. Put a reverse proxy (TLS, auth, rate limiting) in front of APIs.
+5. For the UI, use production build and configure API proxy or CORS.
+
+### Example Production Command
 
 ```bash
-cd blogging
-pip install -r requirements.txt
-python agent_implementations/run_api_server.py
-# or: uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn software_engineering_team.api.main:app --host 0.0.0.0 --port 8000 --workers 2
 ```
 
-**POST `/research-and-review`** – Run research and review agents.
+---
 
-Request body:
+## Contributing
 
-```json
-{
-  "brief": "LLM observability best practices for large enterprises",
-  "title_concept": "Why CTOs need it",
-  "audience": {
-    "skill_level": "expert",
-    "profession": "CTO",
-    "hobbies": ["AI", "DevOps"]
-  },
-  "tone_or_purpose": "technical deep-dive",
-  "max_results": 20
-}
-```
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contribution guidelines, code standards, and pull request process.
 
-`audience` can be an object (skill_level, profession, hobbies, other) or a free-text string. `title_concept` and `audience` are optional.
-
-Response: `title_choices`, `outline`, `compiled_document`, `notes`.
-
-**GET `/health`** – Health check.
-
-Interactive docs: http://localhost:8000/docs
-
-## Blogging agents
-
-The blogging suite includes Research, Review, Draft, Copy Editor, and Publication agents. For full agent descriptions, project layout, and pipeline (research → review → draft → copy-editor loop → publication), see [blogging/README.md](blogging/README.md).
+---
 
 ## License
 
-This repository is provided as an example implementation for building Strands-style research agents.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.

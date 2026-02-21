@@ -1,0 +1,21 @@
+<h1>SOC2 Compliance API</h1>
+<p>Compliance audit on code repositories.</p>
+
+<div class="header-row">
+  <app-health-indicator [healthCheck]="healthCheck" label="SOC2 Compliance API" />
+</div>
+
+@if (loading) {
+  <app-loading-spinner message="Starting audit..." />
+}
+
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<div class="content">
+  <app-soc2-audit-form (submitRequest)="onSubmit($event)" />
+  @if (jobId) {
+    <app-soc2-audit-status [jobId]="jobId" />
+  }
+</div>

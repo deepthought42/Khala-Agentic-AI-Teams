@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strands-research-agent"
+version = "0.1.0"
+description = "A Strands-style research agent that turns a short content brief into curated web references."
+authors = [{ name = "Strands Agent", email = "dev@example.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.8,<3.0",
+    "httpx>=0.27,<0.28",
+    "beautifulsoup4>=4.12,<5.0",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32,<1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["blog_research_agent*", "blog_review_agent*", "blog_draft_agent*", "blog_copy_editor_agent*", "blog_publication_agent*"]
+namespaces = false
+
