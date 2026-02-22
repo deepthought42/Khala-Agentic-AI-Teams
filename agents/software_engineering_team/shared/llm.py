@@ -724,9 +724,51 @@ class OllamaLLMClient(LLMClient):
         """Attempt tolerant JSON repair for common LLM output issues."""
         # Remove trailing commas before ] or }
         s = re.sub(r",\s*([}\]])", r"\1", s)
-        # Fix unescaped newlines in strings (replace with \n)
-        # Be cautious: only fix obvious cases
         return s
+
+    @staticmethod
+    def _repair_truncated_json(s: str) -> str:
+        """Try to close truncated JSON by balancing brackets/braces.
+
+        When the LLM hits max_tokens the response is valid JSON that was simply
+        cut off mid-stream.  This heuristic trims back to the last complete
+        value boundary and then appends the missing closing delimiters.
+        """
+        s = s.rstrip()
+        if not s or s[0] not in "{[":
+            return s
+
+        # Strip trailing incomplete key-value fragments (e.g. `"key": "val` or `, "key`)
+        s = re.sub(r',\s*"[^"]*"\s*:\s*"[^"]*$', "", s)  # dangling string value
+        s = re.sub(r',\s*"[^"]*"\s*:\s*\S*$', "", s)      # dangling non-string value
+        s = re.sub(r',\s*"[^"]*$', "", s)                  # dangling key with no colon
+        s = re.sub(r',\s*\{[^}]*$', "", s)                 # dangling incomplete object
+        s = re.sub(r",\s*$", "", s)                        # trailing comma
+
+        # Count unmatched openers
+        stack: list[str] = []
+        in_string = False
+        escape = False
+        for ch in s:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+
+        # Close in reverse order
+        return s + "".join(reversed(stack))
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         if "---DRAFT---" in text:
@@ -795,7 +837,21 @@ class OllamaLLMClient(LLMClient):
                 except Exception:
                     continue
 
-        # Fail fast: no valid JSON could be extracted from LLM response
+        # Last resort: try repairing truncated JSON (LLM hit max_tokens mid-stream)
+        truncated = self._repair_truncated_json(text)
+        if truncated != text:
+            try:
+                parsed = json.loads(truncated)
+                if isinstance(parsed, dict):
+                    logger.warning(
+                        "Recovered truncated JSON response (%d chars -> %d chars). "
+                        "Some data may be incomplete.",
+                        len(text), len(truncated),
+                    )
+                    return parsed
+            except Exception:
+                logger.debug("Truncated JSON repair also failed")
+
         logger.debug(
             "Raw LLM response that failed all JSON extraction strategies (first 2000 chars):\n%s",
             text[:2000],

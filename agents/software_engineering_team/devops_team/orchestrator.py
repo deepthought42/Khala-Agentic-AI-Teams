@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -73,7 +74,17 @@ from .tool_agents import (
     PolicyAsCodeToolAgent,
     RepoNavigatorInput,
     RepoNavigatorToolAgent,
+    TerraformExecutionInput,
+    TerraformExecutionToolAgent,
+    CDKExecutionInput,
+    CDKExecutionToolAgent,
+    DockerComposeExecutionInput,
+    DockerComposeExecutionToolAgent,
+    HelmExecutionInput,
+    HelmExecutionToolAgent,
 )
+from .infra_debug_agent import InfraDebugAgent, IaCDebugInput
+from .infra_patch_agent import InfraPatchAgent, IaCPatchInput
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +110,13 @@ class DevOpsTeamLeadAgent:
         self.cicd_lint_tool = CICDLintPipelineValidationToolAgent()
         self.deploy_dry_run_tool = DeploymentDryRunPlanToolAgent()
 
+        self.terraform_exec_tool = TerraformExecutionToolAgent()
+        self.cdk_exec_tool = CDKExecutionToolAgent()
+        self.compose_exec_tool = DockerComposeExecutionToolAgent()
+        self.helm_exec_tool = HelmExecutionToolAgent()
+        self.infra_debug_agent = InfraDebugAgent(llm_client)
+        self.infra_patch_agent = InfraPatchAgent(llm_client)
+
     @staticmethod
     def _build_legacy_spec(
         *,
@@ -108,7 +126,9 @@ class DevOpsTeamLeadAgent:
         target_repo: Optional[Any] = None,
     ) -> DevOpsTaskSpec:
         repo_name = target_repo.value if hasattr(target_repo, "value") else (str(target_repo) if target_repo else "")
-        env = "production" if "prod" in (task_description + " " + requirements).lower() else "staging"
+        combined_text = f"{task_description} {requirements}".lower()
+        # Match explicit production intent; avoid false positives like "produce".
+        env = "production" if re.search(r"\b(prod|production)\b", combined_text) else "staging"
         return DevOpsTaskSpec(
             task_id=task_id,
             title=task_description[:120] or task_id,
@@ -204,6 +224,60 @@ class DevOpsTeamLeadAgent:
             ),
         ]
 
+    def _run_execution_tools(
+        self, repo_str: str, artifacts: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """Run applicable execution tools and return list of result dicts."""
+        results: List[Dict[str, Any]] = []
+        has_tf = any(k.endswith(".tf") for k in artifacts)
+        has_cdk = "cdk.json" in artifacts
+        has_compose = any(
+            k in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+            for k in artifacts
+        )
+        has_chart = any(k.endswith("Chart.yaml") or k == "Chart.yaml" for k in artifacts)
+
+        if has_tf:
+            for cmd in ("init", "validate", "plan"):
+                r = self.terraform_exec_tool.run(TerraformExecutionInput(
+                    repo_path=repo_str, command=cmd,
+                ))
+                results.append({
+                    "tool": "terraform", "command": cmd,
+                    "success": r.success, "checks": r.checks,
+                    "findings": r.findings, "failure_class": r.failure_class,
+                })
+                if not r.success:
+                    break
+
+        if has_cdk:
+            r = self.cdk_exec_tool.run(CDKExecutionInput(repo_path=repo_str, command="synth"))
+            results.append({
+                "tool": "cdk", "command": "synth",
+                "success": r.success, "checks": r.checks,
+                "findings": r.findings, "failure_class": r.failure_class,
+            })
+
+        if has_compose:
+            r = self.compose_exec_tool.run(DockerComposeExecutionInput(
+                repo_path=repo_str, command="config",
+            ))
+            results.append({
+                "tool": "compose", "command": "config",
+                "success": r.success, "checks": r.checks,
+                "findings": r.findings, "failure_class": r.failure_class,
+            })
+
+        if has_chart:
+            r = self.helm_exec_tool.run(HelmExecutionInput(repo_path=repo_str, command="lint"))
+            results.append({
+                "tool": "helm", "command": "lint",
+                "success": r.success, "checks": r.checks,
+                "findings": r.findings, "failure_class": r.failure_class,
+            })
+
+        return results
+
     @staticmethod
     def _enforce_env_policy(task_spec: DevOpsTaskSpec) -> Optional[str]:
         """Return a blocking reason if environment policy is violated, else None."""
@@ -281,6 +355,79 @@ class DevOpsTeamLeadAgent:
         tool_gate_map.update(policy_checks.checks)
         tool_gate_map.update(cicd_checks.checks)
         tool_gate_map.update(dry_run_checks.checks)
+
+        # Phase 4.5: Execution verification
+        logger.info("DevOps team pipeline: phase 4.5 - execution verification")
+        repo_str = str(repo_path)
+        exec_results = self._run_execution_tools(repo_str, aggregated_artifacts)
+        exec_gate_map: Dict[str, str] = {}
+        exec_findings: List[str] = []
+        for er in exec_results:
+            exec_gate_map.update(er.get("checks", {}))
+            exec_findings.extend(er.get("findings", []))
+            fc = er.get("failure_class", "")
+            if fc:
+                logger.info(
+                    "DevOps execution [%s %s]: failure_class=%s",
+                    er.get("tool", "?"), er.get("command", "?"), fc,
+                )
+
+        # Phase 4.6: Debug-patch loop for fixable execution failures
+        MAX_INFRA_FIX_ITERATIONS = 3
+        exec_failures = [er for er in exec_results if not er.get("success", True)]
+        for fix_iter in range(MAX_INFRA_FIX_ITERATIONS):
+            if not exec_failures:
+                break
+            logger.info(
+                "DevOps team pipeline: phase 4.6 - debug-patch iteration %d/%d (%d failures)",
+                fix_iter + 1, MAX_INFRA_FIX_ITERATIONS, len(exec_failures),
+            )
+            combined_output = "\n---\n".join(
+                "\n".join(ef.get("findings", [])) for ef in exec_failures
+            )
+            first_tool = exec_failures[0].get("tool", "unknown")
+            first_cmd = exec_failures[0].get("command", "unknown")
+            try:
+                debug_out = self.infra_debug_agent.run(IaCDebugInput(
+                    execution_output=combined_output[:4000],
+                    tool_name=first_tool,
+                    command=first_cmd,
+                    artifacts=aggregated_artifacts,
+                ))
+            except Exception as dbg_err:
+                logger.warning("DevOps debug agent failed: %s", dbg_err)
+                break
+            if not debug_out.fixable:
+                logger.info("DevOps debug agent: errors are not fixable via code changes")
+                break
+            try:
+                patch_out = self.infra_patch_agent.run(IaCPatchInput(
+                    debug_output=debug_out,
+                    original_artifacts=aggregated_artifacts,
+                    repo_path=repo_str,
+                ))
+            except Exception as patch_err:
+                logger.warning("DevOps patch agent failed: %s", patch_err)
+                break
+            if not patch_out.patched_artifacts:
+                logger.info("DevOps patch agent returned no patches")
+                break
+            aggregated_artifacts.update(patch_out.patched_artifacts)
+            if write_changes:
+                write_agent_output(
+                    repo_path=repo_path,
+                    output={"files": patch_out.patched_artifacts, "commit_message": f"fix(devops): patch iteration {fix_iter + 1}"},
+                    subdir=subdir,
+                )
+            exec_results = self._run_execution_tools(repo_str, aggregated_artifacts)
+            exec_failures = [er for er in exec_results if not er.get("success", True)]
+            exec_gate_map = {}
+            exec_findings = []
+            for er in exec_results:
+                exec_gate_map.update(er.get("checks", {}))
+                exec_findings.extend(er.get("findings", []))
+
+        tool_gate_map.update(exec_gate_map)
 
         devsec = self.devsecops_review_agent.run(
             DevSecOpsReviewInput(

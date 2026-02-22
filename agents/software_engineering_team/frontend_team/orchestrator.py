@@ -17,6 +17,11 @@ from shared.llm import LLMClient
 from shared.models import SystemArchitecture, Task, TaskUpdate
 
 from frontend_team.feature_agent import FrontendExpertAgent, FrontendInput
+from frontend_team.feature_agent.agent import (
+    _extract_affected_file_paths_from_frontend_build_errors,
+    _read_frontend_affected_files_code,
+    _apply_frontend_build_fix_edits,
+)
 from frontend_team.feature_agent.models import FrontendOutput, FrontendWorkflowResult
 
 from .models import (
@@ -169,6 +174,7 @@ class FrontendOrchestratorAgent:
         append_backend_task_fn: Optional[Callable[[Task], None]] = None,
         append_frontend_task_fn: Optional[Callable[[str], None]] = None,
         linting_tool_agent: Any | None = None,
+        build_fix_specialist: Any | None = None,
     ) -> FrontendWorkflowResult:
         """
         Execute the full frontend pipeline: design -> architecture -> implementation ->
@@ -452,6 +458,42 @@ class FrontendOrchestratorAgent:
                             f"Last error: {build_errors[:500]}"
                         ),
                     )
+
+                # Try BuildFixSpecialist for minimal targeted fix before QA fallback
+                if consecutive_same_build_failures >= 2 and build_fix_specialist is not None:
+                    try:
+                        from build_fix_specialist.models import BuildFixInput
+                        affected_paths = _extract_affected_file_paths_from_frontend_build_errors(
+                            build_errors, repo_path,
+                        )
+                        affected_code = _read_frontend_affected_files_code(repo_path, affected_paths)
+                        bf_result = build_fix_specialist.run(BuildFixInput(
+                            build_errors=build_errors[:4000],
+                            affected_files_code=affected_code,
+                            task_description=current_task.description,
+                        ))
+                        if bf_result.edits:
+                            ok_apply, msg_apply, files_dict = _apply_frontend_build_fix_edits(
+                                repo_path, bf_result.edits,
+                            )
+                            if ok_apply and files_dict:
+                                ok_write, _ = write_agent_output(
+                                    repo_path,
+                                    type("_BF", (), {"files": files_dict, "summary": bf_result.summary})(),
+                                    subdir="",
+                                )
+                                if ok_write:
+                                    logger.info(
+                                        "[%s] WORKFLOW   BuildFixSpecialist applied %d edit(s), re-running build",
+                                        task_id, len(files_dict),
+                                    )
+                                    continue
+                    except Exception as bf_err:
+                        logger.warning(
+                            "[%s] WORKFLOW   BuildFixSpecialist failed (non-blocking): %s",
+                            task_id, bf_err,
+                        )
+
                 # Invoke testing sub-agent to analyze build errors and produce fix recommendations
                 code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
                 from qa_agent.models import QAInput as QAI

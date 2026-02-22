@@ -69,6 +69,8 @@ def _mock_llm_for_happy_path() -> MagicMock:
         {"artifacts": {"infra/main.tf": "resource {}"}, "summary": "iac ok", "destructive_changes_detected": False},
         {"artifacts": {".github/workflows/ci.yml": "on: push"}, "summary": "cicd ok", "required_gates_present": True},
         {"artifacts": {"deploy/values.yaml": "replicas: 2"}, "summary": "deploy ok", "strategy": "rolling", "rollback_plan": ["helm rollback"]},
+        # Debug agent (execution tools fail because terraform CLI is not installed)
+        {"errors": [{"error_type": "runtime", "error_message": "terraform not found"}], "summary": "cli missing", "fixable": False},
         {"approved": True, "findings": [], "summary": "sec ok"},
         {"approved": True, "findings": [], "summary": "review ok"},
         {"approved": True, "quality_gates": {"iac_validate": "pass", "policy_checks": "pass"}, "acceptance_trace": [], "summary": "validation ok"},
@@ -811,6 +813,14 @@ class TestBackwardCompatibility:
         )
         assert spec.environment == "staging"
 
+    def test_build_legacy_spec_does_not_match_produce_as_prod(self) -> None:
+        spec = DevOpsTeamLeadAgent._build_legacy_spec(
+            task_id="devops-2b",
+            task_description="Produce a Dockerfile and CI/CD",
+            requirements="Build and deploy to staging",
+        )
+        assert spec.environment == "staging"
+
     def test_build_legacy_spec_always_has_rollback(self) -> None:
         spec = DevOpsTeamLeadAgent._build_legacy_spec(
             task_id="devops-3",
@@ -833,6 +843,28 @@ class TestBackwardCompatibility:
 # ===========================================================================
 
 
+class TestDevOpsTeamLeadAgentExecutionTools:
+    """Verify execution tool agents are initialized on DevOpsTeamLeadAgent."""
+
+    def test_init_has_execution_tools(self) -> None:
+        mock_llm = MagicMock()
+        mock_llm.complete_json.return_value = {}
+        agent = DevOpsTeamLeadAgent(mock_llm)
+        assert hasattr(agent, "terraform_exec_tool")
+        assert hasattr(agent, "cdk_exec_tool")
+        assert hasattr(agent, "compose_exec_tool")
+        assert hasattr(agent, "helm_exec_tool")
+        assert hasattr(agent, "infra_debug_agent")
+        assert hasattr(agent, "infra_patch_agent")
+
+    def test_run_execution_tools_returns_empty_for_no_artifacts(self) -> None:
+        mock_llm = MagicMock()
+        mock_llm.complete_json.return_value = {}
+        agent = DevOpsTeamLeadAgent(mock_llm)
+        results = agent._run_execution_tools("/tmp/nonexistent", {})
+        assert results == []
+
+
 class TestMainOrchestratorRegistration:
     def test_devops_team_lead_registered(self) -> None:
         """Verify the main orchestrator registers DevOpsTeamLeadAgent."""
@@ -842,3 +874,11 @@ class TestMainOrchestratorRegistration:
         source = Path(mod.__file__).read_text()
         assert "DevOpsTeamLeadAgent" in source
         assert "devops_team" in source
+
+    def test_build_fix_specialist_registered(self) -> None:
+        """Verify the main orchestrator registers BuildFixSpecialistAgent."""
+        import importlib
+        mod = importlib.import_module("orchestrator")
+        source = Path(mod.__file__).read_text()
+        assert "build_fix_specialist" in source
+        assert "BuildFixSpecialistAgent" in source

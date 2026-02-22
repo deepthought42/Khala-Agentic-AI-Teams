@@ -75,6 +75,13 @@ from shared.repo_writer import write_agent_output
 logger = logging.getLogger(__name__)
 
 BANNER_WIDTH = 72
+MAX_CONTRACT_REPAIR_ATTEMPTS = 2
+_TASK_CONTRACT_REQUIRED_FIELDS = (
+    "goal",
+    "scope",
+    "constraints",
+    "non_functional_requirements",
+)
 
 # Exceptions that the repair agent can attempt to fix (code errors in agent framework)
 REPAIRABLE_EXCEPTIONS = (
@@ -85,6 +92,136 @@ REPAIRABLE_EXCEPTIONS = (
     IndentationError,
     ModuleNotFoundError,
 )
+
+
+def _parse_missing_contract_fields(failure_reason: str) -> List[str]:
+    """Extract missing task-contract fields from backend failure text."""
+    if not failure_reason:
+        return []
+    marker = "Missing required fields:"
+    if marker not in failure_reason:
+        return []
+    tail = failure_reason.split(marker, 1)[1].strip()
+    if not tail:
+        return []
+    fields: List[str] = []
+    for raw in tail.split(","):
+        field = raw.strip()
+        if field and field not in fields:
+            fields.append(field)
+    return fields
+
+
+def _compute_missing_task_contract_fields(task: Any) -> List[str]:
+    """Apply the same contract checks used by backend workflow gate."""
+    metadata = dict(getattr(task, "metadata", None) or {})
+    missing: List[str] = []
+    for key in _TASK_CONTRACT_REQUIRED_FIELDS:
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            missing.append(key)
+    if not getattr(task, "acceptance_criteria", None):
+        missing.append("acceptance_criteria")
+    requirements = (getattr(task, "requirements", "") or "").lower()
+    io_contract = metadata.get("inputs_outputs")
+    if io_contract in (None, "", [], {}) and "input" not in requirements:
+        missing.append("inputs_outputs")
+    return missing
+
+
+def _repair_task_contract_via_planning(
+    *,
+    task: Any,
+    failure_reason: str,
+    spec_content: str,
+    architecture: Any,
+    agents: Dict[str, Any],
+    tech_lead: Any,
+) -> Optional[Any]:
+    """Use planning + tech lead refinement to fill required task contract fields."""
+    missing_fields = _parse_missing_contract_fields(failure_reason) or _compute_missing_task_contract_fields(task)
+    if not missing_fields:
+        return None
+
+    refined_task = task
+    clarification_requests = [
+        f"Provide an explicit '{field}' value in task metadata." for field in missing_fields
+    ]
+    try:
+        if tech_lead is not None and hasattr(tech_lead, "refine_task"):
+            refined_task = tech_lead.refine_task(task, clarification_requests, spec_content, architecture)
+    except Exception as refine_err:
+        logger.warning("[%s] Contract recovery refine step failed: %s", getattr(task, "id", "task"), refine_err)
+        refined_task = task
+
+    planning_nfrs: List[str] = []
+    project_planner = agents.get("project_planning")
+    if project_planner is not None:
+        try:
+            from planning_team.project_planning_agent import ProjectPlanningInput
+            from shared.models import ProductRequirements
+
+            req = ProductRequirements(
+                title=getattr(refined_task, "title", "") or getattr(task, "title", "") or getattr(task, "id", "Task"),
+                description=getattr(refined_task, "description", "") or getattr(task, "description", ""),
+                acceptance_criteria=list(getattr(refined_task, "acceptance_criteria", None) or getattr(task, "acceptance_criteria", None) or []),
+                constraints=[getattr(refined_task, "requirements", "") or getattr(task, "requirements", "")],
+                priority="medium",
+            )
+            project_output = project_planner.run(ProjectPlanningInput(
+                requirements=req,
+                spec_content=spec_content or "",
+                repo_state_summary="",
+            ))
+            planning_nfrs = list(getattr(getattr(project_output, "overview", None), "non_functional_requirements", []) or [])
+        except Exception as plan_err:
+            logger.warning("[%s] Contract recovery planning step failed: %s", getattr(task, "id", "task"), plan_err)
+
+    metadata = dict(getattr(task, "metadata", None) or {})
+    existing_metadata = dict(metadata)
+    metadata.setdefault(
+        "goal",
+        (getattr(refined_task, "description", "") or getattr(task, "description", "") or getattr(task, "title", "")).strip()[:300],
+    )
+    metadata.setdefault(
+        "scope",
+        (getattr(refined_task, "requirements", "") or getattr(task, "requirements", "") or "Implement the assigned task end-to-end.").strip()[:500],
+    )
+    metadata.setdefault(
+        "constraints",
+        existing_metadata.get("constraints")
+        or (planning_nfrs[:3] if planning_nfrs else ["Preserve compatibility with existing architecture and tests."]),
+    )
+    metadata.setdefault(
+        "non_functional_requirements",
+        existing_metadata.get("non_functional_requirements")
+        or (planning_nfrs if planning_nfrs else ["Maintain reliability, security, and performance baselines."]),
+    )
+    metadata.setdefault(
+        "inputs_outputs",
+        existing_metadata.get("inputs_outputs")
+        or "Inputs: task requirements and existing system contracts. Outputs: code changes, tests, and passing verification evidence.",
+    )
+
+    acceptance_criteria = list(
+        getattr(refined_task, "acceptance_criteria", None)
+        or getattr(task, "acceptance_criteria", None)
+        or []
+    )
+    if not acceptance_criteria:
+        acceptance_criteria = [
+            "Implementation satisfies the task goal and scope.",
+            "Build and tests pass for the changed component.",
+        ]
+
+    updated_task = task.model_copy(update={
+        "title": getattr(refined_task, "title", None) or getattr(task, "title", ""),
+        "description": getattr(refined_task, "description", None) or getattr(task, "description", ""),
+        "requirements": getattr(refined_task, "requirements", None) or getattr(task, "requirements", ""),
+        "acceptance_criteria": acceptance_criteria,
+        "metadata": metadata,
+    })
+    return None if _compute_missing_task_contract_fields(updated_task) else updated_task
 
 
 def _get_task_stats() -> Dict[str, Any]:
@@ -307,6 +444,7 @@ def _get_agents():
     from acceptance_verifier_agent import AcceptanceVerifierAgent
     from agent_repair_team import RepairExpertAgent, RepairInput
     from linting_tool_agent import LintingToolAgent
+    from build_fix_specialist import BuildFixSpecialistAgent
 
     return {
         "spec_intake": SpecIntakeAgent(get_llm_for_agent("spec_intake")),
@@ -336,6 +474,7 @@ def _get_agents():
         "git_setup": GitSetupAgent(),
         "repair": RepairExpertAgent(get_llm_for_agent("repair")),
         "linting_tool_agent": LintingToolAgent(get_llm_for_agent("linting_tool_agent")),
+        "build_fix_specialist": BuildFixSpecialistAgent(get_llm_for_agent("build_fix_specialist")),
     }
 
 
@@ -967,6 +1106,7 @@ def _run_backend_frontend_workers(
     state_lock = threading.Lock()
     llm_limit_exceeded = [False]  # mutable ref for workers
     repaired_tasks = set()  # max 1 repair per task
+    contract_repair_attempts: Dict[str, int] = {}
     agent_source_path = Path(__file__).resolve().parent  # software_engineering_team/
 
     def _remaining_queue_ids() -> List[str]:
@@ -1036,8 +1176,36 @@ def _run_backend_frontend_workers(
                     execution_queue=backend_queue,
                     append_task_fn=_append_backend_task,
                     linting_tool_agent=agents.get("linting_tool_agent"),
+                    build_fix_specialist=agents.get("build_fix_specialist"),
                 )
                 elapsed = time.monotonic() - task_start_time
+                failure_reason = workflow_result.failure_reason or "Backend workflow failed"
+                if not workflow_result.success and "Task contract is incomplete" in failure_reason:
+                    should_attempt_repair = False
+                    with state_lock:
+                        attempts = contract_repair_attempts.get(task_id, 0)
+                        if attempts < MAX_CONTRACT_REPAIR_ATTEMPTS:
+                            contract_repair_attempts[task_id] = attempts + 1
+                            should_attempt_repair = True
+                    if should_attempt_repair:
+                        repaired_task = _repair_task_contract_via_planning(
+                            task=task,
+                            failure_reason=failure_reason,
+                            spec_content=spec_content,
+                            architecture=architecture,
+                            agents=agents,
+                            tech_lead=tech_lead,
+                        )
+                        if repaired_task is not None:
+                            with state_lock:
+                                all_tasks[task_id] = repaired_task
+                                backend_queue.append(task_id)
+                            logger.info(
+                                "%s[%s] Backend task contract repaired via planning; re-queued task",
+                                log_prefix,
+                                task_id,
+                            )
+                            continue
                 with state_lock:
                     if workflow_result.success:
                         completed.add(task_id)
@@ -1053,7 +1221,7 @@ def _run_backend_frontend_workers(
                             description=getattr(task, "description", "") or "",
                         )
                     else:
-                        failed[task_id] = workflow_result.failure_reason or "Backend workflow failed"
+                        failed[task_id] = failure_reason
                         execution_tracker.observe_loop(task_id, 1)
                         execution_tracker.finish_task(task_id, blocked=True)
                         logger.warning("%s[%s] Backend FAILED after %.1fs: %s", log_prefix, task_id, elapsed, failed[task_id])
@@ -1194,9 +1362,37 @@ def _run_backend_frontend_workers(
                     append_backend_task_fn=_append_backend_task,
                     append_frontend_task_fn=_append_frontend_task_id,
                     linting_tool_agent=agents.get("linting_tool_agent"),
+                    build_fix_specialist=agents.get("build_fix_specialist"),
                 )
 
                 elapsed = time.monotonic() - task_start_time
+                failure_reason = workflow_result.failure_reason or "Frontend workflow failed"
+                if not workflow_result.success and "Task contract is incomplete" in failure_reason:
+                    should_attempt_repair = False
+                    with state_lock:
+                        attempts = contract_repair_attempts.get(task_id, 0)
+                        if attempts < MAX_CONTRACT_REPAIR_ATTEMPTS:
+                            contract_repair_attempts[task_id] = attempts + 1
+                            should_attempt_repair = True
+                    if should_attempt_repair:
+                        repaired_task = _repair_task_contract_via_planning(
+                            task=task,
+                            failure_reason=failure_reason,
+                            spec_content=spec_content,
+                            architecture=architecture,
+                            agents=agents,
+                            tech_lead=tech_lead,
+                        )
+                        if repaired_task is not None:
+                            with state_lock:
+                                all_tasks[task_id] = repaired_task
+                                frontend_queue.append(task_id)
+                            logger.info(
+                                "%s[%s] Frontend task contract repaired via planning; re-queued task",
+                                log_prefix,
+                                task_id,
+                            )
+                            continue
                 with state_lock:
                     if workflow_result.success:
                         completed.add(task_id)
@@ -1212,7 +1408,7 @@ def _run_backend_frontend_workers(
                             description=getattr(task, "description", "") or "",
                         )
                     else:
-                        failed[task_id] = workflow_result.failure_reason or "Frontend workflow failed"
+                        failed[task_id] = failure_reason
                         execution_tracker.observe_loop(task_id, 1)
                         execution_tracker.finish_task(task_id, blocked=True)
                         logger.warning("%s[%s] Frontend FAILED after %.1fs: %s", log_prefix, task_id, elapsed, failed[task_id])
@@ -1230,6 +1426,8 @@ def _run_backend_frontend_workers(
                         failed[task_id] = f"LLM error: {e}"
                 if isinstance(e, LLMRateLimitError):
                     logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+                elif isinstance(e, LLMPermanentError):
+                    logger.warning("%s[%s] Frontend task generation failed validation: %s", log_prefix, task_id, e)
                 else:
                     logger.warning("%s[%s] Frontend task LLM/HTTP error: %s", log_prefix, task_id, e)
                 checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)

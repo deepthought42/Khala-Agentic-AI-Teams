@@ -85,6 +85,97 @@ def _truncate_for_context(text: str, max_chars: int) -> str:
         return text or ""
     return text[:max_chars] + f"\n\n... [truncated, {len(text) - max_chars} more chars]"
 
+
+# ---------------------------------------------------------------------------
+# Build-fix helpers (frontend-specific, analogous to backend_agent helpers)
+# ---------------------------------------------------------------------------
+
+def _extract_affected_file_paths_from_frontend_build_errors(
+    build_errors: str, repo_path: Path
+) -> List[str]:
+    """Extract TypeScript/template file paths mentioned in ng build errors."""
+    seen: set = set()
+    paths: List[str] = []
+    for m in re.finditer(r"(src/[^\s:\"']+\.(?:ts|html|scss|css)):?\d*", build_errors):
+        p = m.group(1).strip()
+        if p and p not in seen and (repo_path / p).exists():
+            seen.add(p)
+            paths.append(p)
+    for m in re.finditer(r'Could not resolve ["\']([^"\']+)["\']', build_errors):
+        raw = m.group(1)
+        if raw.startswith("./"):
+            raw = "src/" + raw[2:]
+        for ext in (".ts", ".component.ts"):
+            candidate = raw if raw.endswith(ext) else raw + ext
+            if candidate not in seen and (repo_path / candidate).exists():
+                seen.add(candidate)
+                paths.append(candidate)
+    routes_file = "src/app/app.routes.ts"
+    if routes_file not in seen and (repo_path / routes_file).exists():
+        paths.insert(0, routes_file)
+    return paths[:10]
+
+
+def _read_frontend_affected_files_code(
+    repo_path: Path, file_paths: List[str]
+) -> str:
+    """Read content of affected frontend files for BuildFixSpecialist context."""
+    parts: List[str] = []
+    total = 0
+    for p in file_paths:
+        f = repo_path / p
+        if f.is_file():
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                parts.append(f"### {p} ###\n{content}")
+                total += len(content)
+                if total > 12000:
+                    break
+            except Exception:
+                pass
+    return "\n\n".join(parts) if parts else "# No affected files found"
+
+
+def _apply_frontend_build_fix_edits(
+    repo_path: Path, edits: List[Any]
+) -> Tuple[bool, str, Dict[str, str]]:
+    """Apply BuildFixSpecialist edits to frontend files.
+
+    Returns (success, message, files_dict_for_write).
+    """
+    from build_fix_specialist.models import CodeEdit
+
+    file_edits: Dict[str, List[Any]] = {}
+    for edit in edits:
+        if not isinstance(edit, CodeEdit):
+            continue
+        file_edits.setdefault(edit.file_path, []).append(edit)
+
+    files_to_write: Dict[str, str] = {}
+    for file_path, edit_list in file_edits.items():
+        fp = repo_path / file_path
+        if not fp.exists():
+            logger.warning("BuildFixSpecialist edit target not found: %s", file_path)
+            continue
+        try:
+            content = fp.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("BuildFixSpecialist could not read %s: %s", file_path, exc)
+            continue
+        for edit in edit_list:
+            if edit.old_text not in content:
+                logger.warning(
+                    "BuildFixSpecialist old_text not found in %s", file_path,
+                )
+                return False, f"old_text not found in {file_path}", {}
+            content = content.replace(edit.old_text, edit.new_text, 1)
+        files_to_write[file_path] = content
+
+    if not files_to_write:
+        return False, "No edits could be applied", {}
+    return True, f"Applied {len(files_to_write)} edit(s)", files_to_write
+
+
 # Validation constants
 MAX_PATH_SEGMENT_LENGTH = 30
 ANGULAR_PATH_PATTERN = re.compile(r"^src/")
@@ -105,6 +196,14 @@ _ALLOWED_DIRS = frozenset({
 _ALLOWED_EXTENSIONS = frozenset({
     ".ts", ".html", ".scss", ".css", ".json",
 })
+_ANGULAR_ROOT_FILES = frozenset({
+    "angular.json",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.spec.json",
+})
 
 
 def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[str]]:
@@ -124,9 +223,13 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
     validated = {}
     warnings = []
     for path, content in files.items():
-        # Reject files not under src/ (Angular project root)
-        if not ANGULAR_PATH_PATTERN.match(path):
-            warnings.append(f"Path does not start with 'src/' (not Angular project structure): '{path}'")
+        # Angular tasks primarily write under src/, but may legitimately touch root config files.
+        is_src_file = bool(ANGULAR_PATH_PATTERN.match(path))
+        is_allowed_root_file = "/" not in path and path in _ANGULAR_ROOT_FILES
+        if not is_src_file and not is_allowed_root_file:
+            warnings.append(
+                f"Path must be under 'src/' or a known Angular root config file: '{path}'"
+            )
             continue
 
         # Reject non-browser file extensions (e.g. .py, .java)
@@ -542,6 +645,7 @@ class FrontendExpertAgent:
         append_backend_task_fn: Optional[Callable[[Task], None]] = None,
         append_frontend_task_fn: Optional[Callable[[str], None]] = None,
         linting_tool_agent: Any | None = None,
+        build_fix_specialist: Any | None = None,
     ) -> FrontendWorkflowResult:
         """
         Execute the full frontend task lifecycle: branch, generate, review, merge, Tech Lead.
@@ -788,6 +892,43 @@ class FrontendExpertAgent:
                             f"Last error: {build_errors[:500]}"
                         ),
                     )
+
+                # Try BuildFixSpecialist for minimal targeted fix before QA fallback
+                if consecutive_same_build_failures >= 2 and build_fix_specialist is not None:
+                    try:
+                        from build_fix_specialist.models import BuildFixInput
+                        affected_paths = _extract_affected_file_paths_from_frontend_build_errors(
+                            build_errors, repo_path,
+                        )
+                        affected_code = _read_frontend_affected_files_code(repo_path, affected_paths)
+                        bf_result = build_fix_specialist.run(BuildFixInput(
+                            build_errors=build_errors[:4000],
+                            affected_files_code=affected_code,
+                            task_description=current_task.description,
+                        ))
+                        if bf_result.edits:
+                            ok_apply, msg_apply, files_dict = _apply_frontend_build_fix_edits(
+                                repo_path, bf_result.edits,
+                            )
+                            if ok_apply and files_dict:
+                                from shared.repo_writer import write_agent_output as _write_bf
+                                ok_write, _ = _write_bf(
+                                    repo_path,
+                                    type("_BF", (), {"files": files_dict, "summary": bf_result.summary})(),
+                                    subdir="",
+                                )
+                                if ok_write:
+                                    logger.info(
+                                        "[%s] WORKFLOW   BuildFixSpecialist applied %d edit(s), re-running build",
+                                        task_id, len(files_dict),
+                                    )
+                                    continue
+                    except Exception as bf_err:
+                        logger.warning(
+                            "[%s] WORKFLOW   BuildFixSpecialist failed (non-blocking): %s",
+                            task_id, bf_err,
+                        )
+
                 # Invoke testing sub-agent to analyze build errors and produce fix recommendations
                 code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
                 from qa_agent.models import QAInput as QAI

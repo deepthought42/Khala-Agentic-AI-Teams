@@ -1,11 +1,19 @@
 """DevOps tool agents — stateless subprocess wrappers with no LLM dependency.
 
 Detect available tools, run them, and return structured results:
+
+Validation (read-only checks):
   - RepoNavigatorToolAgent: discovers IaC, pipeline, and deploy paths
   - IaCValidationToolAgent: terraform fmt/validate
   - PolicyAsCodeToolAgent: checkov/tfsec policy scanners
   - CICDLintPipelineValidationToolAgent: workflow YAML validation
   - DeploymentDryRunPlanToolAgent: helm lint/template
+
+Execution (guarded CLI wrappers):
+  - TerraformExecutionToolAgent: init/validate/plan/apply/fmt
+  - CDKExecutionToolAgent: synth/diff
+  - DockerComposeExecutionToolAgent: config/build/ps/logs
+  - HelmExecutionToolAgent: template/lint
 """
 
 from .repo_navigator import RepoNavigatorInput, RepoNavigatorOutput, RepoNavigatorToolAgent
@@ -21,6 +29,18 @@ from .deployment_dry_run import (
     DeploymentDryRunOutput,
     DeploymentDryRunPlanToolAgent,
 )
+from .terraform_execution import (
+    TerraformExecutionInput,
+    TerraformExecutionOutput,
+    TerraformExecutionToolAgent,
+)
+from .cdk_execution import CDKExecutionInput, CDKExecutionOutput, CDKExecutionToolAgent
+from .docker_compose_execution import (
+    DockerComposeExecutionInput,
+    DockerComposeExecutionOutput,
+    DockerComposeExecutionToolAgent,
+)
+from .helm_execution import HelmExecutionInput, HelmExecutionOutput, HelmExecutionToolAgent
 
 __all__ = [
     "RepoNavigatorInput",
@@ -38,4 +58,16 @@ __all__ = [
     "DeploymentDryRunInput",
     "DeploymentDryRunOutput",
     "DeploymentDryRunPlanToolAgent",
+    "TerraformExecutionInput",
+    "TerraformExecutionOutput",
+    "TerraformExecutionToolAgent",
+    "CDKExecutionInput",
+    "CDKExecutionOutput",
+    "CDKExecutionToolAgent",
+    "DockerComposeExecutionInput",
+    "DockerComposeExecutionOutput",
+    "DockerComposeExecutionToolAgent",
+    "HelmExecutionInput",
+    "HelmExecutionOutput",
+    "HelmExecutionToolAgent",
 ]

@@ -197,6 +197,25 @@ def test_frontend_agent_rejects_path_not_under_src() -> None:
     assert "src/app/valid.component.ts" in result.files
 
 
+def test_frontend_agent_allows_known_angular_root_config_files() -> None:
+    """Agent allows valid Angular root config files like tsconfig.spec.json."""
+    mock_llm = MagicMock()
+    mock_llm.complete_json.return_value = {
+        "code": "",
+        "summary": "Update tsconfig and component",
+        "files": {
+            "tsconfig.spec.json": '{"extends":"./tsconfig.json"}',
+            "src/app/valid.component.ts": "import { Component } from '@angular/core';\n@Component({selector: 'app-valid', template: 'x'}) export class Valid {}",
+        },
+        "components": ["valid"],
+        "suggested_commit_message": "chore: adjust test tsconfig",
+    }
+    agent = FrontendExpertAgent(llm_client=mock_llm)
+    result = agent.run(FrontendInput(task_description="Update test config", requirements=""))
+    assert "tsconfig.spec.json" in result.files
+    assert "src/app/valid.component.ts" in result.files
+
+
 def test_frontend_agent_rejects_bad_extension() -> None:
     """Agent rejects non-browser file extensions."""
     mock_llm = MagicMock()

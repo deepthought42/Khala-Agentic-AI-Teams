@@ -560,41 +560,98 @@ def test_run_workflow_invokes_build_fix_specialist_when_same_build_fails_twice(
     def build_verifier(_repo_path, _agent_type, _task_id):
         return (False, same_error)
 
-    with patch("build_fix_specialist.BuildFixSpecialistAgent") as mock_specialist_cls:
-        mock_specialist = MagicMock()
-        mock_specialist.run.return_value = MagicMock(
-            edits=[
-                CodeEdit(
-                    file_path="app/main.py",
-                    old_text="from fastapi import FastAPI",
-                    new_text="from fastapi import FastAPI  # fixed",
-                ),
-            ],
-            summary="Added import fix",
-        )
-        mock_specialist_cls.return_value = mock_specialist
+    mock_specialist = MagicMock()
+    mock_specialist.run.return_value = MagicMock(
+        edits=[
+            CodeEdit(
+                file_path="app/main.py",
+                old_text="from fastapi import FastAPI",
+                new_text="from fastapi import FastAPI  # fixed",
+            ),
+        ],
+        summary="Added import fix",
+    )
 
-        agent.run_workflow(
-            repo_path=tmp_path,
-            task=task,
-            spec_content="# Spec",
-            architecture=None,
-            qa_agent=mock_qa,
-            security_agent=MagicMock(),
-            dbc_agent=MagicMock(),
-            code_review_agent=MagicMock(),
-            tech_lead=mock_tech_lead,
-            build_verifier=build_verifier,
-        )
+    agent.run_workflow(
+        repo_path=tmp_path,
+        task=task,
+        spec_content="# Spec",
+        architecture=None,
+        qa_agent=mock_qa,
+        security_agent=MagicMock(),
+        dbc_agent=MagicMock(),
+        code_review_agent=MagicMock(),
+        tech_lead=mock_tech_lead,
+        build_verifier=build_verifier,
+        build_fix_specialist=mock_specialist,
+    )
 
-    mock_specialist_cls.assert_called()
     mock_specialist.run.assert_called()
     call_input = mock_specialist.run.call_args[0][0]
     assert call_input.build_errors == same_error
     assert "app/main.py" in call_input.affected_files_code or "main.py" in call_input.affected_files_code
-    # Verify patch was applied: app/main.py should contain the specialist's edit
     main_content = (tmp_path / "app" / "main.py").read_text()
     assert "# fixed" in main_content
+
+
+def test_run_workflow_skips_specialist_when_none(tmp_path: Path) -> None:
+    """When build_fix_specialist=None, specialist is not invoked even on repeated build failure."""
+    from shared.models import Task, TaskType
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "app").mkdir(exist_ok=True)
+    (tmp_path / "app" / "main.py").write_text("print('hi')", encoding="utf-8")
+    subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+
+    task = Task(
+        id="t-none", type=TaskType.BACKEND, assignee="backend",
+        title="Add", description="Add",
+        acceptance_criteria=["ok"],
+        metadata={"goal": {"summary": "x"}, "scope": {"included": ["x"]},
+                   "constraints": {}, "non_functional_requirements": {},
+                   "inputs_outputs": {"input": "x", "output": "y"}},
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
+    mock_llm.complete_json.side_effect = [
+        {"feature_intent": "Add", "what_changes": ["app/main.py"], "algorithms_data_structures": "", "tests_needed": ""},
+        {"code": "", "language": "python", "summary": "Done",
+         "files": {"app/main.py": "print('hi')"}, "tests": "", "suggested_commit_message": "feat: add"},
+    ] + [
+        {"code": "", "language": "python", "summary": "Fixed",
+         "files": {"app/main.py": "print('hi')"}, "tests": "", "suggested_commit_message": "fix: build"}
+        for _ in range(10)
+    ]
+
+    agent = BackendExpertAgent(llm_client=mock_llm)
+    mock_qa = MagicMock()
+    from qa_agent.models import BugReport
+    mock_qa.run.return_value = MagicMock(
+        bugs_found=[BugReport(severity="critical", description="Fix", location="app/main.py", recommendation="Fix")]
+    )
+    mock_tech_lead = MagicMock()
+    mock_tech_lead.review_progress.return_value = []
+
+    result = agent.run_workflow(
+        repo_path=tmp_path,
+        task=task,
+        spec_content="# Spec",
+        architecture=None,
+        qa_agent=mock_qa,
+        security_agent=MagicMock(),
+        dbc_agent=MagicMock(),
+        code_review_agent=MagicMock(),
+        tech_lead=mock_tech_lead,
+        build_verifier=lambda *a: (False, "same error"),
+        build_fix_specialist=None,
+    )
+    # Workflow completes without crashing; specialist was not available
+    assert result is not None
 
 
 def test_backend_agent_includes_specialist_tooling_plan_in_prompt() -> None:

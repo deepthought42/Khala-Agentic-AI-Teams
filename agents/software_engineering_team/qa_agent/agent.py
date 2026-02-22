@@ -74,13 +74,13 @@ class QAExpertAgent:
                     )
                 )
 
-        integration_tests = data.get("integration_tests", "")
+        integration_tests = data.get("integration_tests") or ""
         if integration_tests and "\\n" in integration_tests:
             integration_tests = integration_tests.replace("\\n", "\n")
-        unit_tests = data.get("unit_tests", "")
+        unit_tests = data.get("unit_tests") or ""
         if unit_tests and "\\n" in unit_tests:
             unit_tests = unit_tests.replace("\\n", "\n")
-        readme_content = data.get("readme_content", "")
+        readme_content = data.get("readme_content") or ""
         if readme_content and "\\n" in readme_content:
             readme_content = readme_content.replace("\\n", "\n")
 
@@ -93,9 +93,9 @@ class QAExpertAgent:
             approved=approved,
             integration_tests=integration_tests,
             unit_tests=unit_tests,
-            test_plan=data.get("test_plan", ""),
-            summary=data.get("summary", ""),
-            live_test_notes=data.get("live_test_notes", ""),
+            test_plan=data.get("test_plan") or "",
+            summary=data.get("summary") or "",
+            live_test_notes=data.get("live_test_notes") or "",
             readme_content=readme_content,
-            suggested_commit_message=data.get("suggested_commit_message", ""),
+            suggested_commit_message=data.get("suggested_commit_message") or "",
         )

@@ -586,6 +586,7 @@ class BackendExpertAgent:
         problem_solver_agent: Any | None = None,
         git_operations_tool_agent: Any | None = None,
         linting_tool_agent: Any | None = None,
+        build_fix_specialist: Any | None = None,
     ) -> BackendWorkflowResult:
         """
         Execute the full backend task lifecycle autonomously.
@@ -1095,9 +1096,9 @@ class BackendExpertAgent:
                     break
                 # When same error repeats 2+ times, try BuildFixSpecialist for minimal targeted fix
                 specialist_success = False
-                if consecutive_same_build_failures >= 2:
+                if consecutive_same_build_failures >= 2 and build_fix_specialist is not None:
                     try:
-                        from build_fix_specialist import BuildFixSpecialistAgent, BuildFixInput
+                        from build_fix_specialist.models import BuildFixInput
                         affected_paths = _extract_affected_file_paths_from_build_errors(build_errors, repo_path)
                         affected_code = _read_affected_files_code(repo_path, affected_paths)
                         failing_test_file = (
@@ -1113,8 +1114,7 @@ class BackendExpertAgent:
                                     failing_test_content = test_path.read_text(encoding="utf-8", errors="replace")[:3000]
                                 except Exception:
                                     pass
-                        specialist = BuildFixSpecialistAgent(llm_client=self.llm)
-                        bf_result = specialist.run(BuildFixInput(
+                        bf_result = build_fix_specialist.run(BuildFixInput(
                             build_errors=build_errors[:4000],
                             failing_test_content=failing_test_content,
                             affected_files_code=affected_code,

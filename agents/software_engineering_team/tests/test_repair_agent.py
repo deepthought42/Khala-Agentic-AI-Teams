@@ -233,3 +233,105 @@ def test_orchestrator_repair_requeue_on_backend_crash(tmp_path: Path) -> None:
     assert task_id not in failed
     assert mock_backend.run_workflow.call_count == 2
     mock_repair.run.assert_called_once()
+
+
+def test_orchestrator_requeues_when_task_contract_is_repaired(tmp_path: Path) -> None:
+    """Backend task blocked by missing contract fields is refined and re-queued."""
+    import orchestrator
+    from shared.models import Task, TaskType
+
+    backend_dir = tmp_path / "backend"
+    backend_dir.mkdir()
+    (backend_dir / ".git").mkdir()
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+
+    task_id = "perf-tenant-index"
+    initial_task = Task(
+        id=task_id,
+        type=TaskType.BACKEND,
+        title="Add tenant index",
+        description="Add index on tasks.tenant_id",
+        assignee="backend",
+        requirements="Create migration and update schema",
+        acceptance_criteria=["Index exists and query latency improves"],
+        metadata={},
+    )
+    refined_task = initial_task.model_copy(update={
+        "description": "Add DB index for tenant-scoped task queries.",
+        "requirements": "Input: existing tasks table schema. Output: migration adding tasks.tenant_id index and validation.",
+        "acceptance_criteria": ["Migration adds index", "Reads remain backward compatible"],
+    })
+
+    fail_result = MagicMock()
+    fail_result.success = False
+    fail_result.failure_reason = (
+        "Task contract is incomplete. Missing required fields: "
+        "goal, scope, constraints, non_functional_requirements, inputs_outputs"
+    )
+    success_result = MagicMock()
+    success_result.success = True
+
+    mock_backend = MagicMock()
+    mock_backend.run_workflow.side_effect = [fail_result, success_result]
+
+    mock_project_planning = MagicMock()
+    planning_out = MagicMock()
+    planning_out.overview = MagicMock(non_functional_requirements=["Performance", "Reliability"])
+    mock_project_planning.run.return_value = planning_out
+
+    mock_tech_lead = MagicMock()
+    mock_tech_lead.refine_task.return_value = refined_task
+
+    mock_agents = {
+        "backend": mock_backend,
+        "frontend": MagicMock(),
+        "git_setup": MagicMock(),
+        "repair": MagicMock(),
+        "tech_lead": mock_tech_lead,
+        "devops": MagicMock(),
+        "qa": MagicMock(),
+        "security": MagicMock(),
+        "dbc_comments": MagicMock(),
+        "code_review": MagicMock(),
+        "accessibility": MagicMock(),
+        "project_planning": mock_project_planning,
+    }
+    mock_agents["git_setup"].run.return_value = MagicMock(success=True)
+
+    backend_queue = [task_id]
+    frontend_queue = []
+    all_tasks = {task_id: initial_task}
+    completed = set()
+    failed = {}
+    completed_code_task_ids = []
+
+    with patch("orchestrator.update_job"):
+        with patch("shared.command_runner.ensure_backend_project_initialized") as mock_init:
+            mock_init.return_value = MagicMock(success=True)
+            orchestrator._run_backend_frontend_workers(
+                job_id="test-job",
+                path=tmp_path,
+                backend_dir=backend_dir,
+                frontend_dir=frontend_dir,
+                backend_queue=backend_queue,
+                frontend_queue=frontend_queue,
+                all_tasks=all_tasks,
+                completed=completed,
+                failed=failed,
+                completed_code_task_ids=completed_code_task_ids,
+                spec_content="# Spec",
+                architecture=MagicMock(),
+                agents=mock_agents,
+                tech_lead=mock_tech_lead,
+                total_tasks=1,
+                is_retry=False,
+            )
+
+    assert task_id in completed
+    assert task_id not in failed
+    assert mock_backend.run_workflow.call_count == 2
+    assert task_id in all_tasks
+    assert all_tasks[task_id].metadata.get("goal")
+    assert all_tasks[task_id].metadata.get("inputs_outputs")
+    mock_project_planning.run.assert_called()
