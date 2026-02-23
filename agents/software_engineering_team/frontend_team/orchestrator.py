@@ -15,6 +15,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.models import SystemArchitecture, Task, TaskUpdate
+from shared.repo_utils import (
+    int_env as _int_env,
+    read_repo_code,
+    truncate_for_context,
+    FRONTEND_EXTENSIONS,
+)
+from shared.task_utils import (
+    task_requirements,
+    task_requirements_with_expectations,
+)
 
 from frontend_team.feature_agent import FrontendExpertAgent, FrontendInput
 from frontend_team.feature_agent.agent import (
@@ -41,12 +51,6 @@ from .build_release import BuildReleaseAgent, BuildReleaseInput
 
 logger = logging.getLogger(__name__)
 
-def _int_env(name: str, default: int, min_val: int = 1) -> int:
-    try:
-        return max(min_val, int(os.environ.get(name) or str(default)))
-    except ValueError:
-        return default
-
 
 MAX_CODE_REVIEW_ITERATIONS = _int_env("SW_MAX_CODE_REVIEW_ITERATIONS", 20)
 MAX_CLARIFICATION_REFINEMENTS = _int_env("SW_MAX_CLARIFICATION_REFINEMENTS", 20)
@@ -70,58 +74,22 @@ LIGHTWEIGHT_KEYWORDS = ("fix", "resolve", "update", "patch", "correct", "remedia
 LIGHTWEIGHT_MAX_DESC_LEN = 400
 
 
-def _task_requirements(task: Task) -> str:
-    """Build full requirements string from a Task object."""
-    parts: List[str] = []
-    if task.description:
-        parts.append(f"Task Description:\n{task.description}")
-    if getattr(task, "user_story", None):
-        parts.append(f"User Story: {task.user_story}")
-    if task.requirements:
-        parts.append(f"Technical Requirements:\n{task.requirements}")
-    if getattr(task, "acceptance_criteria", None):
-        parts.append("Acceptance Criteria:\n- " + "\n- ".join(task.acceptance_criteria))
-    return "\n\n".join(parts) if parts else task.description
+_task_requirements = task_requirements
 
 
 def _task_requirements_with_route_expectations(task: Task, repo_path: Path) -> str:
     """Build requirements string including route/component expectations from repo."""
-    base = _task_requirements(task)
-    try:
-        from shared.test_spec_expectations import build_test_spec_checklist
-        checklist = build_test_spec_checklist(repo_path, "frontend")
-        if checklist:
-            base += "\n\n" + checklist
-    except Exception:
-        pass
-    return base
+    return task_requirements_with_expectations(task, repo_path, "frontend")
 
 
-def _truncate_for_context(text: str, max_chars: int) -> str:
-    """Truncate text for agent context."""
-    if not text or len(text) <= max_chars:
-        return text or ""
-    return text[:max_chars] + f"\n\n... [truncated, {len(text) - max_chars} more chars]"
+_truncate_for_context = truncate_for_context
 
 
 def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str:
-    """Read code files from repo."""
+    """Read code files from repo. Delegates to shared.repo_utils."""
     if extensions is None:
-        extensions = [".ts", ".tsx", ".html", ".scss"]
-    exclude = frozenset({".git", "node_modules", "dist", ".angular"})
-    parts: List[str] = []
-    for f in repo_path.rglob("*"):
-        if exclude & set(f.parts):
-            continue
-        if f.is_file() and f.suffix in extensions:
-            try:
-                parts.append(
-                    f"### {f.relative_to(repo_path)} ###\n"
-                    f"{f.read_text(encoding='utf-8', errors='replace')}"
-                )
-            except Exception:
-                pass
-    return "\n\n".join(parts) if parts else "# No code files found"
+        extensions = FRONTEND_EXTENSIONS
+    return read_repo_code(repo_path, extensions)
 
 
 def _is_lightweight_task(task: Task) -> bool:

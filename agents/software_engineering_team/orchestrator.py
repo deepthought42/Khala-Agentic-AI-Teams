@@ -71,6 +71,8 @@ from shared.development_plan_writer import (
 )
 from shared.models import TaskUpdate, model_to_dict
 from shared.repo_writer import write_agent_output
+from shared.repo_utils import read_repo_code, truncate_for_context
+from shared.task_utils import task_requirements
 
 logger = logging.getLogger(__name__)
 
@@ -478,18 +480,7 @@ def _get_agents():
     }
 
 
-def _task_requirements(task) -> str:
-    """Build full requirements string including description, user story, requirements, and acceptance criteria."""
-    parts = []
-    if task.description:
-        parts.append(f"Task Description:\n{task.description}")
-    if getattr(task, "user_story", None):
-        parts.append(f"User Story: {task.user_story}")
-    if task.requirements:
-        parts.append(f"Technical Requirements:\n{task.requirements}")
-    if getattr(task, "acceptance_criteria", None):
-        parts.append("Acceptance Criteria:\n- " + "\n- ".join(task.acceptance_criteria))
-    return "\n\n".join(parts) if parts else task.description
+_task_requirements = task_requirements
 
 
 MAX_REVIEW_ITERATIONS = 20
@@ -504,35 +495,9 @@ def _issues_to_dicts(qa_bugs, sec_vulns) -> tuple:
     return qa_list, sec_list
 
 
-# When reading frontend-like extensions, exclude dirs that bloat payload (request body too large)
-_READ_REPO_EXCLUDE_PARTS = frozenset({".git", "node_modules", "dist", ".angular"})
-
-
-def _read_repo_code(repo_path: Path, extensions: List[str] = None) -> str:
-    """Read code files from repo, concatenated. Excludes .git, and for frontend paths node_modules/dist/.angular."""
-    if extensions is None:
-        extensions = [".py", ".ts", ".tsx", ".java", ".yml", ".yaml"]
-    frontend_exts = {".ts", ".tsx", ".html", ".scss"}
-    use_frontend_exclusions = bool(set(extensions) & frontend_exts)
-    parts = []
-    for f in repo_path.rglob("*"):
-        if ".git" in f.parts:
-            continue
-        if use_frontend_exclusions and _READ_REPO_EXCLUDE_PARTS & set(f.parts):
-            continue
-        if f.is_file() and f.suffix in extensions:
-            try:
-                parts.append(f"### {f.relative_to(repo_path)} ###\n{f.read_text(encoding='utf-8', errors='replace')}")
-            except Exception:
-                pass
-    return "\n\n".join(parts) if parts else "# No code files found"
-
-
-def _truncate_for_context(text: str, max_chars: int) -> str:
-    """Truncate text for agent context, with truncation notice."""
-    if not text or len(text) <= max_chars:
-        return text or ""
-    return text[:max_chars] + f"\n\n... [truncated, {len(text) - max_chars} more chars]"
+# _read_repo_code and _truncate_for_context are now in shared.repo_utils
+_read_repo_code = read_repo_code
+_truncate_for_context = truncate_for_context
 
 
 def _build_task_update(task_id: str, agent_type: str, result, status: str = "completed") -> TaskUpdate:

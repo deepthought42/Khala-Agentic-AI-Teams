@@ -420,6 +420,20 @@ class TechLeadAgent:
         )
         data = task_gen.run(task_gen_input)
 
+        # ── Handle microtask escalation from Task Generator ──
+        from planning_team.task_generator_agent.agent import ESCALATION_KEY
+
+        if data.get(ESCALATION_KEY):
+            logger.warning(
+                "Tech Lead: Task Generator escalated after depth %d. "
+                "Attempting to refine %d failed scopes.",
+                data.get("max_depth_reached", 0),
+                len(data.get("failed_scopes") or []),
+            )
+            data = self._handle_task_generator_escalation(
+                data, task_gen, task_gen_input, reqs,
+            )
+
         if data.get("spec_clarification_needed"):
             clarification_questions = data.get("clarification_questions") or []
             if not isinstance(clarification_questions, list):
@@ -466,6 +480,128 @@ class TechLeadAgent:
             spec_clarification_needed=False,
             clarification_questions=[],
         )
+
+    def _handle_task_generator_escalation(
+        self,
+        escalation_data: Dict[str, Any],
+        task_gen: "TaskGeneratorAgent",
+        task_gen_input: "TaskGeneratorInput",
+        reqs: Any,
+    ) -> Dict[str, Any]:
+        """Refine failed scopes from a Task Generator escalation and retry.
+
+        The escalation payload contains ``failed_scopes`` (acceptance criteria
+        groups that could not be generated) and ``successful_tasks`` (tasks
+        already produced by successful sub-scope branches).
+
+        The Tech Lead asks the LLM to break each failed scope into smaller,
+        more concrete acceptance criteria, builds a new narrowed
+        ``TaskGeneratorInput`` for each, and retries generation.  Results are
+        merged with already-successful tasks.
+        """
+        from planning_team.task_generator_agent.agent import ESCALATION_KEY
+
+        successful_tasks: list = list(escalation_data.get("successful_tasks") or [])
+        successful_order: list = list(escalation_data.get("successful_execution_order") or [])
+        failed_scopes = escalation_data.get("failed_scopes") or []
+
+        if not failed_scopes:
+            logger.warning("Tech Lead: escalation payload has no failed_scopes; returning successful tasks only")
+            return {
+                "tasks": successful_tasks,
+                "execution_order": successful_order,
+                "summary": "Partial recovery from escalation (no failed scopes to retry).",
+                "requirement_task_mapping": [],
+                "clarification_questions": [],
+                "spec_clarification_needed": False,
+            }
+
+        for scope in failed_scopes:
+            scope_criteria = scope.get("acceptance_criteria") or []
+            scope_title = scope.get("title", reqs.title)
+            scope_desc = scope.get("description", "")
+
+            logger.info(
+                "Tech Lead: refining failed scope '%s' (%d criteria)",
+                scope_title, len(scope_criteria),
+            )
+
+            refined_criteria = self._refine_failed_scope_criteria(
+                scope_title, scope_desc, scope_criteria,
+            )
+
+            if not refined_criteria:
+                logger.warning(
+                    "Tech Lead: LLM produced no refined criteria for scope '%s'; skipping",
+                    scope_title,
+                )
+                continue
+
+            sub_reqs = reqs.model_copy(update={"acceptance_criteria": refined_criteria})
+            sub_input = task_gen_input.model_copy(update={"requirements": sub_reqs})
+
+            try:
+                sub_data = task_gen.run(sub_input)
+            except Exception as exc:
+                logger.error("Tech Lead: retry for refined scope '%s' failed: %s", scope_title, exc)
+                continue
+
+            if sub_data.get(ESCALATION_KEY):
+                logger.warning("Tech Lead: refined scope '%s' escalated again; using partial results", scope_title)
+                successful_tasks.extend(sub_data.get("successful_tasks") or [])
+                successful_order.extend(sub_data.get("successful_execution_order") or [])
+                continue
+
+            successful_tasks.extend(sub_data.get("tasks") or [])
+            successful_order.extend(sub_data.get("execution_order") or [])
+
+        # Deduplicate
+        seen: set[str] = set()
+        deduped: list = []
+        for t in successful_tasks:
+            tid = t.get("id", "")
+            if tid and tid in seen:
+                continue
+            seen.add(tid)
+            deduped.append(t)
+
+        deduped_order = list(dict.fromkeys(successful_order))
+
+        return {
+            "tasks": deduped,
+            "execution_order": deduped_order,
+            "summary": f"Recovered {len(deduped)} tasks after escalation refinement.",
+            "requirement_task_mapping": [],
+            "clarification_questions": [],
+            "spec_clarification_needed": False,
+        }
+
+    def _refine_failed_scope_criteria(
+        self,
+        title: str,
+        description: str,
+        criteria: List[str],
+    ) -> List[str]:
+        """Ask the LLM to break broad acceptance criteria into smaller, concrete ones."""
+        prompt = (
+            "You are a Staff Tech Lead. A task generator failed to produce a valid JSON plan "
+            "for the following scope because the output was too large.\n\n"
+            "Break each acceptance criterion into 2-3 smaller, highly specific, independently "
+            "implementable acceptance criteria. Return ONLY a JSON object:\n"
+            '{"refined_criteria": ["criterion 1", "criterion 2", ...]}\n\n'
+            f"**Title:** {title}\n"
+            f"**Description:** {description[:500]}\n"
+            "**Original criteria:**\n"
+            + "\n".join(f"- {c}" for c in criteria)
+        )
+        try:
+            data = self.llm.complete_json(prompt, temperature=0.3)
+            refined = data.get("refined_criteria") or []
+            if isinstance(refined, list) and all(isinstance(c, str) for c in refined):
+                return refined
+        except Exception as exc:
+            logger.warning("Tech Lead: failed to refine criteria via LLM: %s", exc)
+        return criteria
 
     def refine_task(
         self,

@@ -113,6 +113,25 @@ class LLMPermanentError(LLMError):
     """Raised for 4xx errors (except 429) or malformed responses. Do not retry."""
 
 
+class LLMJsonParseError(LLMPermanentError):
+    """Raised when LLM returned a 200 response but the content is not valid JSON.
+
+    Consumers can catch this specifically to trigger decomposition / retry
+    strategies without catching unrelated permanent errors (e.g. HTTP 400).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str = "json_parse",
+        response_preview: str = "",
+    ):
+        super().__init__(message)
+        self.error_kind = error_kind
+        self.response_preview = response_preview
+
+
 def get_llm_config_summary() -> str:
     """
     Return a short summary of the effective LLM provider and model from env vars.
@@ -726,50 +745,6 @@ class OllamaLLMClient(LLMClient):
         s = re.sub(r",\s*([}\]])", r"\1", s)
         return s
 
-    @staticmethod
-    def _repair_truncated_json(s: str) -> str:
-        """Try to close truncated JSON by balancing brackets/braces.
-
-        When the LLM hits max_tokens the response is valid JSON that was simply
-        cut off mid-stream.  This heuristic trims back to the last complete
-        value boundary and then appends the missing closing delimiters.
-        """
-        s = s.rstrip()
-        if not s or s[0] not in "{[":
-            return s
-
-        # Strip trailing incomplete key-value fragments (e.g. `"key": "val` or `, "key`)
-        s = re.sub(r',\s*"[^"]*"\s*:\s*"[^"]*$', "", s)  # dangling string value
-        s = re.sub(r',\s*"[^"]*"\s*:\s*\S*$', "", s)      # dangling non-string value
-        s = re.sub(r',\s*"[^"]*$', "", s)                  # dangling key with no colon
-        s = re.sub(r',\s*\{[^}]*$', "", s)                 # dangling incomplete object
-        s = re.sub(r",\s*$", "", s)                        # trailing comma
-
-        # Count unmatched openers
-        stack: list[str] = []
-        in_string = False
-        escape = False
-        for ch in s:
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if ch == '"' and not escape:
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch in "{[":
-                stack.append("}" if ch == "{" else "]")
-            elif ch in "}]":
-                if stack:
-                    stack.pop()
-
-        # Close in reverse order
-        return s + "".join(reversed(stack))
-
     def _extract_json(self, text: str) -> Dict[str, Any]:
         if "---DRAFT---" in text:
             parts = text.split("---DRAFT---", 1)
@@ -837,29 +812,16 @@ class OllamaLLMClient(LLMClient):
                 except Exception:
                     continue
 
-        # Last resort: try repairing truncated JSON (LLM hit max_tokens mid-stream)
-        truncated = self._repair_truncated_json(text)
-        if truncated != text:
-            try:
-                parsed = json.loads(truncated)
-                if isinstance(parsed, dict):
-                    logger.warning(
-                        "Recovered truncated JSON response (%d chars -> %d chars). "
-                        "Some data may be incomplete.",
-                        len(text), len(truncated),
-                    )
-                    return parsed
-            except Exception:
-                logger.debug("Truncated JSON repair also failed")
-
         logger.debug(
             "Raw LLM response that failed all JSON extraction strategies (first 2000 chars):\n%s",
             text[:2000],
         )
-        raise LLMPermanentError(
+        raise LLMJsonParseError(
             "Could not parse structured JSON from LLM response. "
             "Model returned invalid or non-JSON output. "
-            f"Response preview: {text[:500]!r}..."
+            f"Response preview: {text[:500]!r}...",
+            error_kind="json_parse",
+            response_preview=text[:500],
         )
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
@@ -891,8 +853,39 @@ class OllamaLLMClient(LLMClient):
                 {"role": "user", "content": prompt},
             ],
         }
-        url = f"{self.base_url}/v1/chat/completions"
+        content = self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
+        return self._extract_json(content)
 
+    def complete_text(self, prompt: str, *, temperature: float = 0.0) -> str:
+        """Return raw text from the model (no JSON mode). Use for template-based output."""
+        max_retries, backoff_base, backoff_max = _parse_retry_config()
+        sem = _get_ollama_semaphore()
+        logger.info("LLM request (text): provider=ollama model=%s base_url=%s", self.model, self.base_url)
+        env_max = os.environ.get(ENV_LLM_MAX_TOKENS)
+        max_tokens = min(
+            int(env_max) if env_max else min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS),
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        payload = {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+        }
+        return self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
+
+    def _ollama_post(
+        self,
+        payload: dict,
+        max_retries: int,
+        backoff_base: float,
+        backoff_max: float,
+        sem: Any,
+    ) -> str:
+        """POST to chat completions; return raw content string. Raises on non-200 or malformed response."""
+        url = f"{self.base_url}/v1/chat/completions"
         last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -900,34 +893,23 @@ class OllamaLLMClient(LLMClient):
                     with httpx.Client(timeout=self.timeout) as client:
                         response = client.post(url, json=payload)
                         status = response.status_code
-
                         if status == 200:
                             try:
                                 data = response.json()
                             except json.JSONDecodeError as e:
                                 raise LLMPermanentError(f"Malformed LLM response (invalid JSON): {e}") from e
-                            content = self._parse_response_content(data)
-                            return self._extract_json(content)
-
+                            return self._parse_response_content(data)
                         if status == 429:
                             last_error = LLMRateLimitError(
                                 f"LLM rate limited (429) after {attempt + 1} attempt(s)",
                                 status_code=429,
                             )
-                            retry_after = response.headers.get("Retry-After")
-                            if retry_after and retry_after.isdigit():
-                                wait = min(float(retry_after), backoff_max)
-                            else:
-                                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                            wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
                             if attempt < max_retries:
-                                logger.warning(
-                                    "LLM 429 rate limit, retrying in %.1fs (attempt %d/%d)",
-                                    wait, attempt + 1, max_retries + 1,
-                                )
+                                logger.warning("LLM 429, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
                                 time.sleep(wait)
                                 continue
                             raise last_error
-
                         if 500 <= status < 600:
                             last_error = LLMTemporaryError(
                                 f"LLM server error {status} after {attempt + 1} attempt(s): {response.text[:200]}",
@@ -935,29 +917,19 @@ class OllamaLLMClient(LLMClient):
                             )
                             if attempt < max_retries:
                                 wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                                logger.warning(
-                                    "LLM 5xx error, retrying in %.1fs (attempt %d/%d)",
-                                    wait, attempt + 1, max_retries + 1,
-                                )
+                                logger.warning("LLM 5xx, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
                                 time.sleep(wait)
                                 continue
                             raise last_error
-
                         if 400 <= status < 500:
                             err_text = response.text[:500]
                             if status == 404 and ("not found" in err_text.lower() or "model" in err_text.lower()):
                                 raise LLMPermanentError(
                                     f"LLM model not found (404). The API at {self.base_url} does not have model "
-                                    f"'{self.model}'. Set SW_LLM_MODEL to a model your API supports (e.g. "
-                                    "export SW_LLM_MODEL=llama3.2 for Ollama, or your provider's model id). "
-                                    f"Original: {err_text[:200]}",
+                                    f"'{self.model}'. Set SW_LLM_MODEL to a model your API supports. Original: {err_text[:200]}",
                                     status_code=status,
                                 )
-                            raise LLMPermanentError(
-                                f"LLM client error {status}: {err_text}",
-                                status_code=status,
-                            )
-
+                            raise LLMPermanentError(f"LLM client error {status}: {err_text}", status_code=status)
                         raise LLMPermanentError(
                             f"Unexpected LLM response status {status}: {response.text[:200]}",
                             status_code=status,
@@ -970,7 +942,6 @@ class OllamaLLMClient(LLMClient):
                     last_error = LLMRateLimitError(str(e), status_code=429, cause=e)
                     if attempt < max_retries:
                         wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                        logger.warning("LLM 429, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
                         time.sleep(wait)
                         continue
                     raise last_error
@@ -978,7 +949,6 @@ class OllamaLLMClient(LLMClient):
                     last_error = LLMTemporaryError(str(e), status_code=status, cause=e)
                     if attempt < max_retries:
                         wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                        logger.warning("LLM 5xx, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
                         time.sleep(wait)
                         continue
                     raise last_error
@@ -986,20 +956,13 @@ class OllamaLLMClient(LLMClient):
                     raise LLMPermanentError(str(e), status_code=status, cause=e)
                 raise LLMPermanentError(str(e), status_code=status, cause=e)
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:
-                last_error = LLMTemporaryError(
-                    f"LLM connection/timeout error: {e}",
-                    cause=e,
-                )
+                last_error = LLMTemporaryError(f"LLM connection/timeout error: {e}", cause=e)
                 if attempt < max_retries:
                     wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                    logger.warning(
-                        "LLM connection error, retrying in %.1fs (attempt %d/%d): %s",
-                        wait, attempt + 1, max_retries + 1, e,
-                    )
+                    logger.warning("LLM connection error, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
                     time.sleep(wait)
                     continue
                 raise last_error
-
         if last_error:
             raise last_error
         raise LLMTemporaryError("LLM request failed after all retries")

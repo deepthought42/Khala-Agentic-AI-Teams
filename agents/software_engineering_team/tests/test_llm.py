@@ -9,6 +9,7 @@ import pytest
 
 from shared.llm import (
     DummyLLMClient,
+    LLMJsonParseError,
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
@@ -155,6 +156,33 @@ def test_extract_json_unparseable_raises_llm_permanent_error() -> None:
     text = "no code blocks or json here at all"
     with pytest.raises(LLMPermanentError, match="Could not parse structured JSON"):
         client._extract_json(text)
+
+
+def test_extract_json_unparseable_raises_json_parse_error_subclass() -> None:
+    """Unparseable text raises LLMJsonParseError (subclass of LLMPermanentError)."""
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    text = "absolutely no JSON here"
+    with pytest.raises(LLMJsonParseError) as exc_info:
+        client._extract_json(text)
+    assert exc_info.value.error_kind == "json_parse"
+    assert exc_info.value.response_preview
+
+
+def test_extract_json_truncated_json_not_repaired() -> None:
+    """Truncated JSON is NOT silently repaired; LLMJsonParseError is raised."""
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    truncated = '{"tasks": [{"id": "t1", "title": "Setup'
+    with pytest.raises(LLMJsonParseError):
+        client._extract_json(truncated)
+
+
+def test_llm_json_parse_error_is_permanent_error() -> None:
+    """LLMJsonParseError is a subclass of LLMPermanentError for backward compat."""
+    assert issubclass(LLMJsonParseError, LLMPermanentError)
+    err = LLMJsonParseError("test", error_kind="json_parse", response_preview="abc")
+    assert isinstance(err, LLMPermanentError)
+    assert err.error_kind == "json_parse"
+    assert err.response_preview == "abc"
 
 
 def test_qwen3_coder_next_uses_known_context_size() -> None:

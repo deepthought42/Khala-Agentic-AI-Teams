@@ -16,6 +16,7 @@ from shared.git_utils import (
     write_files_and_commit,
 )
 from shared.llm import LLMClient
+from shared.repo_utils import read_repo_code, DOCUMENTATION_EXTENSIONS
 
 from .models import DocumentationInput, DocumentationOutput, DocumentationStatus
 from .prompts import (
@@ -33,30 +34,11 @@ MAX_WORKFLOW_SECONDS = 300
 # Maximum characters of codebase content to send to the LLM
 MAX_CODEBASE_CHARS = 40000
 
-# Exclude these dirs when reading repo code (frontend)
-_READ_REPO_EXCLUDE_PARTS = {"node_modules", "dist", ".angular"}
-
-
 def _read_repo_code(repo_path: Path, extensions: List[str] | None = None) -> str:
-    """Read code files from repo, concatenated. Excludes .git and frontend build dirs."""
+    """Read code files from repo, concatenated. Delegates to shared.repo_utils."""
     if extensions is None:
-        extensions = [".py", ".ts", ".tsx", ".java", ".yml", ".yaml", ".html", ".scss"]
-    use_frontend_exclusions = bool(set(extensions) & {".ts", ".tsx", ".html", ".scss"})
-    parts: List[str] = []
-    for f in repo_path.rglob("*"):
-        if ".git" in f.parts:
-            continue
-        if use_frontend_exclusions and _READ_REPO_EXCLUDE_PARTS & set(f.parts):
-            continue
-        if f.is_file() and f.suffix in extensions:
-            try:
-                parts.append(
-                    f"### {f.relative_to(repo_path)} ###\n"
-                    f"{f.read_text(encoding='utf-8', errors='replace')}"
-                )
-            except Exception:
-                pass
-    return "\n\n".join(parts) if parts else "# No code files found"
+        extensions = DOCUMENTATION_EXTENSIONS
+    return read_repo_code(repo_path, extensions)
 
 
 class DocumentationAgent:

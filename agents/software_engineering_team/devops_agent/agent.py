@@ -9,19 +9,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.prompt_utils import log_llm_prompt
+from shared.repo_utils import int_env as _int_env
 from shared.task_plan import TaskPlan
 
 from .models import DevOpsInput, DevOpsOutput, DevOpsWorkflowResult
 from .prompts import DEVOPS_PLANNING_PROMPT, DEVOPS_PROMPT
 
 logger = logging.getLogger(__name__)
-
-
-def _int_env(name: str, default: int, min_val: int = 1) -> int:
-    try:
-        return max(min_val, int(os.environ.get(name) or str(default)))
-    except ValueError:
-        return default
 
 
 MAX_WORKFLOW_ITERATIONS = 20

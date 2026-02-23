@@ -201,14 +201,24 @@ class ArchitectureExpertAgent:
                 name = f"{fallback_base}-{idx + 1}"
             c_type = c.get("type") or "unknown"
             description = c.get("description") or f"{c_type} component {name}"
+            raw_interfaces = c.get("interfaces") or []
+            interfaces: list[str] = []
+            for iface in raw_interfaces:
+                if isinstance(iface, str):
+                    interfaces.append(iface)
+                elif isinstance(iface, dict):
+                    interfaces.append(iface.get("name") or str(iface))
+            raw_deps = c.get("dependencies") or []
+            deps = [d if isinstance(d, str) else (d.get("name") or str(d)) for d in raw_deps]
+
             components.append(
                 ArchitectureComponent(
                     name=name,
                     type=c_type,
                     description=description,
                     technology=c.get("technology"),
-                    dependencies=c.get("dependencies", []),
-                    interfaces=c.get("interfaces", []),
+                    dependencies=deps,
+                    interfaces=interfaces,
                 )
             )
 

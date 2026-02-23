@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List
 
@@ -15,6 +16,7 @@ from planning_team.planning_graph import (
     ensure_dict,
     ensure_str_list,
 )
+from planning_team.planning_template import parse_planning_template
 from shared.llm import LLMClient
 from shared.models import ProductRequirements, SystemArchitecture
 
@@ -174,7 +176,13 @@ class BackendPlanningAgent:
             context_parts.extend(["", "**Spec Analysis:**", input_data.spec_analysis[:4000]])
 
         prompt = BACKEND_PLANNING_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        data = self.llm.complete_json(prompt, temperature=0.2)
+        raw = self.llm.complete_text(prompt, temperature=0.2)
+        data = parse_planning_template(raw)
+        if not data.get("nodes") and raw.strip().startswith("{"):
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
         graph = _parse_graph_from_llm_output(data)
         logger.info("Backend Planning: produced %s nodes, %s edges", len(graph.nodes), len(graph.edges))
         return BackendPlanningOutput(planning_graph=graph, summary=data.get("summary", ""))

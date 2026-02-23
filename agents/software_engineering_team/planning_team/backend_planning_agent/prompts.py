@@ -51,10 +51,32 @@ Edges have from_id, to_id, type: "blocks" | "relates_to" | "exposes_api"
 10. Service design best practices: Separation of concerns, idempotency, and resilience.
 11. Testing: Unit, integration, and contract test tasks.
 
-**Output format:**
-Return a single JSON object with:
-- "nodes": list of {"id", "domain", "kind", "summary", "details", "user_story", "acceptance_criteria", "inputs", "outputs", "parent_id", "metadata"}
-- "edges": list of {"from_id", "to_id", "type"}
-- "summary": string
+**Output format (template – use exactly these section headers):**
+Emit the following sections in order. Use key: value lines. Separate each node or edge with --- on its own line. For acceptance_criteria, inputs, and outputs use pipe-separated values on one line (e.g. acceptance_criteria: criterion one | criterion two).
 
-Respond with valid JSON only. No explanatory text."""
+## NODES ##
+id: backend-api
+domain: backend
+kind: epic
+summary: Short title
+details: Implementation-ready description.
+user_story:
+acceptance_criteria: item1 | item2
+inputs:
+outputs:
+parent_id:
+---
+id: backend-next-task
+...
+## END NODES ##
+## EDGES ##
+from_id: backend-api
+to_id: backend-next-task
+type: blocks
+---
+## END EDGES ##
+## SUMMARY ##
+One sentence summary of the plan.
+## END SUMMARY ##
+
+Do not use JSON. Use only the template above. No explanatory text before or after."""
