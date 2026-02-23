@@ -77,7 +77,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
         try:
             kind = PlanningNodeKind(kind_str)
         except ValueError:
-            kind = PlanningNodeKind.TASK
+            kind = PlanningNodeKind.STORY
         domain_str = (n.get("domain") or "backend").lower()
         try:
             domain = PlanningDomain(domain_str)

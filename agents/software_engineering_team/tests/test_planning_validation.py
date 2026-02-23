@@ -30,7 +30,7 @@ def test_validate_sufficient_tasks_passes():
         g.add_node(PlanningNode(
             id=f"task-{i}",
             domain=domain,
-            kind=PlanningNodeKind.TASK,
+            kind=PlanningNodeKind.STORY,
             summary=f"Task {i}",
             details="Details here.",
         ))
@@ -42,8 +42,8 @@ def test_validate_sufficient_tasks_passes():
 def test_validate_detects_cycle():
     """Validation detects BLOCKS cycle."""
     g = PlanningGraph()
-    g.add_node(PlanningNode(id="a", domain=PlanningDomain.BACKEND, kind=PlanningNodeKind.TASK, summary="A"))
-    g.add_node(PlanningNode(id="b", domain=PlanningDomain.BACKEND, kind=PlanningNodeKind.TASK, summary="B"))
+    g.add_node(PlanningNode(id="a", domain=PlanningDomain.BACKEND, kind=PlanningNodeKind.STORY, summary="A"))
+    g.add_node(PlanningNode(id="b", domain=PlanningDomain.BACKEND, kind=PlanningNodeKind.STORY, summary="B"))
     g.add_edge(PlanningEdge(from_id="a", to_id="b", type=EdgeType.BLOCKS))
     g.add_edge(PlanningEdge(from_id="b", to_id="a", type=EdgeType.BLOCKS))
     is_valid, errors = validate_planning_graph(g)

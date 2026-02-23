@@ -1,0 +1,30 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["agents"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "W",   # pycodestyle warnings
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line-length handled by formatter
+    "N802",  # function name should be lowercase (some agents use CamelCase)
+    "N806",  # variable in function should be lowercase
+    "B904",  # raise-without-from (many re-raises are intentional)
+    "SIM108", # ternary operator (readability preference)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["shared", "backend_agent", "frontend_team", "devops_agent", "qa_agent"]
+
+[tool.ruff.lint.per-file-ignores]
+"agents/**/tests/**" = ["N", "B"]
+"agents/**/agent_implementations/**" = ["E", "F"]

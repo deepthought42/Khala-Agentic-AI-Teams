@@ -1,10 +1,9 @@
-"""Task Generator: generates TaskAssignment from merged spec analysis (fallback for Tech Lead)."""
+"""Task Generator: generates task plan from spec analysis via LLM."""
 
-from .agent import ESCALATION_KEY, TaskGeneratorAgent
+from .agent import TaskGeneratorAgent
 from .models import TaskGeneratorInput
 
 __all__ = [
-    "ESCALATION_KEY",
     "TaskGeneratorAgent",
     "TaskGeneratorInput",
 ]

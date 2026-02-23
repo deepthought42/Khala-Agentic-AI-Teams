@@ -32,7 +32,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
         graph.add_node(PlanningNode(
             id=n["id"],
             domain=PlanningDomain.DOCS,
-            kind=PlanningNodeKind.TASK,
+            kind=PlanningNodeKind.STORY,
             summary=n.get("summary", ""),
             details=n.get("details", ""),
             acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),

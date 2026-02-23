@@ -37,6 +37,7 @@ class RunAuditRequest(BaseModel):
 
     repo_path: str = Field(
         ...,
+        max_length=4096,
         description="Local filesystem path to the code repository to audit.",
     )
 

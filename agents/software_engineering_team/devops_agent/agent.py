@@ -44,8 +44,8 @@ def _gather_codebase_context(repo_path: Path, subdir: str = "") -> str:
             try:
                 content = f.read_text(encoding="utf-8", errors="replace")
                 parts.append(f"**{name}:**\n```\n{content[:2000]}\n```")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                logger.debug("Could not read %s: %s", f, e)
 
     # Node: package.json
     pkg = path / "package.json"
@@ -53,8 +53,8 @@ def _gather_codebase_context(repo_path: Path, subdir: str = "") -> str:
         try:
             content = pkg.read_text(encoding="utf-8", errors="replace")
             parts.append(f"**package.json:**\n```\n{content[:2000]}\n```")
-        except Exception:
-            pass
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug("Could not read %s: %s", pkg, e)
 
     # Existing CI/CD
     workflows_dir = path / ".github" / "workflows"
@@ -64,15 +64,15 @@ def _gather_codebase_context(repo_path: Path, subdir: str = "") -> str:
                 try:
                     content = wf.read_text(encoding="utf-8", errors="replace")
                     parts.append(f"**Existing {wf.name}:**\n```yaml\n{content[:1500]}\n```")
-                except Exception:
-                    pass
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.debug("Could not read workflow %s: %s", wf, e)
         for wf in workflows_dir.glob("*.yaml"):
             if wf.is_file():
                 try:
                     content = wf.read_text(encoding="utf-8", errors="replace")
                     parts.append(f"**Existing {wf.name}:**\n```yaml\n{content[:1500]}\n```")
-                except Exception:
-                    pass
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.debug("Could not read workflow %s: %s", wf, e)
 
     # Main entry (Python)
     for main in ("main.py", "app/main.py"):
@@ -81,8 +81,8 @@ def _gather_codebase_context(repo_path: Path, subdir: str = "") -> str:
             try:
                 content = m.read_text(encoding="utf-8", errors="replace")
                 parts.append(f"**{main} (entry):**\n```\n{content[:800]}\n```")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                logger.debug("Could not read %s: %s", m, e)
             break
 
     if not parts:

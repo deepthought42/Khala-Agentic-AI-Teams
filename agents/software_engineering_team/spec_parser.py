@@ -1,14 +1,11 @@
 """
 Parse initial_spec.md into ProductRequirements for the software engineering team.
-
-Supports both LLM-based extraction (structured output) and heuristic fallback.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -60,32 +57,6 @@ Specification:
     )
     logger.info("Parsed spec: title=%s, %s acceptance criteria", reqs.title, len(reqs.acceptance_criteria))
     return reqs
-
-
-def parse_spec_heuristic(spec_content: str) -> ProductRequirements:
-    """
-    Heuristic parse: extract title from first # heading, rest as description.
-    """
-    lines = spec_content.strip().split("\n")
-    title = "Software Project"
-    description_parts = []
-
-    for line in lines:
-        match = re.match(r"^#\s+(.+)$", line.strip())
-        if match and title == "Software Project":
-            title = match.group(1).strip()
-        else:
-            description_parts.append(line)
-
-    description = "\n".join(description_parts).strip() or spec_content[:2000]
-    return ProductRequirements(
-        title=title,
-        description=description,
-        acceptance_criteria=[],
-        constraints=[],
-        priority="medium",
-        metadata={"parsed_from": "initial_spec.md", "method": "heuristic"},
-    )
 
 
 def load_spec_from_repo(repo_path: str | Path) -> str:

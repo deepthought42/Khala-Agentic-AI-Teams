@@ -55,7 +55,7 @@ class PerformancePlanningAgent:
             graph.add_node(PlanningNode(
                 id=n["id"],
                 domain=PlanningDomain.BACKEND,
-                kind=PlanningNodeKind.TASK,
+                kind=PlanningNodeKind.STORY,
                 summary=n.get("summary", ""),
                 details=n.get("details", ""),
                 acceptance_criteria=ensure_str_list(n.get("acceptance_criteria")),

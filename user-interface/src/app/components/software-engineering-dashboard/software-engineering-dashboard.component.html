@@ -47,6 +47,14 @@
       <app-execution-stream />
     </div>
   </mat-tab>
+  <mat-tab label="Backend Developer (v2)">
+    <div class="tab-content">
+      <app-backend-code-v2-run-form (submitRequest)="onBackendCodeV2Submit($event)" />
+      @if (backendCodeV2JobId) {
+        <app-backend-code-v2-job-status [jobId]="backendCodeV2JobId" />
+      }
+    </div>
+  </mat-tab>
   <mat-tab label="Architecture">
     <div class="tab-content">
       <mat-card>

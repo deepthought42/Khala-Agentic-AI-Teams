@@ -76,7 +76,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any]) -> PlanningGraph:
         try:
             kind = PlanningNodeKind(kind_str)
         except ValueError:
-            kind = PlanningNodeKind.TASK
+            kind = PlanningNodeKind.STORY
         meta = ensure_dict(n.get("metadata"))
         user_story = (n.get("user_story") or meta.get("user_story") or "").strip()
         if user_story:

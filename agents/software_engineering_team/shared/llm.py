@@ -726,7 +726,7 @@ class OllamaLLMClient(LLMClient):
                         self._model_num_ctx = max(2048, int(ctx))
                         logger.info("Ollama model %s context=%s; using as max_tokens", self.model, self._model_num_ctx)
                         return self._model_num_ctx
-        except Exception as e:
+        except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
             logger.warning(
                 "Could not fetch Ollama model info for %s: %s; using max_tokens=16384",
                 self.model,
@@ -755,22 +755,22 @@ class OllamaLLMClient(LLMClient):
             text = fenced_match.group(1).strip()
         try:
             return json.loads(text)
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             logger.debug("Primary JSON parse failed; attempting repair")
         repaired = self._repair_json(text)
         try:
             return json.loads(repaired)
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             logger.debug("Repaired JSON parse failed; attempting object extraction fallback")
         obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if obj_match:
             raw = obj_match.group(0)
             try:
                 return json.loads(raw)
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 try:
                     return json.loads(self._repair_json(raw))
-                except Exception:
+                except (json.JSONDecodeError, ValueError):
                     logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
         # Retry once after stripping common leading/trailing noise
         stripped = text.strip()
@@ -787,7 +787,7 @@ class OllamaLLMClient(LLMClient):
             if obj_match2:
                 try:
                     return json.loads(obj_match2.group(0))
-                except Exception:
+                except (json.JSONDecodeError, ValueError):
                     pass
 
         # Try every markdown code block: parse each as JSON and use first that yields a useful dict
@@ -804,12 +804,12 @@ class OllamaLLMClient(LLMClient):
                 parsed = json.loads(block)
                 if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
                     return parsed
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 try:
                     parsed = json.loads(self._repair_json(block))
                     if isinstance(parsed, dict) and _EXPECTED_KEYS & set(parsed.keys()):
                         return parsed
-                except Exception:
+                except (json.JSONDecodeError, ValueError):
                     continue
 
         logger.debug(

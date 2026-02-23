@@ -27,17 +27,17 @@ _jobs_lock = threading.Lock()
 
 
 class RunMarketingTeamRequest(BaseModel):
-    brand_guidelines_path: str = Field(..., description="Path to brand guidelines document")
-    brand_objectives_path: str = Field(..., description="Path to brand objectives document")
-    llm_model_name: str = Field(..., description="Name of local LLM model to use")
-    brand_name: str = Field(default="Brand")
-    target_audience: str = Field(default="general audience")
+    brand_guidelines_path: str = Field(..., max_length=4096, description="Path to brand guidelines document")
+    brand_objectives_path: str = Field(..., max_length=4096, description="Path to brand objectives document")
+    llm_model_name: str = Field(..., max_length=256, description="Name of local LLM model to use")
+    brand_name: str = Field(default="Brand", max_length=256)
+    target_audience: str = Field(default="general audience", max_length=5000)
     goals: List[str] = Field(default_factory=lambda: ["engagement", "follower growth"])
-    voice_and_tone: str = Field(default="professional, clear, and human")
+    voice_and_tone: str = Field(default="professional, clear, and human", max_length=5000)
     cadence_posts_per_day: int = Field(default=2, ge=1)
     duration_days: int = Field(default=14, ge=1)
     human_approved_for_testing: bool = Field(default=False)
-    human_feedback: str = Field(default="")
+    human_feedback: str = Field(default="", max_length=50_000)
 
 
 class ReviseMarketingTeamRequest(BaseModel):

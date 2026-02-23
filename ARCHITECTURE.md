@@ -9,6 +9,7 @@ This document describes the architecture of the Software Engineering Team — a 
 - [3. Agent Registry and Roles](#3-agent-registry-and-roles)
 - [4. Task Execution Model](#4-task-execution-model)
 - [5. Backend Worker Workflow](#5-backend-worker-workflow)
+- [5b. Backend-Code-V2 Team Workflow](#5b-backend-code-v2-team-workflow)
 - [6. Frontend Worker Workflow](#6-frontend-worker-workflow)
 - [7. Frontend Team Full Pipeline](#7-frontend-team-full-pipeline)
 - [8. DevOps Team Pipeline](#8-devops-team-pipeline)
@@ -136,6 +137,7 @@ flowchart TB
 
     subgraph execGroup [Execution]
         backendAgent["Backend Expert"]
+        backendV2Team["Backend-Code-V2 Team\n(standalone 5-phase)"]
         frontendAgent["Frontend Expert"]
         devopsTeam["DevOps Team Lead"]
     end
@@ -184,6 +186,7 @@ flowchart TB
     subgraph partition [Partition by Assignee]
         PrefixQ["Prefix Queue\n(git_setup + devops tasks)"]
         BackendQ["Backend Queue"]
+        BV2Q["Backend-Code-V2 Queue"]
         FrontendQ["Frontend Queue"]
     end
 
@@ -195,13 +198,16 @@ flowchart TB
 
     subgraph parallelBlock ["Parallel Worker Threads"]
         BThread["Backend Worker\npops from Backend Queue\n1 task at a time"]
+        BV2Thread["Backend-Code-V2 Worker\npops from BV2 Queue\n1 task at a time"]
         FThread["Frontend Worker\npops from Frontend Queue\n1 task at a time"]
     end
 
     BThread --> BWorkflow["BackendExpertAgent\n.run_workflow()"]
+    BV2Thread --> BV2Workflow["BackendCodeV2TeamLead\n.run_workflow()"]
     FThread --> FWorkflow["FrontendExpertAgent\n.run_workflow()"]
 
     BWorkflow --> TaskDone["Task Completed / Failed"]
+    BV2Workflow --> TaskDone
     FWorkflow --> TaskDone
 ```
 
@@ -243,6 +249,44 @@ flowchart TB
 ```
 
 On agent crash, the Repair Agent analyzes the traceback and applies fixes. If the task contract is incomplete (missing required fields like goal, scope, constraints), the orchestrator invokes contract repair via the planning agents and `tech_lead.refine_task`, then re-queues the task.
+
+---
+
+## 5b. Backend-Code-V2 Team Workflow
+
+The **backend-code-v2** agent team is a standalone, experimental backend development team that operates independently from `BackendExpertAgent`. It is assigned tasks with `assignee = "backend-code-v2"` and runs its own 5-phase lifecycle. No code from `backend_agent/` is imported or reused.
+
+```mermaid
+flowchart TB
+    subgraph team ["Backend-Code-V2 Team (standalone)"]
+        Planning["1. Planning\n(decompose into microtasks,\nassign to tool agents)"]
+        Execution["2. Execution\n(run microtasks via tool agents\nor LLM code gen)"]
+        Review["3. Review\n(build, lint, code review,\nQA, security)"]
+        ProblemSolving["4. Problem-Solving\n(root-cause analysis,\napply fixes)"]
+        Deliver["5. Deliver\n(feature branch, commit,\nmerge to development)"]
+
+        Planning --> Execution --> Review
+        Review -->|"issues found"| ProblemSolving
+        ProblemSolving --> Execution
+        Review -->|"passed"| Deliver
+    end
+
+    subgraph toolAgents ["Team-Owned Tool Agents"]
+        DataEng["Data Engineering\n(schema, migrations)"]
+        ApiOA["API / OpenAPI\n(contracts, routes)"]
+        Auth["Auth\n(login, RBAC)"]
+        CICD["CI/CD (stub)"]
+        Container["Containerization (stub)"]
+    end
+
+    team -.->|"delegate microtasks"| toolAgents
+```
+
+The team supports both Python and Java projects (auto-detected from the repository). Quality gate agents (QA, Security, Code Review) are passed in as dependencies by the main orchestrator; the team invokes them during its Review phase. The review/fix loop iterates up to 5 times before proceeding to Deliver.
+
+**API endpoints:**
+- `POST /backend-code-v2/run` — Submit a task and repo path; starts the 5-phase workflow in a background thread.
+- `GET /backend-code-v2/status/{job_id}` — Returns current phase, completed phases, progress percentage, and microtask status.
 
 ---
 
@@ -471,6 +515,7 @@ flowchart TB
     SWTeam --> swCLI["agent_implementations/"]
     SWTeam --> swPlanning["planning_team/\n(20+ planning agents)"]
     SWTeam --> swBackend["backend_agent/"]
+    SWTeam --> swBackendV2["backend_code_v2_team/\n(standalone 5-phase team,\n3 tool agents)"]
     SWTeam --> swFrontend["frontend_team/\n(12 agents)"]
     SWTeam --> swDevops["devops_team/\n(9 agents + 5 tool agents)"]
     SWTeam --> swQuality["quality_gates/"]

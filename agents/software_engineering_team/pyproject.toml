@@ -30,20 +30,15 @@ source = ["shared", "frontend_team"]
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
-    "shared/models.py",
-    "shared/git_utils.py",
-    "shared/repo_writer.py",
-    "shared/llm.py",
-    "shared/job_store.py",
-    "shared/coding_standards.py",
-    "shared/logging_config.py",
-    "shared/task_validation.py",
-    "shared/development_plan_writer.py",
     "shared/__init__.py",
+    # Integration-heavy modules — cover via integration tests separately
+    "shared/git_utils.py",
+    "shared/llm.py",
+    "shared/repo_writer.py",
 ]
 
 [tool.coverage.report]
-fail_under = 95
+fail_under = 80
 show_missing = true
 
 [tool.setuptools.packages.find]

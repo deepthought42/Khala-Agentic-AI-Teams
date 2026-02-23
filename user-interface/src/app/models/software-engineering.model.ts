@@ -108,3 +108,46 @@ export interface ArchitectDesignResponse {
   reliability_model: string;
   summary: string;
 }
+
+// ---------------------------------------------------------------------------
+// Backend-Code-V2
+// ---------------------------------------------------------------------------
+
+/** Task input for backend-code-v2. */
+export interface BackendCodeV2TaskInput {
+  id?: string;
+  title: string;
+  description: string;
+  requirements?: string;
+  acceptance_criteria?: string[];
+}
+
+/** Request for POST /backend-code-v2/run. */
+export interface BackendCodeV2RunRequest {
+  task: BackendCodeV2TaskInput;
+  repo_path: string;
+  spec_content?: string;
+  architecture?: string;
+}
+
+/** Response from POST /backend-code-v2/run. */
+export interface BackendCodeV2RunResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+/** Response from GET /backend-code-v2/status/{job_id}. */
+export interface BackendCodeV2StatusResponse {
+  job_id: string;
+  status: string;
+  repo_path?: string;
+  current_phase?: string;
+  current_microtask?: string;
+  progress: number;
+  microtasks_completed: number;
+  microtasks_total: number;
+  completed_phases: string[];
+  error?: string;
+  summary?: string;
+}

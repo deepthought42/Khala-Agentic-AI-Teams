@@ -14,9 +14,9 @@ app = FastAPI(title="Market Research Team API", version="1.0.0")
 
 
 class RunMarketResearchRequest(BaseModel):
-    product_concept: str = Field(..., min_length=3)
-    target_users: str = Field(..., min_length=3)
-    business_goal: str = Field(..., min_length=3)
+    product_concept: str = Field(..., min_length=3, max_length=50_000)
+    target_users: str = Field(..., min_length=3, max_length=10_000)
+    business_goal: str = Field(..., min_length=3, max_length=10_000)
     topology: TeamTopology = TeamTopology.UNIFIED
     transcript_folder_path: Optional[str] = None
     transcripts: List[str] = Field(default_factory=list)

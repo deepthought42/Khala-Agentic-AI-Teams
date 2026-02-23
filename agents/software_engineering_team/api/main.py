@@ -51,10 +51,12 @@ class RunTeamRequest(BaseModel):
 
     repo_path: str = Field(
         ...,
+        max_length=4096,
         description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
     )
     clarification_session_id: Optional[str] = Field(
         None,
+        max_length=256,
         description="Use refined_spec and resolved_questions from this clarification session",
     )
 
@@ -116,11 +118,11 @@ class RePlanWithClarificationsRequest(BaseModel):
 
 
 class ClarificationCreateRequest(BaseModel):
-    spec_text: str = Field(..., description="Initial product/engineering specification text.")
+    spec_text: str = Field(..., max_length=500_000, description="Initial product/engineering specification text.")
 
 
 class ClarificationMessageRequest(BaseModel):
-    message: str = Field(..., description="User clarification response message.")
+    message: str = Field(..., max_length=50_000, description="User clarification response message.")
 
 
 class ClarificationResponse(BaseModel):
@@ -484,7 +486,7 @@ def architect_design(request: ArchitectDesignRequest) -> ArchitectDesignResponse
     try:
         from architecture_expert import ArchitectureExpertAgent
         from architecture_expert.models import ArchitectureInput
-        from spec_parser import parse_spec_heuristic, parse_spec_with_llm
+        from spec_parser import parse_spec_with_llm
         from shared.llm import get_llm_for_agent
     except ImportError as e:
         logger.exception("Failed to import architect dependencies")
@@ -494,11 +496,8 @@ def architect_design(request: ArchitectDesignRequest) -> ArchitectDesignResponse
         raise HTTPException(status_code=400, detail="Spec text is required")
 
     try:
-        if request.use_llm:
-            llm = get_llm_for_agent("architecture")
-            requirements = parse_spec_with_llm(request.spec.strip(), llm)
-        else:
-            requirements = parse_spec_heuristic(request.spec.strip())
+        llm = get_llm_for_agent("architecture")
+        requirements = parse_spec_with_llm(request.spec.strip(), llm)
 
         arch_agent = ArchitectureExpertAgent(get_llm_for_agent("architecture"))
         arch_input = ArchitectureInput(requirements=requirements)
@@ -523,6 +522,184 @@ def architect_design(request: ArchitectDesignRequest) -> ArchitectDesignResponse
     except Exception as e:
         logger.exception("Architect design failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Backend-Code-V2 endpoints
+# ---------------------------------------------------------------------------
+
+class BackendCodeV2TaskInput(BaseModel):
+    """Task input for backend-code-v2."""
+
+    id: str = Field(default="", description="Task ID (auto-generated if empty)")
+    title: str = Field(default="", description="Short task title")
+    description: str = Field(default="", description="Detailed description")
+    requirements: str = Field(default="", description="Technical requirements")
+    acceptance_criteria: List[str] = Field(default_factory=list, description="Acceptance criteria list")
+
+
+class BackendCodeV2RunRequest(BaseModel):
+    """Request body for POST /backend-code-v2/run."""
+
+    task: BackendCodeV2TaskInput = Field(..., description="Task to implement")
+    repo_path: str = Field(..., description="Local path to the repository")
+    spec_content: Optional[str] = Field(None, description="Optional project spec context")
+    architecture: Optional[str] = Field(None, description="Optional architecture overview")
+
+
+class BackendCodeV2RunResponse(BaseModel):
+    """Response from POST /backend-code-v2/run."""
+
+    job_id: str = Field(..., description="Job ID for polling status")
+    status: str = Field(default="running")
+    message: str = Field(default="")
+
+
+class BackendCodeV2MicrotaskStatus(BaseModel):
+    """Status of a single microtask."""
+
+    id: str = Field(default="")
+    title: str = Field(default="")
+    status: str = Field(default="pending")
+
+
+class BackendCodeV2StatusResponse(BaseModel):
+    """Response from GET /backend-code-v2/status/{job_id}."""
+
+    job_id: str = Field(...)
+    status: str = Field(default="pending", description="pending, running, completed, failed")
+    repo_path: Optional[str] = None
+    current_phase: Optional[str] = None
+    current_microtask: Optional[str] = None
+    progress: int = Field(default=0, description="0-100 completion percentage")
+    microtasks_completed: int = Field(default=0)
+    microtasks_total: int = Field(default=0)
+    completed_phases: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    summary: Optional[str] = None
+
+
+def _run_backend_code_v2_background(job_id: str, repo_path: str, task_dict: dict, spec_content: str, architecture_overview: str) -> None:
+    """Run backend-code-v2 workflow in a background thread."""
+    try:
+        from pathlib import Path as _Path
+        from backend_code_v2_team import BackendCodeV2TeamLead
+        from shared.llm import get_llm_for_agent
+        from shared.models import Task, TaskStatus, TaskType, SystemArchitecture
+        import uuid as _uuid
+
+        update_job(job_id, status="running")
+
+        tid = task_dict.get("id") or f"bv2-{_uuid.uuid4().hex[:8]}"
+        task = Task(
+            id=tid,
+            title=task_dict.get("title", ""),
+            description=task_dict.get("description", ""),
+            requirements=task_dict.get("requirements", ""),
+            acceptance_criteria=task_dict.get("acceptance_criteria", []),
+            type=TaskType.BACKEND,
+            assignee="backend-code-v2",
+            status=TaskStatus.PENDING,
+        )
+
+        arch = SystemArchitecture(overview=architecture_overview) if architecture_overview else None
+
+        team_lead = BackendCodeV2TeamLead(get_llm_for_agent("backend_code_v2"))
+
+        phase_order = ["planning", "execution", "review", "problem_solving", "deliver"]
+
+        def _job_updater(**kwargs):
+            completed_phases = []
+            current = kwargs.get("current_phase", "")
+            for p in phase_order:
+                if p == current:
+                    break
+                completed_phases.append(p)
+            update_job(job_id, completed_phases=completed_phases, **kwargs)
+
+        result = team_lead.run_workflow(
+            repo_path=_Path(repo_path),
+            task=task,
+            spec_content=spec_content or "",
+            architecture=arch,
+            job_updater=_job_updater,
+        )
+
+        final_status = "completed" if result.success else "failed"
+        update_job(
+            job_id,
+            status=final_status,
+            progress=100 if result.success else (result.iterations_used * 20),
+            summary=result.summary,
+            error=result.failure_reason if not result.success else None,
+            current_phase=result.current_phase.value if result.current_phase else "deliver",
+        )
+    except Exception as e:
+        logger.exception("Backend-code-v2 workflow failed")
+        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
+
+
+@app.post(
+    "/backend-code-v2/run",
+    response_model=BackendCodeV2RunResponse,
+    summary="Run backend-code-v2 agent team",
+    description="Submit a task and repo path. Starts the backend-code-v2 5-phase workflow in the background. "
+    "Returns job_id immediately. Poll GET /backend-code-v2/status/{job_id} for progress.",
+)
+def run_backend_code_v2(request: BackendCodeV2RunRequest) -> BackendCodeV2RunResponse:
+    """Start the backend-code-v2 team on a task."""
+    repo = Path(request.repo_path)
+    if not repo.is_dir():
+        raise HTTPException(status_code=400, detail=f"repo_path does not exist or is not a directory: {request.repo_path}")
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, request.repo_path)
+
+    thread = threading.Thread(
+        target=_run_backend_code_v2_background,
+        args=(
+            job_id,
+            request.repo_path,
+            request.task.model_dump(),
+            request.spec_content or "",
+            request.architecture or "",
+        ),
+    )
+    thread.daemon = True
+    thread.start()
+
+    return BackendCodeV2RunResponse(
+        job_id=job_id,
+        status="running",
+        message="Backend-code-v2 workflow started. Poll GET /backend-code-v2/status/{job_id} for progress.",
+    )
+
+
+@app.get(
+    "/backend-code-v2/status/{job_id}",
+    response_model=BackendCodeV2StatusResponse,
+    summary="Get backend-code-v2 job status",
+    description="Returns what is done, what is in progress, and overall completion percentage.",
+)
+def get_backend_code_v2_status(job_id: str) -> BackendCodeV2StatusResponse:
+    """Get the status of a backend-code-v2 job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    return BackendCodeV2StatusResponse(
+        job_id=job_id,
+        status=data.get("status", JOB_STATUS_PENDING),
+        repo_path=data.get("repo_path"),
+        current_phase=data.get("current_phase"),
+        current_microtask=data.get("current_microtask"),
+        progress=data.get("progress", 0),
+        microtasks_completed=data.get("microtasks_completed", 0),
+        microtasks_total=data.get("microtasks_total", 0),
+        completed_phases=data.get("completed_phases", []),
+        error=data.get("error"),
+        summary=data.get("summary"),
+    )
 
 
 @app.get("/health")

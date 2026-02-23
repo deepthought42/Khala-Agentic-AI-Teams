@@ -1,57 +1,148 @@
 """
-Parse LLM JSON output into TaskAssignment.
+Parse LLM JSON output into TaskAssignment and PlanningHierarchy.
 
-Shared by Tech Lead and Task Generator agents.
+Trusts LLM output directly -- no heuristic normalization or reordering.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from shared.models import Task, TaskAssignment, TaskStatus, TaskType
+from shared.models import (
+    Epic,
+    Initiative,
+    PlanningHierarchy,
+    StoryPlan,
+    Task,
+    TaskAssignment,
+    TaskStatus,
+    TaskType,
+)
 
 
-def _normalize_task_type_and_assignee(
-    task_id: str,
-    task_type: TaskType,
-    assignee: str,
-) -> tuple[TaskType, str]:
+def parse_hierarchy_from_data(data: Dict[str, Any]) -> PlanningHierarchy:
     """
-    Ensure type and assignee are consistent. Fix misclassification when task ID
-    clearly indicates domain (e.g. frontend-app-shell with type=backend -> frontend).
+    Parse LLM JSON output into a PlanningHierarchy (Initiative -> Epic -> Story).
     """
-    tid = (task_id or "").lower()
-    if tid.startswith("frontend-") and (task_type == TaskType.BACKEND or assignee == "backend"):
-        return TaskType.FRONTEND, "frontend"
-    if tid.startswith("backend-") and (task_type == TaskType.FRONTEND or assignee == "frontend"):
-        return TaskType.BACKEND, "backend"
-    # Ensure assignee matches type for backend/frontend
-    if task_type == TaskType.BACKEND and assignee == "frontend":
-        return TaskType.BACKEND, "backend"
-    if task_type == TaskType.FRONTEND and assignee == "backend":
-        return TaskType.FRONTEND, "frontend"
-    return task_type, assignee
+    initiatives: List[Initiative] = []
+    for init_data in data.get("initiatives") or []:
+        if not isinstance(init_data, dict):
+            continue
+        epics: List[Epic] = []
+        for epic_data in init_data.get("epics") or []:
+            if not isinstance(epic_data, dict):
+                continue
+            stories: List[StoryPlan] = []
+            for story_data in epic_data.get("stories") or []:
+                if not isinstance(story_data, dict) or not story_data.get("id"):
+                    continue
+                acc = story_data.get("acceptance_criteria") or []
+                if not isinstance(acc, list):
+                    acc = [str(acc)] if acc else []
+                stories.append(StoryPlan(
+                    id=story_data["id"],
+                    title=story_data.get("title") or "",
+                    description=story_data.get("description") or "",
+                    user_story=story_data.get("user_story") or "",
+                    assignee=story_data.get("assignee") or "backend",
+                    requirements=story_data.get("requirements") or "",
+                    dependencies=story_data.get("dependencies") or [],
+                    acceptance_criteria=acc,
+                ))
+            acc = epic_data.get("acceptance_criteria") or []
+            if not isinstance(acc, list):
+                acc = [str(acc)] if acc else []
+            epics.append(Epic(
+                id=epic_data.get("id") or "",
+                title=epic_data.get("title") or "",
+                description=epic_data.get("description") or "",
+                user_stories_summary=epic_data.get("user_stories_summary") or [],
+                acceptance_criteria=acc,
+                stories=stories,
+            ))
+        initiatives.append(Initiative(
+            id=init_data.get("id") or "",
+            title=init_data.get("title") or "",
+            description=init_data.get("description") or "",
+            epics=epics,
+        ))
+
+    execution_order = data.get("execution_order") or []
+    return PlanningHierarchy(
+        initiatives=initiatives,
+        execution_order=execution_order,
+        rationale=data.get("rationale") or "",
+    )
+
+
+def flatten_hierarchy_to_assignment(hierarchy: PlanningHierarchy) -> TaskAssignment:
+    """
+    Flatten a PlanningHierarchy into a TaskAssignment for the execution layer.
+    Each Story becomes a Task. LLM-provided assignee and execution_order are trusted.
+    """
+    tasks: List[Task] = []
+    seen: set = set()
+    for initiative in hierarchy.initiatives:
+        for epic in initiative.epics:
+            for story in epic.stories:
+                if story.id in seen:
+                    continue
+                seen.add(story.id)
+                task_type = _assignee_to_task_type(story.assignee)
+                tasks.append(Task(
+                    id=story.id,
+                    type=task_type,
+                    title=story.title,
+                    description=story.description,
+                    user_story=story.user_story,
+                    assignee=story.assignee,
+                    requirements=story.requirements,
+                    dependencies=story.dependencies,
+                    acceptance_criteria=story.acceptance_criteria,
+                    status=TaskStatus.PENDING,
+                    metadata={
+                        "epic_id": epic.id,
+                        "initiative_id": initiative.id,
+                    },
+                ))
+
+    valid_ids = {t.id for t in tasks}
+    execution_order = [tid for tid in hierarchy.execution_order if tid in valid_ids]
+    for t in tasks:
+        if t.id not in execution_order:
+            execution_order.append(t.id)
+
+    return TaskAssignment(
+        tasks=tasks,
+        execution_order=execution_order,
+        rationale=hierarchy.rationale,
+    )
 
 
 def parse_assignment_from_data(data: Dict[str, Any]) -> TaskAssignment:
     """
     Parse LLM JSON output into TaskAssignment.
-    Filters out security/qa (orchestrator invokes those).
-    Normalizes type/assignee when task ID indicates domain mismatch.
+
+    Supports two formats:
+    1. Hierarchical (initiatives -> epics -> stories) -- preferred
+    2. Flat (tasks list) -- backward compatibility
+
+    No heuristic normalization is applied. LLM output is trusted directly.
     """
+    if data.get("initiatives"):
+        hierarchy = parse_hierarchy_from_data(data)
+        return flatten_hierarchy_to_assignment(hierarchy)
+
     tasks: List[Task] = []
     for t in data.get("tasks") or []:
         if isinstance(t, dict) and t.get("id"):
-            assignee = t.get("assignee") or "devops"
-            try:
-                task_type = TaskType(t.get("type", "backend"))
-            except ValueError:
-                task_type = TaskType.BACKEND
-            task_type, assignee = _normalize_task_type_and_assignee(
-                t.get("id"), task_type, assignee
-            )
-            if task_type in (TaskType.SECURITY, TaskType.QA):
-                continue
+            assignee = t.get("assignee") or "backend"
+            task_type = _assignee_to_task_type(assignee)
+            if t.get("type"):
+                try:
+                    task_type = TaskType(t["type"])
+                except ValueError:
+                    pass
             acc = t.get("acceptance_criteria") or []
             if not isinstance(acc, list):
                 acc = [str(acc)] if acc else []
@@ -73,7 +164,6 @@ def parse_assignment_from_data(data: Dict[str, Any]) -> TaskAssignment:
     execution_order = data.get("execution_order") or [t.id for t in tasks]
     valid_ids = {t.id for t in tasks}
     execution_order = [tid for tid in execution_order if tid in valid_ids]
-    execution_order = _interleave_execution_order(execution_order, {t.id: t for t in tasks})
 
     return TaskAssignment(
         tasks=tasks,
@@ -82,69 +172,14 @@ def parse_assignment_from_data(data: Dict[str, Any]) -> TaskAssignment:
     )
 
 
-def _interleave_execution_order(
-    execution_order: List[str],
-    tasks_by_id: Dict[str, Any],
-) -> List[str]:
-    """
-    Interleave backend and frontend tasks while respecting dependencies.
-    Only adds a task when all its dependencies are already in the result.
-    Prefers alternating backend/frontend when multiple candidates are runnable.
-    """
-    prefix: List[str] = []
-    backend_list: List[str] = []
-    frontend_list: List[str] = []
+def _assignee_to_task_type(assignee: str) -> TaskType:
+    """Map assignee string to TaskType."""
+    mapping = {
+        "backend": TaskType.BACKEND,
+        "backend-code-v2": TaskType.BACKEND,
+        "frontend": TaskType.FRONTEND,
+        "devops": TaskType.DEVOPS,
+    }
+    return mapping.get(assignee, TaskType.BACKEND)
 
-    for tid in execution_order:
-        task = tasks_by_id.get(tid)
-        if not task:
-            prefix.append(tid)
-            continue
-        assignee = getattr(task, "assignee", None) or ""
-        if assignee == "backend":
-            backend_list.append(tid)
-        elif assignee == "frontend":
-            frontend_list.append(tid)
-        else:
-            prefix.append(tid)
 
-    result: List[str] = list(prefix)
-    added: set = set(result)
-
-    def is_runnable(tid: str) -> bool:
-        task = tasks_by_id.get(tid)
-        if not task:
-            return True
-        deps = getattr(task, "dependencies", None) or []
-        return all(dep in added for dep in deps)
-
-    last_was_backend: bool | None = None
-    while True:
-        backend_ready = [t for t in backend_list if t not in added and is_runnable(t)]
-        frontend_ready = [t for t in frontend_list if t not in added and is_runnable(t)]
-
-        candidate: str | None = None
-        if last_was_backend is False and frontend_ready:
-            candidate = frontend_ready[0]
-        elif last_was_backend is True and backend_ready:
-            candidate = backend_ready[0]
-        elif backend_ready:
-            candidate = backend_ready[0]
-        elif frontend_ready:
-            candidate = frontend_ready[0]
-
-        if candidate is None:
-            break
-
-        result.append(candidate)
-        added.add(candidate)
-        task = tasks_by_id.get(candidate)
-        assignee = getattr(task, "assignee", None) or ""
-        last_was_backend = assignee == "backend"
-
-    # Fallback: add any remaining (e.g. circular deps, missing deps) in original order
-    for tid in backend_list + frontend_list:
-        if tid not in added:
-            result.append(tid)
-
-    return result

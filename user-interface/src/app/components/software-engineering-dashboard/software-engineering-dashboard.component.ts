@@ -18,12 +18,15 @@ import { ClarificationChatComponent } from '../clarification-chat/clarification-
 import { ExecutionTasksComponent } from '../execution-tasks/execution-tasks.component';
 import { ExecutionStreamComponent } from '../execution-stream/execution-stream.component';
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
+import { BackendCodeV2RunFormComponent } from '../backend-code-v2-run-form/backend-code-v2-run-form.component';
+import { BackendCodeV2JobStatusComponent } from '../backend-code-v2-job-status/backend-code-v2-job-status.component';
 import type {
   RunTeamRequest,
   JobStatusResponse,
   RePlanWithClarificationsRequest,
   ClarificationCreateRequest,
   ArchitectDesignResponse,
+  BackendCodeV2RunRequest,
 } from '../../models';
 
 @Component({
@@ -48,6 +51,8 @@ import type {
     ExecutionTasksComponent,
     ExecutionStreamComponent,
     ArchitectureResultsComponent,
+    BackendCodeV2RunFormComponent,
+    BackendCodeV2JobStatusComponent,
   ],
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
@@ -62,6 +67,7 @@ export class SoftwareEngineeringDashboardComponent {
   clarificationSessionId: string | null = null;
   architectSpec = '';
   architectResults: ArchitectDesignResponse | null = null;
+  backendCodeV2JobId: string | null = null;
 
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
@@ -120,6 +126,22 @@ export class SoftwareEngineeringDashboardComponent {
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Create session failed';
+      },
+    });
+  }
+
+  onBackendCodeV2Submit(request: BackendCodeV2RunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.backendCodeV2JobId = null;
+    this.api.runBackendCodeV2(request).subscribe({
+      next: (res) => {
+        this.backendCodeV2JobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Backend-Code-V2 request failed';
+        this.loading = false;
       },
     });
   }

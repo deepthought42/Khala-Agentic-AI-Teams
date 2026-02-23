@@ -3,11 +3,8 @@ Tech Lead orchestrator: runs the full pipeline with feature branches.
 
 Planning flow:
 1. Review initial_spec and document features and functionalities (high level) via Project Planning.
-2. Create detailed tasks from spec + features/functionality doc (Tech Lead).
-3. Produce architecture from features/functionality doc + spec (Architecture Expert).
-4. Loop steps 2 and 3 until tasks and architecture align (alignment review).
-5. Review tasks and architecture for conformance to initial_spec; if non-compliant, go to step 2
-   with a detailed list of issues; if compliant, proceed to execution.
+2. Tech Lead produces Initiative/Epic/Story hierarchy from spec + features.
+3. Architecture Expert produces architecture from spec + features.
 
 Execution:
 - Prefix tasks (devops, git_setup) run sequentially on work path.
@@ -77,14 +74,6 @@ from shared.task_utils import task_requirements
 logger = logging.getLogger(__name__)
 
 BANNER_WIDTH = 72
-MAX_CONTRACT_REPAIR_ATTEMPTS = 2
-_TASK_CONTRACT_REQUIRED_FIELDS = (
-    "goal",
-    "scope",
-    "constraints",
-    "non_functional_requirements",
-)
-
 # Exceptions that the repair agent can attempt to fix (code errors in agent framework)
 REPAIRABLE_EXCEPTIONS = (
     NameError,
@@ -94,136 +83,6 @@ REPAIRABLE_EXCEPTIONS = (
     IndentationError,
     ModuleNotFoundError,
 )
-
-
-def _parse_missing_contract_fields(failure_reason: str) -> List[str]:
-    """Extract missing task-contract fields from backend failure text."""
-    if not failure_reason:
-        return []
-    marker = "Missing required fields:"
-    if marker not in failure_reason:
-        return []
-    tail = failure_reason.split(marker, 1)[1].strip()
-    if not tail:
-        return []
-    fields: List[str] = []
-    for raw in tail.split(","):
-        field = raw.strip()
-        if field and field not in fields:
-            fields.append(field)
-    return fields
-
-
-def _compute_missing_task_contract_fields(task: Any) -> List[str]:
-    """Apply the same contract checks used by backend workflow gate."""
-    metadata = dict(getattr(task, "metadata", None) or {})
-    missing: List[str] = []
-    for key in _TASK_CONTRACT_REQUIRED_FIELDS:
-        value = metadata.get(key)
-        if value in (None, "", [], {}):
-            missing.append(key)
-    if not getattr(task, "acceptance_criteria", None):
-        missing.append("acceptance_criteria")
-    requirements = (getattr(task, "requirements", "") or "").lower()
-    io_contract = metadata.get("inputs_outputs")
-    if io_contract in (None, "", [], {}) and "input" not in requirements:
-        missing.append("inputs_outputs")
-    return missing
-
-
-def _repair_task_contract_via_planning(
-    *,
-    task: Any,
-    failure_reason: str,
-    spec_content: str,
-    architecture: Any,
-    agents: Dict[str, Any],
-    tech_lead: Any,
-) -> Optional[Any]:
-    """Use planning + tech lead refinement to fill required task contract fields."""
-    missing_fields = _parse_missing_contract_fields(failure_reason) or _compute_missing_task_contract_fields(task)
-    if not missing_fields:
-        return None
-
-    refined_task = task
-    clarification_requests = [
-        f"Provide an explicit '{field}' value in task metadata." for field in missing_fields
-    ]
-    try:
-        if tech_lead is not None and hasattr(tech_lead, "refine_task"):
-            refined_task = tech_lead.refine_task(task, clarification_requests, spec_content, architecture)
-    except Exception as refine_err:
-        logger.warning("[%s] Contract recovery refine step failed: %s", getattr(task, "id", "task"), refine_err)
-        refined_task = task
-
-    planning_nfrs: List[str] = []
-    project_planner = agents.get("project_planning")
-    if project_planner is not None:
-        try:
-            from planning_team.project_planning_agent import ProjectPlanningInput
-            from shared.models import ProductRequirements
-
-            req = ProductRequirements(
-                title=getattr(refined_task, "title", "") or getattr(task, "title", "") or getattr(task, "id", "Task"),
-                description=getattr(refined_task, "description", "") or getattr(task, "description", ""),
-                acceptance_criteria=list(getattr(refined_task, "acceptance_criteria", None) or getattr(task, "acceptance_criteria", None) or []),
-                constraints=[getattr(refined_task, "requirements", "") or getattr(task, "requirements", "")],
-                priority="medium",
-            )
-            project_output = project_planner.run(ProjectPlanningInput(
-                requirements=req,
-                spec_content=spec_content or "",
-                repo_state_summary="",
-            ))
-            planning_nfrs = list(getattr(getattr(project_output, "overview", None), "non_functional_requirements", []) or [])
-        except Exception as plan_err:
-            logger.warning("[%s] Contract recovery planning step failed: %s", getattr(task, "id", "task"), plan_err)
-
-    metadata = dict(getattr(task, "metadata", None) or {})
-    existing_metadata = dict(metadata)
-    metadata.setdefault(
-        "goal",
-        (getattr(refined_task, "description", "") or getattr(task, "description", "") or getattr(task, "title", "")).strip()[:300],
-    )
-    metadata.setdefault(
-        "scope",
-        (getattr(refined_task, "requirements", "") or getattr(task, "requirements", "") or "Implement the assigned task end-to-end.").strip()[:500],
-    )
-    metadata.setdefault(
-        "constraints",
-        existing_metadata.get("constraints")
-        or (planning_nfrs[:3] if planning_nfrs else ["Preserve compatibility with existing architecture and tests."]),
-    )
-    metadata.setdefault(
-        "non_functional_requirements",
-        existing_metadata.get("non_functional_requirements")
-        or (planning_nfrs if planning_nfrs else ["Maintain reliability, security, and performance baselines."]),
-    )
-    metadata.setdefault(
-        "inputs_outputs",
-        existing_metadata.get("inputs_outputs")
-        or "Inputs: task requirements and existing system contracts. Outputs: code changes, tests, and passing verification evidence.",
-    )
-
-    acceptance_criteria = list(
-        getattr(refined_task, "acceptance_criteria", None)
-        or getattr(task, "acceptance_criteria", None)
-        or []
-    )
-    if not acceptance_criteria:
-        acceptance_criteria = [
-            "Implementation satisfies the task goal and scope.",
-            "Build and tests pass for the changed component.",
-        ]
-
-    updated_task = task.model_copy(update={
-        "title": getattr(refined_task, "title", None) or getattr(task, "title", ""),
-        "description": getattr(refined_task, "description", None) or getattr(task, "description", ""),
-        "requirements": getattr(refined_task, "requirements", None) or getattr(task, "requirements", ""),
-        "acceptance_criteria": acceptance_criteria,
-        "metadata": metadata,
-    })
-    return None if _compute_missing_task_contract_fields(updated_task) else updated_task
 
 
 def _get_task_stats() -> Dict[str, Any]:
@@ -364,7 +223,7 @@ def _apply_repair_fixes(agent_source_path: Path, suggested_fixes: list) -> bool:
             target.write_text(new_content, encoding="utf-8")
             logger.info("Repair: applied fix to %s lines %d-%d", target, line_start, line_end)
             applied = True
-        except Exception as e:
+        except (OSError, ValueError, UnicodeDecodeError) as e:
             logger.warning("Repair: failed to apply fix to %s: %s", fp, e)
     return applied
 
@@ -415,7 +274,7 @@ def _log_task_breakdown(
     logger.info("")
 
 
-def _get_agents():
+def _get_agents() -> Dict[str, Any]:
     """Lazy init agents including the code review, documentation, and DbC comments agents.
     Each agent uses get_llm_for_agent(key) for per-agent model configuration."""
     from frontend_team.accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
@@ -477,18 +336,24 @@ def _get_agents():
         "repair": RepairExpertAgent(get_llm_for_agent("repair")),
         "linting_tool_agent": LintingToolAgent(get_llm_for_agent("linting_tool_agent")),
         "build_fix_specialist": BuildFixSpecialistAgent(get_llm_for_agent("build_fix_specialist")),
+        "backend_code_v2": _lazy_init_backend_code_v2_team(),
     }
 
 
-_task_requirements = task_requirements
+def _lazy_init_backend_code_v2_team():
+    """Instantiate the backend-code-v2 team lead (lazy import)."""
+    from backend_code_v2_team import BackendCodeV2TeamLead
+    return BackendCodeV2TeamLead(get_llm_for_agent("backend_code_v2"))
 
+
+_task_requirements = task_requirements
 
 MAX_REVIEW_ITERATIONS = 20
 MAX_CLARIFICATION_REFINEMENTS = 20  # Max times to refine a task based on specialist clarification
 MAX_CODE_REVIEW_ITERATIONS = 20    # Max rounds of code review -> fix -> re-review
 
 
-def _issues_to_dicts(qa_bugs, sec_vulns) -> tuple:
+def _issues_to_dicts(qa_bugs: Any, sec_vulns: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Convert QA/Security outputs to dict lists for coding agent input."""
     qa_list = [b.model_dump() if hasattr(b, "model_dump") else b.dict() for b in (qa_bugs or [])]
     sec_list = [v.model_dump() if hasattr(v, "model_dump") else v.dict() for v in (sec_vulns or [])]
@@ -500,7 +365,7 @@ _read_repo_code = read_repo_code
 _truncate_for_context = truncate_for_context
 
 
-def _build_task_update(task_id: str, agent_type: str, result, status: str = "completed") -> TaskUpdate:
+def _build_task_update(task_id: str, agent_type: str, result: Any, status: str = "completed") -> TaskUpdate:
     """Construct a TaskUpdate from a specialist agent's output."""
     summary = getattr(result, "summary", "") or ""
     files_changed = list((getattr(result, "files", None) or {}).keys())
@@ -830,7 +695,7 @@ def _run_code_review(
     return agents["code_review"].run(review_input)
 
 
-def _code_review_issues_to_dicts(issues) -> list:
+def _code_review_issues_to_dicts(issues: Any) -> List[Dict[str, Any]]:
     """Convert CodeReviewIssue objects to dicts for coding agent input."""
     return [
         i.model_dump() if hasattr(i, "model_dump") else i.dict()
@@ -838,7 +703,7 @@ def _code_review_issues_to_dicts(issues) -> list:
     ]
 
 
-def _log_code_review_result(review_result, task_id: str) -> None:
+def _log_code_review_result(review_result: Any, task_id: str) -> None:
     """Log code review result with full issue details for debugging."""
     if review_result.approved:
         logger.info("[%s] Code review APPROVED", task_id)
@@ -1045,6 +910,77 @@ def _pop_runnable_task(
     return None
 
 
+def _backend_code_v2_worker(
+    *,
+    job_id: str,
+    backend_code_v2_queue: List[str],
+    all_tasks: Dict[str, Any],
+    completed: set,
+    failed: Dict[str, str],
+    spec_content: str,
+    architecture: Any,
+    agents: Dict[str, Any],
+    repo_path: Path,
+) -> None:
+    """
+    Worker that drains ``backend_code_v2_queue`` by calling the
+    backend-code-v2 team's ``run_workflow`` (no backend_agent code).
+    Designed to run in its own thread, parallel with backend/frontend workers.
+    """
+    from shared.models import SystemArchitecture
+    team_lead = agents.get("backend_code_v2")
+    if team_lead is None:
+        for tid in backend_code_v2_queue:
+            failed[tid] = "backend_code_v2 team not registered"
+        return
+
+    while backend_code_v2_queue:
+        task_id = backend_code_v2_queue.pop(0)
+        task = all_tasks.get(task_id)
+        if not task:
+            continue
+
+        update_job(job_id, current_task=task_id)
+        logger.info("[%s] >>> backend-code-v2 worker starting task", task_id)
+        task_start = time.monotonic()
+
+        try:
+            arch = architecture if isinstance(architecture, SystemArchitecture) else (
+                SystemArchitecture(overview=str(architecture)) if architecture else None
+            )
+            result = team_lead.run_workflow(
+                repo_path=repo_path,
+                task=task,
+                spec_content=spec_content,
+                architecture=arch,
+                qa_agent=agents.get("qa"),
+                security_agent=agents.get("security"),
+                code_review_agent=agents.get("code_review"),
+                build_verifier=_run_build_verification,
+                doc_agent=agents.get("documentation"),
+                linting_tool_agent=agents.get("linting_tool_agent"),
+                tech_lead=agents.get("tech_lead"),
+                build_fix_specialist=agents.get("build_fix_specialist"),
+            )
+            elapsed = time.monotonic() - task_start
+            if result.success:
+                completed.add(task_id)
+                _log_task_completion_banner(
+                    task_id=task_id,
+                    task_title=getattr(task, "title", "") or task_id,
+                    assignee="backend-code-v2",
+                    elapsed_seconds=elapsed,
+                    description=getattr(task, "description", "") or "",
+                )
+            else:
+                reason = result.failure_reason or "backend-code-v2 workflow did not succeed"
+                failed[task_id] = reason
+                logger.warning("[%s] backend-code-v2 task failed: %s", task_id, reason)
+        except Exception as exc:
+            failed[task_id] = f"backend-code-v2 exception: {exc}"
+            logger.exception("[%s] backend-code-v2 worker exception", task_id)
+
+
 def _run_backend_frontend_workers(
     *,
     job_id: str,
@@ -1071,7 +1007,6 @@ def _run_backend_frontend_workers(
     state_lock = threading.Lock()
     llm_limit_exceeded = [False]  # mutable ref for workers
     repaired_tasks = set()  # max 1 repair per task
-    contract_repair_attempts: Dict[str, int] = {}
     agent_source_path = Path(__file__).resolve().parent  # software_engineering_team/
 
     def _remaining_queue_ids() -> List[str]:
@@ -1145,32 +1080,6 @@ def _run_backend_frontend_workers(
                 )
                 elapsed = time.monotonic() - task_start_time
                 failure_reason = workflow_result.failure_reason or "Backend workflow failed"
-                if not workflow_result.success and "Task contract is incomplete" in failure_reason:
-                    should_attempt_repair = False
-                    with state_lock:
-                        attempts = contract_repair_attempts.get(task_id, 0)
-                        if attempts < MAX_CONTRACT_REPAIR_ATTEMPTS:
-                            contract_repair_attempts[task_id] = attempts + 1
-                            should_attempt_repair = True
-                    if should_attempt_repair:
-                        repaired_task = _repair_task_contract_via_planning(
-                            task=task,
-                            failure_reason=failure_reason,
-                            spec_content=spec_content,
-                            architecture=architecture,
-                            agents=agents,
-                            tech_lead=tech_lead,
-                        )
-                        if repaired_task is not None:
-                            with state_lock:
-                                all_tasks[task_id] = repaired_task
-                                backend_queue.append(task_id)
-                            logger.info(
-                                "%s[%s] Backend task contract repaired via planning; re-queued task",
-                                log_prefix,
-                                task_id,
-                            )
-                            continue
                 with state_lock:
                     if workflow_result.success:
                         completed.add(task_id)
@@ -1332,32 +1241,6 @@ def _run_backend_frontend_workers(
 
                 elapsed = time.monotonic() - task_start_time
                 failure_reason = workflow_result.failure_reason or "Frontend workflow failed"
-                if not workflow_result.success and "Task contract is incomplete" in failure_reason:
-                    should_attempt_repair = False
-                    with state_lock:
-                        attempts = contract_repair_attempts.get(task_id, 0)
-                        if attempts < MAX_CONTRACT_REPAIR_ATTEMPTS:
-                            contract_repair_attempts[task_id] = attempts + 1
-                            should_attempt_repair = True
-                    if should_attempt_repair:
-                        repaired_task = _repair_task_contract_via_planning(
-                            task=task,
-                            failure_reason=failure_reason,
-                            spec_content=spec_content,
-                            architecture=architecture,
-                            agents=agents,
-                            tech_lead=tech_lead,
-                        )
-                        if repaired_task is not None:
-                            with state_lock:
-                                all_tasks[task_id] = repaired_task
-                                frontend_queue.append(task_id)
-                            logger.info(
-                                "%s[%s] Frontend task contract repaired via planning; re-queued task",
-                                log_prefix,
-                                task_id,
-                            )
-                            continue
                 with state_lock:
                     if workflow_result.success:
                         completed.add(task_id)
@@ -1627,7 +1510,6 @@ def run_orchestrator(
 
         from architecture_expert.models import ArchitectureInput
         from tech_lead_agent.models import TechLeadInput
-        from planning_team.planning_review import check_tasks_architecture_alignment, check_spec_conformance
 
         from shared.context_sizing import compute_existing_code_chars
 
@@ -1636,233 +1518,61 @@ def run_orchestrator(
         max_code_chars = compute_existing_code_chars(tech_lead.llm)
         existing_code = _truncate_for_context(_read_repo_code(path), max_code_chars)
 
-        minimal_planning = (os.environ.get("SW_MINIMAL_PLANNING") or "").strip().lower() in ("1", "true", "yes")
-        fast_start_planning = (os.environ.get("SW_FAST_START_PLANNING") or "").strip().lower() in ("1", "true", "yes")
-        if fast_start_planning:
-            minimal_planning = True
-            logger.info("Fast-start planning mode: minimal planning, 1 alignment/conformance iteration")
-        tech_lead_minimal_planning = minimal_planning
-
-        MAX_ALIGNMENT_ITERATIONS = int(os.environ.get("SW_MAX_ALIGNMENT_ITERATIONS") or ("1" if fast_start_planning else "5"))
-        MAX_CONFORMANCE_RETRIES = int(os.environ.get("SW_MAX_CONFORMANCE_RETRIES") or ("1" if fast_start_planning else "3"))
-
-        assignment = None
-        architecture = None
-        conformance_retries = 0
-        conformance_issues_from_last: List[str] = []
+        # Single-pass planning: Tech Lead produces Initiative/Epic/Story hierarchy
         tech_lead_output = None
-        enable_planning_cache = (os.environ.get("SW_ENABLE_PLANNING_CACHE", "1") or "1").strip().lower() in ("1", "true", "yes")
-
-        while True:
-            # Step 2: Detailed tasks from spec + features doc (and architecture if we have it from a previous iteration)
-            alignment_feedback = []
-            conformance_issues = conformance_issues_from_last if conformance_retries > 0 else []
-            if conformance_retries > 0 and conformance_issues:
-                logger.info("Re-running task generation with %d spec conformance issues", len(conformance_issues))
-
-            tech_lead_output = None
-            assignment = None
-            tech_lead_retries = 2  # initial run + 1 retry when 0 tasks
-            for tech_lead_attempt in range(tech_lead_retries):
-                try:
-                    tech_lead_output = tech_lead.run(TechLeadInput(
-                        requirements=requirements,
-                        architecture=architecture,
-                        repo_path=str(path),
-                        spec_content=spec_content_for_planning,
-                        existing_codebase=existing_code if existing_code != "# No code files found" else None,
-                        project_overview=project_overview,
-                        alignment_feedback=alignment_feedback if alignment_feedback else None,
-                        conformance_issues=conformance_issues if conformance_issues else None,
-                        minimal_planning=tech_lead_minimal_planning,
-                        open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
-                        assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
-                        resolved_questions=resolved_questions_override,
-                    ))
-                except LLMRateLimitError:
-                    logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
-                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
-                    return
-                if tech_lead_output.spec_clarification_needed:
-                    questions = tech_lead_output.clarification_questions or []
-                    error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
-                    if len(questions) > 5:
-                        error_msg += f" (+{len(questions) - 5} more)"
-                    logger.warning(error_msg)
-                    update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
-                    return
-                assignment = tech_lead_output.assignment
-                if assignment and assignment.tasks:
-                    break
-                if tech_lead_attempt < tech_lead_retries - 1:
-                    logger.warning(
-                        "Tech Lead produced no tasks (attempt %d/%d); retrying",
-                        tech_lead_attempt + 1,
-                        tech_lead_retries,
-                    )
-            if not assignment or not assignment.tasks:
-                logger.error("Tech Lead produced no tasks after %d attempts; failing job", tech_lead_retries)
-                update_job(job_id, status=JOB_STATUS_FAILED, error="Tech Lead produced no tasks")
-                return
-
-            # Step 3: Architecture from features doc + spec (and optional planning feedback)
-            planning_feedback_for_arch = (alignment_feedback + conformance_issues) if (alignment_feedback or conformance_issues) else None
-            arch_input = ArchitectureInput(
+        assignment = None
+        try:
+            tech_lead_output = tech_lead.run(TechLeadInput(
                 requirements=requirements,
-                technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+                repo_path=str(path),
+                spec_content=spec_content_for_planning,
+                existing_codebase=existing_code if existing_code != "# No code files found" else None,
                 project_overview=project_overview,
-                features_and_functionality_doc=features_and_functionality_doc or None,
-                planning_feedback=planning_feedback_for_arch,
-                existing_architecture=enterprise_arch_context,
-            )
-            try:
-                arch_output = arch_agent.run(arch_input)
-            except LLMRateLimitError:
-                logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
-                update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
-                return
-            architecture = arch_output.architecture
-            update_job(job_id, architecture_overview=architecture.overview)
-            try:
-                write_architecture_plan(path, architecture, plan_dir=plan_dir)
-            except Exception as e:
-                logger.warning("Failed to write plan/architecture.md: %s", e)
+                open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
+                assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
+                resolved_questions=resolved_questions_override,
+            ))
+        except LLMRateLimitError:
+            logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+            update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+            return
 
-            # Planning cache: reuse assignment when spec+arch+project unchanged (first iteration only)
-            if enable_planning_cache and conformance_retries == 0 and not alignment_feedback:
-                from shared.planning_cache import (
-                    compute_planning_cache_key,
-                    get_cached_plan,
-                    set_cached_plan,
-                )
-                from shared.models import TaskAssignment
-                cache_key = compute_planning_cache_key(
-                    spec_content_for_planning,
-                    architecture.overview if architecture else "",
-                    project_overview,
-                )
-                cached = get_cached_plan(plan_dir, cache_key)
-                if cached and cached.get("assignment"):
-                    try:
-                        assignment = TaskAssignment(**cached["assignment"])
-                        tech_lead_output = type("TechLeadOutput", (), {
-                            "assignment": assignment,
-                            "requirement_task_mapping": cached.get("requirement_task_mapping") or [],
-                            "summary": cached.get("summary") or "cached",
-                        })()
-                        logger.info("Using cached planning result (skipping alignment/conformance)")
-                        break
-                    except Exception as cache_err:
-                        logger.warning("Planning cache load failed, continuing: %s", cache_err)
+        if tech_lead_output.spec_clarification_needed:
+            questions = tech_lead_output.clarification_questions or []
+            error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
+            if len(questions) > 5:
+                error_msg += f" (+{len(questions) - 5} more)"
+            logger.warning(error_msg)
+            update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg)
+            return
 
-            # Step 4: Loop until tasks and architecture align
-            alignment_iterations = 0
-            alignment_early_exit = int(os.environ.get("SW_ALIGNMENT_EARLY_EXIT_THRESHOLD") or "2")
-            while alignment_iterations < MAX_ALIGNMENT_ITERATIONS:
-                aligned, alignment_feedback = check_tasks_architecture_alignment(assignment, architecture, tech_lead.llm)
-                if aligned:
-                    logger.info("Tasks and architecture aligned (iteration %s)", alignment_iterations + 1)
-                    break
-                # Early exit: few minor issues and we've done at least one iteration
-                if alignment_iterations >= 1 and len(alignment_feedback) <= alignment_early_exit:
-                    has_critical = any(
-                        kw in " ".join(alignment_feedback).lower()
-                        for kw in ("missing", "no task", "no corresponding", "critical", "required")
-                    )
-                    if not has_critical:
-                        logger.info(
-                            "Alignment: early exit (iteration %s, %s minor issues below threshold)",
-                            alignment_iterations + 1,
-                            len(alignment_feedback),
-                        )
-                        break
-                logger.info("Tasks and architecture not aligned (iteration %s/%s): %s", alignment_iterations + 1, MAX_ALIGNMENT_ITERATIONS, alignment_feedback[:3])
-                alignment_iterations += 1
-                if alignment_iterations >= MAX_ALIGNMENT_ITERATIONS:
-                    logger.warning("Max alignment iterations reached; proceeding with current plan")
-                    break
-                # Re-run Tech Lead with architecture and alignment feedback
-                try:
-                    tech_lead_output = tech_lead.run(TechLeadInput(
-                        requirements=requirements,
-                        architecture=architecture,
-                        repo_path=str(path),
-                        spec_content=spec_content_for_planning,
-                        existing_codebase=existing_code if existing_code != "# No code files found" else None,
-                        project_overview=project_overview,
-                        alignment_feedback=alignment_feedback,
-                        minimal_planning=tech_lead_minimal_planning,
-                        open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
-                        assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
-                    ))
-                except LLMRateLimitError:
-                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
-                    return
-                if tech_lead_output.spec_clarification_needed:
-                    update_job(job_id, status=JOB_STATUS_FAILED, error="Spec clarification needed during alignment")
-                    return
-                assignment = tech_lead_output.assignment
-                if not assignment or not assignment.tasks:
-                    break
-                # Re-run Architecture with alignment feedback
-                arch_input = ArchitectureInput(
-                    requirements=requirements,
-                    technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
-                    existing_architecture=enterprise_arch_context,
-                    project_overview=project_overview,
-                    features_and_functionality_doc=features_and_functionality_doc or None,
-                    planning_feedback=alignment_feedback,
-                )
-                try:
-                    arch_output = arch_agent.run(arch_input)
-                except LLMRateLimitError:
-                    update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
-                    return
-                architecture = arch_output.architecture
-                try:
-                    write_architecture_plan(path, architecture, plan_dir=plan_dir)
-                except Exception:
-                    pass
+        assignment = tech_lead_output.assignment
+        if not assignment or not assignment.tasks:
+            logger.error("Tech Lead produced no tasks; failing job")
+            update_job(job_id, status=JOB_STATUS_FAILED, error="Tech Lead produced no tasks")
+            return
 
-            # Step 5: Conformance review (tasks + architecture vs initial_spec)
-            conformant, conformance_issues_from_last = check_spec_conformance(spec_content_for_planning, assignment, architecture, tech_lead.llm)
-            if conformant:
-                logger.info("Tasks and architecture conform to initial spec; proceeding to execution")
-                if enable_planning_cache and architecture:
-                    try:
-                        from shared.planning_cache import compute_planning_cache_key, set_cached_plan
-                        cache_key = compute_planning_cache_key(
-                            spec_content_for_planning,
-                            architecture.overview,
-                            project_overview,
-                        )
-                        set_cached_plan(
-                            plan_dir,
-                            cache_key,
-                            assignment,
-                            getattr(tech_lead_output, "requirement_task_mapping", None) or [],
-                            getattr(tech_lead_output, "summary", "") or "",
-                        )
-                    except Exception as cache_err:
-                        logger.warning("Planning cache store failed: %s", cache_err)
-                break
-            conformance_early_exit = int(os.environ.get("SW_CONFORMANCE_EARLY_EXIT_THRESHOLD") or "2")
-            if len(conformance_issues_from_last) <= conformance_early_exit:
-                has_critical_conformance = any(
-                    kw in " ".join(conformance_issues_from_last).lower()
-                    for kw in ("missing", "violates", "wrong scope", "critical", "required")
-                )
-                if not has_critical_conformance:
-                    logger.info(
-                        "Conformance: early exit (%s minor issues below threshold)",
-                        len(conformance_issues_from_last),
-                    )
-                    break
-            logger.info("Spec conformance failed (%d issues); re-running planning with feedback", len(conformance_issues_from_last))
-            conformance_retries += 1
-            if conformance_retries > MAX_CONFORMANCE_RETRIES:
-                logger.warning("Max conformance retries reached; proceeding with current plan")
-                break
+        # Architecture (single pass, no iteration)
+        architecture = None
+        arch_input = ArchitectureInput(
+            requirements=requirements,
+            technology_preferences=["Python", "FastAPI", "Angular", "PostgreSQL", "Docker"],
+            project_overview=project_overview,
+            features_and_functionality_doc=features_and_functionality_doc or None,
+            existing_architecture=enterprise_arch_context,
+        )
+        try:
+            arch_output = arch_agent.run(arch_input)
+        except LLMRateLimitError:
+            logger.warning("Ollama LLM usage limit exceeded for week. Job %s paused.", job_id)
+            update_job(job_id, status="paused_llm_limit", error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+            return
+        architecture = arch_output.architecture
+        update_job(job_id, architecture_overview=architecture.overview)
+        try:
+            write_architecture_plan(path, architecture, plan_dir=plan_dir)
+        except Exception as e:
+            logger.warning("Failed to write plan/architecture.md: %s", e)
 
         # Run additional planning agents in dependency tiers (parallel within each tier)
         arch_overview = architecture.overview if architecture else ""
@@ -1873,90 +1583,80 @@ def run_orchestrator(
         ui_ux_doc = ""
         devops_doc = ""
 
-        # Optional: skip domain planning agents (env SW_SKIP_PLANNING_AGENTS=agent1,agent2 or SW_MINIMAL_PLANNING=1)
         skip_planning_agents: set = set()
         skip_env = (os.environ.get("SW_SKIP_PLANNING_AGENTS") or "").strip()
         if skip_env:
             skip_planning_agents = {k.strip() for k in skip_env.split(",") if k.strip()}
-        if minimal_planning:
-            skip_planning_agents = {
-                "api_contract", "data_architecture", "ui_ux", "infrastructure",
-                "frontend_architecture", "devops_planning", "qa_test_strategy",
-                "security_planning", "observability", "performance_doc",
-            }
 
-        if not minimal_planning:
-            # Tier 1: api_contract, data_architecture, ui_ux, infrastructure (parallel)
-            tier1_keys = [k for k in ("api_contract", "data_architecture", "ui_ux", "infrastructure") if k not in skip_planning_agents]
-            if tier1_keys:
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = {
-                        executor.submit(
-                            _run_tier1_agent,
-                            key,
-                            agents,
-                            spec_content,
-                            arch_overview,
-                            plan_dir,
-                            requirements,
-                            features_and_functionality_doc or "",
-                            tenancy,
-                        ): key
-                        for key in tier1_keys
-                    }
-                    for future in as_completed(futures):
-                        agent_key, result = future.result()
-                        if result:
-                            if "infra_doc" in result:
-                                infra_doc = result["infra_doc"]
-                            if "data_lifecycle" in result:
-                                data_lifecycle = result["data_lifecycle"]
-                            if "ui_ux_doc" in result:
-                                ui_ux_doc = result["ui_ux_doc"]
+        # Run additional planning agents in dependency tiers (parallel within each tier)
+        tier1_keys = [k for k in ("api_contract", "data_architecture", "ui_ux", "infrastructure") if k not in skip_planning_agents]
+        if tier1_keys:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(
+                        _run_tier1_agent,
+                        key,
+                        agents,
+                        spec_content,
+                        arch_overview,
+                        plan_dir,
+                        requirements,
+                        features_and_functionality_doc or "",
+                        tenancy,
+                    ): key
+                    for key in tier1_keys
+                }
+                for future in as_completed(futures):
+                    agent_key, result = future.result()
+                    if result:
+                        if "infra_doc" in result:
+                            infra_doc = result["infra_doc"]
+                        if "data_lifecycle" in result:
+                            data_lifecycle = result["data_lifecycle"]
+                        if "ui_ux_doc" in result:
+                            ui_ux_doc = result["ui_ux_doc"]
 
-            # Tier 2: frontend_architecture, devops_planning, qa_test_strategy, security_planning (parallel)
-            tier2_keys = [k for k in ("frontend_architecture", "devops_planning", "qa_test_strategy", "security_planning") if k not in skip_planning_agents]
-            if tier2_keys:
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = {
-                        executor.submit(
-                            _run_tier2_agent,
-                            key,
-                            agents,
-                            spec_content_for_planning,
-                            arch_overview,
-                            plan_dir,
-                            requirements,
-                            req_ids,
-                            ui_ux_doc,
-                            infra_doc,
-                            data_lifecycle,
-                        ): key
-                        for key in tier2_keys
-                    }
-                    for future in as_completed(futures):
-                        agent_key, result = future.result()
-                        if result and "devops_doc" in result:
-                            devops_doc = result["devops_doc"]
+        tier2_keys = [k for k in ("frontend_architecture", "devops_planning", "qa_test_strategy", "security_planning") if k not in skip_planning_agents]
+        if tier2_keys:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(
+                        _run_tier2_agent,
+                        key,
+                        agents,
+                        spec_content_for_planning,
+                        arch_overview,
+                        plan_dir,
+                        requirements,
+                        req_ids,
+                        ui_ux_doc,
+                        infra_doc,
+                        data_lifecycle,
+                    ): key
+                    for key in tier2_keys
+                }
+                for future in as_completed(futures):
+                    agent_key, result = future.result()
+                    if result and "devops_doc" in result:
+                        devops_doc = result["devops_doc"]
 
-            # Tier 3: observability, performance_doc (parallel)
-            tier3_keys = [k for k in ("observability", "performance_doc") if k not in skip_planning_agents]
-            if tier3_keys:
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    futures = []
-                    if "observability" in tier3_keys and agents.get("observability"):
-                        futures.append(executor.submit(
-                            lambda: _run_tier3_observability(agents, arch_overview, infra_doc, devops_doc, requirements, plan_dir)
-                        ))
-                    if "performance_doc" in tier3_keys and agents.get("performance_doc"):
-                        futures.append(executor.submit(
-                            lambda: _run_tier3_performance_doc(agents, spec_content_for_planning, arch_overview, requirements, plan_dir)
-                        ))
-                    for f in as_completed(futures):
-                        try:
-                            f.result()
-                        except Exception as e:
-                            logger.debug("Tier 3 planning skipped: %s", e)
+        tier3_keys = [k for k in ("observability", "performance_doc") if k not in skip_planning_agents]
+        if tier3_keys:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = []
+                if "observability" in tier3_keys and agents.get("observability"):
+                    futures.append(executor.submit(
+                        lambda: _run_tier3_observability(agents, arch_overview, infra_doc, devops_doc, requirements, plan_dir)
+                    ))
+                if "performance_doc" in tier3_keys and agents.get("performance_doc"):
+                    futures.append(executor.submit(
+                        lambda: _run_tier3_performance_doc(agents, spec_content_for_planning, arch_overview, requirements, plan_dir)
+                    ))
+                for f in as_completed(futures):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        logger.debug("Tier 3 planning skipped: %s", e)
 
         # Planning consolidation: master plan, risk register, ship checklist
         try:
@@ -2003,12 +1703,13 @@ def run_orchestrator(
             all_tasks[tid].type.value == "git_setup" or all_tasks[tid].assignee == "devops"
         )]
         backend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "backend"]
+        backend_code_v2_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "backend-code-v2"]
         frontend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"]
-        total_tasks = len(prefix_queue) + len(backend_queue) + len(frontend_queue)
+        total_tasks = len(prefix_queue) + len(backend_queue) + len(backend_code_v2_queue) + len(frontend_queue)
 
         logger.info(
-            "=== Starting task execution: prefix=%s, backend=%s, frontend=%s ===",
-            len(prefix_queue), len(backend_queue), len(frontend_queue),
+            "=== Starting task execution: prefix=%s, backend=%s, backend_code_v2=%s, frontend=%s ===",
+            len(prefix_queue), len(backend_queue), len(backend_code_v2_queue), len(frontend_queue),
         )
 
         # Run prefix tasks sequentially (work path; devops writes to path/devops, no git)
@@ -2042,6 +1743,26 @@ def run_orchestrator(
                 )
                 continue
 
+        # Backend-code-v2 worker: run in parallel with backend and frontend workers
+        backend_code_v2_thread = None
+        if backend_code_v2_queue:
+            backend_code_v2_thread = threading.Thread(
+                target=_backend_code_v2_worker,
+                kwargs=dict(
+                    job_id=job_id,
+                    backend_code_v2_queue=backend_code_v2_queue,
+                    all_tasks=all_tasks,
+                    completed=completed,
+                    failed=failed,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    agents=agents,
+                    repo_path=backend_dir,
+                ),
+            )
+            backend_code_v2_thread.daemon = True
+            backend_code_v2_thread.start()
+
         # Backend and frontend workers run in parallel (one task per agent type at a time)
         _run_backend_frontend_workers(
             job_id=job_id,
@@ -2062,8 +1783,11 @@ def run_orchestrator(
             is_retry=False,
         )
 
+        if backend_code_v2_thread is not None:
+            backend_code_v2_thread.join()
+
         llm_limit_exceeded = any(v == OLLAMA_WEEKLY_LIMIT_MESSAGE for v in failed.values())
-        remaining_in_queues = len(backend_queue) + len(frontend_queue)
+        remaining_in_queues = len(backend_queue) + len(backend_code_v2_queue) + len(frontend_queue)
         # Log final execution summary with task breakdown
         logger.info(
             "=== Task execution finished: %s completed, %s failed, %s remaining (of %s total) ===",
@@ -2084,8 +1808,8 @@ def run_orchestrator(
                 logger.warning("  [%s] %s — Reason: %s", tid, title, reason)
         if remaining_in_queues:
             logger.warning(
-                "Unprocessed tasks still in queues: backend=%s, frontend=%s",
-                len(backend_queue), len(frontend_queue),
+                "Unprocessed tasks still in queues: backend=%s, backend_code_v2=%s, frontend=%s",
+                len(backend_queue), len(backend_code_v2_queue), len(frontend_queue),
             )
 
         # Integration phase: validate backend-frontend API contract alignment
@@ -2334,11 +2058,15 @@ def run_failed_tasks(job_id: str) -> None:
             tid for tid in failed_ids
             if all_tasks.get(tid) and all_tasks[tid].assignee == "backend"
         ]
+        retry_backend_code_v2_queue = [
+            tid for tid in failed_ids
+            if all_tasks.get(tid) and all_tasks[tid].assignee == "backend-code-v2"
+        ]
         retry_frontend_queue = [
             tid for tid in failed_ids
             if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"
         ]
-        total_tasks = len(retry_prefix) + len(retry_backend_queue) + len(retry_frontend_queue)
+        total_tasks = len(retry_prefix) + len(retry_backend_queue) + len(retry_backend_code_v2_queue) + len(retry_frontend_queue)
 
         # Run prefix (devops, git_setup) sequentially
         for task_id in retry_prefix:
@@ -2386,6 +2114,26 @@ def run_failed_tasks(job_id: str) -> None:
                 except Exception as e:
                     failed_retry[task_id] = f"DevOps failed: {e}"
 
+        # Run backend-code-v2 retry in parallel
+        retry_bv2_thread = None
+        if retry_backend_code_v2_queue:
+            retry_bv2_thread = threading.Thread(
+                target=_backend_code_v2_worker,
+                kwargs=dict(
+                    job_id=job_id,
+                    backend_code_v2_queue=retry_backend_code_v2_queue,
+                    all_tasks=all_tasks,
+                    completed=completed,
+                    failed=failed_retry,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    agents=agents,
+                    repo_path=backend_dir,
+                ),
+            )
+            retry_bv2_thread.daemon = True
+            retry_bv2_thread.start()
+
         # Run backend and frontend in parallel (1 backend task, 1 frontend task at a time)
         if retry_backend_queue or retry_frontend_queue:
             logger.info(
@@ -2410,6 +2158,9 @@ def run_failed_tasks(job_id: str) -> None:
                 total_tasks=total_tasks,
                 is_retry=True,
             )
+
+        if retry_bv2_thread is not None:
+            retry_bv2_thread.join()
 
         llm_limit_exceeded = any(v == OLLAMA_WEEKLY_LIMIT_MESSAGE for v in failed_retry.values())
 

@@ -415,8 +415,8 @@ def _read_repo_meta_files(repo_path: Path) -> str:
         if f.is_file():
             try:
                 parts.append(f"### {name} ###\n{f.read_text(encoding='utf-8', errors='replace')}")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                logger.debug("Could not read %s: %s", f, e)
     return "\n\n".join(parts) if parts else ""
 def _is_repo_setup_task(task: Any) -> bool:
     """True if task description suggests repo setup / initial commit / branching."""
@@ -460,7 +460,7 @@ def _read_openapi_spec_from_repo(repo_path: Path) -> Optional[str]:
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 return _truncate_for_context(content, MAX_OPENAPI_SPEC_CHARS)
-            except Exception as e:
+            except (OSError, UnicodeDecodeError) as e:
                 logger.debug("Could not read OpenAPI spec %s: %s", p, e)
     return None
 _task_requirements = task_requirements

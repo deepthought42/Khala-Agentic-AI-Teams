@@ -8,7 +8,6 @@ from .planning_graph import (
     PlanningDomain,
     EdgeType,
     Phase,
-    compile_planning_graph_to_task_assignment,
 )
 from .spec_analysis_merger import SpecAnalysisMerger
 from .spec_chunk_analyzer import SpecChunkAnalyzer
@@ -22,7 +21,6 @@ __all__ = [
     "PlanningDomain",
     "EdgeType",
     "Phase",
-    "compile_planning_graph_to_task_assignment",
     "SpecChunkAnalyzer",
     "SpecAnalysisMerger",
     "TaskGeneratorAgent",

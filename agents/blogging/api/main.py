@@ -27,6 +27,15 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+import os
+
+_TAVILY_KEY_PRESENT = bool(os.environ.get("TAVILY_API_KEY"))
+if not _TAVILY_KEY_PRESENT:
+    logger.warning(
+        "TAVILY_API_KEY is not set. The research agent requires this key for "
+        "web search. Set it before calling /research-and-review or /full-pipeline."
+    )
+
 # Base directory for run artifacts (when work_dir is requested)
 RUN_ARTIFACTS_BASE = Path(tempfile.gettempdir()) / "blogging_runs"
 
@@ -61,7 +70,7 @@ class AudienceDetails(BaseModel):
 class ResearchAndReviewRequest(BaseModel):
     """Request body for the research-and-review endpoint."""
 
-    brief: str = Field(..., description="Short description of the content topic.")
+    brief: str = Field(..., max_length=50_000, description="Short description of the content topic.")
     title_concept: Optional[str] = Field(
         None,
         description="Optional idea or angle for the title.",
@@ -241,7 +250,7 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
 class FullPipelineRequest(BaseModel):
     """Request body for the full pipeline endpoint."""
 
-    brief: str = Field(..., description="Short description of the content topic.")
+    brief: str = Field(..., max_length=50_000, description="Short description of the content topic.")
     title_concept: Optional[str] = Field(None, description="Optional idea or angle for the title.")
     audience: Optional[Union[AudienceDetails, str]] = Field(None, description="Audience details.")
     tone_or_purpose: Optional[str] = Field(None, description="e.g. 'educational', 'technical deep-dive'.")
@@ -316,5 +325,11 @@ def full_pipeline(request: FullPipelineRequest) -> FullPipelineResponse:
 
 @app.get("/health")
 def health() -> dict:
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Health check endpoint. Includes a warning when TAVILY_API_KEY is missing."""
+    warnings = []
+    if not _TAVILY_KEY_PRESENT:
+        warnings.append("TAVILY_API_KEY is not set; research agent will fail")
+    result: dict = {"status": "ok"}
+    if warnings:
+        result["warnings"] = warnings
+    return result

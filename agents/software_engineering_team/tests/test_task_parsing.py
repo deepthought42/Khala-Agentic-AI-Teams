@@ -1,13 +1,17 @@
-"""Tests for task parsing and dependency-aware interleaving."""
+"""Tests for task parsing: flat and hierarchical formats."""
 
 import pytest
 
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType
-from shared.task_parsing import _normalize_task_type_and_assignee, parse_assignment_from_data
+from shared.task_parsing import (
+    flatten_hierarchy_to_assignment,
+    parse_assignment_from_data,
+    parse_hierarchy_from_data,
+)
 
 
-def test_interleave_respects_dependencies() -> None:
-    """Interleaving must not place a task before its dependencies."""
+def test_parse_flat_assignment() -> None:
+    """parse_assignment_from_data handles flat tasks list."""
     data = {
         "tasks": [
             {
@@ -22,17 +26,6 @@ def test_interleave_respects_dependencies() -> None:
                 "dependencies": [],
             },
             {
-                "id": "backend-crud-api",
-                "title": "CRUD API",
-                "type": "backend",
-                "assignee": "backend",
-                "description": "Create CRUD endpoints",
-                "user_story": "As a dev",
-                "requirements": "",
-                "acceptance_criteria": [],
-                "dependencies": ["backend-models"],
-            },
-            {
                 "id": "frontend-app-shell",
                 "title": "App shell",
                 "type": "frontend",
@@ -43,62 +36,137 @@ def test_interleave_respects_dependencies() -> None:
                 "acceptance_criteria": [],
                 "dependencies": [],
             },
-            {
-                "id": "frontend-list",
-                "title": "List component",
-                "type": "frontend",
-                "assignee": "frontend",
-                "description": "List that fetches from API",
-                "user_story": "As a dev",
-                "requirements": "",
-                "acceptance_criteria": [],
-                "dependencies": ["backend-crud-api"],
-            },
         ],
-        "execution_order": ["backend-models", "backend-crud-api", "frontend-app-shell", "frontend-list"],
-        "rationale": "",
+        "execution_order": ["backend-models", "frontend-app-shell"],
+        "rationale": "Simple plan",
     }
     assignment = parse_assignment_from_data(data)
-    order = assignment.execution_order
-
-    # frontend-list depends on backend-crud-api; backend-crud-api must appear before frontend-list
-    idx_crud = order.index("backend-crud-api")
-    idx_list = order.index("frontend-list")
-    assert idx_crud < idx_list, "frontend-list must come after backend-crud-api (dependency)"
-
-    # Should be interleaved (backend and frontend alternate where possible)
-    backend_ids = [t for t in order if t.startswith("backend-")]
-    frontend_ids = [t for t in order if t.startswith("frontend-")]
-    assert len(backend_ids) == 2
-    assert len(frontend_ids) == 2
+    assert len(assignment.tasks) == 2
+    assert assignment.execution_order == ["backend-models", "frontend-app-shell"]
+    assert assignment.tasks[0].type == TaskType.BACKEND
+    assert assignment.tasks[1].type == TaskType.FRONTEND
 
 
-def test_normalize_fixes_frontend_id_with_backend_type() -> None:
-    """frontend-app-shell with type=backend gets normalized to frontend."""
-    task_type, assignee = _normalize_task_type_and_assignee(
-        "frontend-app-shell", TaskType.BACKEND, "backend"
-    )
-    assert task_type == TaskType.FRONTEND
-    assert assignee == "frontend"
+def test_parse_hierarchical_assignment() -> None:
+    """parse_assignment_from_data handles initiative/epic/story hierarchy."""
+    data = {
+        "initiatives": [
+            {
+                "id": "init-1",
+                "title": "Build App",
+                "description": "Main initiative",
+                "epics": [
+                    {
+                        "id": "epic-users",
+                        "title": "User Management",
+                        "description": "User CRUD",
+                        "user_stories_summary": ["User can register"],
+                        "acceptance_criteria": ["Users can be created"],
+                        "stories": [
+                            {
+                                "id": "backend-user-api",
+                                "title": "User API",
+                                "description": "REST API for users",
+                                "user_story": "As a dev, I want user endpoints",
+                                "assignee": "backend",
+                                "requirements": "FastAPI",
+                                "acceptance_criteria": ["POST /users works"],
+                                "dependencies": [],
+                            },
+                            {
+                                "id": "frontend-user-form",
+                                "title": "User Form",
+                                "description": "Registration form",
+                                "user_story": "As a user, I want to register",
+                                "assignee": "frontend",
+                                "requirements": "Angular",
+                                "acceptance_criteria": ["Form submits"],
+                                "dependencies": ["backend-user-api"],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+        "execution_order": ["backend-user-api", "frontend-user-form"],
+        "rationale": "Users first",
+    }
+    assignment = parse_assignment_from_data(data)
+    assert len(assignment.tasks) == 2
+    assert assignment.tasks[0].id == "backend-user-api"
+    assert assignment.tasks[0].type == TaskType.BACKEND
+    assert assignment.tasks[0].metadata["epic_id"] == "epic-users"
+    assert assignment.tasks[0].metadata["initiative_id"] == "init-1"
+    assert assignment.tasks[1].id == "frontend-user-form"
+    assert assignment.tasks[1].type == TaskType.FRONTEND
 
 
-def test_normalize_fixes_backend_id_with_frontend_type() -> None:
-    """backend-todo-api with type=frontend gets normalized to backend."""
-    task_type, assignee = _normalize_task_type_and_assignee(
-        "backend-todo-api", TaskType.FRONTEND, "frontend"
-    )
-    assert task_type == TaskType.BACKEND
-    assert assignee == "backend"
+def test_parse_hierarchy_from_data() -> None:
+    """parse_hierarchy_from_data produces a PlanningHierarchy."""
+    data = {
+        "initiatives": [
+            {
+                "id": "init-1",
+                "title": "Build App",
+                "description": "Main",
+                "epics": [
+                    {
+                        "id": "epic-1",
+                        "title": "Feature",
+                        "stories": [
+                            {
+                                "id": "story-1",
+                                "title": "Backend work",
+                                "assignee": "backend",
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+        "execution_order": ["story-1"],
+        "rationale": "Simple",
+    }
+    hierarchy = parse_hierarchy_from_data(data)
+    assert len(hierarchy.initiatives) == 1
+    assert len(hierarchy.initiatives[0].epics) == 1
+    assert len(hierarchy.initiatives[0].epics[0].stories) == 1
+    assert hierarchy.execution_order == ["story-1"]
 
 
-def test_parse_assignment_normalizes_misclassified_tasks() -> None:
-    """parse_assignment_from_data fixes type/assignee when task id indicates domain."""
+def test_flatten_hierarchy_deduplicates() -> None:
+    """flatten_hierarchy_to_assignment skips duplicate story IDs."""
+    hierarchy = parse_hierarchy_from_data({
+        "initiatives": [
+            {
+                "id": "init-1",
+                "title": "App",
+                "epics": [
+                    {
+                        "id": "epic-1",
+                        "title": "Feature",
+                        "stories": [
+                            {"id": "s1", "title": "Story", "assignee": "backend"},
+                            {"id": "s1", "title": "Duplicate", "assignee": "backend"},
+                        ],
+                    },
+                ],
+            },
+        ],
+        "execution_order": ["s1"],
+    })
+    assignment = flatten_hierarchy_to_assignment(hierarchy)
+    assert len(assignment.tasks) == 1
+
+
+def test_assignee_trusted_from_llm() -> None:
+    """LLM-provided assignee is trusted directly, no normalization."""
     data = {
         "tasks": [
             {
                 "id": "frontend-app-init",
                 "title": "Initialize frontend app",
-                "type": "backend",  # Wrong - should be frontend
+                "type": "backend",
                 "assignee": "backend",
                 "description": "Create Angular app",
                 "user_story": "As a dev",
@@ -113,5 +181,19 @@ def test_parse_assignment_normalizes_misclassified_tasks() -> None:
     assignment = parse_assignment_from_data(data)
     assert len(assignment.tasks) == 1
     t = assignment.tasks[0]
-    assert t.type == TaskType.FRONTEND
-    assert t.assignee == "frontend"
+    assert t.type == TaskType.BACKEND
+    assert t.assignee == "backend"
+
+
+def test_execution_order_preserves_llm_order() -> None:
+    """execution_order from LLM is preserved as-is."""
+    data = {
+        "tasks": [
+            {"id": "a", "assignee": "backend", "description": "A"},
+            {"id": "b", "assignee": "frontend", "description": "B"},
+            {"id": "c", "assignee": "backend", "description": "C"},
+        ],
+        "execution_order": ["a", "b", "c"],
+    }
+    assignment = parse_assignment_from_data(data)
+    assert assignment.execution_order == ["a", "b", "c"]

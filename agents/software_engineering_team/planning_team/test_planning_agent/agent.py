@@ -39,7 +39,7 @@ def _parse_graph_from_llm_output(data: Dict[str, Any], existing_task_ids: list) 
         try:
             kind = PlanningNodeKind(kind_str)
         except ValueError:
-            kind = PlanningNodeKind.TASK
+            kind = PlanningNodeKind.STORY
         node = PlanningNode(
             id=n["id"],
             domain=domain,

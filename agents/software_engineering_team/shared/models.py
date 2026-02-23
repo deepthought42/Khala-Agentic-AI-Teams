@@ -173,6 +173,53 @@ class TaskAssignment(BaseModel):
     rationale: str = ""
 
 
+class StoryPlan(BaseModel):
+    """An individual user story that is part of an epic, assigned to an engineer."""
+
+    id: str
+    title: str
+    description: str = ""
+    user_story: str = ""
+    assignee: str = Field(
+        ...,
+        description="Engineer type: frontend, backend, or devops",
+    )
+    requirements: str = ""
+    dependencies: List[str] = Field(default_factory=list)
+    acceptance_criteria: List[str] = Field(default_factory=list)
+
+
+class Epic(BaseModel):
+    """Feature definition containing high-level user stories and acceptance criteria."""
+
+    id: str
+    title: str
+    description: str = ""
+    user_stories_summary: List[str] = Field(default_factory=list)
+    acceptance_criteria: List[str] = Field(default_factory=list)
+    stories: List[StoryPlan] = Field(default_factory=list)
+
+
+class Initiative(BaseModel):
+    """High-level goal that contains epics."""
+
+    id: str
+    title: str
+    description: str = ""
+    epics: List[Epic] = Field(default_factory=list)
+
+
+class PlanningHierarchy(BaseModel):
+    """Full planning output: Initiative -> Epic -> Story hierarchy."""
+
+    initiatives: List[Initiative] = Field(default_factory=list)
+    execution_order: List[str] = Field(
+        default_factory=list,
+        description="Story IDs in execution order",
+    )
+    rationale: str = ""
+
+
 def model_to_dict(obj: Any) -> Dict[str, Any]:
     """
     Convert a Pydantic model (v1 or v2) or similar object to a plain dict.

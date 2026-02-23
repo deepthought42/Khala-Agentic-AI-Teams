@@ -211,23 +211,15 @@ def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: P
     with patch("orchestrator.update_job", side_effect=capture_update_job):
         with patch("orchestrator._get_agents", return_value=mock_agents):
             with patch(
-                "planning_team.planning_review.check_tasks_architecture_alignment",
-                return_value=(True, []),
+                "spec_parser.parse_spec_with_llm",
+                return_value=ProductRequirements(
+                    title="Test App",
+                    description="Build a todo app",
+                    acceptance_criteria=[],
+                    constraints=[],
+                ),
             ):
-                with patch(
-                    "planning_team.planning_review.check_spec_conformance",
-                    return_value=(True, []),
-                ):
-                    with patch(
-                        "spec_parser.parse_spec_with_llm",
-                        return_value=ProductRequirements(
-                            title="Test App",
-                            description="Build a todo app",
-                            acceptance_criteria=[],
-                            constraints=[],
-                        ),
-                    ):
-                        orchestrator.run_orchestrator(job_id, str(tmp_path))
+                orchestrator.run_orchestrator(job_id, str(tmp_path))
 
     failed_calls = [(jid, kw) for jid, kw in update_job_calls if kw.get("status") == "failed"]
     assert len(failed_calls) >= 1
@@ -345,17 +337,12 @@ def test_run_tier1_agent_returns_none_on_exception() -> None:
     assert result is None
 
 
-def test_minimal_planning_skips_domain_agents(tmp_path: Path) -> None:
-    """When SW_MINIMAL_PLANNING=1, domain planning agents are skipped and consolidation runs."""
+def test_skip_planning_agents_env_skips_domain_agents(tmp_path: Path) -> None:
+    """When SW_SKIP_PLANNING_AGENTS lists agents, those domain planning agents are skipped."""
     (tmp_path / "initial_spec.md").write_text("# Test\n\nSpec.", encoding="utf-8")
-    job_id = "test-minimal-planning"
-    plan_agent_calls = []
-
-    def track_planning_agent_run(agent_key, *args, **kwargs):
-        plan_agent_calls.append(agent_key)
+    job_id = "test-skip-planning"
 
     mock_api_contract = MagicMock()
-    mock_api_contract.run.side_effect = lambda *a, **kw: track_planning_agent_run("api_contract")
 
     mock_agents = {
         "project_planning": MagicMock(),
@@ -376,7 +363,6 @@ def test_minimal_planning_skips_domain_agents(tmp_path: Path) -> None:
         "api_contract": mock_api_contract,
     }
 
-    # Configure mocks for full run
     with patch("orchestrator.update_job"):
         with patch("orchestrator._get_agents", return_value=mock_agents):
             with patch(
@@ -388,33 +374,24 @@ def test_minimal_planning_skips_domain_agents(tmp_path: Path) -> None:
                     constraints=[],
                 ),
             ):
-                with patch(
-                    "planning_team.planning_review.check_tasks_architecture_alignment",
-                    return_value=(True, []),
-                ):
-                    with patch(
-                        "planning_team.planning_review.check_spec_conformance",
-                        return_value=(True, []),
-                    ):
-                        from planning_team.project_planning_agent.models import (
-                            ProjectOverview,
-                            ProjectPlanningOutput,
-                        )
-                        mock_pp_output = ProjectPlanningOutput(
-                            overview=ProjectOverview(
-                                primary_goal="",
-                                delivery_strategy="",
-                                features_and_functionality_doc="",
-                            ),
-                            summary="",
-                            features_and_functionality_doc="",
-                        )
-                        mock_agents["project_planning"].run.return_value = mock_pp_output
-                        try:
-                            os.environ["SW_MINIMAL_PLANNING"] = "1"
-                            orchestrator.run_orchestrator(job_id, str(tmp_path))
-                        finally:
-                            os.environ.pop("SW_MINIMAL_PLANNING", None)
+                from planning_team.project_planning_agent.models import (
+                    ProjectOverview,
+                    ProjectPlanningOutput,
+                )
+                mock_pp_output = ProjectPlanningOutput(
+                    overview=ProjectOverview(
+                        primary_goal="",
+                        delivery_strategy="",
+                        features_and_functionality_doc="",
+                    ),
+                    summary="",
+                    features_and_functionality_doc="",
+                )
+                mock_agents["project_planning"].run.return_value = mock_pp_output
+                try:
+                    os.environ["SW_SKIP_PLANNING_AGENTS"] = "api_contract,data_architecture"
+                    orchestrator.run_orchestrator(job_id, str(tmp_path))
+                finally:
+                    os.environ.pop("SW_SKIP_PLANNING_AGENTS", None)
 
-    # api_contract should not have been called (minimal planning skips all domain agents)
     assert mock_api_contract.run.call_count == 0

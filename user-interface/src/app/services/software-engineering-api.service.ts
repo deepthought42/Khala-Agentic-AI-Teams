@@ -15,6 +15,9 @@ import type {
   ArchitectDesignRequest,
   ArchitectDesignResponse,
   HealthResponse,
+  BackendCodeV2RunRequest,
+  BackendCodeV2RunResponse,
+  BackendCodeV2StatusResponse,
 } from '../models';
 
 /**
@@ -151,6 +154,33 @@ export class SoftwareEngineeringApiService {
     return this.http.post<ArchitectDesignResponse>(
       `${this.baseUrl}/architect/design`,
       request
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Backend-Code-V2
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /backend-code-v2/run
+   */
+  runBackendCodeV2(
+    request: BackendCodeV2RunRequest
+  ): Observable<BackendCodeV2RunResponse> {
+    return this.http.post<BackendCodeV2RunResponse>(
+      `${this.baseUrl}/backend-code-v2/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /backend-code-v2/status/{job_id}
+   */
+  getBackendCodeV2Status(
+    jobId: string
+  ): Observable<BackendCodeV2StatusResponse> {
+    return this.http.get<BackendCodeV2StatusResponse>(
+      `${this.baseUrl}/backend-code-v2/status/${jobId}`
     );
   }
 

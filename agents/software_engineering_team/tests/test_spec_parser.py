@@ -3,29 +3,12 @@
 import pytest
 
 from spec_parser import (
-    parse_spec_heuristic,
     parse_spec_with_llm,
     load_spec_from_repo,
     validate_repo_path,
     SPEC_FILENAME,
 )
 from shared.llm import DummyLLMClient
-
-
-def test_parse_spec_heuristic_extracts_title() -> None:
-    """Heuristic parser extracts title from first # heading."""
-    spec = "# Task Manager API\n\nBuild a REST API for tasks."
-    reqs = parse_spec_heuristic(spec)
-    assert reqs.title == "Task Manager API"
-    assert "REST API" in reqs.description
-    assert reqs.priority == "medium"
-
-
-def test_parse_spec_heuristic_fallback_title() -> None:
-    """Heuristic parser uses 'Software Project' when no heading."""
-    spec = "Just a paragraph of text."
-    reqs = parse_spec_heuristic(spec)
-    assert reqs.title == "Software Project"
 
 
 def test_parse_spec_with_llm_uses_dummy() -> None:

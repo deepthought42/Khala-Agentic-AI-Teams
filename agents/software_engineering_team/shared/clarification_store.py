@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -81,7 +84,8 @@ class ClarificationStore:
             output = spec_intake.run(SpecIntakeInput(spec_content=spec_text, plan_dir=None))
             open_questions = output.open_questions or []
             assumptions = output.assumptions or []
-        except Exception:
+        except (ImportError, Exception) as e:
+            logger.debug("Spec intake agent unavailable, using fallback: %s", e)
             open_questions = self._extract_open_questions_fallback(spec_text)
             assumptions = self._extract_assumptions_fallback(spec_text)
 
@@ -104,7 +108,8 @@ class ClarificationStore:
                     message=result.assistant_message,
                 )
             )
-        except Exception:
+        except (ImportError, Exception) as e:
+            logger.debug("Clarification agent unavailable, using fallback: %s", e)
             summary = "I reviewed your spec. I identified open questions and assumptions to refine it."
             first_question = open_questions[0] if open_questions else "What should we clarify first?"
             session.turns.append(
@@ -169,7 +174,8 @@ class ClarificationStore:
                     session.turns.append(
                         ClarificationTurn(role="assistant", message=result.assistant_message)
                     )
-            except Exception:
+            except (ImportError, Exception) as e:
+                logger.debug("Clarification processing fallback: %s", e)
                 if question_answered and session.open_questions:
                     session.resolved_questions.append(
                         {"question": question_answered, "answer": message[:500], "category": "other"}

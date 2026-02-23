@@ -4,7 +4,7 @@ import pytest
 
 from shared.llm import DummyLLMClient
 from shared.models import ProductRequirements, SystemArchitecture
-from spec_parser import parse_spec_heuristic
+from shared.models import ProductRequirements
 from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
 from tech_lead_agent import TechLeadAgent, TechLeadInput
 from devops_agent import DevOpsExpertAgent, DevOpsInput
@@ -34,7 +34,13 @@ Build a REST API for task management.
 ## Acceptance Criteria
 - POST /tasks, GET /tasks
 """
-    requirements = parse_spec_heuristic(spec)
+    requirements = ProductRequirements(
+        title="Task Manager API",
+        description=spec,
+        acceptance_criteria=["POST /tasks, GET /tasks"],
+        constraints=["PostgreSQL"],
+        priority="medium",
+    )
     llm = DummyLLMClient()
 
     # Architecture

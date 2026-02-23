@@ -39,8 +39,6 @@ class TaskGeneratorInput(BaseModel):
         description="Features and functionality doc (capped 15K)",
     )
     architecture: Optional[SystemArchitecture] = None
-    alignment_feedback: Optional[List[str]] = None
-    conformance_issues: Optional[List[str]] = None
     repo_path: str = Field(default="")
     open_questions: Optional[List[str]] = Field(
         None,

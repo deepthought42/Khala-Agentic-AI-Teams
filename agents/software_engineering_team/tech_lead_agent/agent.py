@@ -1,28 +1,18 @@
-"""Tech Lead agent: orchestrates tasks from product requirements and architecture."""
+"""Tech Lead agent: produces Initiative/Epic/Story hierarchy from product requirements."""
 
 from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from planning_team.planning_graph import (
-    PlanningDomain,
-    PlanningGraph,
-    PlanningNode,
-    PlanningNodeKind,
-    compile_planning_graph_to_task_assignment,
-)
-from planning_team.spec_analysis_merger import SpecAnalysisMerger, SpecAnalysisMergerInput
-from shared.context_sizing import compute_spec_chunk_chars
-from planning_team.spec_chunk_analyzer import SpecChunkAnalyzer, SpecChunkAnalyzerInput
-from planning_team.spec_chunking import chunk_spec_by_size
-from planning_team.task_generator_agent import TaskGeneratorAgent, TaskGeneratorInput
 from shared.llm import LLMClient
 from shared.models import Task, TaskAssignment, TaskStatus, TaskType, TaskUpdate
-from shared.task_parsing import _normalize_task_type_and_assignee, parse_assignment_from_data
-from shared.task_validation import validate_assignment
+from shared.task_parsing import (
+    flatten_hierarchy_to_assignment,
+    parse_assignment_from_data,
+    parse_hierarchy_from_data,
+)
 
 from .models import TechLeadInput, TechLeadOutput
 from .prompts import (
@@ -37,14 +27,13 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-MAX_TECH_LEAD_RETRIES = 6
-
 
 class TechLeadAgent:
     """
     Staff-level Tech Lead that bridges product management and engineering.
-    Uses product requirements and system architecture to plan and distribute
-    tasks amongst DevOps, Security, Backend, Frontend, and QA agents.
+    Produces an Initiative -> Epic -> Story hierarchy from product requirements
+    and system architecture. Stories are distributed to backend, frontend,
+    and devops engineers.
     """
 
     def __init__(self, llm_client: LLMClient) -> None:
@@ -52,302 +41,20 @@ class TechLeadAgent:
         self.llm = llm_client
 
     def _analyze_codebase(self, existing_codebase: str) -> str:
-        """Step 1: Analyze the existing codebase to understand what already exists."""
-        logger.info("Tech Lead: Step 1/3 - Analyzing existing codebase (%s chars)", len(existing_codebase))
+        """Analyze the existing codebase to understand what already exists."""
+        logger.info("Tech Lead: Analyzing existing codebase (%s chars)", len(existing_codebase))
         prompt = TECH_LEAD_ANALYZE_CODEBASE_PROMPT + "\n\n---\n\n**EXISTING CODEBASE:**\n" + existing_codebase
         data = self.llm.complete_json(prompt, temperature=0.1)
-        # Return the full analysis as a formatted string for use in subsequent steps
         return json.dumps(data, indent=2)
-
-    def _analyze_spec_chunked(self, spec_content: str, reqs) -> str:
-        """Step 2: Chunk spec, analyze each chunk, merge results."""
-        max_chunk_chars = compute_spec_chunk_chars(self.llm)
-        logger.info(
-            "Tech Lead: Step 2/3 - Analyzing spec in chunks (%s chars, max %s chars/chunk)",
-            len(spec_content),
-            max_chunk_chars,
-        )
-        chunks = chunk_spec_by_size(spec_content, max_chars=max_chunk_chars, overlap=500)
-        if not chunks:
-            return "{}"
-
-        chunk_analyzer = SpecChunkAnalyzer(self.llm)
-        header = {
-            "title": reqs.title,
-            "description": reqs.description,
-            "acceptance_criteria": reqs.acceptance_criteria,
-            "constraints": reqs.constraints,
-            "priority": reqs.priority,
-        }
-
-        def _analyze_chunk(args):
-            i, chunk = args
-            analysis = chunk_analyzer.run(
-                SpecChunkAnalyzerInput(
-                    spec_chunk=chunk,
-                    chunk_index=i + 1,
-                    total_chunks=len(chunks),
-                    requirements_header=header,
-                )
-            )
-            return i, analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()
-
-        max_workers = min(4, len(chunks))
-        chunk_results = [None] * len(chunks)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_analyze_chunk, (i, ch)): i for i, ch in enumerate(chunks)}
-            for future in as_completed(futures):
-                idx, result = future.result()
-                chunk_results[idx] = result
-
-        merger = SpecAnalysisMerger(self.llm)
-        merged = merger.run(SpecAnalysisMergerInput(chunk_results=chunk_results))
-        return json.dumps(
-            merged.model_dump() if hasattr(merged, "model_dump") else merged.dict(),
-            indent=2,
-        )
-
-    def _run_planning_pipeline(
-        self,
-        input_data: TechLeadInput,
-        codebase_analysis: str,
-        spec_analysis: str,
-    ) -> Optional[TechLeadOutput]:
-        """
-        Run the multi-agent planning pipeline (Backend + Frontend planners).
-        Returns TechLeadOutput if successful and valid, else None.
-        """
-        from planning_team.backend_planning_agent import BackendPlanningAgent, BackendPlanningInput
-        from planning_team.frontend_planning_agent import FrontendPlanningAgent, FrontendPlanningInput
-
-        reqs = input_data.requirements
-        arch = input_data.architecture
-        project_overview = getattr(input_data, "project_overview", None)
-
-        if not arch:
-            logger.info("Tech Lead: skipping planning pipeline (no architecture)")
-            return None
-
-        logger.info("Tech Lead: running planning pipeline (Backend + Frontend planners in parallel)")
-        backend_planner = BackendPlanningAgent(self.llm)
-        frontend_planner = FrontendPlanningAgent(self.llm)
-
-        backend_input = BackendPlanningInput(
-            requirements=reqs,
-            architecture=arch,
-            spec_content=input_data.spec_content or "",
-            project_overview=project_overview,
-            codebase_analysis=codebase_analysis or None,
-            spec_analysis=spec_analysis or None,
-        )
-        frontend_input = FrontendPlanningInput(
-            requirements=reqs,
-            architecture=arch,
-            spec_content=input_data.spec_content or "",
-            project_overview=project_overview,
-            codebase_analysis=codebase_analysis or None,
-            spec_analysis=spec_analysis or None,
-            backend_planning_summary="",  # Run in parallel; alignment via merged graph
-        )
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            backend_future = executor.submit(backend_planner.run, backend_input)
-            frontend_future = executor.submit(frontend_planner.run, frontend_input)
-            backend_output = backend_future.result()
-            frontend_output = frontend_future.result()
-
-        merged = PlanningGraph()
-
-        # Seed graph with high-level EPIC/FEATURE nodes derived from architecture components
-        if arch and arch.components:
-            for comp in arch.components:
-                domain = PlanningDomain.BACKEND
-                if comp.type in ("frontend", "ui", "client"):
-                    domain = PlanningDomain.FRONTEND
-                elif comp.type in ("devops", "ci", "cicd"):
-                    domain = PlanningDomain.DEVOPS
-                elif comp.type in ("database", "data"):
-                    domain = PlanningDomain.DATA
-                node_id = f"arch-{domain.value}-{comp.name.replace(' ', '-').lower()}"
-                merged.add_node(
-                    PlanningNode(
-                        id=node_id,
-                        domain=domain,
-                        kind=PlanningNodeKind.FEATURE,
-                        summary=f"{comp.name} ({comp.type})",
-                        details=comp.description or f"Architecture component {comp.name} of type {comp.type}.",
-                        metadata={"component_name": comp.name},
-                    )
-                )
-
-        merged.merge(backend_output.planning_graph)
-        merged.merge(frontend_output.planning_graph)
-
-        # Data planner (optional)
-        try:
-            from planning_team.data_planning_agent import DataPlanningAgent, DataPlanningInput
-            data_planner = DataPlanningAgent(self.llm)
-            data_output = data_planner.run(DataPlanningInput(
-                requirements=reqs,
-                architecture=arch,
-                spec_content=input_data.spec_content or "",
-                project_overview=project_overview,
-            ))
-            if data_output.planning_graph.nodes:
-                merged.merge(data_output.planning_graph)
-        except Exception as e:
-            logger.debug("Data planner skipped: %s", e)
-
-        # Test planner
-        executable_ids = [
-            nid for nid, n in merged.nodes.items()
-            if n.kind in (PlanningNodeKind.TASK, PlanningNodeKind.SUBTASK)
-            and n.domain in (PlanningDomain.BACKEND, PlanningDomain.FRONTEND)
-        ]
-        try:
-            from planning_team.test_planning_agent import TestPlanningAgent, TestPlanningInput
-            test_planner = TestPlanningAgent(self.llm)
-            test_output = test_planner.run(TestPlanningInput(
-                requirements=reqs,
-                architecture=arch,
-                spec_content=input_data.spec_content or "",
-                project_overview=project_overview,
-                existing_task_ids=executable_ids[:15],
-            ))
-            if test_output.planning_graph.nodes:
-                merged.merge(test_output.planning_graph)
-        except Exception as e:
-            logger.debug("Test planner skipped: %s", e)
-
-        # Performance planner (apply node_budgets to merged nodes)
-        try:
-            from planning_team.performance_planning_agent import PerformancePlanningAgent, PerformancePlanningInput
-            perf_planner = PerformancePlanningAgent(self.llm)
-            perf_output = perf_planner.run(PerformancePlanningInput(
-                requirements=reqs,
-                architecture=arch,
-                spec_content=input_data.spec_content or "",
-                project_overview=project_overview,
-                existing_node_ids=executable_ids[:20],
-            ))
-            for nid, budget in perf_output.node_budgets.items():
-                if nid in merged.nodes:
-                    node = merged.nodes[nid]
-                    merged.nodes[nid] = node.model_copy(update={"performance_budget": budget})
-            if perf_output.planning_graph.nodes:
-                merged.merge(perf_output.planning_graph)
-        except Exception as e:
-            logger.debug("Performance planner skipped: %s", e)
-
-        # Documentation planner
-        try:
-            from planning_team.documentation_planning_agent import DocumentationPlanningAgent, DocumentationPlanningInput
-            doc_planner = DocumentationPlanningAgent(self.llm)
-            doc_output = doc_planner.run(DocumentationPlanningInput(
-                requirements=reqs,
-                architecture=arch,
-                spec_content=input_data.spec_content or "",
-                project_overview=project_overview,
-                existing_task_ids=executable_ids[:10],
-            ))
-            if doc_output.planning_graph.nodes:
-                merged.merge(doc_output.planning_graph)
-        except Exception as e:
-            logger.debug("Documentation planner skipped: %s", e)
-
-        # Quality gate planner (apply quality_gates to merged nodes)
-        try:
-            from planning_team.quality_gate_planning_agent import QualityGatePlanningAgent, QualityGatePlanningInput
-            qg_planner = QualityGatePlanningAgent(self.llm)
-            qg_output = qg_planner.run(QualityGatePlanningInput(
-                task_ids=executable_ids,
-                project_overview=project_overview,
-                delivery_strategy=project_overview.get("delivery_strategy", "") if project_overview else "",
-            ))
-            for nid, gates in qg_output.node_quality_gates.items():
-                if nid in merged.nodes:
-                    node = merged.nodes[nid]
-                    merged.nodes[nid] = node.model_copy(update={"quality_gates": gates})
-        except Exception as e:
-            logger.debug("Quality gate planner skipped: %s", e)
-
-        # Ensure git_setup exists when we have backend/frontend tasks
-        has_backend = any(n.domain.value == "backend" for n in merged.nodes.values())
-        has_frontend = any(n.domain.value == "frontend" for n in merged.nodes.values())
-        has_git_setup = any(n.domain == PlanningDomain.GIT_SETUP for n in merged.nodes.values())
-        if (has_backend or has_frontend) and not has_git_setup:
-            git_node = PlanningNode(
-                id="git-setup-repos",
-                domain=PlanningDomain.GIT_SETUP,
-                kind=PlanningNodeKind.TASK,
-                summary="Initialize git repositories for backend and frontend",
-                details="Create backend/ and frontend/ directories with git init. Set up development branch.",
-                acceptance_criteria=[
-                    "Backend repo initialized at work_path/backend",
-                    "Frontend repo initialized at work_path/frontend",
-                    "Development branch created in both repos",
-                ],
-            )
-            merged.add_node(git_node)
-            from planning_team.planning_graph import EdgeType, PlanningEdge
-            for nid, node in list(merged.nodes.items()):
-                if node.kind in (PlanningNodeKind.TASK, PlanningNodeKind.SUBTASK) and node.domain != PlanningDomain.GIT_SETUP:
-                    merged.add_edge(PlanningEdge(from_id="git-setup-repos", to_id=nid, type=EdgeType.BLOCKS))
-
-        assignment = compile_planning_graph_to_task_assignment(
-            merged,
-            rationale=f"Planning pipeline: {backend_output.summary}; {frontend_output.summary}",
-        )
-
-        # Run planning graph validation and build report
-        from planning_team.validation import format_validation_report, validate_planning_graph
-        is_valid, val_errors = validate_planning_graph(merged, requirement_count=len(reqs.acceptance_criteria or []))
-        domain_counts = {}
-        for n in merged.nodes.values():
-            d = n.domain.value
-            domain_counts[d] = domain_counts.get(d, 0) + 1
-        validation_report = format_validation_report(
-            is_valid, val_errors,
-            total_nodes=len(merged.nodes),
-            total_edges=len(merged.edges),
-            domain_counts=domain_counts,
-        )
-
-        mapping = []
-        for ac in reqs.acceptance_criteria or []:
-            task_ids = [t.id for t in assignment.tasks if ac[:30].lower() in (t.description or "").lower() or (t.title or "").lower() in ac[:30].lower()]
-            if not task_ids:
-                task_ids = [t.id for t in assignment.tasks[:2]]
-            mapping.append({"spec_item": ac[:80], "task_ids": task_ids[:3]})
-
-        is_valid, errors = validate_assignment(assignment, reqs, mapping)
-        if not is_valid:
-            logger.warning("Tech Lead planning pipeline validation failed: %s", errors[:3])
-            return None
-
-        coding_count = sum(1 for t in assignment.tasks if t.type.value in ("backend", "frontend", "devops"))
-        if coding_count < 4:
-            logger.info("Tech Lead: planning pipeline produced too few coding tasks (%s), falling back to monolithic", coding_count)
-            return None
-
-        logger.info("Tech Lead: planning pipeline produced %s tasks", len(assignment.tasks))
-        return TechLeadOutput(
-            assignment=assignment,
-            summary=f"Planning pipeline: {backend_output.summary}. {frontend_output.summary}",
-            requirement_task_mapping=mapping,
-            spec_clarification_needed=False,
-            clarification_questions=[],
-            validation_report=validation_report,
-        )
 
     def run(self, input_data: TechLeadInput) -> TechLeadOutput:
         """
-        Plan and assign tasks to the team using a multi-step approach:
-        1. Analyze existing codebase (if provided)
-        2. Deep-analyze the spec to extract all requirements
-        3. Generate task plan using combined context
-        4. Validate and retry if needed
+        Produce an Initiative -> Epic -> Story hierarchy.
+
+        Single-path LLM call: build context, call LLM, parse hierarchy, flatten
+        to TaskAssignment for execution.
         """
-        logger.info("Tech Lead: beginning multi-step planning for %s", input_data.requirements.title)
+        logger.info("Tech Lead: planning for %s", input_data.requirements.title)
         reqs = input_data.requirements
         arch = input_data.architecture
 
@@ -355,84 +62,12 @@ class TechLeadAgent:
         arch_doc = (arch.architecture_document or "") if arch else ""
         existing_codebase = input_data.existing_codebase or ""
 
-        # ── Step 1 & 2: Codebase and spec analysis (parallel when both needed) ──
         codebase_analysis = ""
-        spec_analysis = ""
-        needs_codebase = bool(existing_codebase)
-        needs_spec = bool(spec_content)
-        if needs_codebase and needs_spec:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                cb_future = executor.submit(self._analyze_codebase, existing_codebase)
-                spec_future = executor.submit(self._analyze_spec_chunked, spec_content, reqs)
-                codebase_analysis = cb_future.result()
-                spec_analysis = spec_future.result()
-            logger.info(
-                "Tech Lead: codebase (%s chars) and spec analysis (%s chars) complete (parallel)",
-                len(codebase_analysis),
-                len(spec_analysis),
-            )
-        elif needs_codebase:
+        if existing_codebase:
             codebase_analysis = self._analyze_codebase(existing_codebase)
-            logger.info("Tech Lead: codebase analysis complete (%s chars)", len(codebase_analysis))
-        elif needs_spec:
-            spec_analysis = self._analyze_spec_chunked(spec_content, reqs)
-            logger.info("Tech Lead: spec analysis complete (%s chars)", len(spec_analysis))
 
-        # ── Step 2b: Try planning pipeline (Backend + Frontend planners) unless minimal_planning ──
-        if not getattr(input_data, "minimal_planning", False):
-            pipeline_output = self._run_planning_pipeline(input_data, codebase_analysis, spec_analysis)
-            if pipeline_output is not None:
-                return pipeline_output
-        else:
-            logger.info("Tech Lead: minimal_planning=True, skipping planning pipeline")
-
-        # ── Step 3: Task generation via TaskGeneratorAgent (fallback with model-based limits) ──
-        logger.info("Tech Lead: Step 3/3 - Generating task plan via TaskGeneratorAgent")
-        from shared.context_sizing import (
-            compute_task_generator_existing_chars,
-            compute_task_generator_features_chars,
-            compute_task_generator_spec_chars,
-        )
-
-        po = getattr(input_data, "project_overview", None) or {}
-        max_features = compute_task_generator_features_chars(self.llm)
-        features_doc_raw = po.get("features_and_functionality_doc") or ""
-        features_doc = features_doc_raw[:max_features] + ("..." if len(features_doc_raw) > max_features else "")
-
-        max_spec = compute_task_generator_spec_chars(self.llm)
-        max_existing = compute_task_generator_existing_chars(self.llm)
-        task_gen = TaskGeneratorAgent(self.llm)
-        task_gen_input = TaskGeneratorInput(
-            requirements=reqs,
-            merged_spec_analysis=spec_analysis,
-            codebase_analysis=codebase_analysis,
-            spec_content_truncated=spec_content[:max_spec],
-            existing_codebase=existing_codebase[:max_existing],
-            project_overview=po if po else None,
-            features_doc=features_doc,
-            architecture=arch,
-            alignment_feedback=getattr(input_data, "alignment_feedback", None),
-            conformance_issues=getattr(input_data, "conformance_issues", None),
-            repo_path=input_data.repo_path or "",
-            open_questions=getattr(input_data, "open_questions", None),
-            assumptions=getattr(input_data, "assumptions", None),
-            resolved_questions=getattr(input_data, "resolved_questions", None),
-        )
-        data = task_gen.run(task_gen_input)
-
-        # ── Handle microtask escalation from Task Generator ──
-        from planning_team.task_generator_agent.agent import ESCALATION_KEY
-
-        if data.get(ESCALATION_KEY):
-            logger.warning(
-                "Tech Lead: Task Generator escalated after depth %d. "
-                "Attempting to refine %d failed scopes.",
-                data.get("max_depth_reached", 0),
-                len(data.get("failed_scopes") or []),
-            )
-            data = self._handle_task_generator_escalation(
-                data, task_gen, task_gen_input, reqs,
-            )
+        prompt = self._build_planning_prompt(input_data, codebase_analysis)
+        data = self.llm.complete_json(prompt, temperature=0.2)
 
         if data.get("spec_clarification_needed"):
             clarification_questions = data.get("clarification_questions") or []
@@ -441,167 +76,127 @@ class TechLeadAgent:
             logger.warning("Tech Lead: spec is unclear, requesting clarification: %s", clarification_questions[:3])
             return TechLeadOutput(
                 assignment=None,
+                planning_hierarchy=None,
                 summary=data.get("summary", "Spec is incomplete or ambiguous."),
                 requirement_task_mapping=[],
                 spec_clarification_needed=True,
                 clarification_questions=clarification_questions,
             )
 
-        assignment = parse_assignment_from_data(data)
+        hierarchy = parse_hierarchy_from_data(data)
+        assignment = flatten_hierarchy_to_assignment(hierarchy)
 
-        # Resilience: when 0 tasks (e.g. LLM returned raw content wrapper), try to recover
-        if not assignment.tasks and data.get("content"):
-            from shared.llm_response_utils import extract_task_assignment_from_content
-            recovered = extract_task_assignment_from_content(data["content"])
-            if recovered:
-                logger.info("Tech Lead: recovered task assignment from raw content")
-                data = recovered
-                assignment = parse_assignment_from_data(data)
-
-        # Retry task generation once when we still have 0 tasks
         if not assignment.tasks:
-            logger.warning("Tech Lead: got 0 tasks from Task Generator, retrying once")
-            data = task_gen.run(task_gen_input)
-            if not data.get("spec_clarification_needed"):
-                assignment = parse_assignment_from_data(data)
-                if not assignment.tasks and data.get("content"):
-                    from shared.llm_response_utils import extract_task_assignment_from_content
-                    recovered = extract_task_assignment_from_content(data["content"])
-                    if recovered:
-                        logger.info("Tech Lead: recovered task assignment from raw content on retry")
-                        assignment = parse_assignment_from_data(recovered)
+            assignment = parse_assignment_from_data(data)
 
         mapping = data.get("requirement_task_mapping") or []
-        logger.info("Tech Lead: assigned %s tasks in order %s", len(assignment.tasks), assignment.execution_order)
+        logger.info(
+            "Tech Lead: produced %s stories across %s epics, execution order: %s",
+            len(assignment.tasks),
+            sum(len(e.stories) for i in hierarchy.initiatives for e in i.epics),
+            assignment.execution_order,
+        )
         return TechLeadOutput(
             assignment=assignment,
+            planning_hierarchy=hierarchy,
             summary=data.get("summary", ""),
             requirement_task_mapping=mapping,
             spec_clarification_needed=False,
             clarification_questions=[],
         )
 
-    def _handle_task_generator_escalation(
-        self,
-        escalation_data: Dict[str, Any],
-        task_gen: "TaskGeneratorAgent",
-        task_gen_input: "TaskGeneratorInput",
-        reqs: Any,
-    ) -> Dict[str, Any]:
-        """Refine failed scopes from a Task Generator escalation and retry.
+    def _build_planning_prompt(self, input_data: TechLeadInput, codebase_analysis: str) -> str:
+        """Assemble the full planning prompt from input data."""
+        reqs = input_data.requirements
+        po = getattr(input_data, "project_overview", None) or {}
 
-        The escalation payload contains ``failed_scopes`` (acceptance criteria
-        groups that could not be generated) and ``successful_tasks`` (tasks
-        already produced by successful sub-scope branches).
+        context_parts: List[str] = [
+            f"**Product Title:** {reqs.title}",
+            f"**Description:** {reqs.description}",
+            "**Acceptance Criteria:**",
+            *[f"- {c}" for c in reqs.acceptance_criteria],
+            "**Constraints:**",
+            *[f"- {c}" for c in reqs.constraints],
+            f"**Priority:** {reqs.priority}",
+        ]
 
-        The Tech Lead asks the LLM to break each failed scope into smaller,
-        more concrete acceptance criteria, builds a new narrowed
-        ``TaskGeneratorInput`` for each, and retries generation.  Results are
-        merged with already-successful tasks.
-        """
-        from planning_team.task_generator_agent.agent import ESCALATION_KEY
+        resolved = input_data.resolved_questions or []
+        resolved_question_texts = {r.get("question", "") for r in resolved if isinstance(r, dict)}
+        remaining_open = [q for q in (input_data.open_questions or []) if q not in resolved_question_texts]
 
-        successful_tasks: list = list(escalation_data.get("successful_tasks") or [])
-        successful_order: list = list(escalation_data.get("successful_execution_order") or [])
-        failed_scopes = escalation_data.get("failed_scopes") or []
+        if resolved:
+            context_parts.extend([
+                "",
+                "**USER-PROVIDED RESOLUTIONS (use these exactly):**",
+                *[f"- **{r.get('question', '')}** -> {r.get('answer', '')}" for r in resolved if isinstance(r, dict)],
+            ])
+        if remaining_open:
+            context_parts.extend([
+                "",
+                "**OPEN QUESTIONS (resolve with best-practice defaults):**",
+                *[f"- {q}" for q in remaining_open],
+            ])
+        if input_data.assumptions:
+            context_parts.extend([
+                "",
+                "**Assumptions from Spec Intake:**",
+                *[f"- {a}" for a in input_data.assumptions],
+            ])
 
-        if not failed_scopes:
-            logger.warning("Tech Lead: escalation payload has no failed_scopes; returning successful tasks only")
-            return {
-                "tasks": successful_tasks,
-                "execution_order": successful_order,
-                "summary": "Partial recovery from escalation (no failed scopes to retry).",
-                "requirement_task_mapping": [],
-                "clarification_questions": [],
-                "spec_clarification_needed": False,
-            }
+        if po:
+            context_parts.extend([
+                "",
+                "**Project Overview:**",
+                f"- Primary goal: {po.get('primary_goal', '')}",
+                f"- Delivery strategy: {po.get('delivery_strategy', '')}",
+            ])
+            milestones = po.get("milestones", [])
+            if milestones:
+                context_parts.append("- Milestones: " + ", ".join(m.get("name", "") for m in milestones))
 
-        for scope in failed_scopes:
-            scope_criteria = scope.get("acceptance_criteria") or []
-            scope_title = scope.get("title", reqs.title)
-            scope_desc = scope.get("description", "")
+        features_doc = po.get("features_and_functionality_doc", "") if po else ""
+        if features_doc:
+            context_parts.extend([
+                "",
+                "**Features and Functionality:**",
+                "---",
+                features_doc[:20000],
+                "---",
+            ])
 
-            logger.info(
-                "Tech Lead: refining failed scope '%s' (%d criteria)",
-                scope_title, len(scope_criteria),
-            )
+        if input_data.spec_content:
+            context_parts.extend([
+                "",
+                "**Full Specification:**",
+                "---",
+                input_data.spec_content[:30000],
+                "---",
+            ])
 
-            refined_criteria = self._refine_failed_scope_criteria(
-                scope_title, scope_desc, scope_criteria,
-            )
+        if codebase_analysis:
+            context_parts.extend([
+                "",
+                "**Codebase Analysis:**",
+                "---",
+                codebase_analysis[:10000],
+                "---",
+            ])
 
-            if not refined_criteria:
-                logger.warning(
-                    "Tech Lead: LLM produced no refined criteria for scope '%s'; skipping",
-                    scope_title,
-                )
-                continue
+        if input_data.architecture:
+            arch = input_data.architecture
+            context_parts.extend([
+                "",
+                "**System Architecture:**",
+                arch.overview,
+                "",
+                "**Components:**",
+                *[f"- {c.name} ({c.type}): {c.description}" for c in arch.components],
+            ])
 
-            sub_reqs = reqs.model_copy(update={"acceptance_criteria": refined_criteria})
-            sub_input = task_gen_input.model_copy(update={"requirements": sub_reqs})
+        if input_data.repo_path:
+            context_parts.extend(["", f"**Repo path:** {input_data.repo_path}"])
 
-            try:
-                sub_data = task_gen.run(sub_input)
-            except Exception as exc:
-                logger.error("Tech Lead: retry for refined scope '%s' failed: %s", scope_title, exc)
-                continue
-
-            if sub_data.get(ESCALATION_KEY):
-                logger.warning("Tech Lead: refined scope '%s' escalated again; using partial results", scope_title)
-                successful_tasks.extend(sub_data.get("successful_tasks") or [])
-                successful_order.extend(sub_data.get("successful_execution_order") or [])
-                continue
-
-            successful_tasks.extend(sub_data.get("tasks") or [])
-            successful_order.extend(sub_data.get("execution_order") or [])
-
-        # Deduplicate
-        seen: set[str] = set()
-        deduped: list = []
-        for t in successful_tasks:
-            tid = t.get("id", "")
-            if tid and tid in seen:
-                continue
-            seen.add(tid)
-            deduped.append(t)
-
-        deduped_order = list(dict.fromkeys(successful_order))
-
-        return {
-            "tasks": deduped,
-            "execution_order": deduped_order,
-            "summary": f"Recovered {len(deduped)} tasks after escalation refinement.",
-            "requirement_task_mapping": [],
-            "clarification_questions": [],
-            "spec_clarification_needed": False,
-        }
-
-    def _refine_failed_scope_criteria(
-        self,
-        title: str,
-        description: str,
-        criteria: List[str],
-    ) -> List[str]:
-        """Ask the LLM to break broad acceptance criteria into smaller, concrete ones."""
-        prompt = (
-            "You are a Staff Tech Lead. A task generator failed to produce a valid JSON plan "
-            "for the following scope because the output was too large.\n\n"
-            "Break each acceptance criterion into 2-3 smaller, highly specific, independently "
-            "implementable acceptance criteria. Return ONLY a JSON object:\n"
-            '{"refined_criteria": ["criterion 1", "criterion 2", ...]}\n\n'
-            f"**Title:** {title}\n"
-            f"**Description:** {description[:500]}\n"
-            "**Original criteria:**\n"
-            + "\n".join(f"- {c}" for c in criteria)
-        )
-        try:
-            data = self.llm.complete_json(prompt, temperature=0.3)
-            refined = data.get("refined_criteria") or []
-            if isinstance(refined, list) and all(isinstance(c, str) for c in refined):
-                return refined
-        except Exception as exc:
-            logger.warning("Tech Lead: failed to refine criteria via LLM: %s", exc)
-        return criteria
+        return TECH_LEAD_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
 
     def refine_task(
         self,
@@ -700,9 +295,6 @@ class TechLeadAgent:
                     task_type = TaskType(t.get("type", task.type.value))
                 except ValueError:
                     task_type = task.type
-                task_type, assignee = _normalize_task_type_and_assignee(
-                    t.get("id"), task_type, assignee
-                )
                 acc = t.get("acceptance_criteria") or []
                 if not isinstance(acc, list):
                     acc = [str(acc)] if acc else []
@@ -765,11 +357,9 @@ class TechLeadAgent:
         codebase_summary: str,
     ) -> List[Task]:
         """
-        Review completed work against the spec after receiving a task update from a specialist agent.
+        Review completed work against the spec after receiving a task update.
         Identifies gaps in spec coverage and creates new tasks to fill them.
-        Called by the orchestrator after each specialist agent completes a task.
-
-        Returns a list of new Task objects to enqueue (may be empty if no gaps found).
+        Returns a list of new Task objects (may be empty).
         """
         logger.info(
             "Tech Lead: reviewing progress after task %s (%s) - %s completed, %s remaining",
@@ -779,7 +369,6 @@ class TechLeadAgent:
             len(remaining_tasks),
         )
 
-        # Build context for the LLM
         completed_summary = "\n".join(
             f"- [{t.id}] {t.title}: {t.description[:120]}..." if len(t.description) > 120 else f"- [{t.id}] {t.title}: {t.description}"
             for t in completed_tasks
@@ -838,7 +427,6 @@ class TechLeadAgent:
         prompt = TECH_LEAD_REVIEW_PROGRESS_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         data = self.llm.complete_json(prompt, temperature=0.2)
 
-        # Parse new tasks from the response
         new_tasks: List[Task] = []
         for t in data.get("tasks") or []:
             if isinstance(t, dict) and t.get("id"):
@@ -847,12 +435,6 @@ class TechLeadAgent:
                     task_type = TaskType(t.get("type", "backend"))
                 except ValueError:
                     task_type = TaskType.BACKEND
-                task_type, assignee = _normalize_task_type_and_assignee(
-                    t.get("id"), task_type, assignee
-                )
-                # Only allow coding tasks from progress review
-                if task_type in (TaskType.SECURITY, TaskType.QA):
-                    continue
                 acc = t.get("acceptance_criteria") or []
                 if not isinstance(acc, list):
                     acc = [str(acc)] if acc else []
@@ -899,21 +481,7 @@ class TechLeadAgent:
     ) -> None:
         """
         Decide whether documentation needs updating after a task completes,
-        and if so, trigger the Documentation Agent to update README.md and CONTRIBUTORS.md.
-
-        Preconditions:
-            - doc_agent is a valid DocumentationAgent instance
-            - repo_path is a valid git repository path
-            - task_update contains details about the just-completed task
-
-        Postconditions:
-            - If docs need updating: Documentation Agent runs full workflow (branch, update, merge)
-            - If docs don't need updating: only a log message is produced
-            - Any failure is logged but does not raise (non-blocking)
-
-        Invariants:
-            - The repository is always left on the development branch
-            - Documentation failures never block the main pipeline
+        and if so, trigger the Documentation Agent.
         """
         from pathlib import Path
 
@@ -931,7 +499,6 @@ class TechLeadAgent:
                 if readme_file.exists()
                 else ""
             )
-            # Force docs update when README is missing, empty, or minimal (< 100 chars)
             readme_missing_or_empty = (
                 not readme_file.exists() or not readme_content or len(readme_content) < 100
             )
@@ -940,7 +507,6 @@ class TechLeadAgent:
                 and task_update.agent_type in ("backend", "frontend")
             )
 
-            # Ask LLM if docs need updating (unless we already force due to empty README)
             should_update = force_docs_because_readme_empty
             rationale = ""
             if not force_docs_because_readme_empty:
@@ -974,20 +540,9 @@ class TechLeadAgent:
             )
 
             if not should_update:
-                logger.info(
-                    "Tech Lead: skipping documentation update for task %s (should_update_docs=false, "
-                    "README exists=%s, README len=%d chars)",
-                    task_update.task_id,
-                    readme_file.exists(),
-                    len(readme_content),
-                )
                 return
 
-            # Trigger the Documentation Agent's full workflow
-            logger.info(
-                "Tech Lead: triggering Documentation Agent for task %s",
-                task_update.task_id,
-            )
+            logger.info("Tech Lead: triggering Documentation Agent for task %s", task_update.task_id)
             doc_result = doc_agent.run_full_workflow(
                 repo_path=repo_path,
                 task_id=task_update.task_id,
@@ -1004,7 +559,6 @@ class TechLeadAgent:
             )
 
         except Exception as e:
-            # Non-blocking: documentation failure should never stop the pipeline
             logger.warning(
                 "Tech Lead: documentation update failed for task %s (non-blocking): %s",
                 task_update.task_id,
@@ -1022,8 +576,6 @@ class TechLeadAgent:
     ) -> bool:
         """
         Trigger the DevOps agent to add containerization and deployment for the backend repo.
-        Writes Dockerfile, CI/CD, etc. into the backend repository.
-        When build_verifier is provided, uses run_workflow (plan -> generate -> verify -> fix loop).
         Returns True if run and write succeeded, False otherwise (non-blocking).
         """
         from pathlib import Path
@@ -1066,8 +618,6 @@ class TechLeadAgent:
     ) -> bool:
         """
         Trigger the DevOps agent to add containerization and deployment for the frontend repo.
-        Writes Dockerfile, CI/CD, etc. into the frontend repository.
-        When build_verifier is provided, uses run_workflow (plan -> generate -> verify -> fix loop).
         Returns True if run and write succeeded, False otherwise (non-blocking).
         """
         from pathlib import Path
