@@ -21,6 +21,13 @@ JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
 # Agent process crashed (NameError, ImportError, etc.) - distinct from build/LLM failure
 JOB_STATUS_AGENT_CRASH = "agent_crash"
+# Frontend (or other agent) could not reach LLM after retries; user must confirm connectivity and resume
+JOB_STATUS_PAUSED_LLM_CONNECTIVITY = "paused_llm_connectivity"
+
+# Sentinel failure reason when LLM is unreachable after 3 attempts (frontend team retry + circuit breaker)
+LLM_UNREACHABLE_AFTER_RETRIES = (
+    "LLM unreachable after 3 attempts with exponential backoff. Check connectivity and resume when ready."
+)
 
 DEFAULT_CACHE_DIR: str | Path = ".agent_cache"
 _lock = threading.Lock()

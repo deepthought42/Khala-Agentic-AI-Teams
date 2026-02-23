@@ -4,7 +4,6 @@ Unit tests for the backend-code-v2 team: models, phases, tool agents, orchestrat
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
@@ -122,7 +121,11 @@ class TestPlanningPhase:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"microtasks": [], "language": "python", "summary": "empty"}
+        mock_llm.complete_text.return_value = (
+            "## MICROTASKS ##\n## END MICROTASKS ##\n"
+            "## LANGUAGE ##\npython\n## END LANGUAGE ##\n"
+            "## SUMMARY ##\nempty\n## END SUMMARY ##"
+        )
         task = Task(id="t1", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="build something")
         result = run_planning(llm=mock_llm, task=task, repo_path=tmp_path)
         assert len(result.microtasks) == 1
@@ -163,7 +166,9 @@ class TestExecutionPhase:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"files": {"app.py": "print('hello')"}, "summary": "done"}
+        mock_llm.complete_text.return_value = (
+            "## FILE app.py ##\nprint('hello')\n## SUMMARY ##\ndone\n## END SUMMARY ##"
+        )
         task = Task(id="t1", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="build")
         planning = PlanningResult(
             microtasks=[Microtask(id="mt-gen", tool_agent=ToolAgentKind.GENERAL, description="general task")],
@@ -183,7 +188,11 @@ class TestReviewPhase:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"passed": True, "issues": [], "summary": "all good"}
+        mock_llm.complete_text.return_value = (
+            "## PASSED ##\ntrue\n## END PASSED ##\n"
+            "## ISSUES ##\n## END ISSUES ##\n"
+            "## SUMMARY ##\nall good\n## END SUMMARY ##"
+        )
         task = Task(id="t1", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="build")
         exec_result = ExecutionResult(files={"app.py": "print()"}, microtasks=[])
         result = run_review(llm=mock_llm, task=task, execution_result=exec_result, repo_path=tmp_path)
@@ -195,11 +204,11 @@ class TestReviewPhase:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {
-            "passed": False,
-            "issues": [{"source": "code_review", "severity": "critical", "description": "SQL injection"}],
-            "summary": "critical issue",
-        }
+        mock_llm.complete_text.return_value = (
+            "## PASSED ##\nfalse\n## END PASSED ##\n"
+            "## ISSUES ##\n---\nsource: code_review\nseverity: critical\ndescription: SQL injection\nfile_path: \nrecommendation: \n---\n## END ISSUES ##\n"
+            "## SUMMARY ##\ncritical issue\n## END SUMMARY ##"
+        )
         task = Task(id="t1", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="build")
         exec_result = ExecutionResult(files={"app.py": "query(input)"}, microtasks=[])
         result = run_review(llm=mock_llm, task=task, execution_result=exec_result, repo_path=tmp_path)
@@ -228,12 +237,12 @@ class TestProblemSolvingPhase:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {
-            "files": {"a.py": "fixed_code()"},
-            "fixes_applied": [{"issue": "bug", "fix": "fixed"}],
-            "resolved": True,
-            "summary": "Fixed bug",
-        }
+        mock_llm.complete_text.return_value = (
+            "## FILE a.py ##\nfixed_code()\n"
+            "## FIXES_APPLIED ##\n---\nissue: bug\nfix: fixed\n---\n## END FIXES_APPLIED ##\n"
+            "## RESOLVED ##\ntrue\n## END RESOLVED ##\n"
+            "## SUMMARY ##\nFixed bug\n## END SUMMARY ##"
+        )
         task = Task(id="t1", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="build")
         review = ReviewResult(passed=False, issues=[
             ReviewIssue(source="code_review", severity="high", description="null pointer"),
@@ -252,7 +261,9 @@ class TestToolAgents:
         from backend_code_v2_team.tool_agents.data_engineering import DataEngineeringToolAgent
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"files": {"models.py": "class User: pass"}, "summary": "schema done"}
+        mock_llm.complete_text.return_value = (
+            "## FILE models.py ##\nclass User: pass\n## SUMMARY ##\nschema done\n## END SUMMARY ##"
+        )
         agent = DataEngineeringToolAgent(mock_llm)
         inp = ToolAgentInput(microtask=Microtask(id="mt-1", description="create schema"), language="python")
         out = agent.run(inp)
@@ -262,7 +273,9 @@ class TestToolAgents:
         from backend_code_v2_team.tool_agents.api_openapi import ApiOpenApiToolAgent
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"files": {"routes.py": "route()"}, "summary": "api done"}
+        mock_llm.complete_text.return_value = (
+            "## FILE routes.py ##\nroute()\n## SUMMARY ##\napi done\n## END SUMMARY ##"
+        )
         agent = ApiOpenApiToolAgent(mock_llm)
         inp = ToolAgentInput(microtask=Microtask(id="mt-1", description="create endpoint"), language="python")
         out = agent.run(inp)
@@ -272,7 +285,9 @@ class TestToolAgents:
         from backend_code_v2_team.tool_agents.auth import AuthToolAgent
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"files": {"auth.py": "def login(): pass"}, "summary": "auth done"}
+        mock_llm.complete_text.return_value = (
+            "## FILE auth.py ##\ndef login(): pass\n## SUMMARY ##\nauth done\n## END SUMMARY ##"
+        )
         agent = AuthToolAgent(mock_llm)
         inp = ToolAgentInput(microtask=Microtask(id="mt-1", description="add login"), language="python")
         out = agent.run(inp)
@@ -327,16 +342,17 @@ class TestBackendCodeV2TeamLead:
         from shared.models import Task, TaskStatus, TaskType
 
         mock_llm = MagicMock()
-        mock_llm.complete_json.return_value = {"microtasks": [], "language": "python", "summary": "no microtasks"}
+        planning_response = (
+            "## MICROTASKS ##\n---\nid: mt-1\ntitle: A\ndescription: a\ntool_agent: general\ndepends_on: \n---\n## END MICROTASKS ##\n"
+            "## LANGUAGE ##\npython\n## END LANGUAGE ##\n## SUMMARY ##\nplan\n## END SUMMARY ##"
+        )
+        execution_response = "## SUMMARY ##\nnothing\n## END SUMMARY ##"
+        mock_llm.complete_text.side_effect = [planning_response, execution_response]
 
         lead = BackendCodeV2TeamLead(mock_llm)
         task = Task(id="t-test", type=TaskType.BACKEND, assignee="backend-code-v2", status=TaskStatus.PENDING, description="Do something")
 
         (tmp_path / ".git").mkdir()
-        mock_llm.complete_json.side_effect = [
-            {"microtasks": [{"id": "mt-1", "title": "A", "description": "a", "tool_agent": "general"}], "language": "python", "summary": "plan"},
-            {"files": {}, "summary": "nothing"},
-        ]
 
         result = lead.run_workflow(repo_path=tmp_path, task=task)
         assert not result.success

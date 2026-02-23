@@ -55,6 +55,8 @@ from shared.job_store import (
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_RUNNING,
+    JOB_STATUS_PAUSED_LLM_CONNECTIVITY,
+    LLM_UNREACHABLE_AFTER_RETRIES,
     update_job,
 )
 from shared.command_runner import run_command_with_nvm
@@ -1006,6 +1008,7 @@ def _run_backend_frontend_workers(
     """
     state_lock = threading.Lock()
     llm_limit_exceeded = [False]  # mutable ref for workers
+    llm_connectivity_failed = [False]  # frontend could not reach LLM after retries; pause job
     repaired_tasks = set()  # max 1 repair per task
     agent_source_path = Path(__file__).resolve().parent  # software_engineering_team/
 
@@ -1018,7 +1021,7 @@ def _run_backend_frontend_workers(
     def _backend_worker() -> None:
         while True:
             with state_lock:
-                if llm_limit_exceeded[0]:
+                if llm_limit_exceeded[0] or llm_connectivity_failed[0]:
                     break
                 if not backend_queue:
                     break
@@ -1170,7 +1173,7 @@ def _run_backend_frontend_workers(
     def _frontend_worker() -> None:
         while True:
             with state_lock:
-                if llm_limit_exceeded[0]:
+                if llm_limit_exceeded[0] or llm_connectivity_failed[0]:
                     break
                 if not frontend_queue:
                     break

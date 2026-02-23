@@ -2,16 +2,18 @@
 Data Engineering tool agent: schema design, migrations, data integrity.
 
 Implemented from scratch inside the backend-code-v2 team.
+Uses template-based output (not JSON) so parsing works across model providers.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict
 
 from shared.llm import LLMClient
 
 from ...models import ToolAgentInput, ToolAgentOutput
+from ...output_templates import parse_files_and_summary_template
+from ...prompts import FILES_OUTPUT_TEMPLATE_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +25,7 @@ produce the required files (models, migration scripts, seed data, etc.).
 **Microtask:** {description}
 **Language:** {language}
 **Existing code context:** {existing_code}
-
-**Output (JSON):**
-{{
-  "files": {{ "path/to/file": "content" }},
-  "recommendations": ["recommendation 1", ...],
-  "summary": "what was produced"
-}}
-
-Respond with valid JSON only.
-"""
+""" + FILES_OUTPUT_TEMPLATE_INSTRUCTIONS
 
 
 class DataEngineeringToolAgent:
@@ -48,9 +41,10 @@ class DataEngineeringToolAgent:
             existing_code=inp.existing_code[:4000] if inp.existing_code else "(none)",
         )
         logger.info("DataEngineering: running for microtask %s", inp.microtask.id)
-        raw = self.llm.complete_json(prompt)
+        raw = self.llm.complete_text(prompt)
+        data = parse_files_and_summary_template(raw)
         return ToolAgentOutput(
-            files=raw.get("files") or {},
-            recommendations=raw.get("recommendations") or [],
-            summary=raw.get("summary", ""),
+            files=data.get("files") or {},
+            recommendations=[],
+            summary=data.get("summary", ""),
         )

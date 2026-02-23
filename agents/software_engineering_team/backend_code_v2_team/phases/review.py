@@ -3,6 +3,7 @@ Review phase: code review, build verification, lint, QA, security.
 
 Invokes passed-in quality agents when available; otherwise uses the team's
 own LLM-based review. No code from ``backend_agent`` is used.
+Uses template-based output (not JSON) so parsing works across model providers.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from shared.llm import LLMClient
 from shared.models import Task
 
 from ..models import ExecutionResult, ReviewIssue, ReviewResult
+from ..output_templates import parse_review_template
 from ..prompts import REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -33,9 +35,10 @@ def _run_llm_review(
         acceptance_criteria=", ".join(task.acceptance_criteria) if task.acceptance_criteria else "N/A",
         code=code_text[:12000],
     )
-    raw = llm.complete_json(prompt)
+    raw = llm.complete_text(prompt)
+    data = parse_review_template(raw)
     issues: List[ReviewIssue] = []
-    for item in raw.get("issues") or []:
+    for item in data.get("issues") or []:
         if isinstance(item, dict):
             issues.append(ReviewIssue(
                 source=item.get("source", "code_review"),

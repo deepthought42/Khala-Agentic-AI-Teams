@@ -64,27 +64,29 @@ specialist tool-agent (or a general code-generation step) can handle it.
 - Optional project spec, architecture, existing code context
 - Target language (python or java)
 
-**Output (JSON):**
-Return a JSON object:
-{
-  "microtasks": [
-    {
-      "id": "mt-<short-kebab>",
-      "title": "short title",
-      "description": "what to do (2-4 sentences)",
-      "tool_agent": "<domain from list above>",
-      "depends_on": ["mt-other-id"]
-    }
-  ],
-  "language": "python" or "java",
-  "summary": "1-2 sentence overview of the plan"
-}
+**Output format (template – use exactly these section headers):**
+
+## MICROTASKS ##
+---
+id: mt-<short-kebab>
+title: short title
+description: what to do (2-4 sentences)
+tool_agent: <domain from list above>
+depends_on: mt-other-id|mt-another-id
+---
+## END MICROTASKS ##
+## LANGUAGE ##
+python
+## END LANGUAGE ##
+## SUMMARY ##
+1-2 sentence overview of the plan
+## END SUMMARY ##
 
 Rules:
 - Emit 2-10 microtasks. Prefer smaller, focused microtasks over large monolithic ones.
 - Include at least one testing_qa microtask unless the task is pure docs/config.
-- Dependency order matters: list prerequisites in depends_on.
-- Respond with valid JSON only (no markdown fences, no text before or after).
+- Dependency order matters: list prerequisites in depends_on (pipe-separated IDs).
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -112,20 +114,21 @@ Implement the microtask described below. Produce complete, runnable code files.
 **Architecture context (if any):**
 {architecture_context}
 
-**Output (JSON):**
-Return a single JSON object:
-{{
-  "files": {{
-    "path/to/file.ext": "full file content",
-    ...
-  }},
-  "summary": "what you implemented",
-  "suggested_commit_message": "type(scope): description"
-}}
+**Output format (template – use exactly these markers):**
 
-- The "files" dict MUST be populated with complete file paths and full content.
+For each file, write:
+## FILE path/to/file.ext ##
+<full file content>
+## FILE path/to/next.ext ##
+<full file content>
+## SUMMARY ##
+what you implemented
+## END SUMMARY ##
+
+- Use "## FILE <path> ##" at the start of each file; the next "## FILE " or "## SUMMARY ##" ends the previous file.
+- Do not put the exact line "## FILE " or "## SUMMARY ##" inside file content (use a comment placeholder if needed).
 - All imports must be valid; all referenced modules must be included.
-- Respond with valid JSON only.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -150,22 +153,26 @@ Review the code below for:
 **Code to review:**
 {code}
 
-**Output (JSON):**
-{{
-  "passed": true/false,
-  "issues": [
-    {{
-      "source": "code_review",
-      "severity": "critical|high|medium|low|info",
-      "description": "what is wrong",
-      "file_path": "which file",
-      "recommendation": "how to fix it"
-    }}
-  ],
-  "summary": "overall assessment"
-}}
+**Output format (template – use exactly these section headers):**
 
-Respond with valid JSON only.
+## PASSED ##
+true
+## END PASSED ##
+## ISSUES ##
+---
+source: code_review
+severity: critical|high|medium|low|info
+description: what is wrong
+file_path: which file
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+overall assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -187,22 +194,47 @@ updated file that resolves the issue.
 **Current code:**
 {current_code}
 
-**Output (JSON):**
-{{
-  "files": {{
-    "path/to/file.ext": "full updated file content"
-  }},
-  "fixes_applied": [
-    {{
-      "issue": "summary of the issue",
-      "fix": "what was changed"
-    }}
-  ],
-  "summary": "overview of all fixes",
-  "resolved": true/false
-}}
+**Output format (template – use exactly these markers):**
 
-Respond with valid JSON only.
+Files (same as execution): for each updated file:
+## FILE path/to/file.ext ##
+<full updated file content>
+## FILE path/to/next.ext ##
+...
+## FIXES_APPLIED ##
+---
+issue: summary of the issue
+fix: what was changed
+---
+## END FIXES_APPLIED ##
+## RESOLVED ##
+true
+## END RESOLVED ##
+## SUMMARY ##
+overview of all fixes
+## END SUMMARY ##
+
+- Use "## FILE <path> ##" for each file; "---" to separate each fix block.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# Tool agents: files + summary (template output, reused by execution and tool agents)
+# ---------------------------------------------------------------------------
+
+FILES_OUTPUT_TEMPLATE_INSTRUCTIONS = """
+**Output format (template – use exactly these markers):**
+For each file:
+## FILE path/to/file.ext ##
+<full file content>
+## FILE path/to/next.ext ##
+<content>
+## SUMMARY ##
+what you produced
+## END SUMMARY ##
+- Use "## FILE <path> ##" at the start of each file; the next "## FILE " or "## SUMMARY ##" ends the previous file.
+- Do not put the exact line "## FILE " or "## SUMMARY ##" inside file content.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------

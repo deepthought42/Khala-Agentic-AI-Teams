@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from shared.llm import LLMClient
+from shared.job_store import LLM_UNREACHABLE_AFTER_RETRIES
+from shared.llm import LLMClient, LLMUnreachableAfterRetriesError, call_llm_with_retries
 from shared.models import SystemArchitecture, Task, TaskUpdate
 from shared.frontend_framework import resolve_frontend_framework
 from shared.prompt_utils import build_problem_solving_header, log_llm_prompt
@@ -178,50 +179,140 @@ _ALLOWED_DIRS = frozenset({
     "interceptors", "directives", "utils", "helpers", "test", "spec", "dist", "node_modules",
 })
 
-# Only browser-compatible file extensions are allowed
+# Browser-compatible and frontend-build file extensions (JS runs in browser; .env* loaded at build time)
 _ALLOWED_EXTENSIONS = frozenset({
-    ".ts", ".html", ".scss", ".css", ".json",
+    ".ts", ".tsx", ".js", ".jsx",
+    ".html", ".scss", ".css", ".json",
+    ".env",  # .env.* (e.g. .env.local) allowed via basename check in _validate_file_paths
 })
-_ANGULAR_ROOT_FILES = frozenset({
+# Fallback when llm_client is None: only these root paths are allowed. When llm_client is
+# provided, root paths are validated by the LLM instead (any framework: Vite, Angular, Jest, etc.).
+_ALLOWED_ROOT_FILES = frozenset({
     "angular.json",
     "package.json",
     "package-lock.json",
     "tsconfig.json",
     "tsconfig.app.json",
     "tsconfig.spec.json",
+    "vite.config.ts",
+    "vite.config.js",
+    "index.html",
+    "vitest.config.ts",
+    "vitest.config.js",
 })
+_ANGULAR_ROOT_FILES = _ALLOWED_ROOT_FILES  # backward compatibility
 
 
-def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[str]]:
+def _llm_allowed_extensions(llm_client: Any, extensions: set[str]) -> set[str]:
     """
-    Validate and sanitize file paths from LLM output.
+    Ask the LLM which of the given extensions are valid for browser or frontend build.
+    Returns the subset it considers allowed. Used as optional fallback when extension is not in _ALLOWED_EXTENSIONS.
+    """
+    if not extensions:
+        return set()
+    exts_str = ", ".join(sorted(extensions))
+    prompt = (
+        "Which of these file extensions are typically used in a browser or in a frontend build (e.g. Angular, React, Vite)? "
+        "Answer with a comma-separated list of ONLY the extensions to allow (e.g. .svg, .md), or 'none' if none.\n"
+        f"Extensions: {exts_str}\n"
+        "Allowed:"
+    )
+    try:
+        response = llm_client.complete_text(prompt, temperature=0.0)
+        text = (response or "").strip().lower()
+        if not text or "none" in text:
+            return set()
+        allowed = set()
+        for part in text.replace(",", " ").split():
+            part = part.strip(".")
+            if part and f".{part}" in extensions:
+                allowed.add(f".{part}")
+        return allowed
+    except Exception:
+        return set()
+
+
+def _llm_allowed_root_paths(llm_client: Any, paths: list[str]) -> set[str]:
+    """
+    Ask the LLM which of these root-level file paths are appropriate for a frontend project
+    (config, entry point, test runner, etc.). Any framework (Vite, Angular, Jest, Vitest, etc.) is fine.
+    Returns the subset of paths it considers legitimate.
+    """
+    if not paths:
+        return set()
+    paths_str = "\n".join(f"- {p}" for p in sorted(paths))
+    prompt = (
+        "Which of these root-level file paths are legitimate for a frontend project "
+        "(e.g. config files, entry HTML, test runner config, package files)? "
+        "Any stack is fine: Vite, Angular, Jest, Vitest, Webpack, etc. "
+        "Reply with a comma-separated list of ONLY the paths to allow, or 'none' if none.\n\n"
+        f"Paths:\n{paths_str}\n\n"
+        "Allowed paths:"
+    )
+    try:
+        response = llm_client.complete_text(prompt, temperature=0.0)
+        text = (response or "").strip()
+        if not text or "none" in text.lower():
+            return set()
+        allowed = set()
+        for part in text.replace("\n", ",").split(","):
+            p = part.strip().strip(".-")
+            if p and p in paths:
+                allowed.add(p)
+        return allowed
+    except Exception:
+        return set()
+
+
+def _validate_file_paths(
+    files: Dict[str, str],
+    llm_client: Any,
+) -> tuple[Dict[str, str], list[str]]:
+    """
+    Validate and sanitize file paths from LLM output. Requires llm_client (no fallback).
 
     Returns (validated_files, warnings).
     Rejects files with:
-    - Paths not starting with 'src/' (Angular project root)
-    - Non-browser file extensions (only .ts, .html, .scss, .css, .json allowed)
-    - Path segments > MAX_PATH_SEGMENT_LENGTH
-    - Names that look like sentences (4+ hyphenated words)
-    - Names starting with verbs (implement-, create-, build-, etc.)
-    - Names containing filler words (-the-, -with-, -using-, etc.)
+    - Paths not under 'src/' or LLM-validated root paths (root requires LLM)
+    - Non-browser file extensions (see _ALLOWED_EXTENSIONS; .env* allowed by basename)
+    - Path segments > MAX_PATH_SEGMENT_LENGTH, sentence-like names, etc.
     - Empty content
     """
     validated = {}
     warnings = []
+    # Root-level paths (no slash) to be validated by LLM when llm_client is provided
+    root_paths_pending: list[tuple[str, str]] = []
+    allowed_root_paths: set[str] = set()  # filled by LLM when processing root_paths_pending
+    # First pass: accept allowed exts + .env*; collect (path, content, ext) for unknown exts
+    unknown_ext_files: list[tuple[str, str, str]] = []
     for path, content in files.items():
-        # Angular tasks primarily write under src/, but may legitimately touch root config files.
         is_src_file = bool(ANGULAR_PATH_PATTERN.match(path))
-        is_allowed_root_file = "/" not in path and path in _ANGULAR_ROOT_FILES
-        if not is_src_file and not is_allowed_root_file:
-            warnings.append(
-                f"Path must be under 'src/' or a known Angular root config file: '{path}'"
-            )
-            continue
+        is_root_level = "/" not in path
+        if not is_src_file:
+            if is_root_level:
+                if llm_client is None:
+                    warnings.append(
+                        f"Path must be under 'src/' (LLM required for root file validation): '{path}'"
+                    )
+                    continue
+                root_paths_pending.append((path, content))
+                continue
+            else:
+                # Path has slash but not under src/ (e.g. "other/dir/file.ts")
+                warnings.append(
+                    f"Path must be under 'src/' or a known root config file: '{path}'"
+                )
+                continue
 
-        # Reject non-browser file extensions (e.g. .py, .java)
+        # Reject non-browser / non-frontend-build file extensions (e.g. .py, .java)
         ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-        if ext not in _ALLOWED_EXTENSIONS:
-            warnings.append(f"File extension '{ext}' is not a browser-compatible frontend file: '{path}'")
+        basename = path.split("/")[-1] if "/" in path else path
+        is_env_file = basename.startswith(".env")  # .env, .env.local, .env.example, etc.
+        if ext not in _ALLOWED_EXTENSIONS and not is_env_file:
+            if llm_client is None:
+                warnings.append(f"File extension '{ext}' is not a browser-compatible frontend file (LLM required): '{path}'")
+                continue
+            unknown_ext_files.append((path, content, ext))
             continue
 
         segments = path.split("/")
@@ -258,6 +349,68 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
             continue
 
         validated[path] = content
+
+    # Ask LLM which root-level paths are appropriate (any framework)
+    if root_paths_pending and llm_client is not None:
+        root_path_list = [p for p, _ in root_paths_pending]
+        allowed_root_paths = call_llm_with_retries(
+            lambda: _llm_allowed_root_paths(llm_client, root_path_list),
+            max_attempts=3,
+            backoff_base=2.0,
+        )
+        for path, content in root_paths_pending:
+            if path not in allowed_root_paths:
+                warnings.append(f"Root path not allowed: '{path}'")
+                continue
+            ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
+            is_env_file = path.startswith(".env")
+            if ext not in _ALLOWED_EXTENSIONS and not is_env_file:
+                unknown_ext_files.append((path, content, ext))
+                continue
+            segments = path.split("/")
+            bad_segment = False
+            for seg in segments:
+                name_part = seg.split(".")[0] if seg else ""
+                if not name_part or name_part.lower() in _ALLOWED_DIRS:
+                    continue
+                if len(name_part) > MAX_PATH_SEGMENT_LENGTH or BAD_NAME_PATTERN.match(name_part) or VERB_PREFIX_PATTERN.match(name_part) or FILLER_WORD_PATTERN.search(name_part):
+                    bad_segment = True
+                    break
+            if bad_segment or not content or not content.strip():
+                continue
+            validated[path] = content
+            warnings.append(f"Root path allowed via LLM: '{path}'")
+
+    # LLM decides which unknown extensions to allow (one call per validation run)
+    if unknown_ext_files and llm_client is not None:
+        unknown_exts = {ext for (_, _, ext) in unknown_ext_files}
+        llm_allowed = call_llm_with_retries(
+            lambda: _llm_allowed_extensions(llm_client, unknown_exts),
+            max_attempts=3,
+            backoff_base=2.0,
+        )
+        for path, content, ext in unknown_ext_files:
+            if ext not in llm_allowed:
+                warnings.append(f"File extension '{ext}' is not a browser-compatible frontend file: '{path}'")
+                continue
+            # Same path/segment/empty checks as above (src/ or static list or LLM-allowed root)
+            is_src_file = bool(ANGULAR_PATH_PATTERN.match(path))
+            is_allowed_root_file = "/" not in path and (path in _ALLOWED_ROOT_FILES or path in allowed_root_paths)
+            if not is_src_file and not is_allowed_root_file:
+                continue
+            segments = path.split("/")
+            bad_segment = False
+            for seg in segments:
+                name_part = seg.split(".")[0] if seg else ""
+                if not name_part or name_part.lower() in _ALLOWED_DIRS:
+                    continue
+                if len(name_part) > MAX_PATH_SEGMENT_LENGTH or BAD_NAME_PATTERN.match(name_part) or VERB_PREFIX_PATTERN.match(name_part) or FILLER_WORD_PATTERN.search(name_part):
+                    bad_segment = True
+                    break
+            if bad_segment or not content or not content.strip():
+                continue
+            validated[path] = content
+            warnings.append(f"File extension '{ext}' allowed via LLM for: '{path}'")
 
     return validated, warnings
 
@@ -327,9 +480,15 @@ class FrontendExpertAgent:
         prompt = FRONTEND_PLANNING_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         log_llm_prompt(logger, "Frontend", "planning", (task.description or "")[:80], prompt)
         try:
-            data = self.llm.complete_json(prompt, temperature=0.2)
+            data = call_llm_with_retries(
+                lambda: self.llm.complete_json(prompt, temperature=0.2),
+                max_attempts=3,
+                backoff_base=2.0,
+            )
             plan = TaskPlan.from_llm_json(data)
             return plan.to_markdown()
+        except LLMUnreachableAfterRetriesError:
+            raise
         except Exception as e:
             logger.warning("[%s] Planning step failed, proceeding without plan: %s", task.id, e)
             return ""
@@ -506,7 +665,11 @@ class FrontendExpertAgent:
         code = ""
         raw_files = {}
         for attempt in range(2):
-            data = self.llm.complete_json(prompt, temperature=0.2)
+            data = call_llm_with_retries(
+                lambda: self.llm.complete_json(prompt, temperature=0.2),
+                max_attempts=3,
+                backoff_base=2.0,
+            )
 
             code = data.get("code", "")
             if code and "\\n" in code:
@@ -521,8 +684,8 @@ class FrontendExpertAgent:
             else:
                 raw_files = {}
 
-            # Validate file paths - reject bad names/empty files
-            validated_files, validation_warnings = _validate_file_paths(raw_files)
+            # Validate file paths - reject bad names/empty files (optional LLM fallback for unknown extensions)
+            validated_files, validation_warnings = _validate_file_paths(raw_files, llm_client=self.llm)
             for warn in validation_warnings:
                 logger.warning("Frontend output validation: %s", warn)
 
@@ -653,18 +816,18 @@ class FrontendExpertAgent:
 
         try:
             ok, msg = create_feature_branch(repo_path, DEVELOPMENT_BRANCH, task_id)
-            if not ok:
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason=f"Feature branch failed: {msg}",
-                )
         except Exception as e:
             return FrontendWorkflowResult(
                 task_id=task_id,
                 success=False,
                 failure_reason=f"Feature branch failed: {e}",
+            )
+        if not ok:
+            checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+            return FrontendWorkflowResult(
+                task_id=task_id,
+                success=False,
+                failure_reason=f"Feature branch failed: {msg}",
             )
 
         from shared.command_runner import ensure_frontend_dependencies_installed
@@ -699,475 +862,484 @@ class FrontendExpertAgent:
             compute_spec_content_chars,
         )
 
-        for iteration_round in range(MAX_CODE_REVIEW_ITERATIONS):
-            max_code = compute_existing_code_chars(self.llm)
-            max_api = compute_api_spec_chars(self.llm)
-            existing_code = _truncate_for_context(
-                _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"]),
-                max_code,
-            )
-            api_endpoints = _truncate_for_context(
-                _read_repo_code(backend_dir, [".py"]),
-                max_api,
-            )
-
-            plan_text = ""
-            if not qa_issues and not sec_issues and not a11y_issues and not code_review_issues:
-                plan_text = self._plan_task(
-                    task=current_task,
-                    existing_code=existing_code,
-                    spec_content=spec_content,
-                    architecture=architecture,
-                    api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
+        try:
+            for iteration_round in range(MAX_CODE_REVIEW_ITERATIONS):
+                max_code = compute_existing_code_chars(self.llm)
+                max_api = compute_api_spec_chars(self.llm)
+                existing_code = _truncate_for_context(
+                    _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"]),
+                    max_code,
                 )
-                if plan_text:
-                    logger.info("[%s] WORKFLOW   Planning complete, plan length=%d chars", task_id, len(plan_text))
-                    plan_dir = repo_path.parent / "plan"
-                    if not plan_dir.exists():
-                        plan_dir = repo_path / "plan"
-                    if plan_dir.exists() and plan_dir.is_dir():
-                        try:
-                            plan_file = plan_dir / f"frontend_task_{task_id}.md"
-                            plan_file.write_text(
-                                f"# Frontend task plan: {task_id}\n\n{plan_text}",
-                                encoding="utf-8",
-                            )
-                            logger.info("[%s] WORKFLOW   Persisted plan to %s", task_id, plan_file)
-                        except Exception as e:
-                            logger.warning("[%s] Failed to persist plan (non-blocking): %s", task_id, e)
-
-            result = self.run(FrontendInput(
-                framework_target=_resolved_framework_for_implementation(
-                    current_task.metadata, spec_content
-                ),
-                task_description=current_task.description,
-                requirements=_task_requirements_with_route_expectations(current_task, repo_path),
-                user_story=getattr(current_task, "user_story", "") or "",
-                spec_content=_truncate_for_context(spec_content, compute_spec_content_chars(self.llm)),
-                architecture=architecture,
-                existing_code=existing_code if existing_code != "# No code files found" else None,
-                api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
-                qa_issues=qa_issues,
-                security_issues=sec_issues,
-                accessibility_issues=a11y_issues,
-                code_review_issues=code_review_issues,
-                suggested_tests_from_qa=suggested_tests_from_qa,
-                task_plan=plan_text if plan_text else None,
-                convergence_hint=convergence_hint,
-            ))
-
-            if result.needs_clarification and result.clarification_requests:
-                if iteration_round < MAX_CLARIFICATION_REFINEMENTS:
-                    current_task = tech_lead.refine_task(
-                        current_task, result.clarification_requests, spec_content, architecture,
-                    )
-                    code_review_issues = []
-                    continue
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason="Agent needs clarification after max refinements",
+                api_endpoints = _truncate_for_context(
+                    _read_repo_code(backend_dir, [".py"]),
+                    max_api,
                 )
-
-            ok, write_msg = write_agent_output(repo_path, result, subdir="")
-            if not ok:
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                failure_reason = (
-                    "Frontend agent did not propose any file changes for this task"
-                    if write_msg == NO_FILES_TO_WRITE_MSG
-                    else f"Write failed: {write_msg}"
-                )
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason=failure_reason,
-                )
-
-            if result.npm_packages_to_install:
-                install_cmd = ["npm", "install", "--save"] + result.npm_packages_to_install
-                install_res = run_command_with_nvm(install_cmd, cwd=repo_path)
-                if not install_res.success:
-                    logger.warning(
-                        "[%s] npm install for packages %s failed: %s",
-                        task_id, result.npm_packages_to_install, install_res.stderr[:500],
-                    )
-
-            # ─── Lint verification (before build) ──────────────────────
-            if linting_tool_agent is not None:
-                try:
-                    from linting_tool_agent.models import LintToolInput as _LintInput
-                    lint_result = linting_tool_agent.run(_LintInput(
-                        repo_path=str(repo_path),
-                        agent_type="frontend",
-                        task_id=task_id,
-                        task_description=current_task.description,
-                    ))
-                    if not lint_result.execution_result.success:
-                        logger.info(
-                            "[%s] WORKFLOW   [%d] Lint found %d issue(s), %d edit(s)",
-                            task_id, iteration_round,
-                            lint_result.execution_result.issue_count,
-                            len(lint_result.edits),
-                        )
-                        if lint_result.edits:
-                            from shared.repo_writer import write_agent_output as _write_lint
-                            lint_files: Dict[str, str] = {}
-                            repo_root = repo_path.resolve()
-                            for e in lint_result.edits:
-                                file_abs = (repo_path / e.file_path).resolve()
-                                try:
-                                    rel_path = str(file_abs.relative_to(repo_root))
-                                except ValueError:
-                                    continue
-                                if not file_abs.is_file():
-                                    continue
-                                current_content = lint_files.get(rel_path)
-                                if current_content is None:
-                                    current_content = file_abs.read_text(
-                                        encoding="utf-8", errors="replace"
-                                    )
-                                if e.old_text not in current_content:
-                                    continue
-                                lint_files[rel_path] = current_content.replace(
-                                    e.old_text, e.new_text, 1
-                                )
-                            if lint_files:
-                                _write_lint(
-                                    repo_path,
-                                    type("_LR", (), {"files": lint_files, "summary": lint_result.summary})(),
-                                    subdir="",
-                                )
-                        elif lint_result.linter_issues:
-                            code_review_issues = [
-                                {
-                                    "severity": li.severity,
-                                    "description": f"[{li.rule}] {li.message}",
-                                    "file_path": li.file_path,
-                                    "suggestion": f"Fix lint violation {li.rule} at line {li.line}",
-                                }
-                                for li in lint_result.linter_issues[:20]
-                            ]
-                            continue
-                except Exception as lint_err:
-                    logger.warning(
-                        "[%s] WORKFLOW   Lint step failed (non-blocking): %s",
-                        task_id, lint_err,
-                    )
-
-            build_ok, build_errors = build_verifier(repo_path, "frontend", task_id)
-            if not build_ok:
-                if build_errors.startswith("ENV:"):
-                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                    return FrontendWorkflowResult(
-                        task_id=task_id,
-                        success=False,
-                        failure_reason="Unsupported environment: " + build_errors[4:].strip()[:500],
-                    )
-                build_error_sig = (build_errors[:800] or build_errors).strip()
-                if build_error_sig == last_build_error_sig:
-                    consecutive_same_build_failures += 1
-                else:
-                    last_build_error_sig = build_error_sig
-                    consecutive_same_build_failures = 1
-                if consecutive_same_build_failures >= MAX_SAME_BUILD_FAILURES:
-                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                    return FrontendWorkflowResult(
-                        task_id=task_id,
-                        success=False,
-                        failure_reason=(
-                            f"Build failed {MAX_SAME_BUILD_FAILURES} times with the same error. "
-                            f"Last error: {build_errors[:500]}"
-                        ),
-                    )
-
-                # Try BuildFixSpecialist for minimal targeted fix before QA fallback
-                if consecutive_same_build_failures >= 2 and build_fix_specialist is not None:
-                    try:
-                        from build_fix_specialist.models import BuildFixInput
-                        affected_paths = _extract_affected_file_paths_from_frontend_build_errors(
-                            build_errors, repo_path,
-                        )
-                        affected_code = _read_frontend_affected_files_code(repo_path, affected_paths)
-                        bf_result = build_fix_specialist.run(BuildFixInput(
-                            build_errors=build_errors[:4000],
-                            affected_files_code=affected_code,
-                            task_description=current_task.description,
-                        ))
-                        if bf_result.edits:
-                            ok_apply, msg_apply, files_dict = _apply_frontend_build_fix_edits(
-                                repo_path, bf_result.edits,
-                            )
-                            if ok_apply and files_dict:
-                                from shared.repo_writer import write_agent_output as _write_bf
-                                ok_write, _ = _write_bf(
-                                    repo_path,
-                                    type("_BF", (), {"files": files_dict, "summary": bf_result.summary})(),
-                                    subdir="",
-                                )
-                                if ok_write:
-                                    logger.info(
-                                        "[%s] WORKFLOW   BuildFixSpecialist applied %d edit(s), re-running build",
-                                        task_id, len(files_dict),
-                                    )
-                                    continue
-                    except Exception as bf_err:
-                        logger.warning(
-                            "[%s] WORKFLOW   BuildFixSpecialist failed (non-blocking): %s",
-                            task_id, bf_err,
-                        )
-
-                # Invoke testing sub-agent to analyze build errors and produce fix recommendations
-                code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-                from qa_agent.models import QAInput as QAI
-                qa_fix_result = qa_agent.run(QAI(
-                    code=code_on_branch,
-                    language="typescript",
-                    task_description=current_task.description,
-                    architecture=architecture,
-                    build_errors=build_errors[:4000],
-                    request_mode="fix_build",
-                ))
-                qa_issues = [
-                    b.model_dump() if hasattr(b, "model_dump") else b.dict()
-                    for b in (qa_fix_result.bugs_found or [])
-                ]
-                if not qa_issues:
-                    # Fallback to generic code_review_issues if QA returns nothing
-                    qa_issues = [{
-                        "severity": "critical",
-                        "description": f"ng build failed: {build_errors[:2000]}",
-                        "recommendation": "Fix the Angular compilation errors",
-                    }]
-                if consecutive_same_build_failures >= 2:
-                    qa_issues.insert(0, {
-                        "severity": "critical",
-                        "description": (
-                            f"ESCALATION: This build error has occurred {consecutive_same_build_failures} times. "
-                            "Focus ONLY on fixing this specific error. Make minimal, targeted changes."
-                        ),
-                        "recommendation": "Apply the minimal fix indicated by the error message.",
-                    })
-                code_review_issues = []
-                continue
-
-            consecutive_same_build_failures = 0
-            last_build_error_sig = ""
-
-            # After first successful build: have testing sub-agent write unit and integration tests
-            if not write_tests_requested:
-                write_tests_requested = True
-                code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-                from qa_agent.models import QAInput as QAI
-                qa_tests_result = qa_agent.run(QAI(
-                    code=code_on_branch,
-                    language="typescript",
-                    task_description=current_task.description,
-                    architecture=architecture,
-                    request_mode="write_tests",
-                ))
-                tests_dict = {}
-                if qa_tests_result.unit_tests:
-                    tests_dict["unit_tests"] = qa_tests_result.unit_tests
-                if qa_tests_result.integration_tests:
-                    tests_dict["integration_tests"] = qa_tests_result.integration_tests
-                if tests_dict:
-                    suggested_tests_from_qa = tests_dict
-                    continue
-
-            suggested_tests_from_qa = None  # Clear after use so we don't re-pass on code review loop
-            code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-            from shared.context_sizing import compute_code_review_total_chars, compute_existing_code_chars
-            max_code = compute_existing_code_chars(self.llm)
-            max_review = compute_code_review_total_chars(self.llm)
-            existing_code_ctx = _truncate_for_context(code_on_branch, max_code)
-            code_for_review = _truncate_for_context(code_on_branch, max_review)
-            review_result = self._run_code_review(
-                code_review_agent=code_review_agent,
-                code=code_for_review,
-                spec_content=spec_content,
-                task=current_task,
-                architecture=architecture,
-                existing_code=existing_code_ctx,
-            )
-            if not review_result.approved:
-                code_review_issues = [
-                    i.model_dump() if hasattr(i, "model_dump") else i.dict()
-                    for i in (review_result.issues or [])
-                ]
-                cr_count = len(code_review_issues)
-                if last_code_review_count > 0 and cr_count >= last_code_review_count:
-                    rounds_without_decrease += 1
-                else:
-                    rounds_without_decrease = 0
-                    convergence_hint = None
-                last_code_review_count = cr_count
-                if rounds_without_decrease >= 3:
-                    convergence_hint = (
-                        "Code review issue count has not decreased; make minimal, targeted fixes "
-                        "and avoid refactoring unrelated code."
-                    )
-                if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
-                    continue
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason="Code review did not approve after max iterations",
-                )
-
-            # Acceptance criteria verification (optional)
-            if acceptance_verifier_agent and getattr(current_task, "acceptance_criteria", None):
-                code_for_verify = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-                if code_for_verify and code_for_verify != "# No code files found":
-                    from acceptance_verifier_agent.models import AcceptanceVerifierInput
-                    av_result = acceptance_verifier_agent.run(AcceptanceVerifierInput(
-                        code=code_for_verify,
-                        task_description=current_task.description,
-                        acceptance_criteria=current_task.acceptance_criteria,
+    
+                plan_text = ""
+                if not qa_issues and not sec_issues and not a11y_issues and not code_review_issues:
+                    plan_text = self._plan_task(
+                        task=current_task,
+                        existing_code=existing_code,
                         spec_content=spec_content,
                         architecture=architecture,
-                        language="typescript",
-                    ))
-                    if not av_result.all_satisfied:
-                        unsatisfied = [c for c in av_result.per_criterion if not c.satisfied]
-                        code_review_issues = [
-                            {
-                                "severity": "major",
-                                "category": "acceptance_criteria",
-                                "file_path": "",
-                                "description": f"Criterion not satisfied: {c.criterion}. Evidence: {c.evidence}",
-                                "suggestion": f"Implement or fix code to satisfy: {c.criterion}",
-                            }
-                            for c in unsatisfied
-                        ]
-                        if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
-                            continue
+                        api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
+                    )
+                    if plan_text:
+                        logger.info("[%s] WORKFLOW   Planning complete, plan length=%d chars", task_id, len(plan_text))
+                        plan_dir = repo_path.parent / "plan"
+                        if not plan_dir.exists():
+                            plan_dir = repo_path / "plan"
+                        if plan_dir.exists() and plan_dir.is_dir():
+                            try:
+                                plan_file = plan_dir / f"frontend_task_{task_id}.md"
+                                plan_file.write_text(
+                                    f"# Frontend task plan: {task_id}\n\n{plan_text}",
+                                    encoding="utf-8",
+                                )
+                                logger.info("[%s] WORKFLOW   Persisted plan to %s", task_id, plan_file)
+                            except Exception as e:
+                                logger.warning("[%s] Failed to persist plan (non-blocking): %s", task_id, e)
+    
+                result = self.run(FrontendInput(
+                    framework_target=_resolved_framework_for_implementation(
+                        current_task.metadata, spec_content
+                    ),
+                    task_description=current_task.description,
+                    requirements=_task_requirements_with_route_expectations(current_task, repo_path),
+                    user_story=getattr(current_task, "user_story", "") or "",
+                    spec_content=_truncate_for_context(spec_content, compute_spec_content_chars(self.llm)),
+                    architecture=architecture,
+                    existing_code=existing_code if existing_code != "# No code files found" else None,
+                    api_endpoints=api_endpoints if api_endpoints != "# No code files found" else None,
+                    qa_issues=qa_issues,
+                    security_issues=sec_issues,
+                    accessibility_issues=a11y_issues,
+                    code_review_issues=code_review_issues,
+                    suggested_tests_from_qa=suggested_tests_from_qa,
+                    task_plan=plan_text if plan_text else None,
+                    convergence_hint=convergence_hint,
+                ))
+    
+                if result.needs_clarification and result.clarification_requests:
+                    if iteration_round < MAX_CLARIFICATION_REFINEMENTS:
+                        current_task = tech_lead.refine_task(
+                            current_task, result.clarification_requests, spec_content, architecture,
+                        )
+                        code_review_issues = []
+                        continue
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason="Agent needs clarification after max refinements",
+                    )
+    
+                ok, write_msg = write_agent_output(repo_path, result, subdir="")
+                if not ok:
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    failure_reason = (
+                        "Frontend agent did not propose any file changes for this task"
+                        if write_msg == NO_FILES_TO_WRITE_MSG
+                        else f"Write failed: {write_msg}"
+                    )
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason=failure_reason,
+                    )
+    
+                if result.npm_packages_to_install:
+                    install_cmd = ["npm", "install", "--save"] + result.npm_packages_to_install
+                    install_res = run_command_with_nvm(install_cmd, cwd=repo_path)
+                    if not install_res.success:
+                        logger.warning(
+                            "[%s] npm install for packages %s failed: %s",
+                            task_id, result.npm_packages_to_install, install_res.stderr[:500],
+                        )
+    
+                # ─── Lint verification (before build) ──────────────────────
+                if linting_tool_agent is not None:
+                    try:
+                        from linting_tool_agent.models import LintToolInput as _LintInput
+                        lint_result = linting_tool_agent.run(_LintInput(
+                            repo_path=str(repo_path),
+                            agent_type="frontend",
+                            task_id=task_id,
+                            task_description=current_task.description,
+                        ))
+                        if not lint_result.execution_result.success:
+                            logger.info(
+                                "[%s] WORKFLOW   [%d] Lint found %d issue(s), %d edit(s)",
+                                task_id, iteration_round,
+                                lint_result.execution_result.issue_count,
+                                len(lint_result.edits),
+                            )
+                            if lint_result.edits:
+                                from shared.repo_writer import write_agent_output as _write_lint
+                                lint_files: Dict[str, str] = {}
+                                repo_root = repo_path.resolve()
+                                for e in lint_result.edits:
+                                    file_abs = (repo_path / e.file_path).resolve()
+                                    try:
+                                        rel_path = str(file_abs.relative_to(repo_root))
+                                    except ValueError:
+                                        continue
+                                    if not file_abs.is_file():
+                                        continue
+                                    current_content = lint_files.get(rel_path)
+                                    if current_content is None:
+                                        current_content = file_abs.read_text(
+                                            encoding="utf-8", errors="replace"
+                                        )
+                                    if e.old_text not in current_content:
+                                        continue
+                                    lint_files[rel_path] = current_content.replace(
+                                        e.old_text, e.new_text, 1
+                                    )
+                                if lint_files:
+                                    _write_lint(
+                                        repo_path,
+                                        type("_LR", (), {"files": lint_files, "summary": lint_result.summary})(),
+                                        subdir="",
+                                    )
+                            elif lint_result.linter_issues:
+                                code_review_issues = [
+                                    {
+                                        "severity": li.severity,
+                                        "description": f"[{li.rule}] {li.message}",
+                                        "file_path": li.file_path,
+                                        "suggestion": f"Fix lint violation {li.rule} at line {li.line}",
+                                    }
+                                    for li in lint_result.linter_issues[:20]
+                                ]
+                                continue
+                    except Exception as lint_err:
+                        logger.warning(
+                            "[%s] WORKFLOW   Lint step failed (non-blocking): %s",
+                            task_id, lint_err,
+                        )
+    
+                build_ok, build_errors = build_verifier(repo_path, "frontend", task_id)
+                if not build_ok:
+                    if build_errors.startswith("ENV:"):
                         checkout_branch(repo_path, DEVELOPMENT_BRANCH)
                         return FrontendWorkflowResult(
                             task_id=task_id,
                             success=False,
-                            failure_reason="Acceptance criteria not satisfied after max iterations",
+                            failure_reason="Unsupported environment: " + build_errors[4:].strip()[:500],
                         )
-
-            code_review_issues = []
-            code_to_review = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
-
-            from qa_agent.models import QAInput
-            qa_result = qa_agent.run(QAInput(
-                code=code_to_review,
-                language="typescript",
-                task_description=current_task.description,
-                architecture=architecture,
-            ))
-            from frontend_team.accessibility_agent.models import AccessibilityInput
-            a11y_result = accessibility_agent.run(AccessibilityInput(
-                code=code_to_review,
-                language="typescript",
-                task_description=current_task.description,
-                architecture=architecture,
-            ))
-            from security_agent.models import SecurityInput
-            sec_result = security_agent.run(SecurityInput(
-                code=code_to_review,
-                language="typescript",
-                task_description=current_task.description,
-                architecture=architecture,
-            ))
-
-            qa_issues = [b.model_dump() if hasattr(b, "model_dump") else b.dict() for b in (qa_result.bugs_found or [])]
-            a11y_issues = [i.model_dump() if hasattr(i, "model_dump") else i.dict() for i in (a11y_result.issues or [])]
-            sec_issues = [v.model_dump() if hasattr(v, "model_dump") else v.dict() for v in (sec_result.vulnerabilities or [])]
-
-            all_approved = qa_result.approved and a11y_result.approved and sec_result.approved
-            if not all_approved:
-                if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
-                    continue
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason="QA, accessibility, or security did not approve after max iterations",
-                )
-
-            if all_tasks and append_backend_task_fn:
-                fix_tasks = tech_lead.evaluate_qa_and_create_fix_tasks(
-                    current_task, qa_result, spec_content, architecture,
-                )
-                if fix_tasks:
-                    for ft in fix_tasks:
-                        if getattr(ft, "assignee", None) == "backend":
-                            all_tasks[ft.id] = ft
-                            append_backend_task_fn(ft)
-
-            self._run_dbc_review(
-                dbc_agent=dbc_agent,
-                repo_path=repo_path,
-                task_id=task_id,
-                task_description=current_task.description,
-                architecture=architecture,
-            )
-
-            merge_ok, merge_msg = merge_branch(repo_path, branch_name, DEVELOPMENT_BRANCH)
-            if merge_ok:
-                delete_branch(repo_path, branch_name)
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-
-                if doc_agent and completed_tasks is not None and remaining_tasks is not None:
-                    task_update = TaskUpdate(
-                        task_id=task_id,
-                        agent_type="frontend",
-                        status="completed",
-                        summary=result.summary if result else "",
-                        files_changed=list((result.files or {}).keys()) if result else [],
-                        needs_followup=False,
-                    )
-                    codebase_summary = _truncate_for_context(
-                        _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"]),
-                        compute_existing_code_chars(self.llm),
-                    )
-                    new_tasks = tech_lead.review_progress(
-                        task_update=task_update,
-                        spec_content=spec_content,
+                    build_error_sig = (build_errors[:800] or build_errors).strip()
+                    if build_error_sig == last_build_error_sig:
+                        consecutive_same_build_failures += 1
+                    else:
+                        last_build_error_sig = build_error_sig
+                        consecutive_same_build_failures = 1
+                    if consecutive_same_build_failures >= MAX_SAME_BUILD_FAILURES:
+                        checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                        return FrontendWorkflowResult(
+                            task_id=task_id,
+                            success=False,
+                            failure_reason=(
+                                f"Build failed {MAX_SAME_BUILD_FAILURES} times with the same error. "
+                                f"Last error: {build_errors[:500]}"
+                            ),
+                        )
+    
+                    # Try BuildFixSpecialist for minimal targeted fix before QA fallback
+                    if consecutive_same_build_failures >= 2 and build_fix_specialist is not None:
+                        try:
+                            from build_fix_specialist.models import BuildFixInput
+                            affected_paths = _extract_affected_file_paths_from_frontend_build_errors(
+                                build_errors, repo_path,
+                            )
+                            affected_code = _read_frontend_affected_files_code(repo_path, affected_paths)
+                            bf_result = build_fix_specialist.run(BuildFixInput(
+                                build_errors=build_errors[:4000],
+                                affected_files_code=affected_code,
+                                task_description=current_task.description,
+                            ))
+                            if bf_result.edits:
+                                ok_apply, msg_apply, files_dict = _apply_frontend_build_fix_edits(
+                                    repo_path, bf_result.edits,
+                                )
+                                if ok_apply and files_dict:
+                                    from shared.repo_writer import write_agent_output as _write_bf
+                                    ok_write, _ = _write_bf(
+                                        repo_path,
+                                        type("_BF", (), {"files": files_dict, "summary": bf_result.summary})(),
+                                        subdir="",
+                                    )
+                                    if ok_write:
+                                        logger.info(
+                                            "[%s] WORKFLOW   BuildFixSpecialist applied %d edit(s), re-running build",
+                                            task_id, len(files_dict),
+                                        )
+                                        continue
+                        except Exception as bf_err:
+                            logger.warning(
+                                "[%s] WORKFLOW   BuildFixSpecialist failed (non-blocking): %s",
+                                task_id, bf_err,
+                            )
+    
+                    # Invoke testing sub-agent to analyze build errors and produce fix recommendations
+                    code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
+                    from qa_agent.models import QAInput as QAI
+                    qa_fix_result = qa_agent.run(QAI(
+                        code=code_on_branch,
+                        language="typescript",
+                        task_description=current_task.description,
                         architecture=architecture,
-                        completed_tasks=completed_tasks,
-                        remaining_tasks=remaining_tasks,
-                        codebase_summary=codebase_summary,
+                        build_errors=build_errors[:4000],
+                        request_mode="fix_build",
+                    ))
+                    qa_issues = [
+                        b.model_dump() if hasattr(b, "model_dump") else b.dict()
+                        for b in (qa_fix_result.bugs_found or [])
+                    ]
+                    if not qa_issues:
+                        # Fallback to generic code_review_issues if QA returns nothing
+                        qa_issues = [{
+                            "severity": "critical",
+                            "description": f"ng build failed: {build_errors[:2000]}",
+                            "recommendation": "Fix the Angular compilation errors",
+                        }]
+                    if consecutive_same_build_failures >= 2:
+                        qa_issues.insert(0, {
+                            "severity": "critical",
+                            "description": (
+                                f"ESCALATION: This build error has occurred {consecutive_same_build_failures} times. "
+                                "Focus ONLY on fixing this specific error. Make minimal, targeted changes."
+                            ),
+                            "recommendation": "Apply the minimal fix indicated by the error message.",
+                        })
+                    code_review_issues = []
+                    continue
+    
+                consecutive_same_build_failures = 0
+                last_build_error_sig = ""
+    
+                # After first successful build: have testing sub-agent write unit and integration tests
+                if not write_tests_requested:
+                    write_tests_requested = True
+                    code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
+                    from qa_agent.models import QAInput as QAI
+                    qa_tests_result = qa_agent.run(QAI(
+                        code=code_on_branch,
+                        language="typescript",
+                        task_description=current_task.description,
+                        architecture=architecture,
+                        request_mode="write_tests",
+                    ))
+                    tests_dict = {}
+                    if qa_tests_result.unit_tests:
+                        tests_dict["unit_tests"] = qa_tests_result.unit_tests
+                    if qa_tests_result.integration_tests:
+                        tests_dict["integration_tests"] = qa_tests_result.integration_tests
+                    if tests_dict:
+                        suggested_tests_from_qa = tests_dict
+                        continue
+    
+                suggested_tests_from_qa = None  # Clear after use so we don't re-pass on code review loop
+                code_on_branch = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
+                from shared.context_sizing import compute_code_review_total_chars, compute_existing_code_chars
+                max_code = compute_existing_code_chars(self.llm)
+                max_review = compute_code_review_total_chars(self.llm)
+                existing_code_ctx = _truncate_for_context(code_on_branch, max_code)
+                code_for_review = _truncate_for_context(code_on_branch, max_review)
+                review_result = self._run_code_review(
+                    code_review_agent=code_review_agent,
+                    code=code_for_review,
+                    spec_content=spec_content,
+                    task=current_task,
+                    architecture=architecture,
+                    existing_code=existing_code_ctx,
+                )
+                if not review_result.approved:
+                    code_review_issues = [
+                        i.model_dump() if hasattr(i, "model_dump") else i.dict()
+                        for i in (review_result.issues or [])
+                    ]
+                    cr_count = len(code_review_issues)
+                    if last_code_review_count > 0 and cr_count >= last_code_review_count:
+                        rounds_without_decrease += 1
+                    else:
+                        rounds_without_decrease = 0
+                        convergence_hint = None
+                    last_code_review_count = cr_count
+                    if rounds_without_decrease >= 3:
+                        convergence_hint = (
+                            "Code review issue count has not decreased; make minimal, targeted fixes "
+                            "and avoid refactoring unrelated code."
+                        )
+                    if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
+                        continue
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason="Code review did not approve after max iterations",
                     )
-                    if new_tasks and append_frontend_task_fn:
-                        for nt in new_tasks:
-                            if all_tasks and nt.id not in all_tasks:
-                                all_tasks[nt.id] = nt
-                            append_frontend_task_fn(nt.id)
-                    if doc_agent:
-                        tech_lead.trigger_documentation_update(
-                            doc_agent=doc_agent,
-                            repo_path=repo_path,
+    
+                # Acceptance criteria verification (optional)
+                if acceptance_verifier_agent and getattr(current_task, "acceptance_criteria", None):
+                    code_for_verify = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
+                    if code_for_verify and code_for_verify != "# No code files found":
+                        from acceptance_verifier_agent.models import AcceptanceVerifierInput
+                        av_result = acceptance_verifier_agent.run(AcceptanceVerifierInput(
+                            code=code_for_verify,
+                            task_description=current_task.description,
+                            acceptance_criteria=current_task.acceptance_criteria,
+                            spec_content=spec_content,
+                            architecture=architecture,
+                            language="typescript",
+                        ))
+                        if not av_result.all_satisfied:
+                            unsatisfied = [c for c in av_result.per_criterion if not c.satisfied]
+                            code_review_issues = [
+                                {
+                                    "severity": "major",
+                                    "category": "acceptance_criteria",
+                                    "file_path": "",
+                                    "description": f"Criterion not satisfied: {c.criterion}. Evidence: {c.evidence}",
+                                    "suggestion": f"Implement or fix code to satisfy: {c.criterion}",
+                                }
+                                for c in unsatisfied
+                            ]
+                            if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
+                                continue
+                            checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                            return FrontendWorkflowResult(
+                                task_id=task_id,
+                                success=False,
+                                failure_reason="Acceptance criteria not satisfied after max iterations",
+                            )
+    
+                code_review_issues = []
+                code_to_review = _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"])
+    
+                from qa_agent.models import QAInput
+                qa_result = qa_agent.run(QAInput(
+                    code=code_to_review,
+                    language="typescript",
+                    task_description=current_task.description,
+                    architecture=architecture,
+                ))
+                from frontend_team.accessibility_agent.models import AccessibilityInput
+                a11y_result = accessibility_agent.run(AccessibilityInput(
+                    code=code_to_review,
+                    language="typescript",
+                    task_description=current_task.description,
+                    architecture=architecture,
+                ))
+                from security_agent.models import SecurityInput
+                sec_result = security_agent.run(SecurityInput(
+                    code=code_to_review,
+                    language="typescript",
+                    task_description=current_task.description,
+                    architecture=architecture,
+                ))
+    
+                qa_issues = [b.model_dump() if hasattr(b, "model_dump") else b.dict() for b in (qa_result.bugs_found or [])]
+                a11y_issues = [i.model_dump() if hasattr(i, "model_dump") else i.dict() for i in (a11y_result.issues or [])]
+                sec_issues = [v.model_dump() if hasattr(v, "model_dump") else v.dict() for v in (sec_result.vulnerabilities or [])]
+    
+                all_approved = qa_result.approved and a11y_result.approved and sec_result.approved
+                if not all_approved:
+                    if iteration_round < MAX_CODE_REVIEW_ITERATIONS - 1:
+                        continue
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason="QA, accessibility, or security did not approve after max iterations",
+                    )
+    
+                if all_tasks and append_backend_task_fn:
+                    fix_tasks = tech_lead.evaluate_qa_and_create_fix_tasks(
+                        current_task, qa_result, spec_content, architecture,
+                    )
+                    if fix_tasks:
+                        for ft in fix_tasks:
+                            if getattr(ft, "assignee", None) == "backend":
+                                all_tasks[ft.id] = ft
+                                append_backend_task_fn(ft)
+    
+                self._run_dbc_review(
+                    dbc_agent=dbc_agent,
+                    repo_path=repo_path,
+                    task_id=task_id,
+                    task_description=current_task.description,
+                    architecture=architecture,
+                )
+    
+                merge_ok, merge_msg = merge_branch(repo_path, branch_name, DEVELOPMENT_BRANCH)
+                if merge_ok:
+                    delete_branch(repo_path, branch_name)
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+    
+                    if doc_agent and completed_tasks is not None and remaining_tasks is not None:
+                        task_update = TaskUpdate(
+                            task_id=task_id,
+                            agent_type="frontend",
+                            status="completed",
+                            summary=result.summary if result else "",
+                            files_changed=list((result.files or {}).keys()) if result else [],
+                            needs_followup=False,
+                        )
+                        codebase_summary = _truncate_for_context(
+                            _read_repo_code(repo_path, [".ts", ".tsx", ".html", ".scss"]),
+                            compute_existing_code_chars(self.llm),
+                        )
+                        new_tasks = tech_lead.review_progress(
                             task_update=task_update,
                             spec_content=spec_content,
                             architecture=architecture,
+                            completed_tasks=completed_tasks,
+                            remaining_tasks=remaining_tasks,
                             codebase_summary=codebase_summary,
                         )
+                        if new_tasks and append_frontend_task_fn:
+                            for nt in new_tasks:
+                                if all_tasks and nt.id not in all_tasks:
+                                    all_tasks[nt.id] = nt
+                                append_frontend_task_fn(nt.id)
+                        if doc_agent:
+                            tech_lead.trigger_documentation_update(
+                                doc_agent=doc_agent,
+                                repo_path=repo_path,
+                                task_update=task_update,
+                                spec_content=spec_content,
+                                architecture=architecture,
+                                codebase_summary=codebase_summary,
+                            )
+    
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=True,
+                        summary=result.summary if result else "",
+                    )
+                else:
+                    checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+                    return FrontendWorkflowResult(
+                        task_id=task_id,
+                        success=False,
+                        failure_reason=f"Merge failed: {merge_msg}",
+                    )
 
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=True,
-                    summary=result.summary if result else "",
-                )
-            else:
-                checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-                return FrontendWorkflowResult(
-                    task_id=task_id,
-                    success=False,
-                    failure_reason=f"Merge failed: {merge_msg}",
-                )
-
-        checkout_branch(repo_path, DEVELOPMENT_BRANCH)
-        return FrontendWorkflowResult(
-            task_id=task_id,
-            success=False,
-            failure_reason="Review loop exhausted without merge",
-        )
+            checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+            return FrontendWorkflowResult(
+                task_id=task_id,
+                success=False,
+                failure_reason="Review loop exhausted without merge",
+            )
+        except LLMUnreachableAfterRetriesError:
+            checkout_branch(repo_path, DEVELOPMENT_BRANCH)
+            return FrontendWorkflowResult(
+                task_id=task_id,
+                success=False,
+                failure_reason=LLM_UNREACHABLE_AFTER_RETRIES,
+                llm_unreachable=True,
+            )
 
     @staticmethod
     def _run_code_review(

@@ -160,6 +160,10 @@ class TaskUpdate(BaseModel):
         default=None,
         description="When status is failed, the build/test error or reason. Used by Tech Lead to create targeted fix tasks.",
     )
+    failure_class: Optional[str] = Field(
+        default=None,
+        description="When status is failed, optional classification e.g. 'llm_connectivity'. Tech Lead may skip creating fix tasks for certain classes.",
+    )
 
 
 class TaskAssignment(BaseModel):

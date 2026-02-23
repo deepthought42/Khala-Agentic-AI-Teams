@@ -2,6 +2,7 @@
 Problem-solving phase: root-cause analysis and fix loop.
 
 No code from ``backend_agent`` is used.
+Uses template-based output (not JSON) so parsing works across model providers.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from shared.llm import LLMClient
 from shared.models import Task
 
 from ..models import ProblemSolvingResult, ReviewIssue, ReviewResult
+from ..output_templates import parse_problem_solving_template
 from ..prompts import PROBLEM_SOLVING_PROMPT, PYTHON_CONVENTIONS, JAVA_CONVENTIONS
 
 logger = logging.getLogger(__name__)
@@ -51,15 +53,16 @@ def run_problem_solving(
     )
 
     logger.info("[%s] Problem-solving: sending %d issues to LLM for fixes", task_id, len(actionable))
-    raw = llm.complete_json(prompt)
+    raw = llm.complete_text(prompt)
+    parsed = parse_problem_solving_template(raw)
 
-    fixed_files = raw.get("files") or {}
+    fixed_files = parsed.get("files") or {}
     merged = dict(current_files)
     merged.update(fixed_files)
 
-    fixes_applied = raw.get("fixes_applied") or []
-    resolved = raw.get("resolved", bool(fixed_files))
-    summary = raw.get("summary", f"Applied {len(fixes_applied)} fixes.")
+    fixes_applied = parsed.get("fixes_applied") or []
+    resolved = parsed.get("resolved", bool(fixed_files))
+    summary = parsed.get("summary", f"Applied {len(fixes_applied)} fixes.")
 
     logger.info("[%s] Problem-solving: %s — %s", task_id, "resolved" if resolved else "partial", summary[:120])
 

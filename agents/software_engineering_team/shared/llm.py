@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 import json
 import re
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 import httpx
 
@@ -107,6 +107,10 @@ class LLMRateLimitError(LLMError):
 
 class LLMTemporaryError(LLMError):
     """Raised when the LLM returns 5xx or network errors and retries are exhausted."""
+
+
+class LLMUnreachableAfterRetriesError(LLMError):
+    """Raised when the frontend (or other agent) exhausted retries and could not reach the LLM. Orchestrator should pause job."""
 
 
 class LLMPermanentError(LLMError):
@@ -642,6 +646,68 @@ def _parse_retry_config() -> tuple[int, float, float]:
     except ValueError:
         backoff_max = 60.0
     return max_retries, backoff_base, backoff_max
+
+
+def call_llm_with_retries(
+    fn: Callable[[], Any],
+    *,
+    max_attempts: int = 3,
+    backoff_base: float = 2.0,
+    backoff_max: float = 60.0,
+) -> Any:
+    """
+    Call fn() up to max_attempts times with exponential backoff on connection/temporary errors.
+    Used by the frontend team so that no fallback runs when LLM is unreachable.
+    On permanent/rate-limit errors, re-raises immediately. After exhausting retries, raises
+    LLMUnreachableAfterRetriesError so the caller can return a structured result (e.g. llm_unreachable=True).
+    """
+    last_error: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except (LLMPermanentError, LLMRateLimitError):
+            raise
+        except (LLMTemporaryError, httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout, LLMError) as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    max_attempts,
+                    wait,
+                    e,
+                )
+                time.sleep(wait)
+            else:
+                raise LLMUnreachableAfterRetriesError(
+                    f"LLM unreachable after {max_attempts} attempts: {e}",
+                    cause=e,
+                ) from e
+        except Exception as e:
+            # Network or other transient-like errors
+            last_error = e
+            if attempt < max_attempts - 1:
+                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    max_attempts,
+                    wait,
+                    e,
+                )
+                time.sleep(wait)
+            else:
+                raise LLMUnreachableAfterRetriesError(
+                    f"LLM unreachable after {max_attempts} attempts: {e}",
+                    cause=e,
+                ) from e
+    if last_error:
+        raise LLMUnreachableAfterRetriesError(
+            f"LLM unreachable after {max_attempts} attempts: {last_error}",
+            cause=last_error,
+        ) from last_error
+    raise LLMUnreachableAfterRetriesError(f"LLM unreachable after {max_attempts} attempts")
 
 
 def _get_llm_concurrency_limit() -> int:

@@ -2,11 +2,11 @@
 Execution phase: run each microtask via tool agents or general code gen.
 
 No code from ``backend_agent`` is used.
+Uses template-based output (not JSON) so parsing works across model providers.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -23,6 +23,7 @@ from ..models import (
     ToolAgentInput,
     ToolAgentOutput,
 )
+from ..output_templates import parse_files_and_summary_template
 from ..prompts import EXECUTION_PROMPT, PYTHON_CONVENTIONS, JAVA_CONVENTIONS
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,9 @@ def _run_general_microtask(
         existing_code=existing_code[:8000] if existing_code else "(none)",
         architecture_context=arch_ctx or "(none)",
     )
-    raw = llm.complete_json(prompt)
-    return raw.get("files") or {}
+    raw = llm.complete_text(prompt)
+    data = parse_files_and_summary_template(raw)
+    return data.get("files") or {}
 
 
 def run_execution(

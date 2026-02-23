@@ -2,11 +2,11 @@
 Planning phase: decompose a task into microtasks and assign tool agents.
 
 No code from ``backend_agent`` is used.
+Uses template-based output (not JSON) so parsing works across model providers.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +20,7 @@ from ..models import (
     PlanningResult,
     ToolAgentKind,
 )
+from ..output_templates import parse_planning_template
 from ..prompts import PLANNING_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -109,8 +110,9 @@ def run_planning(
     prompt = _build_context(task, spec_content, architecture, existing_code, language)
 
     logger.info("[%s] Planning phase: generating microtasks (language=%s)", task.id, language)
-    raw = llm.complete_json(prompt)
-    result = _parse_planning_output(raw, language)
+    raw = llm.complete_text(prompt)
+    raw_parsed = parse_planning_template(raw)
+    result = _parse_planning_output(raw_parsed, language)
     logger.info(
         "[%s] Planning phase: produced %d microtasks — %s",
         task.id, len(result.microtasks), result.summary[:120],

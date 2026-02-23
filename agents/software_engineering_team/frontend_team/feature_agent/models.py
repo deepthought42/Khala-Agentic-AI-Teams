@@ -101,3 +101,7 @@ class FrontendWorkflowResult(BaseModel):
     success: bool = Field(default=False, description="True when code was merged to development")
     failure_reason: str = Field(default="", description="Reason for failure if success is False")
     summary: str = Field(default="", description="Final summary of what was implemented")
+    llm_unreachable: bool = Field(
+        default=False,
+        description="True when the agent could not reach the LLM after retries; orchestrator should pause job.",
+    )
