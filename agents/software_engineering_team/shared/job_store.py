@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +72,10 @@ def create_job(
     job_id: str,
     repo_path: str,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
+    job_type: Optional[str] = None,
 ) -> None:
     """Create a new job with pending status and persist to cache."""
-    data = {
+    data: Dict[str, Any] = {
         "job_id": job_id,
         "repo_path": repo_path,
         "status": JOB_STATUS_PENDING,
@@ -86,6 +87,8 @@ def create_job(
         "architecture_overview": None,
         "requirements_title": None,
     }
+    if job_type is not None:
+        data["job_type"] = job_type
     with _lock:
         _job_file(job_id, cache_dir).write_text(
             json.dumps(data, indent=2), encoding="utf-8"
@@ -100,6 +103,34 @@ def get_job(
     with _lock:
         data = _read_job_file(_job_file(job_id, cache_dir))
         return copy.deepcopy(data) if data else None
+
+
+def list_jobs(
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+    running_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """List jobs from cache. If running_only is True, only include pending or running."""
+    running_statuses = (JOB_STATUS_PENDING, JOB_STATUS_RUNNING)
+    result: List[Dict[str, Any]] = []
+    jobs_path = _jobs_dir(cache_dir)
+    if not jobs_path.exists():
+        return result
+    with _lock:
+        for path in jobs_path.glob("*.json"):
+            job_id = path.stem
+            data = _read_job_file(path)
+            if not data:
+                continue
+            status = data.get("status", JOB_STATUS_PENDING)
+            if running_only and status not in running_statuses:
+                continue
+            result.append({
+                "job_id": job_id,
+                "status": status,
+                "repo_path": data.get("repo_path"),
+                "job_type": data.get("job_type"),
+            })
+    return result
 
 
 def update_job(

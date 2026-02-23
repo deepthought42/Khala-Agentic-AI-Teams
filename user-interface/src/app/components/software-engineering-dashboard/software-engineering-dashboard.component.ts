@@ -1,10 +1,12 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnDestroy, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
+import { Subscription, timer } from 'rxjs';
+import { switchMap } from 'rxjs/operators';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
@@ -31,6 +33,7 @@ import type {
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
   PlanningV2RunRequest,
+  RunningJobSummary,
 } from '../../models';
 
 @Component({
@@ -64,8 +67,9 @@ import type {
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
 })
-export class SoftwareEngineeringDashboardComponent {
+export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(SoftwareEngineeringApiService);
+  private runningJobsSub: Subscription | null = null;
 
   loading = false;
   error: string | null = null;
@@ -77,8 +81,55 @@ export class SoftwareEngineeringDashboardComponent {
   backendCodeV2JobId: string | null = null;
   planningV2JobId: string | null = null;
 
+  /** Running jobs from GET /run-team/jobs; used by the right-hand panel. */
+  runningJobs: RunningJobSummary[] = [];
+  /** Job selected in the running-jobs panel for monitoring. */
+  selectedRunningJob: RunningJobSummary | null = null;
+  /** Status for the selected run_team job in the panel (from JobStatusComponent). */
+  panelRunTeamStatus: JobStatusResponse | null = null;
+
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
+
+  ngOnInit(): void {
+    this.runningJobsSub = timer(0, 30000).pipe(
+      switchMap(() => this.api.getRunningJobs())
+    ).subscribe({
+      next: (res) => {
+        this.runningJobs = res.jobs;
+        if (this.runningJobs.length === 0) {
+          this.selectedRunningJob = null;
+          this.panelRunTeamStatus = null;
+        } else if (this.selectedRunningJob && !this.runningJobs.find(j => j.job_id === this.selectedRunningJob!.job_id)) {
+          this.selectedRunningJob = null;
+          this.panelRunTeamStatus = null;
+        }
+        if (this.runningJobs.length > 0 && !this.selectedRunningJob) {
+          this.selectRunningJob(this.runningJobs[0]);
+        }
+      },
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.runningJobsSub?.unsubscribe();
+  }
+
+  selectRunningJob(job: RunningJobSummary): void {
+    this.selectedRunningJob = job;
+    if (job.job_type !== 'run_team') {
+      this.panelRunTeamStatus = null;
+    }
+  }
+
+  runningJobTypeLabel(jobType: string): string {
+    const labels: Record<string, string> = {
+      run_team: 'Run Team',
+      backend_code_v2: 'Backend (v2)',
+      planning_v2: 'Planning (v2)',
+    };
+    return labels[jobType] ?? jobType;
+  }
 
   onRunTeamSubmit(request: RunTeamRequest): void {
     this.loading = true;

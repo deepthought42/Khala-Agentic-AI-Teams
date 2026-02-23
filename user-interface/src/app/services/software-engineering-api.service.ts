@@ -6,6 +6,7 @@ import type {
   RunTeamRequest,
   RunTeamResponse,
   JobStatusResponse,
+  RunningJobsResponse,
   RetryResponse,
   RePlanWithClarificationsRequest,
   ClarificationCreateRequest,
@@ -48,6 +49,15 @@ export class SoftwareEngineeringApiService {
   getJobStatus(jobId: string): Observable<JobStatusResponse> {
     return this.http.get<JobStatusResponse>(
       `${this.baseUrl}/run-team/${jobId}`
+    );
+  }
+
+  /**
+   * GET /run-team/jobs - list running and pending jobs.
+   */
+  getRunningJobs(): Observable<RunningJobsResponse> {
+    return this.http.get<RunningJobsResponse>(
+      `${this.baseUrl}/run-team/jobs`
     );
   }
 

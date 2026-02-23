@@ -13,6 +13,8 @@
   <app-error-message [message]="error" />
 }
 
+<div class="dashboard-layout">
+  <div class="main-content">
 <mat-tab-group>
   <mat-tab label="Run Team">
     <div class="tab-content">
@@ -99,3 +101,65 @@
     </div>
   </mat-tab>
 </mat-tab-group>
+  </div>
+
+  @if (runningJobs.length > 0) {
+    <aside class="running-jobs-panel">
+      <mat-card>
+        <mat-card-header>
+          <mat-card-title>Running jobs</mat-card-title>
+          <mat-card-subtitle>{{ runningJobs.length }} job(s) in progress</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="running-jobs-list">
+            @for (job of runningJobs; track job.job_id) {
+              <button
+                type="button"
+                class="job-item"
+                [class.selected]="selectedRunningJob?.job_id === job.job_id"
+                (click)="selectRunningJob(job)"
+              >
+                <span class="job-type">{{ runningJobTypeLabel(job.job_type) }}</span>
+                <span class="job-id">{{ job.job_id }}</span>
+                @if (job.repo_path) {
+                  <span class="job-repo">{{ job.repo_path }}</span>
+                }
+              </button>
+            }
+          </div>
+
+          @if (selectedRunningJob) {
+            <div class="panel-status">
+              @switch (selectedRunningJob.job_type) {
+                @case ('run_team') {
+                  <app-job-status
+                    [jobId]="selectedRunningJob.job_id"
+                    (statusChange)="panelRunTeamStatus = $event"
+                  />
+                  @if (panelRunTeamStatus) {
+                    <app-run-team-tracking
+                      [jobId]="selectedRunningJob.job_id"
+                      [status]="panelRunTeamStatus"
+                    />
+                  }
+                }
+                @case ('backend_code_v2') {
+                  <app-backend-code-v2-job-status [jobId]="selectedRunningJob.job_id" />
+                }
+                @case ('planning_v2') {
+                  <app-planning-v2-job-status [jobId]="selectedRunningJob.job_id" />
+                }
+                @default {
+                  <app-job-status [jobId]="selectedRunningJob.job_id" (statusChange)="panelRunTeamStatus = $event" />
+                  @if (panelRunTeamStatus) {
+                    <app-run-team-tracking [jobId]="selectedRunningJob.job_id" [status]="panelRunTeamStatus" />
+                  }
+                }
+              }
+            </div>
+          }
+        </mat-card-content>
+      </mat-card>
+    </aside>
+  }
+</div>

@@ -38,6 +38,7 @@ from shared.job_store import (
     JOB_STATUS_PAUSED_LLM_CONNECTIVITY,
     create_job,
     get_job,
+    list_jobs,
     update_job,
 )
 
@@ -83,6 +84,24 @@ class RunTeamResponse(BaseModel):
     job_id: str = Field(..., description="Job ID for polling status.")
     status: str = Field(default="running", description="Initial status.")
     message: str = Field(default="Orchestrator started. Poll GET /run-team/{job_id} for status.")
+
+
+class RunningJobSummary(BaseModel):
+    """Summary of a single job for the running jobs list."""
+
+    job_id: str = Field(..., description="Job ID.")
+    status: str = Field(..., description="pending or running.")
+    repo_path: Optional[str] = Field(None, description="Path to the repo.")
+    job_type: str = Field(
+        default="run_team",
+        description="run_team, backend_code_v2, or planning_v2.",
+    )
+
+
+class RunningJobsResponse(BaseModel):
+    """Response from GET /run-team/jobs (list of running/pending jobs)."""
+
+    jobs: List[RunningJobSummary] = Field(default_factory=list, description="Running or pending jobs.")
 
 
 class FailedTaskDetail(BaseModel):
@@ -276,7 +295,7 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     job_id = str(uuid.uuid4())
-    create_job(job_id, str(repo_path))
+    create_job(job_id, str(repo_path), job_type="run_team")
 
     spec_override: Optional[str] = None
     resolved_override: Optional[List[Dict[str, Any]]] = None
@@ -358,6 +377,27 @@ def _coerce_progress(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+@app.get(
+    "/run-team/jobs",
+    response_model=RunningJobsResponse,
+    summary="List running jobs",
+    description="Returns all jobs with status pending or running. Used by the UI to show a monitoring panel.",
+)
+def get_running_jobs() -> RunningJobsResponse:
+    """List running and pending jobs."""
+    raw = list_jobs(running_only=True)
+    jobs = [
+        RunningJobSummary(
+            job_id=item["job_id"],
+            status=item["status"],
+            repo_path=item.get("repo_path"),
+            job_type=item.get("job_type") or "run_team",
+        )
+        for item in raw
+    ]
+    return RunningJobsResponse(jobs=jobs)
 
 
 @app.get(
@@ -884,7 +924,7 @@ def run_backend_code_v2(request: BackendCodeV2RunRequest) -> BackendCodeV2RunRes
         raise HTTPException(status_code=400, detail=f"repo_path does not exist or is not a directory: {request.repo_path}")
 
     job_id = str(uuid.uuid4())
-    create_job(job_id, request.repo_path)
+    create_job(job_id, request.repo_path, job_type="backend_code_v2")
 
     thread = threading.Thread(
         target=_run_backend_code_v2_background,
@@ -950,7 +990,7 @@ def run_planning_v2(request: PlanningV2RunRequest) -> PlanningV2RunResponse:
         )
 
     job_id = str(uuid.uuid4())
-    create_job(job_id, request.repo_path)
+    create_job(job_id, request.repo_path, job_type="planning_v2")
 
     thread = threading.Thread(
         target=_run_planning_v2_background,

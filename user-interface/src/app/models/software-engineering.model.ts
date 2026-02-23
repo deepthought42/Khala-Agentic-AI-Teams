@@ -11,6 +11,19 @@ export interface RunTeamResponse {
   message: string;
 }
 
+/** Summary of a single job for the running jobs list (GET /run-team/jobs). */
+export interface RunningJobSummary {
+  job_id: string;
+  status: string;
+  repo_path?: string;
+  job_type: string;
+}
+
+/** Response from GET /run-team/jobs. */
+export interface RunningJobsResponse {
+  jobs: RunningJobSummary[];
+}
+
 /** Detail about a single failed task. */
 export interface FailedTaskDetail {
   task_id: string;
