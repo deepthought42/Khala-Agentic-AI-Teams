@@ -55,6 +55,14 @@
       }
     </div>
   </mat-tab>
+  <mat-tab label="Frontend Agent (v2)">
+    <div class="tab-content">
+      <app-frontend-agent-v2-run-form (submitRequest)="onFrontendAgentV2Submit($event)" />
+      @if (frontendAgentV2JobId) {
+        <app-frontend-agent-v2-job-status [jobId]="frontendAgentV2JobId" />
+      }
+    </div>
+  </mat-tab>
   <mat-tab label="Architecture">
     <div class="tab-content">
       <mat-card>

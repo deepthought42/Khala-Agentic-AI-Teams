@@ -33,6 +33,9 @@ class TestTaskParsingBackendCodeV2:
     def test_assignee_to_task_type_maps_backend(self):
         assert _assignee_to_task_type("backend") == TaskType.BACKEND
 
+    def test_assignee_to_task_type_maps_frontend_agent_v2(self):
+        assert _assignee_to_task_type("frontend-agent-v2") == TaskType.FRONTEND
+
     def test_parse_assignment_with_backend_code_v2(self):
         data = {
             "tasks": [

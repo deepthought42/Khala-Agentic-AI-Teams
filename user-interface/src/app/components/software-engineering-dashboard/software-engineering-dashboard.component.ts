@@ -20,6 +20,8 @@ import { ExecutionStreamComponent } from '../execution-stream/execution-stream.c
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
 import { BackendCodeV2RunFormComponent } from '../backend-code-v2-run-form/backend-code-v2-run-form.component';
 import { BackendCodeV2JobStatusComponent } from '../backend-code-v2-job-status/backend-code-v2-job-status.component';
+import { FrontendAgentV2RunFormComponent } from '../frontend-agent-v2-run-form/frontend-agent-v2-run-form.component';
+import { FrontendAgentV2JobStatusComponent } from '../frontend-agent-v2-job-status/frontend-agent-v2-job-status.component';
 import type {
   RunTeamRequest,
   JobStatusResponse,
@@ -27,6 +29,7 @@ import type {
   ClarificationCreateRequest,
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
+  FrontendAgentV2RunRequest,
 } from '../../models';
 
 @Component({
@@ -53,6 +56,8 @@ import type {
     ArchitectureResultsComponent,
     BackendCodeV2RunFormComponent,
     BackendCodeV2JobStatusComponent,
+    FrontendAgentV2RunFormComponent,
+    FrontendAgentV2JobStatusComponent,
   ],
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
@@ -68,6 +73,7 @@ export class SoftwareEngineeringDashboardComponent {
   architectSpec = '';
   architectResults: ArchitectDesignResponse | null = null;
   backendCodeV2JobId: string | null = null;
+  frontendAgentV2JobId: string | null = null;
 
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
@@ -158,6 +164,22 @@ export class SoftwareEngineeringDashboardComponent {
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Architecture design failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onFrontendAgentV2Submit(request: FrontendAgentV2RunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.frontendAgentV2JobId = null;
+    this.api.runFrontendAgentV2(request).subscribe({
+      next: (res) => {
+        this.frontendAgentV2JobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Frontend-Agent-V2 request failed';
         this.loading = false;
       },
     });

@@ -18,6 +18,9 @@ import type {
   BackendCodeV2RunRequest,
   BackendCodeV2RunResponse,
   BackendCodeV2StatusResponse,
+  FrontendAgentV2RunRequest,
+  FrontendAgentV2RunResponse,
+  FrontendAgentV2StatusResponse,
 } from '../models';
 
 /**
@@ -181,6 +184,29 @@ export class SoftwareEngineeringApiService {
   ): Observable<BackendCodeV2StatusResponse> {
     return this.http.get<BackendCodeV2StatusResponse>(
       `${this.baseUrl}/backend-code-v2/status/${jobId}`
+    );
+  }
+
+  /**
+   * POST /frontend-agent-v2/run
+   */
+  runFrontendAgentV2(
+    request: FrontendAgentV2RunRequest
+  ): Observable<FrontendAgentV2RunResponse> {
+    return this.http.post<FrontendAgentV2RunResponse>(
+      `${this.baseUrl}/frontend-agent-v2/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /frontend-agent-v2/status/{job_id}
+   */
+  getFrontendAgentV2Status(
+    jobId: string
+  ): Observable<FrontendAgentV2StatusResponse> {
+    return this.http.get<FrontendAgentV2StatusResponse>(
+      `${this.baseUrl}/frontend-agent-v2/status/${jobId}`
     );
   }
 

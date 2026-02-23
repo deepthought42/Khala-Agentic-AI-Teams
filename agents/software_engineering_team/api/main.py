@@ -579,6 +579,49 @@ class BackendCodeV2StatusResponse(BaseModel):
     summary: Optional[str] = None
 
 
+class FrontendAgentV2TaskInput(BaseModel):
+    """Task input for frontend-agent-v2."""
+
+    id: str = Field(default="", description="Task ID (auto-generated if empty)")
+    title: str = Field(default="", description="Short task title")
+    description: str = Field(default="", description="Detailed description")
+    requirements: str = Field(default="", description="Technical requirements")
+    acceptance_criteria: List[str] = Field(default_factory=list, description="Acceptance criteria list")
+
+
+class FrontendAgentV2RunRequest(BaseModel):
+    """Request body for POST /frontend-agent-v2/run."""
+
+    task: FrontendAgentV2TaskInput = Field(..., description="Task to implement")
+    repo_path: str = Field(..., description="Local path to the repository")
+    spec_content: Optional[str] = Field(None, description="Optional project spec context")
+    architecture: Optional[str] = Field(None, description="Optional architecture overview")
+
+
+class FrontendAgentV2RunResponse(BaseModel):
+    """Response from POST /frontend-agent-v2/run."""
+
+    job_id: str = Field(..., description="Job ID for polling status")
+    status: str = Field(default="running")
+    message: str = Field(default="")
+
+
+class FrontendAgentV2StatusResponse(BaseModel):
+    """Response from GET /frontend-agent-v2/status/{job_id}."""
+
+    job_id: str = Field(...)
+    status: str = Field(default="pending", description="pending, running, completed, failed")
+    repo_path: Optional[str] = None
+    current_phase: Optional[str] = None
+    current_microtask: Optional[str] = None
+    progress: int = Field(default=0, description="0-100 completion percentage")
+    microtasks_completed: int = Field(default=0)
+    microtasks_total: int = Field(default=0)
+    completed_phases: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    summary: Optional[str] = None
+
+
 def _run_backend_code_v2_background(job_id: str, repo_path: str, task_dict: dict, spec_content: str, architecture_overview: str) -> None:
     """Run backend-code-v2 workflow in a background thread."""
     try:
@@ -639,6 +682,66 @@ def _run_backend_code_v2_background(job_id: str, repo_path: str, task_dict: dict
         update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
 
 
+def _run_frontend_agent_v2_background(job_id: str, repo_path: str, task_dict: dict, spec_content: str, architecture_overview: str) -> None:
+    """Run frontend-agent-v2 workflow in a background thread."""
+    try:
+        from pathlib import Path as _Path
+        from frontend_agent_v2 import FrontendAgentV2TeamLead
+        from shared.llm import get_llm_for_agent
+        from shared.models import Task, TaskStatus, TaskType, SystemArchitecture
+        import uuid as _uuid
+
+        update_job(job_id, status="running")
+
+        tid = task_dict.get("id") or f"fv2-{_uuid.uuid4().hex[:8]}"
+        task = Task(
+            id=tid,
+            title=task_dict.get("title", ""),
+            description=task_dict.get("description", ""),
+            requirements=task_dict.get("requirements", ""),
+            acceptance_criteria=task_dict.get("acceptance_criteria", []),
+            type=TaskType.FRONTEND,
+            assignee="frontend-agent-v2",
+            status=TaskStatus.PENDING,
+        )
+
+        arch = SystemArchitecture(overview=architecture_overview) if architecture_overview else None
+
+        team_lead = FrontendAgentV2TeamLead(get_llm_for_agent("frontend"))
+
+        phase_order = ["planning", "execution", "review", "problem_solving", "deliver"]
+
+        def _job_updater(**kwargs):
+            completed_phases = []
+            current = kwargs.get("current_phase", "")
+            for p in phase_order:
+                if p == current:
+                    break
+                completed_phases.append(p)
+            update_job(job_id, completed_phases=completed_phases, **kwargs)
+
+        result = team_lead.run_workflow(
+            repo_path=_Path(repo_path),
+            task=task,
+            spec_content=spec_content or "",
+            architecture=arch,
+            job_updater=_job_updater,
+        )
+
+        final_status = "completed" if result.success else "failed"
+        update_job(
+            job_id,
+            status=final_status,
+            progress=100 if result.success else (result.iterations_used * 20),
+            summary=result.summary,
+            error=result.failure_reason if not result.success else None,
+            current_phase=result.current_phase.value if result.current_phase else "deliver",
+        )
+    except Exception as e:
+        logger.exception("Frontend-agent-v2 workflow failed")
+        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
+
+
 @app.post(
     "/backend-code-v2/run",
     response_model=BackendCodeV2RunResponse,
@@ -688,6 +791,69 @@ def get_backend_code_v2_status(job_id: str) -> BackendCodeV2StatusResponse:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     return BackendCodeV2StatusResponse(
+        job_id=job_id,
+        status=data.get("status", JOB_STATUS_PENDING),
+        repo_path=data.get("repo_path"),
+        current_phase=data.get("current_phase"),
+        current_microtask=data.get("current_microtask"),
+        progress=data.get("progress", 0),
+        microtasks_completed=data.get("microtasks_completed", 0),
+        microtasks_total=data.get("microtasks_total", 0),
+        completed_phases=data.get("completed_phases", []),
+        error=data.get("error"),
+        summary=data.get("summary"),
+    )
+
+
+@app.post(
+    "/frontend-agent-v2/run",
+    response_model=FrontendAgentV2RunResponse,
+    summary="Run frontend-agent-v2",
+    description="Submit a task and repo path. Starts the frontend-agent-v2 5-phase workflow in the background. "
+    "Returns job_id immediately. Poll GET /frontend-agent-v2/status/{job_id} for progress.",
+)
+def run_frontend_agent_v2(request: FrontendAgentV2RunRequest) -> FrontendAgentV2RunResponse:
+    """Start the frontend-agent-v2 team on a task."""
+    repo = Path(request.repo_path)
+    if not repo.is_dir():
+        raise HTTPException(status_code=400, detail=f"repo_path does not exist or is not a directory: {request.repo_path}")
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, request.repo_path)
+
+    thread = threading.Thread(
+        target=_run_frontend_agent_v2_background,
+        args=(
+            job_id,
+            request.repo_path,
+            request.task.model_dump(),
+            request.spec_content or "",
+            request.architecture or "",
+        ),
+    )
+    thread.daemon = True
+    thread.start()
+
+    return FrontendAgentV2RunResponse(
+        job_id=job_id,
+        status="running",
+        message="Frontend-agent-v2 workflow started. Poll GET /frontend-agent-v2/status/{job_id} for progress.",
+    )
+
+
+@app.get(
+    "/frontend-agent-v2/status/{job_id}",
+    response_model=FrontendAgentV2StatusResponse,
+    summary="Get frontend-agent-v2 job status",
+    description="Returns what is done, what is in progress, and overall completion percentage.",
+)
+def get_frontend_agent_v2_status(job_id: str) -> FrontendAgentV2StatusResponse:
+    """Get the status of a frontend-agent-v2 job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    return FrontendAgentV2StatusResponse(
         job_id=job_id,
         status=data.get("status", JOB_STATUS_PENDING),
         repo_path=data.get("repo_path"),

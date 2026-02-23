@@ -151,3 +151,42 @@ export interface BackendCodeV2StatusResponse {
   error?: string;
   summary?: string;
 }
+
+/** Task input for frontend-agent-v2. */
+export interface FrontendAgentV2TaskInput {
+  id?: string;
+  title: string;
+  description: string;
+  requirements?: string;
+  acceptance_criteria?: string[];
+}
+
+/** Request for POST /frontend-agent-v2/run. */
+export interface FrontendAgentV2RunRequest {
+  task: FrontendAgentV2TaskInput;
+  repo_path: string;
+  spec_content?: string;
+  architecture?: string;
+}
+
+/** Response from POST /frontend-agent-v2/run. */
+export interface FrontendAgentV2RunResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+/** Response from GET /frontend-agent-v2/status/{job_id}. */
+export interface FrontendAgentV2StatusResponse {
+  job_id: string;
+  status: string;
+  repo_path?: string;
+  current_phase?: string;
+  current_microtask?: string;
+  progress: number;
+  microtasks_completed: number;
+  microtasks_total: number;
+  completed_phases: string[];
+  error?: string;
+  summary?: string;
+}
