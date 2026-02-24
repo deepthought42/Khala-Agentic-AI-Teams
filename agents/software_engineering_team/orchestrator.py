@@ -317,6 +317,7 @@ def _get_agents() -> Dict[str, Any]:
         "devops": DevOpsTeamLeadAgent(get_llm_for_agent("devops")),
         "backend": _lazy_init_backend_code_v2_team(),
         "frontend": FrontendExpertAgent(get_llm_for_agent("frontend")),
+        "frontend_code_v2": _lazy_init_frontend_code_v2_team(),
         "security": CybersecurityExpertAgent(get_llm_for_agent("security")),
         "qa": QAExpertAgent(get_llm_for_agent("qa")),
         "accessibility": AccessibilityExpertAgent(get_llm_for_agent("accessibility")),
@@ -334,6 +335,12 @@ def _lazy_init_backend_code_v2_team():
     """Instantiate the backend team lead (backend_code_v2_team; lazy import)."""
     from backend_code_v2_team import BackendCodeV2TeamLead
     return BackendCodeV2TeamLead(get_llm_for_agent("backend"))
+
+
+def _lazy_init_frontend_code_v2_team():
+    """Instantiate the frontend team lead (frontend_code_v2_team; lazy import)."""
+    from frontend_code_v2_team import FrontendCodeV2TeamLead
+    return FrontendCodeV2TeamLead(get_llm_for_agent("frontend"))
 
 
 _task_requirements = task_requirements
@@ -823,6 +830,82 @@ def _backend_code_v2_worker(
             failed[task_id] = f"backend exception: {exc}"
             update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=str(exc))
             logger.exception("[%s] backend worker exception", task_id)
+
+
+def _frontend_code_v2_worker(
+    *,
+    job_id: str,
+    frontend_code_v2_queue: List[str],
+    all_tasks: Dict[str, Any],
+    completed: set,
+    failed: Dict[str, str],
+    completed_code_task_ids: List[str],
+    spec_content: str,
+    architecture: Any,
+    agents: Dict[str, Any],
+    repo_path: Path,
+) -> None:
+    """Worker that drains frontend_code_v2_queue by calling frontend_code_v2_team run_workflow."""
+    from shared.models import SystemArchitecture
+    team_lead = agents.get("frontend_code_v2")
+    if team_lead is None:
+        for tid in frontend_code_v2_queue:
+            failed[tid] = "frontend_code_v2 team not registered"
+        return
+
+    while frontend_code_v2_queue:
+        task_id = frontend_code_v2_queue.pop(0)
+        task = all_tasks.get(task_id)
+        if not task:
+            continue
+
+        update_job(job_id, current_task=task_id)
+        update_task_state(job_id, task_id, status="in_progress", started_at=_iso_now())
+        update_job_team_progress(job_id, "frontend-code-v2", current_task_id=task_id)
+        logger.info("[%s] >>> frontend_code_v2 worker starting task", task_id)
+        task_start = time.monotonic()
+
+        def _job_updater(**kwargs: Any) -> None:
+            update_job_team_progress(job_id, "frontend-code-v2", **kwargs)
+
+        try:
+            arch = architecture if isinstance(architecture, SystemArchitecture) else (
+                SystemArchitecture(overview=str(architecture)) if architecture else None
+            )
+            result = team_lead.run_workflow(
+                repo_path=repo_path,
+                task=task,
+                spec_content=spec_content,
+                architecture=arch,
+                qa_agent=agents.get("qa"),
+                security_agent=agents.get("security"),
+                code_review_agent=agents.get("code_review"),
+                build_verifier=_run_build_verification,
+                doc_agent=agents.get("documentation"),
+                linting_tool_agent=agents.get("linting_tool_agent"),
+                job_updater=_job_updater,
+            )
+            elapsed = time.monotonic() - task_start
+            if result.success:
+                completed.add(task_id)
+                completed_code_task_ids.append(task_id)
+                update_task_state(job_id, task_id, status="done", finished_at=_iso_now())
+                _log_task_completion_banner(
+                    task_id=task_id,
+                    task_title=getattr(task, "title", "") or task_id,
+                    assignee=getattr(task, "assignee", "frontend-code-v2"),
+                    elapsed_seconds=elapsed,
+                    description=getattr(task, "description", "") or "",
+                )
+            else:
+                reason = result.failure_reason or "frontend_code_v2 workflow did not succeed"
+                failed[task_id] = reason
+                update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=reason)
+                logger.warning("[%s] frontend_code_v2 task failed: %s", task_id, reason)
+        except Exception as exc:
+            failed[task_id] = f"frontend_code_v2 exception: {exc}"
+            update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=str(exc))
+            logger.exception("[%s] frontend_code_v2 worker exception", task_id)
 
 
 def _run_backend_frontend_workers(
@@ -1507,11 +1590,15 @@ def run_orchestrator(
             if all_tasks.get(tid) and all_tasks[tid].assignee in ("backend", "backend-code-v2")
         ]
         frontend_queue: List[str] = [tid for tid in full_order if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"]
-        total_tasks = len(prefix_queue) + len(backend_queue) + len(backend_code_v2_queue) + len(frontend_queue)
+        frontend_code_v2_queue: List[str] = [
+            tid for tid in full_order
+            if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend-code-v2"
+        ]
+        total_tasks = len(prefix_queue) + len(backend_queue) + len(backend_code_v2_queue) + len(frontend_queue) + len(frontend_code_v2_queue)
 
         logger.info(
-            "=== Starting task execution: prefix=%s, backend=%s, frontend=%s ===",
-            len(prefix_queue), len(backend_code_v2_queue), len(frontend_queue),
+            "=== Starting task execution: prefix=%s, backend=%s, frontend=%s, frontend_code_v2=%s ===",
+            len(prefix_queue), len(backend_code_v2_queue), len(frontend_queue), len(frontend_code_v2_queue),
         )
 
         # Run prefix tasks sequentially (work path; devops writes to path/devops, no git)
@@ -1571,6 +1658,27 @@ def run_orchestrator(
             backend_code_v2_thread.daemon = True
             backend_code_v2_thread.start()
 
+        # Frontend-code-v2 worker: run in parallel with other workers
+        frontend_code_v2_thread = None
+        if frontend_code_v2_queue:
+            frontend_code_v2_thread = threading.Thread(
+                target=_frontend_code_v2_worker,
+                kwargs=dict(
+                    job_id=job_id,
+                    frontend_code_v2_queue=frontend_code_v2_queue,
+                    all_tasks=all_tasks,
+                    completed=completed,
+                    failed=failed,
+                    completed_code_task_ids=completed_code_task_ids,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    agents=agents,
+                    repo_path=frontend_dir,
+                ),
+            )
+            frontend_code_v2_thread.daemon = True
+            frontend_code_v2_thread.start()
+
         # Backend and frontend workers run in parallel (one task per agent type at a time)
         _run_backend_frontend_workers(
             job_id=job_id,
@@ -1593,10 +1701,12 @@ def run_orchestrator(
 
         if backend_code_v2_thread is not None:
             backend_code_v2_thread.join()
+        if frontend_code_v2_thread is not None:
+            frontend_code_v2_thread.join()
 
         llm_limit_exceeded = any(v == OLLAMA_WEEKLY_LIMIT_MESSAGE for v in failed.values())
         llm_connectivity_failed = any(v == LLM_UNREACHABLE_AFTER_RETRIES for v in failed.values())
-        remaining_in_queues = len(backend_code_v2_queue) + len(frontend_queue)
+        remaining_in_queues = len(backend_code_v2_queue) + len(frontend_queue) + len(frontend_code_v2_queue)
         # Log final execution summary with task breakdown
         logger.info(
             "=== Task execution finished: %s completed, %s failed, %s remaining (of %s total) ===",
@@ -1617,8 +1727,8 @@ def run_orchestrator(
                 logger.warning("  [%s] %s — Reason: %s", tid, title, reason)
         if remaining_in_queues:
             logger.warning(
-                "Unprocessed tasks still in queues: backend=%s, frontend=%s",
-                len(backend_code_v2_queue), len(frontend_queue),
+                "Unprocessed tasks still in queues: backend=%s, frontend=%s, frontend_code_v2=%s",
+                len(backend_code_v2_queue), len(frontend_queue), len(frontend_code_v2_queue),
             )
 
         # Integration phase: validate backend-frontend API contract alignment
@@ -1883,7 +1993,11 @@ def run_failed_tasks(job_id: str) -> None:
             tid for tid in failed_ids
             if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend"
         ]
-        total_tasks = len(retry_prefix) + len(retry_backend_queue) + len(retry_backend_code_v2_queue) + len(retry_frontend_queue)
+        retry_frontend_code_v2_queue = [
+            tid for tid in failed_ids
+            if all_tasks.get(tid) and all_tasks[tid].assignee == "frontend-code-v2"
+        ]
+        total_tasks = len(retry_prefix) + len(retry_backend_queue) + len(retry_backend_code_v2_queue) + len(retry_frontend_queue) + len(retry_frontend_code_v2_queue)
 
         # Run prefix (devops, git_setup) sequentially
         for task_id in retry_prefix:
@@ -1952,6 +2066,27 @@ def run_failed_tasks(job_id: str) -> None:
             retry_bv2_thread.daemon = True
             retry_bv2_thread.start()
 
+        # Run frontend-code-v2 retry in parallel
+        retry_fv2_thread = None
+        if retry_frontend_code_v2_queue:
+            retry_fv2_thread = threading.Thread(
+                target=_frontend_code_v2_worker,
+                kwargs=dict(
+                    job_id=job_id,
+                    frontend_code_v2_queue=retry_frontend_code_v2_queue,
+                    all_tasks=all_tasks,
+                    completed=completed,
+                    failed=failed_retry,
+                    completed_code_task_ids=completed_code_task_ids,
+                    spec_content=spec_content,
+                    architecture=architecture,
+                    agents=agents,
+                    repo_path=frontend_dir,
+                ),
+            )
+            retry_fv2_thread.daemon = True
+            retry_fv2_thread.start()
+
         # Run backend and frontend in parallel (1 backend task, 1 frontend task at a time)
         if retry_backend_queue or retry_frontend_queue:
             logger.info(
@@ -1979,6 +2114,8 @@ def run_failed_tasks(job_id: str) -> None:
 
         if retry_bv2_thread is not None:
             retry_bv2_thread.join()
+        if retry_fv2_thread is not None:
+            retry_fv2_thread.join()
 
         llm_limit_exceeded = any(v == OLLAMA_WEEKLY_LIMIT_MESSAGE for v in failed_retry.values())
         llm_connectivity_failed = any(v == LLM_UNREACHABLE_AFTER_RETRIES for v in failed_retry.values())

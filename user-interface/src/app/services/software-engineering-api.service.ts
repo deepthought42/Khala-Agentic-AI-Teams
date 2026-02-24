@@ -19,6 +19,9 @@ import type {
   BackendCodeV2RunRequest,
   BackendCodeV2RunResponse,
   BackendCodeV2StatusResponse,
+  FrontendCodeV2RunRequest,
+  FrontendCodeV2RunResponse,
+  FrontendCodeV2StatusResponse,
   PlanningV2RunRequest,
   PlanningV2RunResponse,
   PlanningV2StatusResponse,
@@ -195,6 +198,33 @@ export class SoftwareEngineeringApiService {
   ): Observable<BackendCodeV2StatusResponse> {
     return this.http.get<BackendCodeV2StatusResponse>(
       `${this.baseUrl}/backend-code-v2/status/${jobId}`
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Frontend-Code-V2
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /frontend-code-v2/run
+   */
+  runFrontendCodeV2(
+    request: FrontendCodeV2RunRequest
+  ): Observable<FrontendCodeV2RunResponse> {
+    return this.http.post<FrontendCodeV2RunResponse>(
+      `${this.baseUrl}/frontend-code-v2/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /frontend-code-v2/status/{job_id}
+   */
+  getFrontendCodeV2Status(
+    jobId: string
+  ): Observable<FrontendCodeV2StatusResponse> {
+    return this.http.get<FrontendCodeV2StatusResponse>(
+      `${this.baseUrl}/frontend-code-v2/status/${jobId}`
     );
   }
 

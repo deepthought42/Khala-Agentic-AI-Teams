@@ -22,7 +22,7 @@ from .models import (
     ToolAgentInput,
     ToolAgentOutput,
 )
-from .phases.planning import run_planning
+from .phases.planning import run_planning, plan_fixes_for_unresolved_issues
 from .phases.execution import run_execution
 from .phases.review import run_review
 from .phases.problem_solving import run_problem_solving
@@ -303,6 +303,63 @@ class BackendDevelopmentAgent:
                 )
                 result.problem_solving_result = ps_result
                 current_files = ps_result.files
+                # Escalation: unresolved issues → backend v2 creates fix microtasks and runs them
+                if getattr(ps_result, "unresolved_issues", None):
+                    fix_microtasks = plan_fixes_for_unresolved_issues(
+                        llm=self.llm,
+                        task=task,
+                        unresolved_issues=ps_result.unresolved_issues,
+                        current_files=current_files,
+                        language=planning_result.language,
+                    )
+                    if fix_microtasks:
+                        fix_ids = [mt.id for mt in fix_microtasks]
+                        planning_result.microtasks.extend(fix_microtasks)
+                        _update_job(current_phase="execution", progress=min(65 + iteration * 10, 85))
+                        try:
+                            fix_exec_result = run_execution(
+                                llm=self.llm,
+                                task=task,
+                                planning_result=planning_result,
+                                repo_path=repo_path,
+                                spec_content=spec_content,
+                                architecture=architecture,
+                                existing_code=existing_code,
+                                tool_runners=tool_runners,
+                                only_microtask_ids=fix_ids,
+                            )
+                            current_files.update(fix_exec_result.files)
+                            from shared.repo_writer import write_agent_output
+                            class _Payload:
+                                def __init__(self, files):
+                                    self.files = files
+                                    self.summary = ""
+                                    self.suggested_commit_message = f"fix: unresolved issues (iteration {iteration})"
+                                    self.gitignore_entries = []
+                            write_agent_output(repo_path, _Payload(current_files), subdir="")
+                            if feature_branch_name and git_agent is not None and hasattr(git_agent, "commit_current_changes"):
+                                try:
+                                    git_agent.commit_current_changes(repo_path, f"fix: unresolved issues (iteration {iteration})")
+                                except Exception as exc:
+                                    logger.warning("[%s] Git commit after fix microtasks raised: %s", task_id, exc)
+                            review_result = run_review(
+                                llm=self.llm,
+                                task=task,
+                                execution_result=fix_exec_result,
+                                repo_path=repo_path,
+                                build_verifier=build_verifier,
+                                qa_agent=qa_agent,
+                                security_agent=security_agent,
+                                code_review_agent=code_review_agent,
+                                linting_tool_agent=linting_tool_agent,
+                                tool_agents=tool_agents,
+                            )
+                            result.review_result = review_result
+                            if review_result.passed:
+                                logger.info("[%s] Review passed after fix microtasks", task_id)
+                                break
+                        except Exception as fix_exc:
+                            logger.warning("[%s] Fix microtasks execution/review failed: %s", task_id, fix_exc)
             except Exception as exc:
                 logger.warning("[%s] Problem-solving failed (non-blocking): %s", task_id, exc)
                 break

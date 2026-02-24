@@ -19,11 +19,12 @@ from ..models import (
     MicrotaskStatus,
     Phase,
     PlanningResult,
+    ReviewIssue,
     ToolAgentKind,
     ToolAgentPhaseInput,
 )
 from ..output_templates import parse_planning_template
-from ..prompts import PLANNING_PROMPT
+from ..prompts import PLANNING_PROMPT, PLANNING_FIXES_FOR_ISSUES_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -156,3 +157,41 @@ def run_planning(
         ]
         result.summary = result.summary or "Single-microtask fallback."
     return result
+
+
+def plan_fixes_for_unresolved_issues(
+    *,
+    llm: LLMClient,
+    task: Task,
+    unresolved_issues: List[ReviewIssue],
+    current_files: Dict[str, str],
+    language: str = "python",
+) -> List[Microtask]:
+    """
+    Create microtasks to fix unresolved review issues (escalation from problem-solving).
+
+    Called when the problem-solving phase could not resolve issues after
+    MAX_ITERATIONS_PER_ISSUE attempts per issue. Returns new microtasks that
+    the execution phase can run to implement the fixes.
+    """
+    if not unresolved_issues:
+        return []
+    task_id = task.id
+    issues_text = "\n".join(
+        f"- [{i.severity}] {i.description} (file: {i.file_path or 'N/A'}) → {i.recommendation}"
+        for i in unresolved_issues
+    )
+    code_text = "\n\n".join(
+        f"--- {p} ---\n{c}" for p, c in list(current_files.items())[:15]
+    )[:8000]
+    prompt = PLANNING_FIXES_FOR_ISSUES_PROMPT.format(
+        issues_text=issues_text,
+        existing_code=code_text or "(no code)",
+        language=language,
+    )
+    logger.info("[%s] Planning fix microtasks for %d unresolved issues", task_id, len(unresolved_issues))
+    raw = llm.complete_text(prompt)
+    raw_parsed = parse_planning_template(raw)
+    result = _parse_planning_output(raw_parsed, language)
+    logger.info("[%s] Planned %d fix microtasks", task_id, len(result.microtasks))
+    return result.microtasks

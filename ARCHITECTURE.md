@@ -10,6 +10,7 @@ This document describes the architecture of the Software Engineering Team — a 
 - [4. Task Execution Model](#4-task-execution-model)
 - [5. Backend Worker Workflow](#5-backend-worker-workflow)
 - [5b. Backend-Code-V2 Team Workflow](#5b-backend-code-v2-team-workflow)
+- [5c. Frontend-Code-V2 Team Workflow](#5c-frontend-code-v2-team-workflow)
 - [6. Frontend Worker Workflow](#6-frontend-worker-workflow)
 - [7. Frontend Team Full Pipeline](#7-frontend-team-full-pipeline)
 - [8. DevOps Team Pipeline](#8-devops-team-pipeline)
@@ -285,6 +286,22 @@ The team supports both Python and Java (auto-detected). Quality gate agents (QA,
 **API endpoints:**
 - `POST /backend-code-v2/run` — Submit a task and repo path; starts Setup then the 5-phase workflow in a background thread.
 - `GET /backend-code-v2/status/{job_id}` — Returns current phase (including `setup`), completed phases, progress percentage, and microtask status.
+
+---
+
+## 5c. Frontend-Code-V2 Team Workflow
+
+The **frontend-code-v2** agent team is a standalone, experimental frontend development team that does **not** import or reuse any code from `frontend_team/` or `feature_agent/`. It mirrors the backend-code-v2 **three-layer architecture**: a Frontend Tech Lead Agent runs Setup then delegates to a Frontend Development Agent, which runs the 5-phase cycle and consults **tool agents in every phase**.
+
+- **Layer 1 — Frontend Tech Lead Agent**: Runs **Setup** (git init if needed, README, development branch), then delegates the 5-phase cycle to the Frontend Development Agent.
+- **Layer 2 — Frontend Development Agent**: Planning (microtask decomposition; stack inferred as Angular/React/TypeScript/JavaScript), Execution (tool agents + LLM fallback), Review (build, lint, QA, security, code review), Problem-solving (fix loop), Deliver (feature branch, commit, merge to `development`). Review/fix loop runs up to 5 iterations.
+- **Layer 3 — Tool agents**: State Management, Auth, API/OpenAPI, CI/CD, Containerization, Documentation, Testing/QA, Security, **Git branch management**, UI Design, Branding/Theme, UX/Usability, Accessibility, **Build Specialist**, Linter. Each participates in plan, execute, review, problem_solve, and deliver. Git branch management creates a feature branch off `development`, commits along the way, and merges in Deliver.
+
+**API endpoints:**
+- `POST /frontend-code-v2/run` — Submit a task and repo path; starts Setup then the 6-phase workflow (setup + 5-phase cycle) in a background thread.
+- `GET /frontend-code-v2/status/{job_id}` — Returns current phase (including `setup`), completed phases, progress percentage, and microtask status.
+
+The Software Engineering UI dashboard includes a **Frontend Developer (v2)** tab with a run form and job-status panel; the main orchestrator supports assignee **frontend-code-v2** (task_parsing and a dedicated frontend_code_v2_queue + worker).
 
 ---
 

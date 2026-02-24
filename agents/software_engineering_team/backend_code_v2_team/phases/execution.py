@@ -72,9 +72,14 @@ def run_execution(
     existing_code: str = "",
     tool_runners: Optional[Dict[ToolAgentKind, ToolAgentRunner]] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    only_microtask_ids: Optional[List[str]] = None,
 ) -> ExecutionResult:
     """
-    Execute all microtasks in dependency order.
+    Execute microtasks in dependency order.
+
+    If ``only_microtask_ids`` is set, only those microtasks are run (e.g. fix
+    microtasks from plan_fixes_for_unresolved_issues). Otherwise all microtasks
+    are run.
 
     ``tool_runners`` maps ToolAgentKind → callable(ToolAgentInput) → ToolAgentOutput.
     For microtasks whose tool_agent has no runner, fall back to general LLM code gen.
@@ -83,6 +88,9 @@ def run_execution(
     runners = tool_runners or {}
     all_files: Dict[str, str] = {}
     microtasks = list(planning_result.microtasks)
+    if only_microtask_ids is not None:
+        id_set = set(only_microtask_ids)
+        microtasks = [mt for mt in microtasks if mt.id in id_set]
     completed_ids: set[str] = set()
     total = len(microtasks)
 

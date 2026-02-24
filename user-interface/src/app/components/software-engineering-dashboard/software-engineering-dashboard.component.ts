@@ -22,6 +22,8 @@ import { ExecutionStreamComponent } from '../execution-stream/execution-stream.c
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
 import { BackendCodeV2RunFormComponent } from '../backend-code-v2-run-form/backend-code-v2-run-form.component';
 import { BackendCodeV2JobStatusComponent } from '../backend-code-v2-job-status/backend-code-v2-job-status.component';
+import { FrontendCodeV2RunFormComponent } from '../frontend-code-v2-run-form/frontend-code-v2-run-form.component';
+import { FrontendCodeV2JobStatusComponent } from '../frontend-code-v2-job-status/frontend-code-v2-job-status.component';
 import { PlanningV2RunFormComponent } from '../planning-v2-run-form/planning-v2-run-form.component';
 import { PlanningV2JobStatusComponent } from '../planning-v2-job-status/planning-v2-job-status.component';
 import { RunTeamTrackingComponent } from '../run-team-tracking/run-team-tracking.component';
@@ -32,6 +34,7 @@ import type {
   ClarificationCreateRequest,
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
+  FrontendCodeV2RunRequest,
   PlanningV2RunRequest,
   RunningJobSummary,
 } from '../../models';
@@ -60,6 +63,8 @@ import type {
     ArchitectureResultsComponent,
     BackendCodeV2RunFormComponent,
     BackendCodeV2JobStatusComponent,
+    FrontendCodeV2RunFormComponent,
+    FrontendCodeV2JobStatusComponent,
     PlanningV2RunFormComponent,
     PlanningV2JobStatusComponent,
     RunTeamTrackingComponent,
@@ -79,6 +84,7 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   architectSpec = '';
   architectResults: ArchitectDesignResponse | null = null;
   backendCodeV2JobId: string | null = null;
+  frontendCodeV2JobId: string | null = null;
   planningV2JobId: string | null = null;
 
   /** Running jobs from GET /run-team/jobs; used by the right-hand panel. */
@@ -126,6 +132,7 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
     const labels: Record<string, string> = {
       run_team: 'Run Team',
       backend_code_v2: 'Backend (v2)',
+      frontend_code_v2: 'Frontend (v2)',
       planning_v2: 'Planning (v2)',
     };
     return labels[jobType] ?? jobType;
@@ -200,6 +207,22 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Backend-Code-V2 request failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onFrontendCodeV2Submit(request: FrontendCodeV2RunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.frontendCodeV2JobId = null;
+    this.api.runFrontendCodeV2(request).subscribe({
+      next: (res) => {
+        this.frontendCodeV2JobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Frontend-Code-V2 request failed';
         this.loading = false;
       },
     });

@@ -190,6 +190,49 @@ export interface BackendCodeV2StatusResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Frontend-Code-V2
+// ---------------------------------------------------------------------------
+
+/** Task input for frontend-code-v2. */
+export interface FrontendCodeV2TaskInput {
+  id?: string;
+  title: string;
+  description: string;
+  requirements?: string;
+  acceptance_criteria?: string[];
+}
+
+/** Request for POST /frontend-code-v2/run. */
+export interface FrontendCodeV2RunRequest {
+  task: FrontendCodeV2TaskInput;
+  repo_path: string;
+  spec_content?: string;
+  architecture?: string;
+}
+
+/** Response from POST /frontend-code-v2/run. */
+export interface FrontendCodeV2RunResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+/** Response from GET /frontend-code-v2/status/{job_id}. */
+export interface FrontendCodeV2StatusResponse {
+  job_id: string;
+  status: string;
+  repo_path?: string;
+  current_phase?: string;
+  current_microtask?: string;
+  progress: number;
+  microtasks_completed: number;
+  microtasks_total: number;
+  completed_phases: string[];
+  error?: string;
+  summary?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Planning-V2
 // ---------------------------------------------------------------------------
 

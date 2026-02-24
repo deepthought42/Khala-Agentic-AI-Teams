@@ -181,6 +181,7 @@ def _assignee_to_task_type(assignee: str) -> TaskType:
         "backend": TaskType.BACKEND,
         "backend-code-v2": TaskType.BACKEND,
         "frontend": TaskType.FRONTEND,
+        "frontend-code-v2": TaskType.FRONTEND,
         "devops": TaskType.DEVOPS,
     }
     return mapping.get(assignee, TaskType.BACKEND)

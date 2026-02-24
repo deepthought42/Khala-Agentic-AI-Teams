@@ -1,8 +1,9 @@
 """
 Problem-solving phase: root-cause analysis and fix loop.
 
-No code from ``backend_agent`` is used.
-Uses template-based output (not JSON) so parsing works across model providers.
+Processes one issue at a time to keep LLM prompts and responses small.
+Each issue gets up to MAX_ITERATIONS_PER_ISSUE attempts; unresolved issues
+are returned for the backend v2 agent to turn into fix microtasks.
 """
 
 from __future__ import annotations
@@ -21,10 +22,47 @@ from ..models import (
     ToolAgentKind,
     ToolAgentPhaseInput,
 )
-from ..output_templates import parse_problem_solving_template
-from ..prompts import PROBLEM_SOLVING_PROMPT, PYTHON_CONVENTIONS, JAVA_CONVENTIONS
+from ..output_templates import (
+    parse_problem_solving_template,
+    parse_problem_solving_single_issue_template,
+)
+from ..prompts import (
+    PROBLEM_SOLVING_PROMPT,
+    PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT,
+    PYTHON_CONVENTIONS,
+    JAVA_CONVENTIONS,
+)
 
 logger = logging.getLogger(__name__)
+
+MAX_ITERATIONS_PER_ISSUE = 10
+MAX_RELEVANT_CODE_CHARS = 8000
+
+
+def _relevant_code_for_issue(
+    issue: ReviewIssue,
+    current_files: Dict[str, str],
+) -> str:
+    """Return code context for a single issue: prefer issue's file, else first files."""
+    if issue.file_path and issue.file_path in current_files:
+        content = current_files[issue.file_path]
+        if len(content) <= MAX_RELEVANT_CODE_CHARS:
+            return f"--- {issue.file_path} ---\n{content}"
+        return f"--- {issue.file_path} ---\n{content[:MAX_RELEVANT_CODE_CHARS]}\n... [truncated]"
+    # Fallback: include first few files to stay under limit
+    parts: List[str] = []
+    total = 0
+    for path, content in list(current_files.items())[:10]:
+        chunk = f"--- {path} ---\n{content}\n"
+        if total + len(chunk) > MAX_RELEVANT_CODE_CHARS:
+            remaining = MAX_RELEVANT_CODE_CHARS - total
+            if remaining > 200:
+                chunk = f"--- {path} ---\n{content[:remaining]}\n... [truncated]"
+            else:
+                break
+        parts.append(chunk)
+        total += len(chunk)
+    return "\n".join(parts) if parts else "(no code)"
 
 
 def run_problem_solving(
@@ -38,9 +76,11 @@ def run_problem_solving(
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
 ) -> ProblemSolvingResult:
     """
-    Analyse review issues and produce fixes.
+    Analyse review issues and produce fixes, one issue at a time.
 
-    Returns updated files and a summary of what was changed.
+    For each actionable issue: identify root cause, implement fix (up to
+    MAX_ITERATIONS_PER_ISSUE attempts). Unresolved issues are returned for
+    the backend v2 agent to turn into fix microtasks.
     """
     task_id = task.id
     actionable = [i for i in review_result.issues if i.severity in ("critical", "high", "medium")]
@@ -48,29 +88,52 @@ def run_problem_solving(
         logger.info("[%s] Problem-solving: no actionable issues.", task_id)
         return ProblemSolvingResult(resolved=True, files=current_files, summary="No actionable issues.")
 
-    issues_text = "\n".join(
-        f"- [{i.severity}] {i.description} (file: {i.file_path or 'N/A'}) → {i.recommendation}"
-        for i in actionable
-    )
-    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(current_files.items())[:20])
-
     lang_conv = JAVA_CONVENTIONS if language == "java" else PYTHON_CONVENTIONS
-    prompt = PROBLEM_SOLVING_PROMPT.format(
-        language_conventions=lang_conv,
-        issues=issues_text,
-        current_code=code_text[:12000],
-    )
-
-    logger.info("[%s] Problem-solving: sending %d issues to LLM for fixes", task_id, len(actionable))
-    raw = llm.complete_text(prompt)
-    parsed = parse_problem_solving_template(raw)
-
-    fixed_files = parsed.get("files") or {}
     merged = dict(current_files)
-    merged.update(fixed_files)
+    fixes_applied: List[Dict[str, Any]] = []
+    summary_parts: List[str] = []
+    unresolved_issues: List[ReviewIssue] = []
 
-    fixes_applied = parsed.get("fixes_applied") or []
-    summary_parts: List[str] = [parsed.get("summary", f"Applied {len(fixes_applied)} fixes.")]
+    for issue_idx, issue in enumerate(actionable):
+        desc_short = (issue.description or "")[:80]
+        logger.info("[%s] Problem-solving: issue %d/%d — %s", task_id, issue_idx + 1, len(actionable), desc_short)
+        working = dict(merged)
+        resolved_this = False
+        for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
+            relevant_code = _relevant_code_for_issue(issue, working)
+            prompt = PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT.format(
+                language_conventions=lang_conv,
+                source=issue.source or "review",
+                severity=issue.severity or "medium",
+                description=issue.description or "",
+                file_path=issue.file_path or "N/A",
+                recommendation=issue.recommendation or "Fix the issue.",
+                current_code=relevant_code,
+            )
+            try:
+                raw = llm.complete_text(prompt)
+            except Exception as exc:
+                logger.warning("[%s] Problem-solving LLM call failed (issue %d, attempt %d): %s", task_id, issue_idx + 1, attempt, exc)
+                break
+            parsed = parse_problem_solving_single_issue_template(raw)
+            fixed_files = parsed.get("files") or {}
+            if not fixed_files:
+                if parsed.get("resolved"):
+                    resolved_this = True
+                break
+            working.update(fixed_files)
+            merged.update(fixed_files)
+            fixes_applied.append({
+                "issue": desc_short,
+                "fix": parsed.get("summary", "updated file(s)"),
+                "root_cause": parsed.get("root_cause", ""),
+            })
+            if parsed.get("resolved"):
+                resolved_this = True
+                break
+        if not resolved_this:
+            unresolved_issues.append(issue)
+            logger.warning("[%s] Issue unresolved after %d attempts: %s", task_id, MAX_ITERATIONS_PER_ISSUE, desc_short)
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -78,7 +141,7 @@ def run_problem_solving(
             repo_path=repo_path,
             spec_context=task.description or "",
             language=language,
-            current_files=current_files,
+            current_files=merged,
             review_issues=review_result.issues,
             task_title=task.title or "",
             task_description=task.description or "",
@@ -96,14 +159,19 @@ def run_problem_solving(
             except Exception as exc:
                 logger.warning("[%s] Tool agent %s problem_solve() failed: %s", task_id, kind.value, exc)
 
-    resolved = parsed.get("resolved", bool(fixed_files))
-    summary = " ".join(summary_parts)
-
-    logger.info("[%s] Problem-solving: %s — %s", task_id, "resolved" if resolved else "partial", summary[:120])
-
+    resolved = len(unresolved_issues) == 0
+    summary = " ".join(summary_parts) if summary_parts else f"Applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    logger.info(
+        "[%s] Problem-solving: %s — %s (%d unresolved)",
+        task_id,
+        "resolved" if resolved else "partial",
+        summary[:120],
+        len(unresolved_issues),
+    )
     return ProblemSolvingResult(
         fixes_applied=fixes_applied,
         files=merged,
         summary=summary,
         resolved=resolved,
+        unresolved_issues=unresolved_issues,
     )

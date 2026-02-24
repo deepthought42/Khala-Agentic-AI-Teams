@@ -58,6 +58,14 @@
       }
     </div>
   </mat-tab>
+  <mat-tab label="Frontend Developer (v2)">
+    <div class="tab-content">
+      <app-frontend-code-v2-run-form (submitRequest)="onFrontendCodeV2Submit($event)" />
+      @if (frontendCodeV2JobId) {
+        <app-frontend-code-v2-job-status [jobId]="frontendCodeV2JobId" />
+      }
+    </div>
+  </mat-tab>
   <mat-tab label="Planning (v2)">
     <div class="tab-content">
       <app-planning-v2-run-form (submitRequest)="onPlanningV2Submit($event)" />
@@ -145,6 +153,9 @@
                 }
                 @case ('backend_code_v2') {
                   <app-backend-code-v2-job-status [jobId]="selectedRunningJob.job_id" />
+                }
+                @case ('frontend_code_v2') {
+                  <app-frontend-code-v2-job-status [jobId]="selectedRunningJob.job_id" />
                 }
                 @case ('planning_v2') {
                   <app-planning-v2-job-status [jobId]="selectedRunningJob.job_id" />

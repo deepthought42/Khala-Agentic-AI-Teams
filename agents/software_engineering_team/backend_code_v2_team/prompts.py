@@ -89,6 +89,42 @@ Rules:
 - Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
+# Planning fix microtasks for unresolved review issues (escalation from problem-solving).
+PLANNING_FIXES_FOR_ISSUES_PROMPT = """You are the Planning Agent. The problem-solving phase could not fix these issues automatically. Create microtasks that implement the fixes.
+
+**Your job:** For each unresolved issue (or a small related group), emit one microtask that describes the exact fix. Each microtask should be implementable by a single code change or small set of changes.
+
+**Unresolved issues:**
+{issues_text}
+
+**Current codebase (excerpt):**
+{existing_code}
+
+**Language:** {language}
+
+**Output format (template – use exactly these section headers):**
+
+## MICROTASKS ##
+---
+id: mt-fix-<short-kebab>
+title: short title describing the fix
+description: what to change and why (2-4 sentences). Reference the issue (e.g. "Fix the build error in X").
+tool_agent: general
+depends_on:
+---
+## END MICROTASKS ##
+## LANGUAGE ##
+{language}
+## END LANGUAGE ##
+## SUMMARY ##
+1-2 sentence overview of the fix plan
+## END SUMMARY ##
+
+- Emit one microtask per issue (or group closely related issues into one microtask).
+- Use tool_agent: general for all fix microtasks.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
 # ---------------------------------------------------------------------------
 # Execution phase
 # ---------------------------------------------------------------------------
@@ -215,6 +251,47 @@ overview of all fixes
 ## END SUMMARY ##
 
 - Use "## FILE <path> ##" for each file; "---" to separate each fix block.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# Single-issue problem-solving: one issue at a time to keep prompts small.
+PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT = """You are a Problem-Solving Specialist. Fix exactly ONE issue.
+
+""" + CODING_STANDARDS + """
+
+{language_conventions}
+
+**Single issue to fix:**
+- Source: {source}
+- Severity: {severity}
+- Description: {description}
+- File: {file_path}
+- Recommendation: {recommendation}
+
+**Relevant code (only the file(s) involved):**
+{current_code}
+
+**Your steps:**
+1. Identify the root cause of this issue.
+2. Implement the fix by outputting the complete updated file(s).
+
+**Output format (template – use exactly these markers):**
+
+## ROOT_CAUSE ##
+One or two sentences: why this issue occurs.
+## END ROOT_CAUSE ##
+## FILE path/to/file.ext ##
+<full updated file content>
+## FILE path/to/next.ext ##
+<content if you need to change more than one file>
+## RESOLVED ##
+true
+## END RESOLVED ##
+## SUMMARY ##
+one sentence: what you changed
+## END SUMMARY ##
+
+- Output only the file(s) you change. Use "## FILE <path> ##" for each.
 - Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 

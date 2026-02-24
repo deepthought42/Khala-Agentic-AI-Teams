@@ -312,3 +312,35 @@ def parse_problem_solving_template(text: str) -> Dict[str, Any]:
         "summary": summary,
         "resolved": resolved,
     }
+
+
+def parse_problem_solving_single_issue_template(text: str) -> Dict[str, Any]:
+    """
+    Parse single-issue problem-solving output: ROOT_CAUSE, FILE blocks, RESOLVED, SUMMARY.
+
+    Returns dict with keys: "files", "root_cause", "resolved" (bool), "summary".
+    """
+    base = parse_files_and_summary_template(text)
+    files = base["files"]
+    summary = base["summary"]
+
+    root_cause = _section(text, "## ROOT_CAUSE ##", "## END ROOT_CAUSE ##")
+    if root_cause:
+        root_cause = root_cause.strip().split("\n")[0].strip()[:500]
+
+    resolved = True
+    resolved_section = _section(text, MARKER_RESOLVED, MARKER_END_RESOLVED)
+    if resolved_section:
+        first = resolved_section.strip().split("\n")[0].strip().lower()
+        resolved = first in ("true", "yes", "1")
+
+    summary_sec = _section(text, MARKER_PS_SUMMARY, MARKER_END_PS_SUMMARY)
+    if summary_sec:
+        summary = summary_sec.strip().split("\n")[0].strip()[:1000]
+
+    return {
+        "files": files,
+        "root_cause": root_cause or "",
+        "resolved": resolved,
+        "summary": summary,
+    }

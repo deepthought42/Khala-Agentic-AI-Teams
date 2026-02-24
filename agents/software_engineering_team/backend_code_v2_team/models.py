@@ -131,6 +131,10 @@ class ProblemSolvingResult(BaseModel):
     files: Dict[str, str] = Field(default_factory=dict, description="Updated files after fixes")
     summary: str = Field(default="")
     resolved: bool = Field(default=False)
+    unresolved_issues: List[ReviewIssue] = Field(
+        default_factory=list,
+        description="Issues still unresolved after per-issue fix attempts (escalate to planning for fix microtasks)",
+    )
 
 
 class DeliverResult(BaseModel):
