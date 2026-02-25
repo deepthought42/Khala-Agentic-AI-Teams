@@ -286,7 +286,7 @@ class UserStoryToolAgent:
         content = _hierarchy_to_markdown(hierarchy)
         
         files = {
-            "planning_v2/user_stories.md": content,
+            "plan/user_stories.md": content,
         }
         
         return ToolAgentPhaseOutput(

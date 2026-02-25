@@ -133,7 +133,7 @@ class UIDesignToolAgent:
         
         files = {}
         if design_tokens or components:
-            files["planning_v2/ui_design.md"] = "".join(content_parts)
+            files["plan/ui_design.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary="UI Design artifacts generated.",

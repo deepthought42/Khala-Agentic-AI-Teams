@@ -158,7 +158,7 @@ class TaskDependencyToolAgent:
         
         files = {}
         if dependencies or critical_path:
-            files["planning_v2/task_dependencies.md"] = "".join(content_parts)
+            files["plan/task_dependencies.md"] = "".join(content_parts)
         
         all_issues = issues + circular_risks
         

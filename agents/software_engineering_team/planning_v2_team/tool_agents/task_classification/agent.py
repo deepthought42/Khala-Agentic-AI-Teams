@@ -129,7 +129,7 @@ class TaskClassificationToolAgent:
         
         files = {}
         if classifications:
-            files["planning_v2/task_classification.md"] = "".join(content_parts)
+            files["plan/task_classification.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary=data.get("summary", f"Classified {len(classifications)} tasks."),

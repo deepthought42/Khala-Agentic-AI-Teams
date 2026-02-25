@@ -47,7 +47,7 @@ def run_implementation(
     
     try:
         repo_path.mkdir(parents=True, exist_ok=True)
-        plan_dir = repo_path / "planning_v2"
+        plan_dir = repo_path / "plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
         
         effective_hierarchy = hierarchy
@@ -134,14 +134,12 @@ def run_implementation(
             parts.append(f"- {epic_count} Epic(s)\n")
             parts.append(f"- {story_count} Story(ies)\n")
             parts.append(f"- {task_count} Task(s)\n")
-            parts.append("\nSee `planning_v2_hierarchy.md` in `/plan` for detailed hierarchy.\n")
+            parts.append("\nSee `planning_hierarchy.md` in `/plan` for detailed hierarchy.\n")
             
-            # Write full hierarchy to /plan/planning_v2_hierarchy.md
+            # Write full hierarchy to /plan/planning_hierarchy.md
             try:
-                main_plan_dir = repo_path / "plan"
-                main_plan_dir.mkdir(parents=True, exist_ok=True)
                 hierarchy_md = _hierarchy_to_markdown(effective_hierarchy)
-                hierarchy_file = main_plan_dir / "planning_v2_hierarchy.md"
+                hierarchy_file = plan_dir / "planning_hierarchy.md"
                 hierarchy_file.write_text(hierarchy_md, encoding="utf-8")
                 hierarchy_rel_path = str(hierarchy_file.relative_to(repo_path))
                 if hierarchy_rel_path not in assets_created:

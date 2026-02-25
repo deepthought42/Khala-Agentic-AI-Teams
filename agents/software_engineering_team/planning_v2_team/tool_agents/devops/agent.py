@@ -132,7 +132,7 @@ class DevOpsToolAgent:
         
         files = {}
         if pipeline_stages or infrastructure:
-            files["planning_v2/devops.md"] = "".join(content_parts)
+            files["plan/devops.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary="DevOps artifacts generated.",

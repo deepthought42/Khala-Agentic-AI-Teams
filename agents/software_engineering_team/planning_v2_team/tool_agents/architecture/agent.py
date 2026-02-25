@@ -158,7 +158,7 @@ class ArchitectureToolAgent:
         
         files = {}
         if arch_style or layers:
-            files["planning_v2/architecture.md"] = "".join(content_parts)
+            files["plan/architecture.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary="Architecture artifacts generated.",

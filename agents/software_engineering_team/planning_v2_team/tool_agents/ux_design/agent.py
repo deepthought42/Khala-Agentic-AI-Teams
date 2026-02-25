@@ -134,7 +134,7 @@ class UXDesignToolAgent:
         
         files = {}
         if personas or user_flows:
-            files["planning_v2/ux_design.md"] = "".join(content_parts)
+            files["plan/ux_design.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary=data.get("summary", "UX Design artifacts generated."),

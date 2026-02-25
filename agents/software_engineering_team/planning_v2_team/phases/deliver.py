@@ -69,22 +69,22 @@ def run_deliver(
     try:
         if (repo_path / ".git").exists():
             subprocess.run(
-                ["git", "add", "planning_v2/"],
+                ["git", "add", "plan/"],
                 cwd=repo_path,
                 check=False,
                 capture_output=True,
             )
             
-            if (repo_path / "planning_v2").exists():
+            if (repo_path / "plan").exists():
                 subprocess.run(
-                    ["git", "add", "planning_v2/*"],
+                    ["git", "add", "plan/*"],
                     cwd=repo_path,
                     check=False,
                     capture_output=True,
                 )
             
             r = subprocess.run(
-                ["git", "commit", "-m", "chore: planning-v2 artifacts"],
+                ["git", "commit", "-m", "chore: planning artifacts"],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,

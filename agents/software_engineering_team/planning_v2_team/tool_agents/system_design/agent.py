@@ -151,7 +151,7 @@ class SystemDesignToolAgent:
         
         files = {}
         if component_design or data_flow:
-            files["planning_v2/system_design.md"] = "".join(content_parts)
+            files["plan/system_design.md"] = "".join(content_parts)
         
         return ToolAgentPhaseOutput(
             summary="System design artifacts generated.",

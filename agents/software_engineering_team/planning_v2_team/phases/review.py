@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def _read_planning_artifacts(repo_path: Path) -> Dict[str, str]:
     """Read planning artifacts from repo for review."""
     files: Dict[str, str] = {}
-    plan_dir = repo_path / "planning_v2"
+    plan_dir = repo_path / "plan"
     if plan_dir.exists():
         for f in plan_dir.glob("*.md"):
             try:
