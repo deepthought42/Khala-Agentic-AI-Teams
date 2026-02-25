@@ -40,6 +40,7 @@ from shared.job_store import (
     get_job,
     list_jobs,
     update_job,
+    submit_answers as store_submit_answers,
 )
 
 from shared.logging_config import setup_logging
@@ -132,6 +133,30 @@ class TeamProgressEntry(BaseModel):
     current_task_id: Optional[str] = Field(None, description="Task ID currently being executed by this team.")
 
 
+class QuestionOption(BaseModel):
+    """A selectable option for a pending question."""
+
+    id: str = Field(..., description="Unique identifier for this option.")
+    label: str = Field(..., description="Display text for this option.")
+
+
+class PendingQuestion(BaseModel):
+    """A question awaiting user response during job execution."""
+
+    id: str = Field(..., description="Unique identifier for this question.")
+    question_text: str = Field(..., description="The question to display to the user.")
+    context: Optional[str] = Field(None, description="Additional context or explanation.")
+    options: List[QuestionOption] = Field(
+        default_factory=list,
+        description="Selectable answer options. Always includes an 'other' option automatically.",
+    )
+    required: bool = Field(default=True, description="Whether this question must be answered.")
+    source: str = Field(
+        default="planning",
+        description="Source of the question: planning, tech_lead, execution, etc.",
+    )
+
+
 class JobStatusResponse(BaseModel):
     """Response from GET /run-team/{job_id}."""
 
@@ -164,6 +189,14 @@ class JobStatusResponse(BaseModel):
         None,
         description="Per-team progress when multiple teams run in parallel.",
     )
+    pending_questions: List[PendingQuestion] = Field(
+        default_factory=list,
+        description="Questions awaiting user response before job can proceed.",
+    )
+    waiting_for_answers: bool = Field(
+        default=False,
+        description="True when job is blocked waiting for user to answer pending questions.",
+    )
 
 
 class RetryResponse(BaseModel):
@@ -181,6 +214,29 @@ class RePlanWithClarificationsRequest(BaseModel):
     clarification_session_id: str = Field(
         ...,
         description="Clarification session with refined_spec and resolved_questions to use for re-planning",
+    )
+
+
+class AnswerSubmission(BaseModel):
+    """A user's answer to a pending question."""
+
+    question_id: str = Field(..., description="ID of the question being answered.")
+    selected_option_id: Optional[str] = Field(
+        None,
+        description="ID of the selected option, or 'other' if custom text provided.",
+    )
+    other_text: Optional[str] = Field(
+        None,
+        description="Custom text when 'other' option is selected.",
+    )
+
+
+class SubmitAnswersRequest(BaseModel):
+    """Request body for submitting answers to pending questions."""
+
+    answers: List[AnswerSubmission] = Field(
+        ...,
+        description="List of answers to submit.",
     )
 
 
@@ -429,6 +485,25 @@ def get_job_status(job_id: str) -> JobStatusResponse:
     task_states_parsed = _parse_task_states(data.get("task_states"))
     team_progress_parsed = _parse_team_progress(data.get("team_progress"))
 
+    raw_pending_questions = data.get("pending_questions", [])
+    pending_questions_parsed = []
+    for pq in raw_pending_questions:
+        if isinstance(pq, dict):
+            options = [
+                QuestionOption(**opt) if isinstance(opt, dict) else opt
+                for opt in pq.get("options", [])
+            ]
+            pending_questions_parsed.append(
+                PendingQuestion(
+                    id=pq.get("id", ""),
+                    question_text=pq.get("question_text", ""),
+                    context=pq.get("context"),
+                    options=options,
+                    required=pq.get("required", True),
+                    source=pq.get("source", "planning"),
+                )
+            )
+
     payload: Dict[str, Any] = {
         "job_id": str(job_id),
         "status": str(data.get("status", JOB_STATUS_PENDING)),
@@ -444,6 +519,8 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         "phase": data.get("phase"),
         "task_states": {k: v.model_dump() for k, v in task_states_parsed.items()} if task_states_parsed else None,
         "team_progress": {k: v.model_dump() for k, v in team_progress_parsed.items()} if team_progress_parsed else None,
+        "pending_questions": [pq.model_dump() for pq in pending_questions_parsed],
+        "waiting_for_answers": bool(data.get("waiting_for_answers", False)),
     }
     return JobStatusResponse.model_validate(payload)
 
@@ -519,6 +596,97 @@ def resume_after_llm_check(job_id: str) -> RetryResponse:
         status="running",
         retrying_tasks=failed_ids,
         message="Resumed after LLM connectivity check. Poll GET /run-team/{job_id} for status.",
+    )
+
+
+@app.post(
+    "/run-team/{job_id}/answers",
+    response_model=JobStatusResponse,
+    summary="Submit answers to pending questions",
+    description="Submit user answers to pending questions. The job will resume once all required questions are answered. "
+    "Each answer can select a predefined option or provide custom 'other' text.",
+)
+def submit_pending_answers(job_id: str, request: SubmitAnswersRequest) -> JobStatusResponse:
+    """Submit answers to pending questions and resume job execution."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if not data.get("waiting_for_answers"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job is not waiting for answers.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    if not pending_questions:
+        raise HTTPException(status_code=400, detail="No pending questions to answer.")
+
+    pending_ids = {q["id"] for q in pending_questions}
+    required_ids = {q["id"] for q in pending_questions if q.get("required", True)}
+    answered_ids = {a.question_id for a in request.answers}
+
+    missing_required = required_ids - answered_ids
+    if missing_required:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing answers for required questions: {', '.join(sorted(missing_required))}",
+        )
+
+    invalid_ids = answered_ids - pending_ids
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown question IDs: {', '.join(sorted(invalid_ids))}",
+        )
+
+    for answer in request.answers:
+        if answer.selected_option_id == "other" and not answer.other_text:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Question {answer.question_id}: 'other' selected but no text provided.",
+            )
+
+    answers_dicts = [
+        {
+            "question_id": a.question_id,
+            "selected_option_id": a.selected_option_id,
+            "other_text": a.other_text,
+        }
+        for a in request.answers
+    ]
+    store_submit_answers(job_id, answers_dicts)
+
+    updated_data = get_job(job_id)
+    return JobStatusResponse(
+        job_id=job_id,
+        status=updated_data.get("status", "running"),
+        repo_path=updated_data.get("repo_path"),
+        requirements_title=updated_data.get("requirements_title"),
+        architecture_overview=updated_data.get("architecture_overview"),
+        current_task=updated_data.get("current_task"),
+        task_results=updated_data.get("task_results", []),
+        task_ids=updated_data.get("execution_order", []),
+        progress=updated_data.get("progress"),
+        error=updated_data.get("error"),
+        failed_tasks=[
+            FailedTaskDetail(**ft)
+            for ft in updated_data.get("failed_tasks", [])
+        ],
+        phase=updated_data.get("phase"),
+        task_states={
+            k: TaskStateEntry(**v)
+            for k, v in (updated_data.get("task_states") or {}).items()
+        } if updated_data.get("task_states") else None,
+        team_progress={
+            k: TeamProgressEntry(**v)
+            for k, v in (updated_data.get("team_progress") or {}).items()
+        } if updated_data.get("team_progress") else None,
+        pending_questions=[
+            PendingQuestion(**q)
+            for q in updated_data.get("pending_questions", [])
+        ],
+        waiting_for_answers=updated_data.get("waiting_for_answers", False),
     )
 
 
@@ -842,7 +1010,7 @@ def _run_frontend_code_v2_background(job_id: str, repo_path: str, task_dict: dic
 
         team_lead = FrontendCodeV2TeamLead(get_llm_for_agent("frontend"))
 
-        phase_order = ["setup", "planning", "execution", "review", "problem_solving", "deliver"]
+        phase_order = ["setup", "planning", "execution", "review", "problem_solving", "documentation", "deliver"]
 
         def _job_updater(**kwargs):
             completed_phases = []
@@ -970,6 +1138,14 @@ class PlanningV2StatusResponse(BaseModel):
     active_roles: List[str] = Field(default_factory=list, description="Roles active in current phase")
     error: Optional[str] = None
     summary: Optional[str] = None
+    pending_questions: List[PendingQuestion] = Field(
+        default_factory=list,
+        description="Questions requiring user input before workflow can continue.",
+    )
+    waiting_for_answers: bool = Field(
+        default=False,
+        description="True if the workflow is paused waiting for user answers.",
+    )
 
 
 class PlanningV2ResultResponse(BaseModel):
@@ -1012,7 +1188,7 @@ def _run_backend_code_v2_background(job_id: str, repo_path: str, task_dict: dict
 
         team_lead = BackendCodeV2TeamLead(get_llm_for_agent("backend"))
 
-        phase_order = ["setup", "planning", "execution", "review", "problem_solving", "deliver"]
+        phase_order = ["setup", "planning", "execution", "review", "problem_solving", "documentation", "deliver"]
 
         def _job_updater(**kwargs):
             completed_phases = []
@@ -1077,6 +1253,7 @@ def _run_planning_v2_background(
             repo_path=_Path(repo_path),
             inspiration_content=inspiration_content or None,
             job_updater=_job_updater,
+            job_id=job_id,
         )
 
         final_status = "completed" if result.success else "failed"
@@ -1221,6 +1398,21 @@ def get_planning_v2_status(job_id: str) -> PlanningV2StatusResponse:
     if not data:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
+    pending_questions_raw = data.get("pending_questions", [])
+    pending_questions = [
+        PendingQuestion(
+            id=q.get("id", ""),
+            question_text=q.get("question_text", ""),
+            context=q.get("context"),
+            options=[
+                QuestionOption(id=opt.get("id", ""), label=opt.get("label", ""))
+                for opt in q.get("options", [])
+            ],
+            required=q.get("required", False),
+        )
+        for q in pending_questions_raw
+    ]
+
     return PlanningV2StatusResponse(
         job_id=job_id,
         status=data.get("status", JOB_STATUS_PENDING),
@@ -1231,6 +1423,104 @@ def get_planning_v2_status(job_id: str) -> PlanningV2StatusResponse:
         active_roles=data.get("active_roles", []),
         error=data.get("error"),
         summary=data.get("summary"),
+        pending_questions=pending_questions,
+        waiting_for_answers=data.get("waiting_for_answers", False),
+    )
+
+
+@app.post(
+    "/planning-v2/{job_id}/answers",
+    response_model=PlanningV2StatusResponse,
+    summary="Submit answers to planning-v2 open questions",
+    description="Submit user answers to open questions identified during spec review. "
+    "The workflow will resume once all required questions are answered. "
+    "Each answer can select a predefined option or provide custom 'other' text.",
+)
+def submit_planning_v2_answers(job_id: str, request: SubmitAnswersRequest) -> PlanningV2StatusResponse:
+    """Submit answers to open questions and resume planning-v2 workflow."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("job_type") != "planning_v2":
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is only for planning-v2 jobs.",
+        )
+
+    if not data.get("waiting_for_answers"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job is not waiting for answers.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    if not pending_questions:
+        raise HTTPException(status_code=400, detail="No pending questions to answer.")
+
+    pending_ids = {q["id"] for q in pending_questions}
+    required_ids = {q["id"] for q in pending_questions if q.get("required", True)}
+    answered_ids = {a.question_id for a in request.answers}
+
+    missing_required = required_ids - answered_ids
+    if missing_required:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing answers for required questions: {', '.join(sorted(missing_required))}",
+        )
+
+    invalid_ids = answered_ids - pending_ids
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown question IDs: {', '.join(sorted(invalid_ids))}",
+        )
+
+    for answer in request.answers:
+        if answer.selected_option_id == "other" and not answer.other_text:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Question {answer.question_id}: 'other' selected but no text provided.",
+            )
+
+    answers_dicts = [
+        {
+            "question_id": a.question_id,
+            "selected_option_id": a.selected_option_id,
+            "other_text": a.other_text,
+        }
+        for a in request.answers
+    ]
+    store_submit_answers(job_id, answers_dicts)
+
+    updated_data = get_job(job_id)
+    pending_questions_raw = updated_data.get("pending_questions", [])
+    pending_questions_response = [
+        PendingQuestion(
+            id=q.get("id", ""),
+            question_text=q.get("question_text", ""),
+            context=q.get("context"),
+            options=[
+                QuestionOption(id=opt.get("id", ""), label=opt.get("label", ""))
+                for opt in q.get("options", [])
+            ],
+            required=q.get("required", False),
+        )
+        for q in pending_questions_raw
+    ]
+
+    return PlanningV2StatusResponse(
+        job_id=job_id,
+        status=updated_data.get("status", "running"),
+        repo_path=updated_data.get("repo_path"),
+        current_phase=updated_data.get("current_phase"),
+        progress=updated_data.get("progress", 0),
+        completed_phases=updated_data.get("completed_phases", []),
+        active_roles=updated_data.get("active_roles", []),
+        error=updated_data.get("error"),
+        summary=updated_data.get("summary"),
+        pending_questions=pending_questions_response,
+        waiting_for_answers=updated_data.get("waiting_for_answers", False),
     )
 
 

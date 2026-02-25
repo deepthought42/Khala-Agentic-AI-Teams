@@ -14,6 +14,7 @@ from shared.llm import LLMClient
 from shared.models import Task
 
 from ..models import (
+    Microtask,
     Phase,
     ProblemSolvingResult,
     ReviewIssue,
@@ -140,6 +141,119 @@ def run_problem_solving(
 
     resolved = len(unresolved_issues) == 0
     summary = " ".join(summary_parts) if summary_parts else f"Applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    return ProblemSolvingResult(
+        fixes_applied=fixes_applied,
+        files=merged,
+        summary=summary,
+        resolved=resolved,
+        unresolved_issues=unresolved_issues,
+    )
+
+
+def run_problem_solving_for_microtask(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    review_result: ReviewResult,
+    current_files: Dict[str, str],
+    language: str = "typescript",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+) -> ProblemSolvingResult:
+    """
+    Fix issues for a single microtask, one issue at a time.
+
+    This function is similar to run_problem_solving() but is scoped to a single
+    microtask's files, enabling per-microtask problem-solving within the review loop.
+    """
+    microtask_id = microtask.id
+    actionable = [i for i in review_result.issues if i.severity in ("critical", "high", "medium")]
+    if not actionable:
+        return ProblemSolvingResult(resolved=True, files=current_files, summary="No actionable issues.")
+
+    merged = dict(current_files)
+    fixes_applied: List[Dict[str, Any]] = []
+    summary_parts: List[str] = []
+    unresolved_issues: List[ReviewIssue] = []
+
+    logger.info("[%s] Problem-solving for microtask %s: %d actionable issues", task_id, microtask_id, len(actionable))
+
+    for issue_idx, issue in enumerate(actionable):
+        desc_short = (issue.description or "")[:80]
+        logger.info("[%s] Microtask %s: fixing issue %d/%d — %s", task_id, microtask_id, issue_idx + 1, len(actionable), desc_short)
+        working = dict(merged)
+        resolved_this = False
+
+        for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
+            relevant_code = _relevant_code_for_issue(issue, working)
+            prompt = PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT.format(
+                source=issue.source or "review",
+                severity=issue.severity or "medium",
+                description=issue.description or "",
+                file_path=issue.file_path or "N/A",
+                recommendation=issue.recommendation or "Fix the issue.",
+                current_code=relevant_code,
+            )
+            try:
+                raw = llm.complete_text(prompt)
+            except Exception as exc:
+                logger.warning("[%s] Microtask %s: problem-solving LLM call failed (issue %d, attempt %d): %s",
+                               task_id, microtask_id, issue_idx + 1, attempt, exc)
+                break
+
+            parsed = parse_problem_solving_single_issue_template(raw)
+            fixed_files = parsed.get("files") or {}
+            if not fixed_files:
+                if parsed.get("resolved"):
+                    resolved_this = True
+                break
+
+            working.update(fixed_files)
+            merged.update(fixed_files)
+            fixes_applied.append({
+                "microtask": microtask_id,
+                "issue": desc_short,
+                "fix": parsed.get("summary", "updated file(s)"),
+                "root_cause": parsed.get("root_cause", ""),
+            })
+            if parsed.get("resolved"):
+                resolved_this = True
+                break
+
+        if not resolved_this:
+            unresolved_issues.append(issue)
+
+    if tool_agents:
+        phase_inp = ToolAgentPhaseInput(
+            phase=Phase.PROBLEM_SOLVING,
+            microtask=microtask,
+            repo_path=repo_path,
+            spec_context=microtask.description or "",
+            language=language,
+            current_files=merged,
+            review_issues=review_result.issues,
+            task_title=microtask.title or "",
+            task_description=microtask.description or "",
+            task_id=task_id,
+        )
+        for kind, agent in tool_agents.items():
+            if not hasattr(agent, "problem_solve"):
+                continue
+            try:
+                out = agent.problem_solve(phase_inp)
+                if out.files:
+                    merged.update(out.files)
+                if out.recommendations:
+                    fixes_applied.extend([{"source": kind.value, "microtask": microtask_id, "recommendation": r} for r in out.recommendations])
+                    summary_parts.append(f"Tool {kind.value}: {out.summary or 'suggestions applied.'}")
+            except Exception as exc:
+                logger.warning("[%s] Microtask %s: tool agent %s problem_solve() failed: %s", task_id, microtask_id, kind.value, exc)
+
+    resolved = len(unresolved_issues) == 0
+    summary = " ".join(summary_parts) if summary_parts else f"Microtask {microtask_id}: applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    logger.info("[%s] %s", task_id, summary)
+
     return ProblemSolvingResult(
         fixes_applied=fixes_applied,
         files=merged,

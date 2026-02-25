@@ -1,18 +1,19 @@
 """
-Planning phase: high-level plan, milestones, user stories.
+Planning phase: high-level plan, milestones, user stories, hierarchy.
 
-Roles: System Design, Architecture, User Story creation, DevOps, UI Design.
+Tool agents: System Design, Architecture, User Story, DevOps, UI Design.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from shared.llm import LLMClient
+from shared.models import PlanningHierarchy
 
-from ..models import PlanningPhaseResult, SpecReviewResult
+from ..models import PlanningPhaseResult, SpecReviewResult, ToolAgentKind, ToolAgentPhaseInput
 from ..prompts import PLANNING_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,76 @@ def run_planning(
     repo_path: Path,
     spec_review_result: Optional[SpecReviewResult] = None,
     inspiration_content: Optional[str] = None,
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
 ) -> PlanningPhaseResult:
     """
-    Run Planning phase (5 roles: System Design, Architecture, User Story, DevOps, UI Design).
+    Run Planning phase.
+    
+    Tool agents participating: System Design, Architecture, User Story, DevOps, UI Design.
     """
+    all_recommendations: list[str] = []
+    hierarchy: Optional[PlanningHierarchy] = None
+    metadata: Dict[str, Any] = {}
+    
+    tool_agent_input = ToolAgentPhaseInput(
+        spec_content=spec_content,
+        inspiration_content=inspiration_content or "",
+        repo_path=str(repo_path),
+        spec_review_result=spec_review_result,
+    )
+    
+    if tool_agents:
+        system_design_agent = tool_agents.get(ToolAgentKind.SYSTEM_DESIGN)
+        if system_design_agent and hasattr(system_design_agent, "plan"):
+            try:
+                sd_result = system_design_agent.plan(tool_agent_input)
+                all_recommendations.extend(sd_result.recommendations)
+                metadata["system_design"] = sd_result.metadata
+                logger.info("Planning: SystemDesign provided %d recommendations", len(sd_result.recommendations))
+            except Exception as e:
+                logger.warning("SystemDesign plan failed: %s", e)
+        
+        architecture_agent = tool_agents.get(ToolAgentKind.ARCHITECTURE)
+        if architecture_agent and hasattr(architecture_agent, "plan"):
+            try:
+                arch_result = architecture_agent.plan(tool_agent_input)
+                all_recommendations.extend(arch_result.recommendations)
+                metadata["architecture"] = arch_result.metadata
+                logger.info("Planning: Architecture provided %d recommendations", len(arch_result.recommendations))
+            except Exception as e:
+                logger.warning("Architecture plan failed: %s", e)
+        
+        user_story_agent = tool_agents.get(ToolAgentKind.USER_STORY)
+        if user_story_agent and hasattr(user_story_agent, "plan"):
+            try:
+                us_result = user_story_agent.plan(tool_agent_input)
+                all_recommendations.extend(us_result.recommendations)
+                if us_result.hierarchy:
+                    hierarchy = us_result.hierarchy
+                    logger.info("Planning: UserStory created hierarchy with %d initiatives", len(hierarchy.initiatives))
+            except Exception as e:
+                logger.warning("UserStory plan failed: %s", e)
+        
+        devops_agent = tool_agents.get(ToolAgentKind.DEVOPS)
+        if devops_agent and hasattr(devops_agent, "plan"):
+            try:
+                devops_result = devops_agent.plan(tool_agent_input)
+                all_recommendations.extend(devops_result.recommendations)
+                metadata["devops"] = devops_result.metadata
+                logger.info("Planning: DevOps provided %d recommendations", len(devops_result.recommendations))
+            except Exception as e:
+                logger.warning("DevOps plan failed: %s", e)
+        
+        ui_design_agent = tool_agents.get(ToolAgentKind.UI_DESIGN)
+        if ui_design_agent and hasattr(ui_design_agent, "plan"):
+            try:
+                ui_result = ui_design_agent.plan(tool_agent_input)
+                all_recommendations.extend(ui_result.recommendations)
+                metadata["ui_design"] = ui_result.metadata
+                logger.info("Planning: UIDesign provided %d recommendations", len(ui_result.recommendations))
+            except Exception as e:
+                logger.warning("UIDesign plan failed: %s", e)
+    
     review_summary = (spec_review_result.summary if spec_review_result else "") or "None"
     prompt = PLANNING_PROMPT.format(
         spec_content=(spec_content or "")[:8000],
@@ -50,13 +117,29 @@ def run_planning(
     try:
         raw = llm.complete_json(prompt)
         result = _parse_planning_response(raw)
-        logger.info("Planning: %d milestones, %d user stories", len(result.milestones), len(result.user_stories))
-        return result
+        
+        init_count = len(hierarchy.initiatives) if hierarchy else 0
+        epic_count = sum(len(i.epics) for i in hierarchy.initiatives) if hierarchy else 0
+        story_count = sum(len(e.stories) for i in hierarchy.initiatives for e in i.epics) if hierarchy else 0
+        
+        logger.info(
+            "Planning: %d milestones, %d user stories, %d initiatives, %d epics, %d stories",
+            len(result.milestones), len(result.user_stories), init_count, epic_count, story_count
+        )
+        
+        return PlanningPhaseResult(
+            milestones=result.milestones,
+            user_stories=result.user_stories,
+            high_level_plan=result.high_level_plan,
+            summary=result.summary,
+            hierarchy=hierarchy,
+        )
     except Exception as e:
-        logger.warning("Planning LLM call failed, using fallback: %s", e)
+        logger.warning("Planning LLM call failed, using tool agent results: %s", e)
         return PlanningPhaseResult(
             milestones=[],
             user_stories=[],
             high_level_plan="",
-            summary="Planning completed (fallback).",
+            summary="Planning completed with tool agents.",
+            hierarchy=hierarchy,
         )

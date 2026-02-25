@@ -9,6 +9,7 @@ import type {
   RunningJobsResponse,
   RetryResponse,
   RePlanWithClarificationsRequest,
+  SubmitAnswersRequest,
   ClarificationCreateRequest,
   ClarificationResponse,
   ClarificationMessageRequest,
@@ -84,6 +85,20 @@ export class SoftwareEngineeringApiService {
   ): Observable<RunTeamResponse> {
     return this.http.post<RunTeamResponse>(
       `${this.baseUrl}/run-team/${jobId}/re-plan-with-clarifications`,
+      request
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/answers
+   * Submit answers to pending questions to resume job execution.
+   */
+  submitAnswers(
+    jobId: string,
+    request: SubmitAnswersRequest
+  ): Observable<JobStatusResponse> {
+    return this.http.post<JobStatusResponse>(
+      `${this.baseUrl}/run-team/${jobId}/answers`,
       request
     );
   }
@@ -270,6 +285,20 @@ export class SoftwareEngineeringApiService {
   getPlanningV2Result(jobId: string): Observable<PlanningV2ResultResponse> {
     return this.http.get<PlanningV2ResultResponse>(
       `${this.baseUrl}/planning-v2/result/${jobId}`
+    );
+  }
+
+  /**
+   * POST /planning-v2/{job_id}/answers
+   * Submit answers to open questions to resume planning-v2 workflow.
+   */
+  submitPlanningV2Answers(
+    jobId: string,
+    request: SubmitAnswersRequest
+  ): Observable<PlanningV2StatusResponse> {
+    return this.http.post<PlanningV2StatusResponse>(
+      `${this.baseUrl}/planning-v2/${jobId}/answers`,
+      request
     );
   }
 

@@ -7,9 +7,24 @@ Use this to get consistent, readable logs when running agents or the API.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Optional
+
+
+class HttpxErrorLevelFilter(logging.Filter):
+    """Elevate httpx 5xx responses from INFO to ERROR."""
+
+    _5XX_PATTERN = re.compile(r'"HTTP/[\d.]+ (5\d{2})')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.INFO:
+            match = self._5XX_PATTERN.search(record.getMessage())
+            if match:
+                record.levelno = logging.ERROR
+                record.levelname = "ERROR"
+        return True
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
@@ -80,3 +95,7 @@ def setup_logging(
     for name in AGENT_LOGGERS:
         logger = logging.getLogger(name)
         logger.setLevel(agent_level)
+
+    # Apply filter to httpx logger to elevate 5xx errors to ERROR level
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.addFilter(HttpxErrorLevelFilter())

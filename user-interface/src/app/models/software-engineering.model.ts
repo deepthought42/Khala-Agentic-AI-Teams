@@ -68,6 +68,10 @@ export interface JobStatusResponse {
   task_states?: Record<string, TaskStateEntry>;
   /** Per-team progress when multiple teams run in parallel. */
   team_progress?: Record<string, TeamProgressEntry>;
+  /** Questions awaiting user response before job can proceed. */
+  pending_questions?: PendingQuestion[];
+  /** True when job is blocked waiting for user to answer pending questions. */
+  waiting_for_answers?: boolean;
 }
 
 /** Response from POST /run-team/{job_id}/retry-failed. */
@@ -81,6 +85,38 @@ export interface RetryResponse {
 /** Request for POST /run-team/{job_id}/re-plan-with-clarifications. */
 export interface RePlanWithClarificationsRequest {
   clarification_session_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pending Questions (Structured Q&A)
+// ---------------------------------------------------------------------------
+
+/** A selectable option for a pending question. */
+export interface QuestionOption {
+  id: string;
+  label: string;
+}
+
+/** A question awaiting user response during job execution. */
+export interface PendingQuestion {
+  id: string;
+  question_text: string;
+  context?: string;
+  options: QuestionOption[];
+  required: boolean;
+  source: string;
+}
+
+/** A user's answer to a pending question. */
+export interface AnswerSubmission {
+  question_id: string;
+  selected_option_id: string | null;
+  other_text: string | null;
+}
+
+/** Request for POST /run-team/{job_id}/answers. */
+export interface SubmitAnswersRequest {
+  answers: AnswerSubmission[];
 }
 
 /** Request for POST /clarification/sessions. */
@@ -261,6 +297,10 @@ export interface PlanningV2StatusResponse {
   active_roles?: string[];
   error?: string;
   summary?: string;
+  /** Questions awaiting user response before workflow can continue. */
+  pending_questions?: PendingQuestion[];
+  /** True when workflow is blocked waiting for user to answer open questions. */
+  waiting_for_answers?: boolean;
 }
 
 /** Response from GET /planning-v2/result/{job_id}. */

@@ -1,9 +1,10 @@
-import { Component, Input, OnInit, OnDestroy, inject } from '@angular/core';
+import { Component, Input, Output, EventEmitter, OnInit, OnDestroy, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
+import { MatBadgeModule } from '@angular/material/badge';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import type { PlanningV2StatusResponse } from '../../models';
 
@@ -16,12 +17,15 @@ import type { PlanningV2StatusResponse } from '../../models';
     MatProgressBarModule,
     MatChipsModule,
     MatIconModule,
+    MatBadgeModule,
   ],
   templateUrl: './planning-v2-job-status.component.html',
   styleUrl: './planning-v2-job-status.component.scss',
 })
 export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
   @Input() jobId!: string;
+  /** Emits the latest status each time it's polled (including pending questions). */
+  @Output() statusChange = new EventEmitter<PlanningV2StatusResponse>();
 
   private readonly api = inject(SoftwareEngineeringApiService);
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -40,7 +44,7 @@ export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.poll();
-    this.pollTimer = setInterval(() => this.poll(), 15000);
+    this.pollTimer = setInterval(() => this.poll(), 90000);
   }
 
   ngOnDestroy(): void {
@@ -54,6 +58,7 @@ export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.status = res;
         this.error = null;
+        this.statusChange.emit(res);
         if (res.status === 'completed' || res.status === 'failed') {
           if (this.pollTimer) {
             clearInterval(this.pollTimer);
@@ -67,17 +72,38 @@ export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Force an immediate poll (e.g., after answers are submitted). */
+  refresh(): void {
+    this.poll();
+  }
+
+  /** True when workflow is blocked waiting for user answers. */
+  get isWaitingForAnswers(): boolean {
+    return this.status?.waiting_for_answers ?? false;
+  }
+
+  /** Number of pending questions requiring answers. */
+  get pendingQuestionsCount(): number {
+    return this.status?.pending_questions?.length ?? 0;
+  }
+
   phaseIcon(phase: string): string {
     if (!this.status) return 'radio_button_unchecked';
     if (this.status.completed_phases.includes(phase)) return 'check_circle';
-    if (this.status.current_phase === phase) return 'pending';
+    if (this.status.current_phase === phase) {
+      if (this.isWaitingForAnswers) return 'pause_circle';
+      return 'pending';
+    }
     return 'radio_button_unchecked';
   }
 
   phaseClass(phase: string): string {
     if (!this.status) return '';
     if (this.status.completed_phases.includes(phase)) return 'phase-done';
-    if (this.status.current_phase === phase) return 'phase-active';
+    if (this.status.current_phase === phase) {
+      if (this.isWaitingForAnswers) return 'phase-waiting';
+      return 'phase-active';
+    }
     return 'phase-pending';
   }
 

@@ -17,13 +17,16 @@ from shared.models import SystemArchitecture, Task, TaskUpdate
 
 from .models import (
     BackendCodeV2WorkflowResult,
+    MicrotaskReviewConfig,
+    MicrotaskReviewFailedError,
+    MicrotaskStatus,
     Phase,
     ToolAgentKind,
     ToolAgentInput,
     ToolAgentOutput,
 )
 from .phases.planning import run_planning, plan_fixes_for_unresolved_issues
-from .phases.execution import run_execution
+from .phases.execution import run_execution, run_execution_with_review_gates, ReviewDependencies
 from .phases.review import run_review
 from .phases.problem_solving import run_problem_solving
 from .phases.deliver import run_deliver
@@ -45,6 +48,7 @@ def _build_tool_agents(llm: LLMClient) -> Dict[ToolAgentKind, Any]:
     from .tool_agents.build_specialist import BuildSpecialistAdapterAgent
     from .tool_agents.testing_qa import TestingQAToolAgent
     from .tool_agents.security import SecurityToolAgent
+    from .tool_agents.documentation import DocumentationToolAgent
 
     return {
         ToolAgentKind.DATA_ENGINEERING: DataEngineeringToolAgent(llm),
@@ -56,6 +60,7 @@ def _build_tool_agents(llm: LLMClient) -> Dict[ToolAgentKind, Any]:
         ToolAgentKind.BUILD_SPECIALIST: BuildSpecialistAdapterAgent(llm),
         ToolAgentKind.TESTING_QA: TestingQAToolAgent(llm),
         ToolAgentKind.SECURITY: SecurityToolAgent(llm),
+        ToolAgentKind.DOCUMENTATION: DocumentationToolAgent(llm),
     }
 
 
@@ -130,18 +135,13 @@ class BackendDevelopmentAgent:
         dbc_agent: Any = None,
         problem_solver_agent: Any = None,
         job_updater: Optional[Callable[..., None]] = None,
+        review_config: Optional[MicrotaskReviewConfig] = None,
     ) -> BackendCodeV2WorkflowResult:
         """
-        Execute the full 5-phase backend-code-v2 lifecycle.
+        Execute the full 5-phase backend-code-v2 lifecycle with per-microtask review gates.
 
-        Phases:
-            1. Planning — decompose task into microtasks
-            2. Execution — implement microtasks via tool agents / LLM
-            3. Review — code review, build, lint, QA, security
-            4. Problem-solving — root-cause and fix loop (on review failure)
-            5. Deliver — commit and merge to development
-
-        Steps 2-4 repeat for up to ``MAX_REVIEW_ITERATIONS``.
+        Each microtask must pass full review (code quality, QA, security, build, lint)
+        before the next microtask can begin.
         """
         task_id = task.id
         start_time = time.monotonic()
@@ -154,7 +154,7 @@ class BackendDevelopmentAgent:
                 except Exception:
                     pass
 
-        logger.info("[%s] WORKFLOW START: Backend Development Agent (5-phase)", task_id)
+        logger.info("[%s] WORKFLOW START: Backend Development Agent (per-microtask review gates)", task_id)
 
         existing_code = self._read_repo_code(repo_path)
         tool_agents = _build_tool_agents(self.llm)
@@ -204,176 +204,95 @@ class BackendDevelopmentAgent:
             except Exception as exc:
                 logger.warning("[%s] Git agent create_feature_branch raised: %s", task_id, exc)
 
-        # ── Phases 2-4: Execution → Review → Problem-solving loop ─────
-        current_files: Dict[str, str] = {}
-        for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
-            logger.info("[%s] ── Iteration %d/%d ──", task_id, iteration, MAX_REVIEW_ITERATIONS)
+        # ── Phase 2: Execution with per-microtask review gates ─────────
+        result.current_phase = Phase.EXECUTION
+        _update_job(current_phase="execution", current_microtask="", progress=15)
 
-            # Phase 2: Execution
-            result.current_phase = Phase.EXECUTION
-            _update_job(current_phase="execution", current_microtask="", progress=10 + iteration * 10)
+        def _progress_cb(done: int, total: int, title: str) -> None:
+            _update_job(
+                current_phase="execution",
+                current_microtask=title,
+                microtasks_completed=done,
+                microtasks_total=total,
+                progress=min(15 + int(done / max(total, 1) * 60), 75),
+            )
 
-            def _progress_cb(done: int, total: int, title: str) -> None:
-                _update_job(
-                    current_phase="execution",
-                    current_microtask=title,
-                    microtasks_completed=done,
-                    microtasks_total=total,
-                    progress=min(10 + iteration * 10 + int(done / max(total, 1) * 20), 80),
-                )
+        review_deps = ReviewDependencies(
+            build_verifier=build_verifier,
+            qa_agent=qa_agent,
+            security_agent=security_agent,
+            code_review_agent=code_review_agent,
+            linting_tool_agent=linting_tool_agent,
+            tool_agents=tool_agents,
+        )
 
+        config = review_config or MicrotaskReviewConfig()
+
+        try:
+            exec_result = run_execution_with_review_gates(
+                llm=self.llm,
+                task=task,
+                planning_result=planning_result,
+                repo_path=repo_path,
+                spec_content=spec_content,
+                architecture=architecture,
+                existing_code=existing_code,
+                tool_runners=tool_runners,
+                progress_callback=_progress_cb,
+                review_config=config,
+                review_deps=review_deps,
+            )
+            result.execution_result = exec_result
+        except MicrotaskReviewFailedError as err:
+            result.failure_reason = f"Microtask {err.microtask.id} failed review: {err.review_result.summary}"
+            logger.error("[%s] %s", task_id, result.failure_reason)
+            return result
+        except Exception as exc:
+            result.failure_reason = f"Execution failed: {exc}"
+            logger.error("[%s] %s", task_id, result.failure_reason)
+            return result
+
+        current_files = exec_result.files
+        if not current_files:
+            result.failure_reason = "Execution produced no files."
+            return result
+
+        completed_count = sum(1 for mt in exec_result.microtasks if mt.status == MicrotaskStatus.COMPLETED)
+        failed_count = sum(1 for mt in exec_result.microtasks if mt.status == MicrotaskStatus.REVIEW_FAILED)
+        result.iterations_used = completed_count
+
+        if feature_branch_name and git_agent is not None and hasattr(git_agent, "commit_current_changes"):
             try:
-                exec_result = run_execution(
-                    llm=self.llm,
-                    task=task,
-                    planning_result=planning_result,
-                    repo_path=repo_path,
-                    spec_content=spec_content,
-                    architecture=architecture,
-                    existing_code=existing_code,
-                    tool_runners=tool_runners,
-                    progress_callback=_progress_cb,
-                )
-                result.execution_result = exec_result
-                current_files.update(exec_result.files)
+                git_agent.commit_current_changes(repo_path, f"feat: {completed_count} microtasks completed")
             except Exception as exc:
-                result.failure_reason = f"Execution failed (iter {iteration}): {exc}"
-                logger.error("[%s] %s", task_id, result.failure_reason)
-                result.iterations_used = iteration
-                return result
+                logger.warning("[%s] Git agent commit_current_changes raised: %s", task_id, exc)
 
-            if not current_files:
-                result.failure_reason = "Execution produced no files."
-                result.iterations_used = iteration
-                return result
-
-            # Write files to repo for build/review
-            from shared.repo_writer import write_agent_output
-
-            class _Payload:
-                def __init__(self, files: Dict[str, str]) -> None:
-                    self.files = files
-                    self.summary = ""
-                    self.suggested_commit_message = f"wip: iteration {iteration}"
-                    self.gitignore_entries: list[str] = []
-
-            write_agent_output(repo_path, _Payload(current_files), subdir="")
-
-            if feature_branch_name and git_agent is not None and hasattr(git_agent, "commit_current_changes"):
-                try:
-                    git_agent.commit_current_changes(repo_path, f"wip: iteration {iteration}")
-                except Exception as exc:
-                    logger.warning("[%s] Git agent commit_current_changes raised: %s", task_id, exc)
-
-            # Phase 3: Review
-            result.current_phase = Phase.REVIEW
-            _update_job(current_phase="review", progress=min(50 + iteration * 10, 85))
-
-            try:
-                review_result = run_review(
-                    llm=self.llm,
-                    task=task,
-                    execution_result=exec_result,
-                    repo_path=repo_path,
-                    build_verifier=build_verifier,
-                    qa_agent=qa_agent,
-                    security_agent=security_agent,
-                    code_review_agent=code_review_agent,
-                    linting_tool_agent=linting_tool_agent,
-                    tool_agents=tool_agents,
-                )
-                result.review_result = review_result
-            except Exception as exc:
-                logger.warning("[%s] Review failed (non-blocking): %s", task_id, exc)
-                break  # proceed to deliver anyway
-
-            if review_result.passed:
-                logger.info("[%s] Review passed on iteration %d", task_id, iteration)
-                break
-
-            # Phase 4: Problem-solving
-            result.current_phase = Phase.PROBLEM_SOLVING
-            _update_job(current_phase="problem_solving", progress=min(60 + iteration * 10, 85))
-
-            try:
-                ps_result = run_problem_solving(
-                    llm=self.llm,
-                    task=task,
-                    review_result=review_result,
-                    current_files=current_files,
-                    language=planning_result.language,
-                    repo_path=str(repo_path),
-                    tool_agents=tool_agents,
-                )
-                result.problem_solving_result = ps_result
-                current_files = ps_result.files
-                # Escalation: unresolved issues → backend v2 creates fix microtasks and runs them
-                if getattr(ps_result, "unresolved_issues", None):
-                    fix_microtasks = plan_fixes_for_unresolved_issues(
-                        llm=self.llm,
-                        task=task,
-                        unresolved_issues=ps_result.unresolved_issues,
-                        current_files=current_files,
-                        language=planning_result.language,
-                    )
-                    if fix_microtasks:
-                        fix_ids = [mt.id for mt in fix_microtasks]
-                        planning_result.microtasks.extend(fix_microtasks)
-                        _update_job(current_phase="execution", progress=min(65 + iteration * 10, 85))
-                        try:
-                            fix_exec_result = run_execution(
-                                llm=self.llm,
-                                task=task,
-                                planning_result=planning_result,
-                                repo_path=repo_path,
-                                spec_content=spec_content,
-                                architecture=architecture,
-                                existing_code=existing_code,
-                                tool_runners=tool_runners,
-                                only_microtask_ids=fix_ids,
-                            )
-                            current_files.update(fix_exec_result.files)
-                            from shared.repo_writer import write_agent_output
-                            class _Payload:
-                                def __init__(self, files):
-                                    self.files = files
-                                    self.summary = ""
-                                    self.suggested_commit_message = f"fix: unresolved issues (iteration {iteration})"
-                                    self.gitignore_entries = []
-                            write_agent_output(repo_path, _Payload(current_files), subdir="")
-                            if feature_branch_name and git_agent is not None and hasattr(git_agent, "commit_current_changes"):
-                                try:
-                                    git_agent.commit_current_changes(repo_path, f"fix: unresolved issues (iteration {iteration})")
-                                except Exception as exc:
-                                    logger.warning("[%s] Git commit after fix microtasks raised: %s", task_id, exc)
-                            review_result = run_review(
-                                llm=self.llm,
-                                task=task,
-                                execution_result=fix_exec_result,
-                                repo_path=repo_path,
-                                build_verifier=build_verifier,
-                                qa_agent=qa_agent,
-                                security_agent=security_agent,
-                                code_review_agent=code_review_agent,
-                                linting_tool_agent=linting_tool_agent,
-                                tool_agents=tool_agents,
-                            )
-                            result.review_result = review_result
-                            if review_result.passed:
-                                logger.info("[%s] Review passed after fix microtasks", task_id)
-                                break
-                        except Exception as fix_exc:
-                            logger.warning("[%s] Fix microtasks execution/review failed: %s", task_id, fix_exc)
-            except Exception as exc:
-                logger.warning("[%s] Problem-solving failed (non-blocking): %s", task_id, exc)
-                break
-
-            result.iterations_used = iteration
-
-        result.iterations_used = max(result.iterations_used, 1)
         result.final_files = current_files
 
-        # ── Phase 5: Deliver ───────────────────────────────────────────
+        # ── Phase: Documentation ────────────────────────────────────────
+        result.current_phase = Phase.DOCUMENTATION
+        _update_job(current_phase="documentation", progress=80)
+
+        from .phases.documentation import run_documentation_phase
+
+        try:
+            doc_result = run_documentation_phase(
+                llm=self.llm,
+                task=task,
+                repo_path=repo_path,
+                execution_result=exec_result,
+                planning_result=planning_result,
+                tool_agents=tool_agents,
+            )
+            result.documentation_result = doc_result
+            if doc_result.files:
+                current_files.update(doc_result.files)
+                result.final_files = current_files
+            logger.info("[%s] Documentation phase complete: %s", task_id, doc_result.summary)
+        except Exception as exc:
+            logger.warning("[%s] Documentation phase failed: %s", task_id, exc)
+
+        # ── Phase: Deliver ───────────────────────────────────────────
         result.current_phase = Phase.DELIVER
         _update_job(current_phase="deliver", progress=90)
 
@@ -382,15 +301,18 @@ class BackendDevelopmentAgent:
                 task_id=task_id,
                 repo_path=repo_path,
                 files=current_files,
-                summary=result.execution_result.summary if result.execution_result else "",
+                summary=exec_result.summary,
                 task_title=task.title or "",
                 tool_agents=tool_agents,
                 task_description=task.description or "",
                 feature_branch_name=feature_branch_name,
             )
             result.deliver_result = deliver_result
-            result.success = deliver_result.merged
-            result.summary = deliver_result.summary
+            result.success = deliver_result.merged and failed_count == 0
+            result.summary = f"{exec_result.summary} {deliver_result.summary}"
+            if failed_count > 0:
+                result.needs_followup = True
+                result.summary += f" ({failed_count} microtask(s) failed review)"
         except Exception as exc:
             result.failure_reason = f"Deliver failed: {exc}"
             logger.error("[%s] %s", task_id, result.failure_reason)
@@ -399,11 +321,12 @@ class BackendDevelopmentAgent:
         elapsed = time.monotonic() - start_time
         _update_job(current_phase="deliver", progress=100 if result.success else 95)
         logger.info(
-            "[%s] WORKFLOW %s in %.1fs (%d iterations)",
+            "[%s] WORKFLOW %s in %.1fs (%d microtasks completed, %d failed review)",
             task_id,
-            "SUCCEEDED" if result.success else "FAILED",
+            "SUCCEEDED" if result.success else "PARTIAL",
             elapsed,
-            result.iterations_used,
+            completed_count,
+            failed_count,
         )
         return result
 
@@ -443,6 +366,7 @@ class BackendCodeV2TeamLead:
         dbc_agent: Any = None,
         problem_solver_agent: Any = None,
         job_updater: Optional[Callable[..., None]] = None,
+        review_config: Optional[MicrotaskReviewConfig] = None,
     ) -> BackendCodeV2WorkflowResult:
         """
         Run Setup phase, then delegate to BackendDevelopmentAgent for the 5-phase cycle.
@@ -494,6 +418,7 @@ class BackendCodeV2TeamLead:
             dbc_agent=dbc_agent,
             problem_solver_agent=problem_solver_agent,
             job_updater=job_updater,
+            review_config=review_config,
         )
         result.success = inner.success
         result.current_phase = inner.current_phase

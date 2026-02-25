@@ -3,13 +3,14 @@ import { timer, Subscription, switchMap } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatExpansionModule } from '@angular/material/expansion';
+import { MatIconModule } from '@angular/material/icon';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import type { JobStatusResponse } from '../../models';
 
 @Component({
   selector: 'app-job-status',
   standalone: true,
-  imports: [MatCardModule, MatProgressBarModule, MatExpansionModule],
+  imports: [MatCardModule, MatProgressBarModule, MatExpansionModule, MatIconModule],
   templateUrl: './job-status.component.html',
   styleUrl: './job-status.component.scss',
 })

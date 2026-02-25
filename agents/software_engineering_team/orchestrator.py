@@ -62,6 +62,9 @@ from shared.job_store import (
     update_job,
     update_task_state,
     update_job_team_progress,
+    add_pending_questions,
+    is_waiting_for_answers,
+    get_job,
 )
 from shared.command_runner import run_command_with_nvm
 from shared.execution_tracker import execution_tracker
@@ -96,6 +99,65 @@ REPAIRABLE_EXCEPTIONS = (
     IndentationError,
     ModuleNotFoundError,
 )
+
+# Default options for clarification questions
+DEFAULT_CLARIFICATION_OPTIONS = [
+    {"id": "yes", "label": "Yes"},
+    {"id": "no", "label": "No"},
+    {"id": "not_sure", "label": "Not sure / Need more info"},
+]
+
+# Poll interval for waiting for user answers (in seconds)
+ANSWER_WAIT_POLL_INTERVAL = 5.0
+
+
+def _convert_to_structured_questions(
+    questions: List[str],
+    source: str = "planning",
+) -> List[Dict[str, Any]]:
+    """
+    Convert free-text clarification questions to structured questions with options.
+
+    Each question gets:
+    - A unique ID based on index
+    - Default yes/no/not_sure options
+    - An 'other' option is implicitly available in the UI
+    """
+    import uuid
+    structured = []
+    for idx, question_text in enumerate(questions):
+        question_id = f"{source}_{idx}_{uuid.uuid4().hex[:8]}"
+        structured.append({
+            "id": question_id,
+            "question_text": question_text,
+            "context": None,
+            "options": DEFAULT_CLARIFICATION_OPTIONS.copy(),
+            "required": True,
+            "source": source,
+        })
+    return structured
+
+
+def _wait_for_user_answers(
+    job_id: str,
+    timeout_seconds: float = 3600.0,
+) -> bool:
+    """
+    Poll job store until waiting_for_answers becomes False.
+
+    Returns True if answers were received, False if timed out or job failed.
+    """
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        if not is_waiting_for_answers(job_id):
+            return True
+        job_data = get_job(job_id)
+        if job_data and job_data.get("status") in (JOB_STATUS_FAILED, JOB_STATUS_COMPLETED):
+            return False
+        time.sleep(ANSWER_WAIT_POLL_INTERVAL)
+    logger.warning("Timed out waiting for user answers on job %s", job_id)
+    update_job(job_id, status=JOB_STATUS_FAILED, error="Timed out waiting for user answers")
+    return False
 
 
 def _get_task_stats() -> Dict[str, Any]:
@@ -1756,12 +1818,26 @@ def run_orchestrator(
 
         if tech_lead_output.spec_clarification_needed:
             questions = tech_lead_output.clarification_questions or []
-            error_msg = f"Spec is unclear. Tech Lead requests clarification: {'; '.join(questions[:5])}"
-            if len(questions) > 5:
-                error_msg += f" (+{len(questions) - 5} more)"
-            logger.warning(error_msg)
-            update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg, phase="completed")
-            return
+            if questions:
+                structured_questions = _convert_to_structured_questions(
+                    questions,
+                    source="tech_lead",
+                )
+                add_pending_questions(job_id, structured_questions)
+                logger.info(
+                    "Job %s waiting for %d clarification answers from user",
+                    job_id,
+                    len(structured_questions),
+                )
+                _wait_for_user_answers(job_id)
+                job_data = get_job(job_id)
+                if job_data and job_data.get("status") == JOB_STATUS_FAILED:
+                    return
+            else:
+                error_msg = "Spec is unclear but no clarification questions provided."
+                logger.warning(error_msg)
+                update_job(job_id, status=JOB_STATUS_FAILED, error=error_msg, phase="completed")
+                return
 
         assignment = tech_lead_output.assignment
         if not assignment or not assignment.tasks:

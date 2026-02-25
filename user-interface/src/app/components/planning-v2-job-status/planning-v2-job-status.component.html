@@ -36,6 +36,13 @@
         }
       </div>
 
+      @if (isWaitingForAnswers) {
+        <div class="waiting-banner">
+          <mat-icon color="warn">help_outline</mat-icon>
+          <span>Workflow paused — {{ pendingQuestionsCount }} question(s) need your input</span>
+        </div>
+      }
+
       @if (activeRoles.length) {
         <p class="roles-label">Active roles (current phase):</p>
         <mat-chip-set>

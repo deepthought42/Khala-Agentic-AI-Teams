@@ -86,6 +86,9 @@ def create_job(
         "error": None,
         "architecture_overview": None,
         "requirements_title": None,
+        "pending_questions": [],
+        "waiting_for_answers": False,
+        "submitted_answers": [],
     }
     if job_type is not None:
         data["job_type"] = job_type
@@ -195,3 +198,58 @@ def add_task_result(
         results.append(result)
         data["task_results"] = results
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def add_pending_questions(
+    job_id: str,
+    questions: List[Dict[str, Any]],
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Add pending questions and set waiting_for_answers=True to pause job."""
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path) or {}
+        existing = data.get("pending_questions", [])
+        existing.extend(questions)
+        data["pending_questions"] = existing
+        data["waiting_for_answers"] = True
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def submit_answers(
+    job_id: str,
+    answers: List[Dict[str, Any]],
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Store submitted answers, clear pending questions, and resume job."""
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path) or {}
+        existing_answers = data.get("submitted_answers", [])
+        existing_answers.extend(answers)
+        data["submitted_answers"] = existing_answers
+        data["pending_questions"] = []
+        data["waiting_for_answers"] = False
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def is_waiting_for_answers(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> bool:
+    """Check if job is waiting for user answers."""
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path) or {}
+        return bool(data.get("waiting_for_answers", False))
+
+
+def get_submitted_answers(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> List[Dict[str, Any]]:
+    """Get submitted answers for a job."""
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path) or {}
+        return list(data.get("submitted_answers", []))

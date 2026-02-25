@@ -1,0 +1,88 @@
+@if (questions.length > 0) {
+  <mat-card class="pending-questions-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar class="header-icon">help_outline</mat-icon>
+      <mat-card-title>Clarification Required</mat-card-title>
+      <mat-card-subtitle>
+        Please answer the following questions to continue ({{ answeredCount }}/{{ questions.length }} answered)
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (error) {
+        <div class="error-message">
+          <mat-icon>error</mat-icon>
+          <span>{{ error }}</span>
+        </div>
+      }
+
+      <div class="questions-list">
+        @for (question of questions; track question.id) {
+          <div class="question-item" [class.answered]="isQuestionAnswered(question)">
+            <div class="question-header">
+              <span class="question-number">Q{{ $index + 1 }}</span>
+              <span class="question-text">{{ question.question_text }}</span>
+              @if (question.required) {
+                <span class="required-badge">Required</span>
+              }
+            </div>
+
+            @if (question.context) {
+              <p class="question-context">{{ question.context }}</p>
+            }
+
+            <div class="options-list">
+              <mat-radio-group
+                [value]="getAnswer(question.id)?.selectedOptionId"
+                (change)="onOptionChange(question.id, $event.value)"
+              >
+                @for (option of question.options; track option.id) {
+                  <mat-radio-button [value]="option.id" class="option-button">
+                    {{ option.label }}
+                  </mat-radio-button>
+                }
+                <mat-radio-button value="other" class="option-button other-option">
+                  Other (specify below)
+                </mat-radio-button>
+              </mat-radio-group>
+
+              @if (isOtherSelected(question.id)) {
+                <mat-form-field appearance="outline" class="other-input">
+                  <mat-label>Your answer</mat-label>
+                  <textarea
+                    matInput
+                    rows="2"
+                    [value]="getAnswer(question.id)?.otherText ?? ''"
+                    (input)="onOtherTextChange(question.id, $any($event.target).value)"
+                    placeholder="Please provide your specific answer..."
+                  ></textarea>
+                </mat-form-field>
+              }
+            </div>
+
+            <div class="question-source">
+              Source: {{ question.source }}
+            </div>
+          </div>
+        }
+      </div>
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button
+        mat-raised-button
+        color="primary"
+        [disabled]="!allRequiredAnswered || submitting"
+        (click)="submitAnswers()"
+      >
+        @if (submitting) {
+          <mat-spinner diameter="20" class="button-spinner"></mat-spinner>
+          Submitting...
+        } @else {
+          <mat-icon>send</mat-icon>
+          Submit All Answers
+        }
+      </button>
+    </mat-card-actions>
+  </mat-card>
+}

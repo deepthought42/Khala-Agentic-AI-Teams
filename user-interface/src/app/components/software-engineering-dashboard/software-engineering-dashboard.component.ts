@@ -27,6 +27,7 @@ import { FrontendCodeV2JobStatusComponent } from '../frontend-code-v2-job-status
 import { PlanningV2RunFormComponent } from '../planning-v2-run-form/planning-v2-run-form.component';
 import { PlanningV2JobStatusComponent } from '../planning-v2-job-status/planning-v2-job-status.component';
 import { RunTeamTrackingComponent } from '../run-team-tracking/run-team-tracking.component';
+import { PendingQuestionsComponent } from '../pending-questions/pending-questions.component';
 import type {
   RunTeamRequest,
   JobStatusResponse,
@@ -36,6 +37,7 @@ import type {
   BackendCodeV2RunRequest,
   FrontendCodeV2RunRequest,
   PlanningV2RunRequest,
+  PlanningV2StatusResponse,
   RunningJobSummary,
 } from '../../models';
 
@@ -68,6 +70,7 @@ import type {
     PlanningV2RunFormComponent,
     PlanningV2JobStatusComponent,
     RunTeamTrackingComponent,
+    PendingQuestionsComponent,
   ],
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
@@ -93,6 +96,10 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   selectedRunningJob: RunningJobSummary | null = null;
   /** Status for the selected run_team job in the panel (from JobStatusComponent). */
   panelRunTeamStatus: JobStatusResponse | null = null;
+  /** Status for planning-v2 job in the main tab. */
+  planningV2Status: PlanningV2StatusResponse | null = null;
+  /** Status for the selected planning_v2 job in the panel. */
+  panelPlanningV2Status: PlanningV2StatusResponse | null = null;
 
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
@@ -259,5 +266,29 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
         this.loading = false;
       },
     });
+  }
+
+  onAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.jobStatus = response as JobStatusResponse;
+  }
+
+  onPlanningV2StatusChange(status: PlanningV2StatusResponse): void {
+    this.planningV2Status = status;
+  }
+
+  onPlanningV2AnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.planningV2Status = response as PlanningV2StatusResponse;
+  }
+
+  onPanelRunTeamAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.panelRunTeamStatus = response as JobStatusResponse;
+  }
+
+  onPanelPlanningV2StatusChange(status: PlanningV2StatusResponse): void {
+    this.panelPlanningV2Status = status;
+  }
+
+  onPanelPlanningV2AnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.panelPlanningV2Status = response as PlanningV2StatusResponse;
   }
 }

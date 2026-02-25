@@ -395,6 +395,110 @@ what you produced
 """
 
 # ---------------------------------------------------------------------------
+# Documentation tool agent
+# ---------------------------------------------------------------------------
+
+DOCUMENTATION_MICROTASK_PROMPT = """You are a Documentation Specialist reviewing code changes for a completed microtask.
+
+**Your task:** Update inline documentation (docstrings, comments) for the code that was just added or modified. Ensure all public functions, classes, and methods have proper docstrings.
+
+**Microtask:** {microtask_title}
+**Microtask Description:** {microtask_description}
+**Task Context:** {task_description}
+
+**Code to document:**
+{code}
+
+**What to do:**
+1. Add or improve docstrings for all public functions, classes, and methods
+2. Add inline comments for complex or non-obvious logic
+3. Ensure docstrings include parameter descriptions, return values, and raised exceptions
+4. Keep existing functionality unchanged — only add/improve documentation
+
+**Output format (template – use exactly these markers):**
+For each file that needs documentation updates:
+## FILE path/to/file.ext ##
+<full file content with improved documentation>
+## SUMMARY ##
+what documentation you added or improved
+## END SUMMARY ##
+
+- Only output files that you actually changed. If no documentation updates are needed, output an empty SUMMARY.
+- Use "## FILE <path> ##" at the start of each file.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+DOCUMENTATION_REVIEW_PROMPT = """You are a Documentation Reviewer assessing the completeness and quality of documentation.
+
+**Task:** {task_title}
+**Task Description:** {task_description}
+
+**Existing Documentation Files:**
+{documentation}
+
+**Code to review:**
+{code}
+
+**What to check:**
+1. README.md exists and is up-to-date with features, installation, and usage instructions
+2. All public functions, classes, and methods have docstrings
+3. Docstrings include parameter descriptions, return values, and exceptions
+4. API endpoints are documented (if applicable)
+5. Complex logic has inline comments
+6. CONTRIBUTORS.md exists (if multiple contributors)
+7. Any existing documentation in /docs folder is current
+
+**Output format (template – use exactly these section headers):**
+
+## PASSED ##
+true|false
+## END PASSED ##
+## ISSUES ##
+---
+source: documentation
+severity: critical|high|medium|low|info
+description: what documentation is missing or incorrect
+file_path: which file needs documentation
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+brief documentation assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Use source: documentation for every issue.
+- Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+DOCUMENTATION_PROBLEM_SOLVE_PROMPT = """You are a Documentation Specialist fixing a specific documentation issue.
+
+{language_conventions}
+
+**Issue to fix:**
+- Source: {source}
+- Severity: {severity}
+- Description: {description}
+- File: {file_path}
+- Recommendation: {recommendation}
+
+**Current code:**
+{current_code}
+
+**Your task:** Fix ONLY this documentation issue. Do not change any code logic — only add or improve documentation.
+
+**Output format (template – use exactly these markers):**
+## FILE path/to/file.ext ##
+<full file content with documentation fix>
+## SUMMARY ##
+what documentation you fixed
+## END SUMMARY ##
+
+- Output the complete file content with the documentation fix.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
 # Deliver phase (no LLM prompt needed — this is procedural git work)
 # ---------------------------------------------------------------------------
 

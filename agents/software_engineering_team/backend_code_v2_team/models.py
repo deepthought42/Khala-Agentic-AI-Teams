@@ -7,7 +7,7 @@ All types are defined from scratch — no reuse of ``backend_agent`` models.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,14 +24,18 @@ class Phase(str, Enum):
     EXECUTION = "execution"
     REVIEW = "review"
     PROBLEM_SOLVING = "problem_solving"
+    DOCUMENTATION = "documentation"
     DELIVER = "deliver"
 
 
 class MicrotaskStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    IN_REVIEW = "in_review"
+    IN_DOCUMENTATION = "in_documentation"
     COMPLETED = "completed"
     FAILED = "failed"
+    REVIEW_FAILED = "review_failed"
     SKIPPED = "skipped"
 
 
@@ -137,6 +141,15 @@ class ProblemSolvingResult(BaseModel):
     )
 
 
+class DocumentationPhaseResult(BaseModel):
+    """Output of the Documentation phase."""
+
+    files: Dict[str, str] = Field(default_factory=dict, description="All files with documentation updates")
+    iterations: int = Field(default=0, description="Number of review/fix iterations")
+    issues_fixed: int = Field(default=0, description="Total documentation issues fixed")
+    summary: str = Field(default="")
+
+
 class DeliverResult(BaseModel):
     """Output of the Deliver phase."""
 
@@ -167,6 +180,7 @@ class BackendCodeV2WorkflowResult(BaseModel):
     execution_result: Optional[ExecutionResult] = None
     review_result: Optional[ReviewResult] = None
     problem_solving_result: Optional[ProblemSolvingResult] = None
+    documentation_result: Optional[DocumentationPhaseResult] = None
     deliver_result: Optional[DeliverResult] = None
     final_files: Dict[str, str] = Field(default_factory=dict)
     summary: str = Field(default="")
@@ -222,3 +236,29 @@ class ToolAgentOutput(BaseModel):
     recommendations: List[str] = Field(default_factory=list)
     summary: str = Field(default="")
     success: bool = Field(default=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-microtask review configuration
+# ---------------------------------------------------------------------------
+
+class MicrotaskReviewConfig(BaseModel):
+    """Configuration for per-microtask review gates."""
+
+    max_retries: int = Field(
+        default=3,
+        description="Max problem-solving attempts per microtask before marking as failed",
+    )
+    on_failure: Literal["stop", "skip_continue"] = Field(
+        default="skip_continue",
+        description="Behavior when max retries exceeded: 'stop' aborts workflow, 'skip_continue' proceeds to next microtask",
+    )
+
+
+class MicrotaskReviewFailedError(Exception):
+    """Raised when a microtask fails review and on_failure='stop'."""
+
+    def __init__(self, microtask: "Microtask", review_result: "ReviewResult") -> None:
+        self.microtask = microtask
+        self.review_result = review_result
+        super().__init__(f"Microtask {microtask.id} failed review after max retries")

@@ -1,4 +1,13 @@
-"""Prompts for planning-v2 phases. No reuse from planning_team."""
+"""
+Prompts for planning-v2 phases and tool agent orchestration.
+
+No reuse from planning_team. Tool agents have their own embedded prompts.
+These prompts are used by the orchestrator and phase implementations.
+"""
+
+# ---------------------------------------------------------------------------
+# Phase-level prompts (used by orchestrator phases)
+# ---------------------------------------------------------------------------
 
 SPEC_REVIEW_PROMPT = """You are a System Design and Architecture expert. Review the following product specification.
 
@@ -48,6 +57,11 @@ Spec excerpt:
 ---
 {spec_content}
 ---
+
+Artifacts to review:
+---
+{artifacts}
+---
 """
 
 PROBLEM_SOLVING_PROMPT = """You are a problem-solving expert. Given review issues, suggest fixes.
@@ -58,4 +72,51 @@ Respond with a JSON object only:
 - "summary": string
 
 Review issues: {issues}
+"""
+
+# ---------------------------------------------------------------------------
+# Orchestration prompts (for coordinating tool agents)
+# ---------------------------------------------------------------------------
+
+TOOL_AGENT_COORDINATION_PROMPT = """You are coordinating multiple planning tool agents.
+
+Current phase: {phase}
+Active tool agents: {active_agents}
+
+Spec:
+---
+{spec_content}
+---
+
+Prior results:
+{prior_results}
+
+Determine what each tool agent should focus on for this phase.
+
+Respond with JSON:
+{{
+  "agent_instructions": [
+    {{"agent": "system_design", "focus": "what to focus on"}},
+    {{"agent": "architecture", "focus": "what to focus on"}}
+  ],
+  "summary": "coordination summary"
+}}
+"""
+
+DELIVERABLES_CONSOLIDATION_PROMPT = """You are consolidating planning deliverables from multiple tool agents.
+
+Tool agent outputs:
+---
+{tool_agent_outputs}
+---
+
+Create a unified summary and identify any conflicts or gaps.
+
+Respond with JSON:
+{{
+  "consolidated_summary": "unified summary of all outputs",
+  "conflicts": ["any conflicts between agent outputs"],
+  "gaps": ["any remaining gaps"],
+  "next_steps": ["recommended next steps"]
+}}
 """

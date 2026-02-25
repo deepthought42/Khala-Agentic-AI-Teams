@@ -1,0 +1,147 @@
+.pending-questions-card {
+  margin: 1rem 0;
+
+  .header-icon {
+    color: #ff9800;
+    font-size: 40px;
+    width: 40px;
+    height: 40px;
+  }
+
+  mat-card-header {
+    margin-bottom: 1rem;
+  }
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background-color: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+
+  mat-icon {
+    flex-shrink: 0;
+  }
+}
+
+.questions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.question-item {
+  padding: 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background-color: #fafafa;
+  transition: border-color 0.2s, background-color 0.2s;
+
+  &.answered {
+    border-color: #4caf50;
+    background-color: #f1f8e9;
+  }
+}
+
+.question-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.question-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  background-color: #1976d2;
+  color: white;
+  border-radius: 16px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.question-text {
+  flex: 1;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.required-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background-color: #ff5722;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.question-context {
+  margin: 0 0 0.75rem 0;
+  padding-left: 40px;
+  color: #666;
+  font-size: 0.875rem;
+  font-style: italic;
+}
+
+.options-list {
+  padding-left: 40px;
+
+  mat-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .option-button {
+    margin-bottom: 4px;
+  }
+
+  .other-option {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed #e0e0e0;
+  }
+}
+
+.other-input {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.question-source {
+  margin-top: 0.75rem;
+  padding-left: 40px;
+  font-size: 0.75rem;
+  color: #999;
+}
+
+mat-card-actions {
+  padding: 1rem;
+  border-top: 1px solid #e0e0e0;
+
+  button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+}
+
+.button-spinner {
+  margin-right: 0.25rem;
+
+  ::ng-deep circle {
+    stroke: white;
+  }
+}

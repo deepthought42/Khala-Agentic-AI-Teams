@@ -7,9 +7,11 @@ All types are defined from scratch — no reuse of planning_team or project_plan
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +42,51 @@ class PlanningRole(str, Enum):
     TASK_DEPENDENCY_ANALYZER = "task_dependency_analyzer"
 
 
+class ToolAgentKind(str, Enum):
+    """Tool agent types for the planning-v2 team (8 tool agents)."""
+
+    SYSTEM_DESIGN = "system_design"
+    ARCHITECTURE = "architecture"
+    USER_STORY = "user_story"
+    DEVOPS = "devops"
+    UI_DESIGN = "ui_design"
+    UX_DESIGN = "ux_design"
+    TASK_CLASSIFICATION = "task_classification"
+    TASK_DEPENDENCY = "task_dependency"
+
+
+# ---------------------------------------------------------------------------
+# Tool Agent Phase Input/Output
+# ---------------------------------------------------------------------------
+
+
+class ToolAgentPhaseInput(BaseModel):
+    """Input to a tool agent's phase method (plan/execute/review/problem_solve/deliver)."""
+
+    spec_content: str = Field(default="")
+    inspiration_content: str = Field(default="")
+    repo_path: str = Field(default="")
+    spec_review_result: Optional[Any] = None
+    planning_result: Optional[Any] = None
+    implementation_result: Optional[Any] = None
+    review_result: Optional[Any] = None
+    current_files: Dict[str, str] = Field(default_factory=dict)
+    review_issues: List[str] = Field(default_factory=list)
+    hierarchy: Optional[PlanningHierarchy] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolAgentPhaseOutput(BaseModel):
+    """Output from a tool agent's phase method."""
+
+    summary: str = Field(default="")
+    recommendations: List[str] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+    files: Dict[str, str] = Field(default_factory=dict)
+    hierarchy: Optional[PlanningHierarchy] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Phase result types (optional, for passing data between phases)
 # ---------------------------------------------------------------------------
@@ -56,12 +103,13 @@ class SpecReviewResult(BaseModel):
 
 
 class PlanningPhaseResult(BaseModel):
-    """Output of Planning phase (high-level plan, milestones, user stories)."""
+    """Output of Planning phase (high-level plan, milestones, user stories, hierarchy)."""
 
     milestones: List[str] = Field(default_factory=list)
     user_stories: List[str] = Field(default_factory=list)
     high_level_plan: str = Field(default="")
     summary: str = Field(default="")
+    hierarchy: Optional[PlanningHierarchy] = None
 
 
 class ImplementationPhaseResult(BaseModel):
@@ -117,3 +165,7 @@ class PlanningV2WorkflowResult(BaseModel):
     review_result: Optional[ReviewPhaseResult] = None
     problem_solving_result: Optional[ProblemSolvingPhaseResult] = None
     deliver_result: Optional[DeliverPhaseResult] = None
+    user_answers: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="User answers to open questions submitted during the workflow.",
+    )

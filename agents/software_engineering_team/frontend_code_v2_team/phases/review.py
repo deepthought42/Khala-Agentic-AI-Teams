@@ -16,6 +16,7 @@ from shared.models import Task
 
 from ..models import (
     ExecutionResult,
+    Microtask,
     Phase,
     ReviewIssue,
     ReviewResult,
@@ -214,4 +215,165 @@ def run_review(
 
     passed = build_ok and lint_ok and len([i for i in issues if i.severity in ("critical", "high")]) == 0
     summary = f"Review {'passed' if passed else 'failed'}; {len(issues)} issue(s)."
+    return ReviewResult(passed=passed, issues=issues, build_ok=build_ok, lint_ok=lint_ok, summary=summary)
+
+
+def run_microtask_review(
+    *,
+    llm: LLMClient,
+    task: Task,
+    microtask: Microtask,
+    repo_path: Path,
+    files: Dict[str, str],
+    build_verifier: Optional[Callable[..., Tuple[bool, str]]] = None,
+    qa_agent: Any = None,
+    security_agent: Any = None,
+    code_review_agent: Any = None,
+    linting_tool_agent: Any = None,
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+) -> ReviewResult:
+    """
+    Run full review on a single microtask's output files.
+
+    This function performs the same checks as run_review() but is scoped to the
+    files produced by a single microtask, enabling per-microtask quality gates.
+    """
+    task_id = task.id
+    microtask_id = microtask.id
+    issues: List[ReviewIssue] = []
+
+    logger.info("[%s] Running microtask review for %s (%d files)", task_id, microtask_id, len(files))
+
+    build_ok, build_msg = _run_build_verification(repo_path, build_verifier, task_id)
+    if not build_ok:
+        issues.append(ReviewIssue(
+            source="build",
+            severity="critical",
+            description=f"Build failed after microtask {microtask_id}: {build_msg[:300]}",
+            recommendation="Fix build errors before proceeding.",
+        ))
+
+    lint_ok = True
+    if linting_tool_agent is not None:
+        try:
+            from linting_tool_agent.models import LintToolInput as _LintInput
+            lint_result = linting_tool_agent.run(_LintInput(
+                repo_path=str(repo_path),
+                agent_type="frontend",
+                task_id=task_id,
+                task_description=f"Microtask: {microtask.title or microtask_id}",
+            ))
+            if lint_result and not getattr(
+                lint_result.execution_result, "success", getattr(lint_result, "passed", True)
+            ):
+                lint_ok = False
+                for li in getattr(lint_result, "linter_issues", getattr(lint_result, "issues", [])):
+                    file_path = getattr(li, "file_path", "")
+                    if files and file_path and file_path not in files:
+                        continue
+                    issues.append(ReviewIssue(
+                        source="lint",
+                        severity=getattr(li, "severity", "medium"),
+                        description=getattr(li, "message", str(li)),
+                        file_path=file_path,
+                        recommendation="",
+                    ))
+        except Exception as exc:
+            logger.warning("[%s] Linting tool agent failed for microtask %s: %s", task_id, microtask_id, exc)
+
+    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(files.items())[:20])
+    code_text_12k = code_text[:12000]
+
+    if code_review_agent is not None:
+        try:
+            from code_review_agent.models import CodeReviewInput as _CRInput
+            cr_input = _CRInput(
+                code=code_text_12k,
+                task_description=f"Microtask: {microtask.description or microtask.title}",
+                task_requirements=task.requirements or "",
+                acceptance_criteria=getattr(task, "acceptance_criteria", []) or [],
+                language="typescript",
+            )
+            cr_result = code_review_agent.run(cr_input)
+            for item in getattr(cr_result, "issues", []):
+                issues.append(ReviewIssue(
+                    source="code_review",
+                    severity=getattr(item, "severity", "medium"),
+                    description=getattr(item, "description", str(item)),
+                    file_path=getattr(item, "file_path", ""),
+                    recommendation=getattr(item, "recommendation", ""),
+                ))
+        except Exception as exc:
+            logger.warning("[%s] Code review agent failed for microtask %s, using LLM fallback: %s", task_id, microtask_id, exc)
+            issues.extend(_run_llm_review(llm=llm, task=task, files=files))
+    else:
+        issues.extend(_run_llm_review(llm=llm, task=task, files=files))
+
+    if qa_agent is not None:
+        try:
+            from qa_agent.models import QAInput as _QAInput
+            qa_input = _QAInput(
+                code=code_text_12k,
+                language="typescript",
+                task_description=f"Microtask: {microtask.description or microtask.title}",
+            )
+            qa_result = qa_agent.run(qa_input)
+            for item in getattr(qa_result, "bugs_found", getattr(qa_result, "issues", [])):
+                issues.append(ReviewIssue(
+                    source="qa",
+                    severity=getattr(item, "severity", "medium"),
+                    description=getattr(item, "description", str(item)),
+                    file_path=getattr(item, "location", getattr(item, "file_path", "")),
+                    recommendation=getattr(item, "recommendation", ""),
+                ))
+        except Exception as exc:
+            logger.warning("[%s] QA agent failed for microtask %s: %s", task_id, microtask_id, exc)
+
+    if security_agent is not None:
+        try:
+            from security_agent.models import SecurityInput as _SecInput
+            sec_input = _SecInput(
+                code=code_text_12k,
+                language="typescript",
+                task_description=f"Microtask: {microtask.description or microtask.title}",
+            )
+            sec_result = security_agent.run(sec_input)
+            for item in getattr(sec_result, "vulnerabilities", getattr(sec_result, "issues", [])):
+                issues.append(ReviewIssue(
+                    source="security",
+                    severity=getattr(item, "severity", "high"),
+                    description=getattr(item, "description", str(item)),
+                    file_path=getattr(item, "location", getattr(item, "file_path", "")),
+                    recommendation=getattr(item, "recommendation", ""),
+                ))
+        except Exception as exc:
+            logger.warning("[%s] Security agent failed for microtask %s: %s", task_id, microtask_id, exc)
+
+    if tool_agents:
+        phase_inp = ToolAgentPhaseInput(
+            phase=Phase.REVIEW,
+            microtask=microtask,
+            repo_path=str(repo_path),
+            current_files=files,
+            review_issues=issues,
+            task_title=task.title or "",
+            task_description=f"Microtask: {microtask.description or microtask.title}",
+            task_id=task_id,
+        )
+        for kind, agent in tool_agents.items():
+            if not hasattr(agent, "review"):
+                continue
+            try:
+                out = agent.review(phase_inp)
+                if out.issues:
+                    issues.extend(out.issues)
+                if out.recommendations:
+                    for r in out.recommendations:
+                        issues.append(ReviewIssue(source=kind.value, severity="info", description=r, recommendation=""))
+            except Exception as exc:
+                logger.warning("[%s] Tool agent %s review() failed for microtask %s: %s", task_id, kind.value, microtask_id, exc)
+
+    passed = build_ok and lint_ok and len([i for i in issues if i.severity in ("critical", "high")]) == 0
+    summary = f"Microtask {microtask_id} review {'passed' if passed else 'failed'}; {len(issues)} issue(s)."
+    logger.info("[%s] %s", task_id, summary)
     return ReviewResult(passed=passed, issues=issues, build_ok=build_ok, lint_ok=lint_ok, summary=summary)

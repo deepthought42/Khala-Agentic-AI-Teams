@@ -21,6 +21,13 @@
       <app-run-team-form (submitRequest)="onRunTeamSubmit($event)" />
       @if (jobId) {
         <app-job-status [jobId]="jobId" (statusChange)="jobStatus = $event" />
+        @if (jobStatus?.waiting_for_answers && jobStatus?.pending_questions?.length) {
+          <app-pending-questions
+            [jobId]="jobId"
+            [questions]="jobStatus!.pending_questions ?? []"
+            (answersSubmitted)="onAnswersSubmitted($event)"
+          />
+        }
         <app-run-team-tracking [jobId]="jobId" [status]="jobStatus" />
         <app-retry-failed
           [jobId]="jobId"
@@ -70,7 +77,18 @@
     <div class="tab-content">
       <app-planning-v2-run-form (submitRequest)="onPlanningV2Submit($event)" />
       @if (planningV2JobId) {
-        <app-planning-v2-job-status [jobId]="planningV2JobId" />
+        <app-planning-v2-job-status
+          [jobId]="planningV2JobId"
+          (statusChange)="onPlanningV2StatusChange($event)"
+        />
+        @if (planningV2Status?.waiting_for_answers && planningV2Status?.pending_questions?.length) {
+          <app-pending-questions
+            [jobId]="planningV2JobId"
+            [questions]="planningV2Status!.pending_questions ?? []"
+            submitEndpoint="planning-v2"
+            (answersSubmitted)="onPlanningV2AnswersSubmitted($event)"
+          />
+        }
       }
     </div>
   </mat-tab>
@@ -144,6 +162,13 @@
                     [jobId]="selectedRunningJob.job_id"
                     (statusChange)="panelRunTeamStatus = $event"
                   />
+                  @if (panelRunTeamStatus?.waiting_for_answers && panelRunTeamStatus?.pending_questions?.length) {
+                    <app-pending-questions
+                      [jobId]="selectedRunningJob.job_id"
+                      [questions]="panelRunTeamStatus!.pending_questions ?? []"
+                      (answersSubmitted)="onPanelRunTeamAnswersSubmitted($event)"
+                    />
+                  }
                   @if (panelRunTeamStatus) {
                     <app-run-team-tracking
                       [jobId]="selectedRunningJob.job_id"
@@ -158,7 +183,18 @@
                   <app-frontend-code-v2-job-status [jobId]="selectedRunningJob.job_id" />
                 }
                 @case ('planning_v2') {
-                  <app-planning-v2-job-status [jobId]="selectedRunningJob.job_id" />
+                  <app-planning-v2-job-status
+                    [jobId]="selectedRunningJob.job_id"
+                    (statusChange)="onPanelPlanningV2StatusChange($event)"
+                  />
+                  @if (panelPlanningV2Status?.waiting_for_answers && panelPlanningV2Status?.pending_questions?.length) {
+                    <app-pending-questions
+                      [jobId]="selectedRunningJob.job_id"
+                      [questions]="panelPlanningV2Status!.pending_questions ?? []"
+                      submitEndpoint="planning-v2"
+                      (answersSubmitted)="onPanelPlanningV2AnswersSubmitted($event)"
+                    />
+                  }
                 }
                 @default {
                   <app-job-status [jobId]="selectedRunningJob.job_id" (statusChange)="panelRunTeamStatus = $event" />
