@@ -48,6 +48,7 @@ export interface TeamProgressEntry {
   progress?: number;
   current_task_id?: string;
   current_microtask?: string;
+  current_microtask_phase?: string;
   microtasks_completed?: number;
   microtasks_total?: number;
 }
@@ -81,6 +82,13 @@ export const CODE_TEAM_PHASES: PhaseDefinition[] = [
   { id: 'execution', label: 'Execution', icon: 'code' },
   { id: 'documentation', label: 'Documentation', icon: 'article' },
   { id: 'deliver', label: 'Deliver', icon: 'local_shipping' },
+];
+
+/** Microtask lifecycle phases within execution. */
+export const MICROTASK_PHASES: PhaseDefinition[] = [
+  { id: 'coding', label: 'Coding', icon: 'code' },
+  { id: 'review', label: 'Review', icon: 'rate_review' },
+  { id: 'problem_solving', label: 'Problem Solving', icon: 'psychology' },
 ];
 
 /** Response from GET /run-team/{job_id}. */

@@ -264,12 +264,17 @@ def run_microtask_review(
     code_review_agent: Any = None,
     linting_tool_agent: Any = None,
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    detail_callback: Optional[Callable[[str], None]] = None,
 ) -> ReviewResult:
     """
     Run full review on a single microtask's output files.
 
     This function performs the same checks as run_review() but is scoped to the
     files produced by a single microtask, enabling per-microtask quality gates.
+
+    Args:
+        detail_callback: Optional callback to report detailed status messages
+            (e.g., "Running build verification...", "Running linter...").
     """
     task_id = task.id
     microtask_id = microtask.id
@@ -277,6 +282,8 @@ def run_microtask_review(
 
     logger.info("[%s] Running microtask review for %s (%d files)", task_id, microtask_id, len(files))
 
+    if detail_callback:
+        detail_callback("Running build verification...")
     build_ok, build_msg = _run_build_verification(repo_path, build_verifier, task_id)
     if not build_ok:
         issues.append(ReviewIssue(
@@ -288,6 +295,8 @@ def run_microtask_review(
 
     lint_ok = True
     if linting_tool_agent is not None:
+        if detail_callback:
+            detail_callback("Running linter...")
         try:
             from linting_tool_agent.models import LintToolInput as _LintInput
             lint_result = linting_tool_agent.run(_LintInput(
@@ -320,6 +329,8 @@ def run_microtask_review(
     code_text_12k = code_text[:12000]
 
     if code_review_agent is not None:
+        if detail_callback:
+            detail_callback("Running code review...")
         try:
             from code_review_agent.models import CodeReviewInput as _CRInput
             cr_input = _CRInput(
@@ -342,9 +353,13 @@ def run_microtask_review(
             logger.warning("[%s] Code review agent failed for microtask %s, using LLM fallback: %s", task_id, microtask_id, exc)
             issues.extend(_run_llm_review(llm=llm, task=task, files=files))
     else:
+        if detail_callback:
+            detail_callback("Running code review...")
         issues.extend(_run_llm_review(llm=llm, task=task, files=files))
 
     if qa_agent is not None:
+        if detail_callback:
+            detail_callback("Running QA check...")
         try:
             from qa_agent.models import QAInput as _QAInput
             qa_input = _QAInput(
@@ -365,6 +380,8 @@ def run_microtask_review(
             logger.warning("[%s] QA agent failed for microtask %s: %s", task_id, microtask_id, exc)
 
     if security_agent is not None:
+        if detail_callback:
+            detail_callback("Running security scan...")
         try:
             from security_agent.models import SecurityInput as _SecInput
             sec_input = _SecInput(

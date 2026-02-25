@@ -8,7 +8,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { Subscription, switchMap, timer } from 'rxjs';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import type { JobStatusResponse, TaskStateEntry, TeamProgressEntry } from '../../models';
-import { PLANNING_V2_PHASES, CODE_TEAM_PHASES, type PhaseDefinition } from '../../models';
+import { PLANNING_V2_PHASES, CODE_TEAM_PHASES, MICROTASK_PHASES, type PhaseDefinition } from '../../models';
 
 /** Team display order for swim lanes. */
 const TEAM_ORDER = ['git_setup', 'devops', 'backend-code-v2', 'frontend-code-v2', 'backend', 'frontend'];
@@ -311,5 +311,50 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
   /** Check if we should show the execution subprocess section. */
   showExecutionSubprocess(): boolean {
     return this.status?.phase === 'execution' && this.getExecutionTeams().length > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Task Title and Microtask Phase Tracking
+  // ---------------------------------------------------------------------------
+
+  /** Get the title of the current task for a team from task_states. */
+  getTaskTitle(teamId: string): string | null {
+    const taskId = this.status?.team_progress?.[teamId]?.current_task_id;
+    if (!taskId) return null;
+    const taskState = this.status?.task_states?.[taskId];
+    return taskState?.title ?? taskId;
+  }
+
+  /** Get microtask phases for display. */
+  getMicrotaskPhases(): PhaseDefinition[] {
+    return MICROTASK_PHASES;
+  }
+
+  /** Check if a microtask phase has been completed for a team. */
+  isMicrotaskPhaseCompleted(teamId: string, phaseId: string): boolean {
+    const currentPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    if (!currentPhase) return false;
+    if (currentPhase === 'completed') return true;
+    const phaseOrder = MICROTASK_PHASES.map(p => p.id);
+    const currentIdx = phaseOrder.indexOf(currentPhase);
+    const targetIdx = phaseOrder.indexOf(phaseId);
+    return currentIdx > targetIdx && targetIdx >= 0;
+  }
+
+  /** Check if a microtask phase is currently active for a team. */
+  isMicrotaskPhaseCurrent(teamId: string, phaseId: string): boolean {
+    const currentPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    return currentPhase === phaseId;
+  }
+
+  /** Check if a microtask phase is pending for a team. */
+  isMicrotaskPhasePending(teamId: string, phaseId: string): boolean {
+    return !this.isMicrotaskPhaseCompleted(teamId, phaseId) && !this.isMicrotaskPhaseCurrent(teamId, phaseId);
+  }
+
+  /** Check if we should show microtask phase stepper for a team. */
+  showMicrotaskPhases(teamId: string): boolean {
+    const teamProgress = this.status?.team_progress?.[teamId];
+    return teamProgress?.current_phase === 'execution' && !!teamProgress?.current_microtask;
   }
 }

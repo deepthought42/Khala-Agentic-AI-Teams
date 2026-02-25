@@ -132,6 +132,14 @@ class TeamProgressEntry(BaseModel):
     progress: Optional[int] = Field(None, description="0-100 completion for this team.")
     current_task_id: Optional[str] = Field(None, description="Task ID currently being executed by this team.")
     current_microtask: Optional[str] = Field(None, description="Title of the currently executing microtask.")
+    current_microtask_phase: Optional[str] = Field(
+        None,
+        description="Current phase of the microtask: coding, review, or problem_solving.",
+    )
+    phase_detail: Optional[str] = Field(
+        None,
+        description="Human-readable detail about what's happening within the current phase.",
+    )
     microtasks_completed: Optional[int] = Field(None, description="Number of microtasks completed.")
     microtasks_total: Optional[int] = Field(None, description="Total number of microtasks.")
 
@@ -431,6 +439,8 @@ def _parse_team_progress(raw: Any) -> Optional[Dict[str, TeamProgressEntry]]:
                 progress=entry.get("progress"),
                 current_task_id=entry.get("current_task_id"),
                 current_microtask=entry.get("current_microtask"),
+                current_microtask_phase=entry.get("current_microtask_phase"),
+                phase_detail=entry.get("phase_detail"),
                 microtasks_completed=entry.get("microtasks_completed"),
                 microtasks_total=entry.get("microtasks_total"),
             )

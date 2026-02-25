@@ -39,6 +39,19 @@ def _section(text: str, start_marker: str, end_marker: str) -> str:
     return text[start:end].strip()
 
 
+def _normalize_file_path(path: str) -> str:
+    """Strip redundant backend/ prefix from path.
+    
+    The backend team operates within the backend directory, so LLM output
+    paths like 'backend/src/...' should be normalized to 'src/...'.
+    """
+    prefixes_to_strip = ("backend/", "./backend/")
+    for prefix in prefixes_to_strip:
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return path
+
+
 def parse_files_and_summary_template(text: str) -> Dict[str, Any]:
     """
     Parse template output that contains file blocks and an optional summary.
@@ -60,7 +73,7 @@ def parse_files_and_summary_template(text: str) -> Dict[str, Any]:
         content_end = next_section.start() if next_section else len(text)
         content = text[content_start:content_end].rstrip()
         if path:
-            files[path] = content
+            files[_normalize_file_path(path)] = content
 
     summary_section = _section(text, MARKER_SUMMARY, MARKER_END_SUMMARY)
     if summary_section:

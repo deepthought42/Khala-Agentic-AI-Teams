@@ -141,6 +141,11 @@ Implement the microtask described below. Produce complete, runnable component/se
 **Architecture context (if any):**
 {architecture_context}
 
+**File path rules:**
+- Use paths relative to the project root (e.g. `src/app/component.ts`, `src/styles.scss`)
+- Do NOT include `frontend/` prefix in paths — you are already in the frontend project
+- Example: use `src/app/app.component.ts`, NOT `frontend/src/app/app.component.ts`
+
 **Output format (template – use exactly these markers):**
 
 For each file, write:

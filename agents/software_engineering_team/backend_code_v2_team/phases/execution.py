@@ -96,7 +96,7 @@ def run_execution(
     architecture: Optional[SystemArchitecture] = None,
     existing_code: str = "",
     tool_runners: Optional[Dict[ToolAgentKind, ToolAgentRunner]] = None,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    progress_callback: Optional[Callable[[int, int, str, str, str], None]] = None,
     only_microtask_ids: Optional[List[str]] = None,
 ) -> ExecutionResult:
     """
@@ -108,7 +108,9 @@ def run_execution(
 
     ``tool_runners`` maps ToolAgentKind → callable(ToolAgentInput) → ToolAgentOutput.
     For microtasks whose tool_agent has no runner, fall back to general LLM code gen.
-    ``progress_callback(completed, total, current_microtask_title)`` is called after each.
+    ``progress_callback(completed, total, title, microtask_phase, phase_detail)`` is called during execution.
+    ``microtask_phase`` is one of: "coding", "review", "problem_solving", "completed".
+    ``phase_detail`` provides human-readable detail about the current action.
     """
     runners = tool_runners or {}
     all_files: Dict[str, str] = {}
@@ -126,6 +128,9 @@ def run_execution(
 
         mt.status = MicrotaskStatus.IN_PROGRESS
         logger.info("[%s] Execution: microtask %d/%d — %s (%s)", task.id, idx + 1, total, mt.id, mt.tool_agent.value)
+
+        if progress_callback:
+            progress_callback(len(completed_ids), total, mt.title or mt.id, "coding", "Generating code...")
 
         try:
             runner = runners.get(mt.tool_agent)
@@ -160,7 +165,7 @@ def run_execution(
             mt.notes = str(exc)
 
         if progress_callback:
-            progress_callback(len(completed_ids), total, mt.title or mt.id)
+            progress_callback(len(completed_ids), total, mt.title or mt.id, "completed", "")
 
     summary = f"Executed {len(completed_ids)}/{total} microtasks; {len(all_files)} files produced."
     return ExecutionResult(files=all_files, microtasks=microtasks, summary=summary)
@@ -184,7 +189,7 @@ def run_execution_with_review_gates(
     architecture: Optional[SystemArchitecture] = None,
     existing_code: str = "",
     tool_runners: Optional[Dict[ToolAgentKind, ToolAgentRunner]] = None,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    progress_callback: Optional[Callable[[int, int, str, str, str], None]] = None,
     only_microtask_ids: Optional[List[str]] = None,
     review_config: Optional[MicrotaskReviewConfig] = None,
     review_deps: Optional[ReviewDependencies] = None,
@@ -199,6 +204,10 @@ def run_execution_with_review_gates(
     If still failing after retries, behavior depends on review_config.on_failure:
     - "stop": raises MicrotaskReviewFailedError
     - "skip_continue": marks microtask as REVIEW_FAILED and continues
+
+    ``progress_callback(completed, total, title, microtask_phase, phase_detail)`` is called during execution.
+    ``microtask_phase`` is one of: "coding", "review", "problem_solving", "completed".
+    ``phase_detail`` provides human-readable detail about the current action.
     """
     from .review import run_microtask_review
     from .problem_solving import run_problem_solving_for_microtask
@@ -235,6 +244,16 @@ def run_execution_with_review_gates(
         mt.status = MicrotaskStatus.IN_PROGRESS
         logger.info("[%s] Execution: microtask %d/%d — %s (%s)", task_id, idx + 1, total, mt.id, mt.tool_agent.value)
 
+        if progress_callback:
+            progress_callback(len(completed_ids), total, mt.title or mt.id, "coding", "Generating code...")
+
+        def _detail_cb(detail: str) -> None:
+            """Forward phase detail to progress callback."""
+            if progress_callback:
+                progress_callback(len(completed_ids), total, mt.title or mt.id, current_phase, detail)
+
+        current_phase = "coding"
+
         try:
             runner = runners.get(mt.tool_agent)
             if runner is not None:
@@ -268,11 +287,15 @@ def run_execution_with_review_gates(
             mt.status = MicrotaskStatus.FAILED
             mt.notes = str(exc)
             if progress_callback:
-                progress_callback(len(completed_ids), total, mt.title or mt.id)
+                progress_callback(len(completed_ids), total, mt.title or mt.id, "completed", "")
             continue
 
         mt.status = MicrotaskStatus.IN_REVIEW
+        current_phase = "review"
         logger.info("[%s] Microtask %s: starting review", task_id, mt.id)
+
+        if progress_callback:
+            progress_callback(len(completed_ids), total, mt.title or mt.id, "review", "Starting review...")
 
         review_result = run_microtask_review(
             llm=llm,
@@ -286,6 +309,7 @@ def run_execution_with_review_gates(
             code_review_agent=deps.code_review_agent,
             linting_tool_agent=deps.linting_tool_agent,
             tool_agents=deps.tool_agents,
+            detail_callback=_detail_cb,
         )
 
         retry_count = 0
@@ -293,6 +317,10 @@ def run_execution_with_review_gates(
             retry_count += 1
             logger.info("[%s] Microtask %s: review failed, problem-solving attempt %d/%d",
                         task_id, mt.id, retry_count, config.max_retries)
+
+            current_phase = "problem_solving"
+            if progress_callback:
+                progress_callback(len(completed_ids), total, mt.title or mt.id, "problem_solving", "Analyzing issues...")
 
             ps_result = run_problem_solving_for_microtask(
                 llm=llm,
@@ -303,12 +331,17 @@ def run_execution_with_review_gates(
                 repo_path=str(repo_path),
                 tool_agents=deps.tool_agents,
                 task_id=task_id,
+                detail_callback=_detail_cb,
             )
 
             microtask_files = ps_result.files
             _write_microtask_files(repo_path, microtask_files)
             mt.output_files = microtask_files
             all_files.update(microtask_files)
+
+            current_phase = "review"
+            if progress_callback:
+                progress_callback(len(completed_ids), total, mt.title or mt.id, "review", "Re-running review...")
 
             review_result = run_microtask_review(
                 llm=llm,
@@ -322,6 +355,7 @@ def run_execution_with_review_gates(
                 code_review_agent=deps.code_review_agent,
                 linting_tool_agent=deps.linting_tool_agent,
                 tool_agents=deps.tool_agents,
+                detail_callback=_detail_cb,
             )
 
         if review_result.passed:
@@ -359,7 +393,7 @@ def run_execution_with_review_gates(
                 raise MicrotaskReviewFailedError(mt, review_result)
 
         if progress_callback:
-            progress_callback(len(completed_ids), total, mt.title or mt.id)
+            progress_callback(len(completed_ids), total, mt.title or mt.id, "completed", "")
 
     completed_count = len(completed_ids)
     failed_count = len(review_failed_ids)

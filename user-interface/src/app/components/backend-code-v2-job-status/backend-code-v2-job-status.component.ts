@@ -33,7 +33,7 @@ export class BackendCodeV2JobStatusComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.poll();
-    this.pollTimer = setInterval(() => this.poll(), 90000);
+    this.pollTimer = setInterval(() => this.poll(), 120000);
   }
 
   ngOnDestroy(): void {

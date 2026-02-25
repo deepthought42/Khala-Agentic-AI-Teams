@@ -74,9 +74,21 @@
                     <span class="team-subprocess-pct">{{ team.progress.progress }}%</span>
                   }
                 </div>
+
+                <!-- Current Task Title -->
+                @if (getTaskTitle(team.teamId)) {
+                  <div class="team-current-task">
+                    <mat-icon>assignment</mat-icon>
+                    <span class="task-title-label">Task:</span>
+                    <span class="task-title-text">{{ getTaskTitle(team.teamId) }}</span>
+                  </div>
+                }
+
+                <!-- Current Microtask -->
                 @if (team.progress.current_microtask) {
                   <div class="team-microtask">
                     <mat-icon>code</mat-icon>
+                    <span class="microtask-label">Microtask:</span>
                     <span>{{ team.progress.current_microtask }}</span>
                     @if (team.progress.microtasks_completed != null && team.progress.microtasks_total != null) {
                       <span class="microtask-count">
@@ -84,7 +96,34 @@
                       </span>
                     }
                   </div>
+
+                  <!-- Microtask Phase Stepper -->
+                  @if (showMicrotaskPhases(team.teamId)) {
+                    <div class="microtask-phase-section">
+                      <span class="microtask-phase-label">Microtask Phase:</span>
+                      <div class="microtask-phase-stepper">
+                        @for (phase of getMicrotaskPhases(); track phase.id; let i = $index) {
+                          <div class="microtask-phase-step"
+                               [class.completed]="isMicrotaskPhaseCompleted(team.teamId, phase.id)"
+                               [class.current]="isMicrotaskPhaseCurrent(team.teamId, phase.id)"
+                               [class.pending]="isMicrotaskPhasePending(team.teamId, phase.id)">
+                            <div class="microtask-phase-node">
+                              <mat-icon>{{ phase.icon }}</mat-icon>
+                            </div>
+                            <span class="microtask-phase-name">{{ phase.label }}</span>
+                          </div>
+                          @if (i < getMicrotaskPhases().length - 1) {
+                            <div class="microtask-phase-connector"
+                                 [class.completed]="isMicrotaskPhaseCompleted(team.teamId, getMicrotaskPhases()[i + 1].id)">
+                            </div>
+                          }
+                        }
+                      </div>
+                    </div>
+                  }
                 }
+
+                <!-- Team Phase Stepper -->
                 <div class="subprocess-stepper subprocess-stepper-small">
                   @for (phase of getCodeTeamPhases(); track phase.id; let i = $index) {
                     <div class="subprocess-step"

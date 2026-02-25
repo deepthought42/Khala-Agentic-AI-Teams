@@ -148,6 +148,11 @@ Implement the microtask described below. Produce complete, runnable code files.
 **Architecture context (if any):**
 {architecture_context}
 
+**File path rules:**
+- Use paths relative to the project root (e.g. `src/main.py`, `src/services/user_service.py`)
+- Do NOT include `backend/` prefix in paths — you are already in the backend project
+- Example: use `src/main.py`, NOT `backend/src/main.py`
+
 **Output format (template – use exactly these markers):**
 
 For each file, write:

@@ -583,3 +583,163 @@ mat-progress-bar {
   font-weight: 500;
   color: var(--mat-sys-primary, #1976d2);
 }
+
+// Current task display
+.team-current-task {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--mat-sys-surface-container, #e8f5e9);
+  border-radius: 6px;
+  border-left: 3px solid var(--mat-sys-tertiary, #4caf50);
+  font-size: 13px;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: var(--mat-sys-tertiary, #4caf50);
+    flex-shrink: 0;
+  }
+
+  .task-title-label {
+    font-weight: 600;
+    color: var(--mat-sys-on-surface, #424242);
+    flex-shrink: 0;
+  }
+
+  .task-title-text {
+    color: var(--mat-sys-on-surface-variant, #616161);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.microtask-label {
+  font-weight: 600;
+  color: var(--mat-sys-on-surface, #424242);
+  flex-shrink: 0;
+}
+
+// Microtask phase section
+.microtask-phase-section {
+  margin: 8px 0 12px 0;
+  padding: 10px 12px;
+  background: var(--mat-sys-surface-container-low, #fafafa);
+  border-radius: 6px;
+  border: 1px dashed var(--mat-sys-outline-variant, #e0e0e0);
+}
+
+.microtask-phase-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--mat-sys-on-surface-variant, #757575);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.microtask-phase-stepper {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.microtask-phase-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 70px;
+}
+
+.microtask-phase-node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #e0e0e0;
+  background: white;
+  transition: all 0.2s ease;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    color: #9e9e9e;
+  }
+}
+
+.microtask-phase-name {
+  font-size: 10px;
+  font-weight: 500;
+  color: #9e9e9e;
+  text-align: center;
+  max-width: 70px;
+}
+
+.microtask-phase-step.completed {
+  .microtask-phase-node {
+    border-color: #4caf50;
+    background: #4caf50;
+
+    mat-icon {
+      color: white;
+    }
+  }
+
+  .microtask-phase-name {
+    color: #4caf50;
+  }
+}
+
+.microtask-phase-step.current {
+  .microtask-phase-node {
+    border-color: #ff9800;
+    background: #fff3e0;
+    box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.2);
+
+    mat-icon {
+      color: #ff9800;
+    }
+  }
+
+  .microtask-phase-name {
+    color: #ff9800;
+    font-weight: 600;
+  }
+}
+
+.microtask-phase-step.pending {
+  .microtask-phase-node {
+    border-color: #e0e0e0;
+    background: white;
+
+    mat-icon {
+      color: #bdbdbd;
+    }
+  }
+
+  .microtask-phase-name {
+    color: #9e9e9e;
+  }
+}
+
+.microtask-phase-connector {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 2px;
+  background: #e0e0e0;
+  margin-top: 13px;
+
+  &.completed {
+    background: #4caf50;
+  }
+}

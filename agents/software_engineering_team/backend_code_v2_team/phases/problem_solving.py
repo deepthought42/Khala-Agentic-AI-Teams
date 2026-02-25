@@ -9,7 +9,7 @@ are returned for the backend v2 agent to turn into fix microtasks.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from shared.llm import LLMClient
 from shared.models import Task
@@ -188,12 +188,17 @@ def run_problem_solving_for_microtask(
     repo_path: str = "",
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
     task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
 ) -> ProblemSolvingResult:
     """
     Fix issues for a single microtask, one issue at a time.
 
     This function is similar to run_problem_solving() but is scoped to a single
     microtask's files, enabling per-microtask problem-solving within the review loop.
+
+    Args:
+        detail_callback: Optional callback to report detailed status messages
+            (e.g., "Fixing issue 2/5: Missing null check...").
     """
     microtask_id = microtask.id
     actionable = [i for i in review_result.issues if i.severity in ("critical", "high", "medium")]
@@ -210,6 +215,8 @@ def run_problem_solving_for_microtask(
 
     for issue_idx, issue in enumerate(actionable):
         desc_short = (issue.description or "")[:80]
+        if detail_callback:
+            detail_callback(f"Fixing issue {issue_idx + 1}/{len(actionable)}: {desc_short[:50]}...")
         logger.info("[%s] Microtask %s: fixing issue %d/%d — %s", task_id, microtask_id, issue_idx + 1, len(actionable), desc_short)
         working = dict(merged)
         resolved_this = False
