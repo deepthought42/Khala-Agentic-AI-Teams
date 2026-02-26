@@ -11,12 +11,13 @@
   display: flex !important;
   flex-direction: row !important;
   justify-content: space-between !important;
-  align-items: flex-start !important;
+  align-items: center !important;
   width: 100%;
-  padding: 16px;
+  padding: 16px 24px 16px 16px;
+  box-sizing: border-box;
   
   .mat-mdc-card-header-text {
-    display: none; // Hide the default header text container
+    display: none;
   }
 }
 
@@ -49,7 +50,7 @@
   font-weight: 500;
   text-transform: capitalize;
   letter-spacing: 0.25px;
-  margin-right: 8px;
+  flex-shrink: 0;
 }
 
 .status-running {
