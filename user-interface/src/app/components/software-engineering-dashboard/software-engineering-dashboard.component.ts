@@ -13,7 +13,6 @@ import { ErrorMessageComponent } from '../../shared/error-message/error-message.
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
 import { RunTeamFormComponent } from '../run-team-form/run-team-form.component';
 import { RetryFailedComponent } from '../retry-failed/retry-failed.component';
-import { RePlanWithClarificationsComponent } from '../re-plan-with-clarifications/re-plan-with-clarifications.component';
 import { ClarificationSessionsComponent } from '../clarification-sessions/clarification-sessions.component';
 import { ClarificationChatComponent } from '../clarification-chat/clarification-chat.component';
 import { ExecutionTasksComponent } from '../execution-tasks/execution-tasks.component';
@@ -27,16 +26,19 @@ import { PlanningV2RunFormComponent } from '../planning-v2-run-form/planning-v2-
 import { PlanningV2JobStatusComponent } from '../planning-v2-job-status/planning-v2-job-status.component';
 import { RunTeamTrackingComponent } from '../run-team-tracking/run-team-tracking.component';
 import { PendingQuestionsComponent } from '../pending-questions/pending-questions.component';
+import { ProductAnalysisRunFormComponent } from '../product-analysis-run-form/product-analysis-run-form.component';
+import { ProductAnalysisJobStatusComponent } from '../product-analysis-job-status/product-analysis-job-status.component';
 import type {
   RunTeamRequest,
   JobStatusResponse,
-  RePlanWithClarificationsRequest,
   ClarificationCreateRequest,
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
   FrontendCodeV2RunRequest,
   PlanningV2RunRequest,
   PlanningV2StatusResponse,
+  ProductAnalysisRunRequest,
+  ProductAnalysisStatusResponse,
   RunningJobSummary,
 } from '../../models';
 
@@ -55,7 +57,6 @@ import type {
     HealthIndicatorComponent,
     RunTeamFormComponent,
     RetryFailedComponent,
-    RePlanWithClarificationsComponent,
     ClarificationSessionsComponent,
     ClarificationChatComponent,
     ExecutionTasksComponent,
@@ -69,6 +70,8 @@ import type {
     PlanningV2JobStatusComponent,
     RunTeamTrackingComponent,
     PendingQuestionsComponent,
+    ProductAnalysisRunFormComponent,
+    ProductAnalysisJobStatusComponent,
   ],
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
@@ -76,9 +79,10 @@ import type {
 export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy {
   private static readonly JOB_TYPE_TAB_MAP: Record<string, number> = {
     run_team: 0,
-    backend_code_v2: 3,
-    frontend_code_v2: 4,
-    planning_v2: 5,
+    product_analysis: 1,
+    backend_code_v2: 4,
+    frontend_code_v2: 5,
+    planning_v2: 6,
   };
   private readonly api = inject(SoftwareEngineeringApiService);
   private runningJobsSub: Subscription | null = null;
@@ -94,6 +98,7 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   backendCodeV2JobId: string | null = null;
   frontendCodeV2JobId: string | null = null;
   planningV2JobId: string | null = null;
+  productAnalysisJobId: string | null = null;
 
   /** Running jobs from GET /run-team/jobs; used by the right-hand panel. */
   runningJobs: RunningJobSummary[] = [];
@@ -103,6 +108,8 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   panelRunTeamStatus: JobStatusResponse | null = null;
   /** Status for planning-v2 job in the main tab. */
   planningV2Status: PlanningV2StatusResponse | null = null;
+  /** Status for product-analysis job in the main tab. */
+  productAnalysisStatus: ProductAnalysisStatusResponse | null = null;
   /** Status for the selected planning_v2 job in the panel. */
   panelPlanningV2Status: PlanningV2StatusResponse | null = null;
 
@@ -148,6 +155,9 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       case 'run_team':
         this.jobId = job.job_id;
         break;
+      case 'product_analysis':
+        this.productAnalysisJobId = job.job_id;
+        break;
       case 'backend_code_v2':
         this.backendCodeV2JobId = job.job_id;
         break;
@@ -163,6 +173,7 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   runningJobTypeLabel(jobType: string): string {
     const labels: Record<string, string> = {
       run_team: 'Run Team',
+      product_analysis: 'Product Analysis',
       backend_code_v2: 'Backend (v2)',
       frontend_code_v2: 'Frontend (v2)',
       planning_v2: 'Planning (v2)',
@@ -196,21 +207,6 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Retry failed';
-        this.loading = false;
-      },
-    });
-  }
-
-  onRePlanSubmit(request: RePlanWithClarificationsRequest): void {
-    if (!this.jobId) return;
-    this.loading = true;
-    this.error = null;
-    this.api.rePlanWithClarifications(this.jobId, request).subscribe({
-      next: () => {
-        this.loading = false;
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Re-plan failed';
         this.loading = false;
       },
     });
@@ -315,5 +311,29 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
 
   onPanelPlanningV2AnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
     this.panelPlanningV2Status = response as PlanningV2StatusResponse;
+  }
+
+  onProductAnalysisSubmit(request: ProductAnalysisRunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.productAnalysisJobId = null;
+    this.api.runProductAnalysis(request).subscribe({
+      next: (res) => {
+        this.productAnalysisJobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Product Analysis request failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onProductAnalysisStatusChange(status: ProductAnalysisStatusResponse): void {
+    this.productAnalysisStatus = status;
+  }
+
+  onProductAnalysisAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.productAnalysisStatus = response as unknown as ProductAnalysisStatusResponse;
   }
 }

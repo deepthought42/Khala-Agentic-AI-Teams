@@ -29,10 +29,92 @@
               @if (question.required) {
                 <span class="required-badge">Required</span>
               }
+              <button
+                mat-icon-button
+                class="auto-answer-btn"
+                [disabled]="isAutoAnswering(question.id)"
+                (click)="autoAnswerQuestion(question)"
+                matTooltip="Auto-answer using AI based on industry best practices"
+              >
+                @if (isAutoAnswering(question.id)) {
+                  <mat-spinner diameter="20"></mat-spinner>
+                } @else {
+                  <mat-icon>auto_awesome</mat-icon>
+                }
+              </button>
             </div>
 
             @if (question.context) {
               <p class="question-context">{{ question.context }}</p>
+            }
+
+            <!-- Auto-answer result panel -->
+            @if (hasAutoAnswerResult(question.id)) {
+              <div class="auto-answer-result">
+                <div class="auto-answer-header">
+                  <mat-icon>lightbulb</mat-icon>
+                  <span class="auto-answer-title">AI Recommendation</span>
+                  <span 
+                    class="confidence-badge"
+                    [class.high]="getAutoAnswerResult(question.id)!.confidence >= 0.8"
+                    [class.medium]="getAutoAnswerResult(question.id)!.confidence >= 0.6 && getAutoAnswerResult(question.id)!.confidence < 0.8"
+                    [class.low]="getAutoAnswerResult(question.id)!.confidence < 0.6"
+                  >
+                    {{ getConfidenceLabel(getAutoAnswerResult(question.id)!.confidence) }} confidence
+                    ({{ (getAutoAnswerResult(question.id)!.confidence * 100).toFixed(0) }}%)
+                  </span>
+                </div>
+                <div class="auto-answer-content">
+                  <p class="selected-answer">
+                    <strong>Recommended:</strong> {{ getAutoAnswerResult(question.id)!.selected_answer }}
+                  </p>
+                  <p class="rationale">{{ getAutoAnswerResult(question.id)!.rationale }}</p>
+                  @if (getAutoAnswerResult(question.id)!.risks.length > 0) {
+                    <div class="risks-section">
+                      <span class="risks-label">Potential risks:</span>
+                      <ul class="risks-list">
+                        @for (risk of getAutoAnswerResult(question.id)!.risks; track risk) {
+                          <li>{{ risk }}</li>
+                        }
+                      </ul>
+                    </div>
+                  }
+                </div>
+                <div class="auto-answer-actions">
+                  <button 
+                    mat-stroked-button 
+                    color="primary" 
+                    (click)="applyAutoAnswer(question.id)"
+                    [disabled]="isAutoAnswering(question.id)"
+                  >
+                    @if (isAutoAnswering(question.id)) {
+                      <mat-spinner diameter="16"></mat-spinner>
+                      Submitting...
+                    } @else {
+                      <ng-container>
+                        <mat-icon>check</mat-icon>
+                        Accept
+                      </ng-container>
+                    }
+                  </button>
+                  <button 
+                    mat-stroked-button 
+                    (click)="dismissAutoAnswer(question.id)"
+                    [disabled]="isAutoAnswering(question.id)"
+                  >
+                    <mat-icon>close</mat-icon>
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            }
+
+            <!-- Show if this was auto-answered and applied -->
+            @if (getAnswer(question.id)?.wasAutoAnswered) {
+              <div class="auto-answered-badge">
+                <mat-icon>auto_awesome</mat-icon>
+                <span>Auto-answered with {{ (getAnswer(question.id)!.autoAnswerConfidence * 100).toFixed(0) }}% confidence</span>
+              </div>
             }
 
             <div class="options-list">
@@ -41,9 +123,17 @@
                 (change)="onOptionChange(question.id, $event.value)"
               >
                 @for (option of question.options; track option.id) {
-                  <mat-radio-button [value]="option.id" class="option-button">
-                    {{ option.label }}
-                  </mat-radio-button>
+                  <div class="option-wrapper">
+                    <mat-radio-button [value]="option.id" class="option-button">
+                      {{ option.label }}
+                      @if (option.is_default) {
+                        <span class="default-badge">Recommended</span>
+                      }
+                    </mat-radio-button>
+                    @if (option.rationale) {
+                      <p class="option-rationale">{{ option.rationale }}</p>
+                    }
+                  </div>
                 }
                 <mat-radio-button value="other" class="option-button other-option">
                   Other (specify below)

@@ -100,6 +100,16 @@ class QuestionOption(BaseModel):
     is_default: bool = Field(
         default=False, description="Whether this is the recommended default"
     )
+    rationale: str = Field(
+        default="",
+        description="Why this option is recommended based on industry best practices",
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0-1.0) that this is the best choice",
+    )
 
 
 class OpenQuestion(BaseModel):
@@ -208,6 +218,10 @@ class DeliverPhaseResult(BaseModel):
 
     committed: bool = Field(default=False)
     summary: str = Field(default="")
+    final_spec_content: Optional[str] = Field(
+        default=None,
+        description="The final product spec content (from product_spec.md).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,4 +249,8 @@ class PlanningV2WorkflowResult(BaseModel):
     user_answers: Dict[str, Any] = Field(
         default_factory=dict,
         description="User answers to open questions submitted during the workflow.",
+    )
+    final_spec_content: Optional[str] = Field(
+        default=None,
+        description="The final approved product spec content after all iterations and updates.",
     )

@@ -25,6 +25,7 @@ class PlanningV2AdapterResult:
     open_questions: List[str]
     assumptions: List[str]
     hierarchy: Optional[PlanningHierarchy] = field(default=None)
+    final_spec_content: Optional[str] = field(default=None)
 
 
 def adapt_planning_v2_result(
@@ -128,10 +129,14 @@ def adapt_planning_v2_result(
     if not hierarchy and planning:
         hierarchy = getattr(planning, "hierarchy", None)
 
+    # Extract the final spec content from the result
+    final_spec_content: Optional[str] = getattr(result, "final_spec_content", None)
+
     return PlanningV2AdapterResult(
         requirements=requirements,
         project_overview=project_overview,
         open_questions=open_questions,
         assumptions=assumptions,
         hierarchy=hierarchy,
+        final_spec_content=final_spec_content,
     )

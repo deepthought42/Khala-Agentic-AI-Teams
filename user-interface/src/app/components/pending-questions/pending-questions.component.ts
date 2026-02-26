@@ -8,16 +8,24 @@ import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatExpansionModule } from '@angular/material/expansion';
+import { MatChipsModule } from '@angular/material/chips';
+import { Observable } from 'rxjs';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
-import type { PendingQuestion, AnswerSubmission, JobStatusResponse, PlanningV2StatusResponse } from '../../models';
+import type { PendingQuestion, AnswerSubmission, JobStatusResponse, PlanningV2StatusResponse, AutoAnswerResponse } from '../../models';
 
 /** Endpoint type determines which API to call for submitting answers. */
-export type SubmitEndpointType = 'run-team' | 'planning-v2';
+export type SubmitEndpointType = 'run-team' | 'planning-v2' | 'product-analysis';
 
 interface QuestionAnswer {
   questionId: string;
   selectedOptionId: string | null;
   otherText: string;
+  wasAutoAnswered: boolean;
+  autoAnswerRationale: string;
+  autoAnswerConfidence: number;
+  autoAnswerRisks: string[];
 }
 
 @Component({
@@ -33,6 +41,9 @@ interface QuestionAnswer {
     MatButtonModule,
     MatIconModule,
     MatProgressSpinnerModule,
+    MatTooltipModule,
+    MatExpansionModule,
+    MatChipsModule,
   ],
   templateUrl: './pending-questions.component.html',
   styleUrl: './pending-questions.component.scss',
@@ -42,13 +53,19 @@ export class PendingQuestionsComponent implements OnChanges {
 
   @Input() jobId: string | null = null;
   @Input() questions: PendingQuestion[] = [];
-  /** Which endpoint to call: 'run-team' (default) or 'planning-v2'. */
+  /** Which endpoint to call: 'run-team' (default), 'planning-v2', or 'product-analysis'. */
   @Input() submitEndpoint: SubmitEndpointType = 'run-team';
   @Output() answersSubmitted = new EventEmitter<JobStatusResponse | PlanningV2StatusResponse>();
 
   answers: Map<string, QuestionAnswer> = new Map();
   submitting = false;
   error: string | null = null;
+
+  /** Track which questions are currently being auto-answered. */
+  autoAnsweringQuestions: Set<string> = new Set();
+
+  /** Store auto-answer results for display. */
+  autoAnswerResults: Map<string, AutoAnswerResponse> = new Map();
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['questions']) {
@@ -57,13 +74,29 @@ export class PendingQuestionsComponent implements OnChanges {
   }
 
   private initializeAnswers(): void {
-    this.answers.clear();
+    const currentQuestionIds = new Set(this.questions.map(q => q.id));
+
+    // Remove answers for questions no longer present
+    for (const questionId of this.answers.keys()) {
+      if (!currentQuestionIds.has(questionId)) {
+        this.answers.delete(questionId);
+        this.autoAnswerResults.delete(questionId);
+      }
+    }
+
+    // Add default answers only for NEW questions
     for (const q of this.questions) {
-      this.answers.set(q.id, {
-        questionId: q.id,
-        selectedOptionId: null,
-        otherText: '',
-      });
+      if (!this.answers.has(q.id)) {
+        this.answers.set(q.id, {
+          questionId: q.id,
+          selectedOptionId: null,
+          otherText: '',
+          wasAutoAnswered: false,
+          autoAnswerRationale: '',
+          autoAnswerConfidence: 0,
+          autoAnswerRisks: [],
+        });
+      }
     }
   }
 
@@ -77,6 +110,9 @@ export class PendingQuestionsComponent implements OnChanges {
       answer.selectedOptionId = optionId;
       if (optionId !== 'other') {
         answer.otherText = '';
+      }
+      if (answer.wasAutoAnswered) {
+        answer.wasAutoAnswered = false;
       }
     }
   }
@@ -103,6 +139,18 @@ export class PendingQuestionsComponent implements OnChanges {
     return true;
   }
 
+  isAutoAnswering(questionId: string): boolean {
+    return this.autoAnsweringQuestions.has(questionId);
+  }
+
+  hasAutoAnswerResult(questionId: string): boolean {
+    return this.autoAnswerResults.has(questionId);
+  }
+
+  getAutoAnswerResult(questionId: string): AutoAnswerResponse | undefined {
+    return this.autoAnswerResults.get(questionId);
+  }
+
   get allRequiredAnswered(): boolean {
     return this.questions
       .filter((q) => q.required)
@@ -111,6 +159,98 @@ export class PendingQuestionsComponent implements OnChanges {
 
   get answeredCount(): number {
     return this.questions.filter((q) => this.isQuestionAnswered(q)).length;
+  }
+
+  autoAnswerQuestion(question: PendingQuestion): void {
+    if (!this.jobId || this.isAutoAnswering(question.id)) return;
+
+    this.autoAnsweringQuestions.add(question.id);
+    this.error = null;
+
+    const handleSuccess = (response: AutoAnswerResponse): void => {
+      this.autoAnsweringQuestions.delete(question.id);
+      this.autoAnswerResults.set(question.id, response);
+    };
+
+    const handleError = (err: { error?: { detail?: string }; message?: string }): void => {
+      this.autoAnsweringQuestions.delete(question.id);
+      this.error = `Auto-answer failed for Q${this.questions.indexOf(question) + 1}: ${err?.error?.detail ?? err?.message ?? 'Unknown error'}`;
+    };
+
+    if (this.submitEndpoint === 'planning-v2') {
+      this.api.autoAnswerPlanningV2(this.jobId, question.id).subscribe({
+        next: handleSuccess,
+        error: handleError,
+      });
+    } else if (this.submitEndpoint === 'product-analysis') {
+      this.api.autoAnswerProductAnalysis(this.jobId, question.id).subscribe({
+        next: handleSuccess,
+        error: handleError,
+      });
+    } else {
+      this.api.autoAnswerRunTeam(this.jobId, question.id).subscribe({
+        next: handleSuccess,
+        error: handleError,
+      });
+    }
+  }
+
+  applyAutoAnswer(questionId: string): void {
+    const result = this.autoAnswerResults.get(questionId);
+    if (!result || !this.jobId) return;
+
+    // Mark as submitting (reuse autoAnsweringQuestions set for spinner)
+    this.autoAnsweringQuestions.add(questionId);
+    this.error = null;
+
+    const submission: AnswerSubmission = {
+      question_id: questionId,
+      selected_option_id: result.selected_option_id,
+      other_text: null,
+    };
+    const request = { answers: [submission] };
+
+    this.getSubmitObservable(request).subscribe({
+      next: (statusResponse) => {
+        this.autoAnsweringQuestions.delete(questionId);
+        this.autoAnswerResults.delete(questionId);
+        this.answers.delete(questionId);
+        // Emit so parent refreshes and question disappears
+        this.answersSubmitted.emit(statusResponse);
+      },
+      error: (err: { error?: { detail?: string }; message?: string }) => {
+        this.autoAnsweringQuestions.delete(questionId);
+        this.error = `Failed to submit auto-answer: ${err?.error?.detail ?? err?.message ?? 'Unknown error'}`;
+      },
+    });
+  }
+
+  private getSubmitObservable(
+    request: { answers: AnswerSubmission[] }
+  ): Observable<JobStatusResponse | PlanningV2StatusResponse> {
+    if (this.submitEndpoint === 'planning-v2') {
+      return this.api.submitPlanningV2Answers(this.jobId!, request);
+    } else if (this.submitEndpoint === 'product-analysis') {
+      return this.api.submitProductAnalysisAnswers(this.jobId!, request) as unknown as Observable<JobStatusResponse>;
+    } else {
+      return this.api.submitAnswers(this.jobId!, request);
+    }
+  }
+
+  dismissAutoAnswer(questionId: string): void {
+    this.autoAnswerResults.delete(questionId);
+  }
+
+  getConfidenceColor(confidence: number): string {
+    if (confidence >= 0.8) return 'primary';
+    if (confidence >= 0.6) return 'accent';
+    return 'warn';
+  }
+
+  getConfidenceLabel(confidence: number): string {
+    if (confidence >= 0.8) return 'High';
+    if (confidence >= 0.6) return 'Medium';
+    return 'Low';
   }
 
   submitAnswers(): void {
@@ -146,6 +286,11 @@ export class PendingQuestionsComponent implements OnChanges {
     if (this.submitEndpoint === 'planning-v2') {
       this.api.submitPlanningV2Answers(this.jobId, request).subscribe({
         next: handleSuccess,
+        error: handleError,
+      });
+    } else if (this.submitEndpoint === 'product-analysis') {
+      this.api.submitProductAnalysisAnswers(this.jobId, request).subscribe({
+        next: (res) => handleSuccess(res as unknown as JobStatusResponse),
         error: handleError,
       });
     } else {

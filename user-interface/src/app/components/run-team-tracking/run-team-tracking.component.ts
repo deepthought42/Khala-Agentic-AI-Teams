@@ -8,7 +8,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { Subscription, switchMap, timer } from 'rxjs';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import type { JobStatusResponse, TaskStateEntry, TeamProgressEntry } from '../../models';
-import { PLANNING_V2_PHASES, CODE_TEAM_PHASES, MICROTASK_PHASES, type PhaseDefinition } from '../../models';
+import { PLANNING_V2_PHASES, CODE_TEAM_PHASES, MICROTASK_PHASES, PRODUCT_ANALYSIS_PHASES, type PhaseDefinition } from '../../models';
 
 /** Team display order for swim lanes. */
 const TEAM_ORDER = ['git_setup', 'devops', 'backend-code-v2', 'frontend-code-v2', 'backend', 'frontend'];
@@ -44,6 +44,7 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
 
   /** All phases in order for the visual stepper. */
   readonly ALL_PHASES: PhaseDefinition[] = [
+    { id: 'product_analysis', label: 'Product Analysis', icon: 'analytics' },
     { id: 'planning', label: 'Planning', icon: 'architecture' },
     { id: 'execution', label: 'Execution', icon: 'play_arrow' },
     { id: 'completed', label: 'Completed', icon: 'check_circle' },
@@ -311,6 +312,36 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
   /** Check if we should show the execution subprocess section. */
   showExecutionSubprocess(): boolean {
     return this.status?.phase === 'execution' && this.getExecutionTeams().length > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Product Analysis Subprocess Tracking
+  // ---------------------------------------------------------------------------
+
+  /** Get all product analysis subprocess phases for display. */
+  getProductAnalysisPhases(): PhaseDefinition[] {
+    return PRODUCT_ANALYSIS_PHASES;
+  }
+
+  /** Check if a product analysis subprocess phase has been completed. */
+  isAnalysisSubprocessCompleted(phaseId: string): boolean {
+    const completedPhases = this.status?.analysis_completed_phases ?? [];
+    return completedPhases.includes(phaseId);
+  }
+
+  /** Check if a product analysis subprocess phase is currently active. */
+  isAnalysisSubprocessCurrent(phaseId: string): boolean {
+    return this.status?.analysis_subprocess === phaseId;
+  }
+
+  /** Check if a product analysis subprocess phase is pending (not started). */
+  isAnalysisSubprocessPending(phaseId: string): boolean {
+    return !this.isAnalysisSubprocessCompleted(phaseId) && !this.isAnalysisSubprocessCurrent(phaseId);
+  }
+
+  /** Check if we should show the product analysis subprocess section. */
+  showProductAnalysisSubprocess(): boolean {
+    return this.status?.phase === 'product_analysis' && !!this.status?.analysis_subprocess;
   }
 
   // ---------------------------------------------------------------------------

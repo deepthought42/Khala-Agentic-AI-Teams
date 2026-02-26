@@ -30,6 +30,34 @@
         }
       </div>
 
+      <!-- Product Analysis Subprocess Details -->
+      @if (showProductAnalysisSubprocess()) {
+        <div class="subprocess-section">
+          <h4 class="subprocess-title">
+            <mat-icon>analytics</mat-icon>
+            Product Analysis Progress
+          </h4>
+          <div class="subprocess-stepper">
+            @for (phase of getProductAnalysisPhases(); track phase.id; let i = $index) {
+              <div class="subprocess-step"
+                   [class.completed]="isAnalysisSubprocessCompleted(phase.id)"
+                   [class.current]="isAnalysisSubprocessCurrent(phase.id)"
+                   [class.pending]="isAnalysisSubprocessPending(phase.id)">
+                <div class="subprocess-node">
+                  <mat-icon>{{ phase.icon }}</mat-icon>
+                </div>
+                <span class="subprocess-label">{{ phase.label }}</span>
+              </div>
+              @if (i < getProductAnalysisPhases().length - 1) {
+                <div class="subprocess-connector"
+                     [class.completed]="isAnalysisSubprocessCompleted(getProductAnalysisPhases()[i + 1].id)">
+                </div>
+              }
+            }
+          </div>
+        </div>
+      }
+
       <!-- Planning Subprocess Details -->
       @if (showPlanningSubprocess()) {
         <div class="subprocess-section">

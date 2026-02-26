@@ -37,9 +37,14 @@ def run_deliver(
     
     Tool agents: System Design, Architecture, User Story.
     Finalizes planning artifacts and optionally commits to git.
+    
+    Also finalizes the spec by:
+    - Renaming updated_spec.md to product_spec.md
+    - Deleting intermediate updated_spec_v*.md files
     """
     committed = False
     summaries: list[str] = []
+    final_spec_content: Optional[str] = None
     
     tool_agent_input = ToolAgentPhaseInput(
         spec_content=spec_content,
@@ -65,6 +70,10 @@ def run_deliver(
                     logger.info("Deliver: %s completed", agent_kind.value)
                 except Exception as e:
                     logger.warning("Deliver: %s failed: %s", agent_kind.value, e)
+    
+    # Finalize the product spec: rename updated_spec.md to product_spec.md
+    # and clean up intermediate versioned files
+    final_spec_content = _finalize_product_spec(repo_path, spec_content)
     
     try:
         if (repo_path / ".git").exists():
@@ -117,4 +126,63 @@ def run_deliver(
     if committed:
         summary += " Changes committed."
     
-    return DeliverPhaseResult(committed=committed, summary=summary)
+    return DeliverPhaseResult(
+        committed=committed,
+        summary=summary,
+        final_spec_content=final_spec_content,
+    )
+
+
+def _finalize_product_spec(repo_path: Path, fallback_spec: str) -> str:
+    """
+    Finalize the product spec by:
+    1. Reading the final updated_spec.md content
+    2. Renaming it to product_spec.md
+    3. Deleting all intermediate updated_spec_v*.md files
+    
+    Returns the final spec content.
+    """
+    plan_dir = repo_path / "plan"
+    if not plan_dir.exists():
+        logger.info("Deliver: No plan directory, using original spec content")
+        return fallback_spec
+    
+    updated_spec_file = plan_dir / "updated_spec.md"
+    product_spec_file = plan_dir / "product_spec.md"
+    
+    # Read the final spec content
+    if updated_spec_file.exists():
+        try:
+            final_content = updated_spec_file.read_text(encoding="utf-8")
+            logger.info("Deliver: Read final spec from %s", updated_spec_file)
+        except Exception as e:
+            logger.warning("Deliver: Failed to read updated_spec.md: %s", e)
+            final_content = fallback_spec
+    else:
+        logger.info("Deliver: No updated_spec.md found, using original spec content")
+        final_content = fallback_spec
+    
+    # Write to product_spec.md
+    try:
+        product_spec_file.write_text(final_content, encoding="utf-8")
+        logger.info("Deliver: Wrote product_spec.md")
+    except Exception as e:
+        logger.warning("Deliver: Failed to write product_spec.md: %s", e)
+    
+    # Delete updated_spec.md if it exists (now that we have product_spec.md)
+    if updated_spec_file.exists():
+        try:
+            updated_spec_file.unlink()
+            logger.info("Deliver: Deleted updated_spec.md")
+        except Exception as e:
+            logger.warning("Deliver: Failed to delete updated_spec.md: %s", e)
+    
+    # Delete all intermediate updated_spec_v*.md files
+    for versioned_file in plan_dir.glob("updated_spec_v*.md"):
+        try:
+            versioned_file.unlink()
+            logger.info("Deliver: Deleted %s", versioned_file.name)
+        except Exception as e:
+            logger.warning("Deliver: Failed to delete %s: %s", versioned_file.name, e)
+    
+    return final_content

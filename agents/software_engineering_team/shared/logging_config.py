@@ -105,3 +105,7 @@ def setup_logging(
     # Suppress verbose LLM request INFO logs (only show warnings/errors)
     llm_logger = logging.getLogger("shared.llm")
     llm_logger.setLevel(logging.WARNING)
+
+    # Suppress uvicorn access logs (HTTP request logs) - only show warnings/errors
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    uvicorn_access.setLevel(logging.WARNING)

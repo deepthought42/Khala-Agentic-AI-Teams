@@ -1,5 +1,5 @@
 <h1>Software Engineering Team API</h1>
-<p>Run team, job status, clarification sessions, execution tasks.</p>
+<p>Run team, job status, open questions, execution tasks.</p>
 
 <div class="header-row">
   <app-health-indicator [healthCheck]="healthCheck" label="Software Engineering API" />
@@ -32,10 +32,22 @@
           [disabled]="loading"
           (retry)="onRetryFailed()"
         />
-        <app-re-plan-with-clarifications
-          [jobId]="jobId"
-          [disabled]="loading"
-          (submitRequest)="onRePlanSubmit($event)"
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Product Analysis">
+    <div class="tab-content">
+      <app-product-analysis-run-form (submitRequest)="onProductAnalysisSubmit($event)" />
+      @if (productAnalysisJobId) {
+        <app-product-analysis-job-status
+          [jobId]="productAnalysisJobId"
+          (statusChange)="onProductAnalysisStatusChange($event)"
+        />
+        <app-pending-questions
+          [jobId]="productAnalysisJobId"
+          [questions]="productAnalysisStatus?.pending_questions ?? []"
+          submitEndpoint="product-analysis"
+          (answersSubmitted)="onProductAnalysisAnswersSubmitted($event)"
         />
       }
     </div>

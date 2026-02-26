@@ -1,7 +1,6 @@
 /** Request for POST /run-team. */
 export interface RunTeamRequest {
   repo_path: string;
-  clarification_session_id?: string;
 }
 
 /** Response from POST /run-team. */
@@ -17,6 +16,8 @@ export interface RunningJobSummary {
   status: string;
   repo_path?: string;
   job_type: string;
+  /** ISO timestamp when job was created. */
+  created_at?: string;
 }
 
 /** Response from GET /run-team/jobs. */
@@ -92,6 +93,14 @@ export const MICROTASK_PHASES: PhaseDefinition[] = [
   { id: 'problem_solving', label: 'Problem Solving', icon: 'psychology' },
 ];
 
+/** Product Analysis subprocesses (spec_review, communicate, spec_update, spec_cleanup). */
+export const PRODUCT_ANALYSIS_PHASES: PhaseDefinition[] = [
+  { id: 'spec_review', label: 'Spec Review', icon: 'description' },
+  { id: 'communicate', label: 'User Questions', icon: 'question_answer' },
+  { id: 'spec_update', label: 'Spec Update', icon: 'edit_note' },
+  { id: 'spec_cleanup', label: 'Cleanup', icon: 'cleaning_services' },
+];
+
 /** Response from GET /run-team/{job_id}. */
 export interface JobStatusResponse {
   job_id: string;
@@ -119,6 +128,10 @@ export interface JobStatusResponse {
   planning_subprocess?: string;
   /** Completed subprocesses within the planning phase. */
   planning_completed_phases?: string[];
+  /** Current subprocess within product_analysis phase (spec_review, communicate, spec_update, spec_cleanup). */
+  analysis_subprocess?: string;
+  /** Completed subprocesses within the product_analysis phase. */
+  analysis_completed_phases?: string[];
 }
 
 /** Response from POST /run-team/{job_id}/retry-failed. */
@@ -142,6 +155,9 @@ export interface RePlanWithClarificationsRequest {
 export interface QuestionOption {
   id: string;
   label: string;
+  rationale?: string;
+  confidence?: number;
+  is_default?: boolean;
 }
 
 /** A question awaiting user response during job execution. */
@@ -165,6 +181,30 @@ export interface AnswerSubmission {
 export interface SubmitAnswersRequest {
   answers: AnswerSubmission[];
 }
+
+// ---------------------------------------------------------------------------
+// Auto-Answer
+// ---------------------------------------------------------------------------
+
+/** Request for POST /run-team/{job_id}/auto-answer/{question_id}. */
+export interface AutoAnswerRequest {
+  spec_context?: string;
+}
+
+/** Response from auto-answer endpoints. */
+export interface AutoAnswerResponse {
+  question_id: string;
+  selected_option_id: string;
+  selected_answer: string;
+  rationale: string;
+  confidence: number;
+  risks: string[];
+  applied: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Clarification
+// ---------------------------------------------------------------------------
 
 /** Request for POST /clarification/sessions. */
 export interface ClarificationCreateRequest {
@@ -357,4 +397,36 @@ export interface PlanningV2ResultResponse {
   phase_results: Record<string, unknown>;
   summary?: string;
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Product Analysis
+// ---------------------------------------------------------------------------
+
+/** Request for POST /product-analysis/run. */
+export interface ProductAnalysisRunRequest {
+  repo_path: string;
+  spec_content?: string;
+}
+
+/** Response from POST /product-analysis/run. */
+export interface ProductAnalysisRunResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+/** Response from GET /product-analysis/status/{job_id}. */
+export interface ProductAnalysisStatusResponse {
+  job_id: string;
+  status: string;
+  repo_path?: string;
+  current_phase?: string;
+  progress: number;
+  iterations: number;
+  pending_questions?: PendingQuestion[];
+  waiting_for_answers?: boolean;
+  error?: string;
+  summary?: string;
+  validated_spec_path?: string;
 }

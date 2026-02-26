@@ -269,7 +269,7 @@ def _apply_defaults_for_unanswered(
         sub = submitted_by_id.get(q.id)
         if sub:
             selected_id = sub.get("selected_option_id", "")
-            other_text = sub.get("other_text", "")
+            other_text = sub.get("other_text") or ""
 
             if selected_id == "other" and other_text:
                 selected_answer = other_text

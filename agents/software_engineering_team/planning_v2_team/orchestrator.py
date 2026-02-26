@@ -230,8 +230,9 @@ class PlanningV2PlanningAgent:
         inspiration_content: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
         job_id: Optional[str] = None,
+        skip_spec_review: bool = False,
     ) -> PlanningV2WorkflowResult:
-        """Execute the 6-phase planning workflow using tool agents.
+        """Execute the planning workflow using tool agents.
         
         Args:
             spec_content: The specification content to plan from.
@@ -241,6 +242,8 @@ class PlanningV2PlanningAgent:
             job_id: Job ID for open questions support. If provided and open questions
                     are found after planning, the workflow will pause and wait for
                     user answers before continuing to implementation.
+            skip_spec_review: If True, skip the iterative spec review phase. Use when
+                    the spec has already been validated by Product Requirements Analysis.
         """
         start_time = time.monotonic()
         result = PlanningV2WorkflowResult()
@@ -265,39 +268,54 @@ class PlanningV2PlanningAgent:
         problem_solving_result: Optional[ProblemSolvingPhaseResult] = None
         deliver_result: Optional[DeliverPhaseResult] = None
 
+        current_spec = spec_content
+
         # ── Phase 1: Iterative Spec Review (3-phase cycle) ────────────────
         # Repeats: Spec Review → Communicate with User → Spec Update
         # Until no open questions remain
-        result.current_phase = Phase.SPEC_REVIEW_GAP
-        _update_job(
-            current_phase=Phase.SPEC_REVIEW_GAP.value,
-            progress=5,
-            active_roles=_active_roles_for_phase(Phase.SPEC_REVIEW_GAP),
-        )
-
-        current_spec = spec_content
-
-        try:
-            spec_review_result, current_spec = run_iterative_spec_review(
-                llm=self.llm,
-                spec_content=spec_content,
-                repo_path=repo_path,
-                job_id=job_id,
-                tool_agents=self.tool_agents,
-                max_iterations=5,
-                update_job_callback=lambda **kw: _update_job(**kw),
+        # Skip if spec was already validated by Product Requirements Analysis
+        if skip_spec_review:
+            logger.info(
+                "Planning-v2: Skipping spec review (already validated by Product Requirements Analysis)"
+            )
+            spec_review_result = SpecReviewResult(
+                summary="Spec review skipped - validated by Product Requirements Analysis",
             )
             result.spec_review_result = spec_review_result
-            logger.info(
-                "Planning-v2: Iterative spec review complete - %d issues, %d gaps",
-                len(spec_review_result.issues),
-                len(spec_review_result.product_gaps),
+            _update_job(
+                current_phase=Phase.SPEC_REVIEW_GAP.value,
+                progress=18,
+                message="Spec already validated, proceeding to planning...",
             )
-        except Exception as exc:
-            result.failure_reason = f"Iterative spec review failed: {exc}"
-            logger.error("Planning-v2: %s", result.failure_reason)
-            return result
-        _update_job(current_phase=Phase.SPEC_REVIEW_GAP.value, progress=18)
+        else:
+            result.current_phase = Phase.SPEC_REVIEW_GAP
+            _update_job(
+                current_phase=Phase.SPEC_REVIEW_GAP.value,
+                progress=5,
+                active_roles=_active_roles_for_phase(Phase.SPEC_REVIEW_GAP),
+            )
+
+            try:
+                spec_review_result, current_spec = run_iterative_spec_review(
+                    llm=self.llm,
+                    spec_content=spec_content,
+                    repo_path=repo_path,
+                    job_id=job_id,
+                    tool_agents=self.tool_agents,
+                    max_iterations=5,
+                    update_job_callback=lambda **kw: _update_job(**kw),
+                )
+                result.spec_review_result = spec_review_result
+                logger.info(
+                    "Planning-v2: Iterative spec review complete - %d issues, %d gaps",
+                    len(spec_review_result.issues),
+                    len(spec_review_result.product_gaps),
+                )
+            except Exception as exc:
+                result.failure_reason = f"Iterative spec review failed: {exc}"
+                logger.error("Planning-v2: %s", result.failure_reason)
+                return result
+            _update_job(current_phase=Phase.SPEC_REVIEW_GAP.value, progress=18)
 
         # ── Phase 2: Planning (uses updated spec from iterative review) ──
         result.current_phase = Phase.PLANNING
@@ -413,7 +431,7 @@ class PlanningV2PlanningAgent:
         try:
             deliver_result = run_deliver(
                 llm=self.llm,
-                spec_content=spec_content,
+                spec_content=current_spec,
                 repo_path=repo_path,
                 implementation_result=implementation_result,
                 tool_agents=self.tool_agents,
@@ -422,6 +440,7 @@ class PlanningV2PlanningAgent:
             result.deliver_result = deliver_result
             result.success = True
             result.summary = deliver_result.summary or "Planning-v2 workflow completed."
+            result.final_spec_content = deliver_result.final_spec_content
         except Exception as exc:
             result.failure_reason = f"Deliver failed: {exc}"
             logger.error("Planning-v2: %s", result.failure_reason)
@@ -438,6 +457,8 @@ class PlanningV2ProductLead:
     Layer 1: Product Lead that handles spec intake, inspiration, and feedback.
     
     Top layer of the 3-layer architecture. Delegates to PlanningV2PlanningAgent.
+    
+    Optionally runs Product Requirements Analysis first to get a validated spec.
     """
 
     def __init__(self, llm_client: LLMClient) -> None:
@@ -452,12 +473,15 @@ class PlanningV2ProductLead:
         inspiration_content: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
         job_id: Optional[str] = None,
+        use_product_analysis: bool = False,
+        validated_spec_content: Optional[str] = None,
+        skip_spec_review: bool = False,
     ) -> PlanningV2WorkflowResult:
         """
         Execute the full planning-v2 workflow.
         
         The Product Lead handles initial spec intake and then delegates to
-        the Planning Agent for the 6-phase workflow.
+        the Planning Agent for the planning workflow.
         
         Args:
             spec_content: The specification content to plan from.
@@ -467,6 +491,13 @@ class PlanningV2ProductLead:
             job_id: Job ID for open questions support. If provided and open questions
                     are found after planning, the workflow will pause and wait for
                     user answers before continuing to implementation.
+            use_product_analysis: If True, run Product Requirements Analysis first
+                                  to generate a validated spec before planning.
+            validated_spec_content: Pre-validated spec content from Product Analysis.
+                                    If provided, skips running Product Analysis even
+                                    if use_product_analysis is True.
+            skip_spec_review: If True, skip the iterative spec review phase. Use when
+                    the spec has already been validated by Product Requirements Analysis.
         """
         logger.info("Planning-v2 Product Lead: starting workflow")
         
@@ -479,13 +510,74 @@ class PlanningV2ProductLead:
         
         _update_job(current_phase="intake", progress=2)
         
+        # Use validated spec if provided, or run Product Analysis if requested
+        final_spec = spec_content
+        
+        if validated_spec_content:
+            logger.info("Planning-v2: Using pre-validated spec content")
+            final_spec = validated_spec_content
+        elif use_product_analysis:
+            logger.info("Planning-v2: Running Product Requirements Analysis first")
+            _update_job(current_phase="product_analysis", progress=3)
+            
+            try:
+                from product_requirements_analysis_agent import ProductRequirementsAnalysisAgent
+                
+                analysis_agent = ProductRequirementsAnalysisAgent(self.llm)
+                analysis_result = analysis_agent.run_workflow(
+                    spec_content=spec_content,
+                    repo_path=repo_path,
+                    job_id=job_id,
+                    job_updater=job_updater,
+                )
+                
+                if analysis_result.success and analysis_result.final_spec_content:
+                    final_spec = analysis_result.final_spec_content
+                    logger.info(
+                        "Planning-v2: Product Analysis complete - using validated spec"
+                    )
+                else:
+                    logger.warning(
+                        "Planning-v2: Product Analysis did not produce validated spec, "
+                        "proceeding with original spec"
+                    )
+            except ImportError:
+                logger.warning(
+                    "Planning-v2: Product Requirements Analysis Agent not available, "
+                    "skipping pre-analysis"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Planning-v2: Product Analysis failed (%s), proceeding with original spec",
+                    exc,
+                )
+        
+        # Also check for validated_spec.md in repo
+        validated_spec_path = repo_path / "plan" / "validated_spec.md"
+        if validated_spec_path.exists() and not validated_spec_content:
+            try:
+                file_spec = validated_spec_path.read_text(encoding="utf-8")
+                if file_spec.strip():
+                    logger.info(
+                        "Planning-v2: Found validated_spec.md, using it instead of original spec"
+                    )
+                    final_spec = file_spec
+            except Exception as exc:
+                logger.warning(
+                    "Planning-v2: Could not read validated_spec.md: %s", exc
+                )
+        
+        # If we have a validated spec (from file or parameter), we can skip spec review
+        should_skip_review = skip_spec_review or validated_spec_content or (final_spec != spec_content)
+        
         planning_agent = PlanningV2PlanningAgent(self.llm)
         result = planning_agent.run_workflow(
-            spec_content=spec_content,
+            spec_content=final_spec,
             repo_path=repo_path,
             inspiration_content=inspiration_content,
             job_updater=job_updater,
             job_id=job_id,
+            skip_spec_review=should_skip_review,
         )
         
         logger.info("Planning-v2 Product Lead: workflow %s", "succeeded" if result.success else "failed")

@@ -97,6 +97,7 @@ class RunningJobSummary(BaseModel):
         default="run_team",
         description="run_team, backend_code_v2, or planning_v2.",
     )
+    created_at: Optional[str] = Field(None, description="ISO timestamp when job was created.")
 
 
 class RunningJobsResponse(BaseModel):
@@ -215,6 +216,14 @@ class JobStatusResponse(BaseModel):
     planning_completed_phases: List[str] = Field(
         default_factory=list,
         description="Completed subprocesses within the planning phase.",
+    )
+    analysis_subprocess: Optional[str] = Field(
+        None,
+        description="Current subprocess within product_analysis phase (spec_review, communicate, spec_update, spec_cleanup).",
+    )
+    analysis_completed_phases: List[str] = Field(
+        default_factory=list,
+        description="Completed subprocesses within the product_analysis phase.",
     )
 
 
@@ -474,9 +483,12 @@ def get_running_jobs() -> RunningJobsResponse:
             status=item["status"],
             repo_path=item.get("repo_path"),
             job_type=item.get("job_type") or "run_team",
+            created_at=item.get("created_at"),
         )
         for item in raw
     ]
+    # Sort by created_at descending (most recent first)
+    jobs.sort(key=lambda j: j.created_at or "", reverse=True)
     return RunningJobsResponse(jobs=jobs)
 
 
@@ -547,6 +559,8 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         "waiting_for_answers": bool(data.get("waiting_for_answers", False)),
         "planning_subprocess": data.get("planning_subprocess"),
         "planning_completed_phases": data.get("planning_completed_phases") or [],
+        "analysis_subprocess": data.get("analysis_subprocess"),
+        "analysis_completed_phases": data.get("analysis_completed_phases") or [],
     }
     return JobStatusResponse.model_validate(payload)
 
@@ -713,6 +727,10 @@ def submit_pending_answers(job_id: str, request: SubmitAnswersRequest) -> JobSta
             for q in updated_data.get("pending_questions", [])
         ],
         waiting_for_answers=updated_data.get("waiting_for_answers", False),
+        planning_subprocess=updated_data.get("planning_subprocess"),
+        planning_completed_phases=updated_data.get("planning_completed_phases") or [],
+        analysis_subprocess=updated_data.get("analysis_subprocess"),
+        analysis_completed_phases=updated_data.get("analysis_completed_phases") or [],
     )
 
 
@@ -1585,6 +1603,549 @@ def get_planning_v2_jobs() -> RunningJobsResponse:
             status=item["status"],
             repo_path=item.get("repo_path"),
             job_type=item.get("job_type") or "planning_v2",
+        )
+        for item in raw
+    ]
+    return RunningJobsResponse(jobs=jobs)
+
+
+# ---------------------------------------------------------------------------
+# Auto-Answer Endpoints
+# ---------------------------------------------------------------------------
+
+
+class AutoAnswerRequest(BaseModel):
+    """Request body for auto-answering a question."""
+
+    spec_context: Optional[str] = Field(
+        None,
+        description="Additional context to help the LLM make a better choice.",
+    )
+
+
+class AutoAnswerResponse(BaseModel):
+    """Response from auto-answering a question."""
+
+    question_id: str = Field(..., description="ID of the question that was answered.")
+    selected_option_id: str = Field(..., description="ID of the selected option.")
+    selected_answer: str = Field(..., description="Text of the selected answer.")
+    rationale: str = Field(..., description="Detailed explanation of why this choice was made.")
+    confidence: float = Field(..., description="Confidence score (0.0-1.0) in this answer.")
+    risks: List[str] = Field(default_factory=list, description="Potential risks of this choice.")
+    applied: bool = Field(
+        default=False,
+        description="Whether the answer was auto-applied to the job.",
+    )
+
+
+@app.post(
+    "/run-team/{job_id}/auto-answer/{question_id}",
+    response_model=AutoAnswerResponse,
+    summary="Auto-answer a pending question for run-team job",
+    description="Use LLM to automatically answer a pending question based on industry best practices. "
+    "The answer is NOT automatically applied - review the response and submit via /answers endpoint.",
+)
+def auto_answer_run_team_question(
+    job_id: str,
+    question_id: str,
+    request: Optional[AutoAnswerRequest] = None,
+) -> AutoAnswerResponse:
+    """Auto-answer a pending question using LLM analysis."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("job_type") not in (None, "run_team"):
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is only for run-team jobs. Use /planning-v2/{job_id}/auto-answer/{question_id} for planning-v2 jobs.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    question_data = next(
+        (q for q in pending_questions if q.get("id") == question_id), None
+    )
+    if not question_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question {question_id} not found in pending questions.",
+        )
+
+    spec_content = _get_spec_content_for_job(data)
+    additional_context = request.spec_context if request else None
+
+    try:
+        from product_requirements_analysis_agent import get_auto_answer_for_job
+        from shared.llm import get_llm_for_agent
+
+        llm = get_llm_for_agent("backend")
+        result = get_auto_answer_for_job(
+            llm=llm,
+            job_id=job_id,
+            question_id=question_id,
+            spec_content=spec_content,
+            additional_context=additional_context,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=500,
+                detail="Auto-answer failed to produce a result.",
+            )
+
+        return AutoAnswerResponse(
+            question_id=result.question_id,
+            selected_option_id=result.selected_option_id,
+            selected_answer=result.selected_answer,
+            rationale=result.rationale,
+            confidence=result.confidence,
+            risks=result.risks,
+            applied=False,
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer module not available: {e}",
+        )
+    except Exception as e:
+        logger.exception("Auto-answer failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer failed: {e}",
+        )
+
+
+@app.post(
+    "/planning-v2/{job_id}/auto-answer/{question_id}",
+    response_model=AutoAnswerResponse,
+    summary="Auto-answer a pending question for planning-v2 job",
+    description="Use LLM to automatically answer a pending question based on industry best practices. "
+    "The answer is NOT automatically applied - review the response and submit via /answers endpoint.",
+)
+def auto_answer_planning_v2_question(
+    job_id: str,
+    question_id: str,
+    request: Optional[AutoAnswerRequest] = None,
+) -> AutoAnswerResponse:
+    """Auto-answer a pending question using LLM analysis."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("job_type") != "planning_v2":
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is only for planning-v2 jobs.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    question_data = next(
+        (q for q in pending_questions if q.get("id") == question_id), None
+    )
+    if not question_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question {question_id} not found in pending questions.",
+        )
+
+    spec_content = _get_spec_content_for_job(data)
+    additional_context = request.spec_context if request else None
+
+    try:
+        from product_requirements_analysis_agent import get_auto_answer_for_job
+        from shared.llm import get_llm_for_agent
+
+        llm = get_llm_for_agent("backend")
+        result = get_auto_answer_for_job(
+            llm=llm,
+            job_id=job_id,
+            question_id=question_id,
+            spec_content=spec_content,
+            additional_context=additional_context,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=500,
+                detail="Auto-answer failed to produce a result.",
+            )
+
+        return AutoAnswerResponse(
+            question_id=result.question_id,
+            selected_option_id=result.selected_option_id,
+            selected_answer=result.selected_answer,
+            rationale=result.rationale,
+            confidence=result.confidence,
+            risks=result.risks,
+            applied=False,
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer module not available: {e}",
+        )
+    except Exception as e:
+        logger.exception("Auto-answer failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer failed: {e}",
+        )
+
+
+def _get_spec_content_for_job(data: Dict[str, Any]) -> str:
+    """Get spec content for a job from its repo path."""
+    repo_path = data.get("repo_path")
+    if not repo_path:
+        return ""
+
+    repo = Path(repo_path)
+
+    spec_files = [
+        repo / "plan" / "validated_spec.md",
+        repo / "plan" / "updated_spec.md",
+        repo / "initial_spec.md",
+        repo / "spec.md",
+    ]
+
+    for spec_file in spec_files:
+        if spec_file.exists():
+            try:
+                return spec_file.read_text(encoding="utf-8")[:12000]
+            except Exception:
+                continue
+
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Product Analysis Endpoints
+# ---------------------------------------------------------------------------
+
+
+class ProductAnalysisRunRequest(BaseModel):
+    """Request body for starting Product Requirements Analysis."""
+
+    repo_path: str = Field(
+        ...,
+        max_length=4096,
+        description="Local filesystem path to the folder containing initial_spec.md.",
+    )
+    spec_content: Optional[str] = Field(
+        None,
+        max_length=500_000,
+        description="Optional spec content. If not provided, reads from initial_spec.md.",
+    )
+
+
+class ProductAnalysisRunResponse(BaseModel):
+    """Response from POST /product-analysis/run."""
+
+    job_id: str = Field(..., description="Job ID for polling status.")
+    status: str = Field(default="running", description="Initial status.")
+    message: str = Field(default="Product analysis started. Poll GET /product-analysis/status/{job_id} for progress.")
+
+
+class ProductAnalysisStatusResponse(BaseModel):
+    """Response from GET /product-analysis/status/{job_id}."""
+
+    job_id: str = Field(..., description="Job ID.")
+    status: str = Field(..., description="pending, running, completed, or failed.")
+    repo_path: Optional[str] = Field(None, description="Path to the repo.")
+    current_phase: Optional[str] = Field(None, description="spec_review, communicate, spec_update, or spec_cleanup.")
+    progress: int = Field(default=0, description="Progress percentage 0-100.")
+    iterations: int = Field(default=0, description="Number of spec review iterations completed.")
+    pending_questions: List[PendingQuestion] = Field(
+        default_factory=list,
+        description="Questions awaiting user response.",
+    )
+    waiting_for_answers: bool = Field(
+        default=False,
+        description="True when blocked waiting for user answers.",
+    )
+    error: Optional[str] = Field(None, description="Error message if failed.")
+    summary: Optional[str] = Field(None, description="Summary of analysis results.")
+    validated_spec_path: Optional[str] = Field(None, description="Path to validated spec file when complete.")
+
+
+def _run_product_analysis_background(
+    job_id: str,
+    repo_path: str,
+    spec_content: str,
+) -> None:
+    """Run product analysis workflow in a background thread."""
+    try:
+        from pathlib import Path as _Path
+        from product_requirements_analysis_agent import (
+            AnalysisPhase,
+            ProductRequirementsAnalysisAgent,
+        )
+        from shared.llm import get_llm_for_agent
+
+        update_job(job_id, status="running")
+
+        def _job_updater(**kwargs: Any) -> None:
+            update_job(job_id, **kwargs)
+
+        agent = ProductRequirementsAnalysisAgent(get_llm_for_agent("backend"))
+        result = agent.run_workflow(
+            spec_content=spec_content,
+            repo_path=_Path(repo_path),
+            job_id=job_id,
+            job_updater=_job_updater,
+        )
+
+        final_status = "completed" if result.success else "failed"
+        update_job(
+            job_id,
+            status=final_status,
+            progress=100 if result.success else 90,
+            summary=result.summary,
+            error=result.failure_reason if not result.success else None,
+            current_phase=AnalysisPhase.SPEC_CLEANUP.value if result.success else result.current_phase.value if result.current_phase else None,
+            iterations=result.iterations,
+            validated_spec_path=result.validated_spec_path,
+        )
+    except Exception as e:
+        logger.exception("Product analysis workflow failed")
+        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
+
+
+@app.post(
+    "/product-analysis/run",
+    response_model=ProductAnalysisRunResponse,
+    summary="Start Product Requirements Analysis",
+    description="Analyze product specification for completeness, identify gaps, and generate questions. "
+    "Returns job_id immediately. Poll GET /product-analysis/status/{job_id} for progress.",
+)
+def run_product_analysis(request: ProductAnalysisRunRequest) -> ProductAnalysisRunResponse:
+    """Start the Product Requirements Analysis workflow."""
+    repo = Path(request.repo_path)
+    if not repo.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"repo_path does not exist or is not a directory: {request.repo_path}",
+        )
+
+    spec_content = request.spec_content
+    if not spec_content:
+        spec_file = repo / "initial_spec.md"
+        if not spec_file.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"No spec_content provided and {spec_file} does not exist.",
+            )
+        spec_content = spec_file.read_text(encoding="utf-8")
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, request.repo_path, job_type="product_analysis")
+
+    thread = threading.Thread(
+        target=_run_product_analysis_background,
+        args=(job_id, request.repo_path, spec_content),
+    )
+    thread.daemon = True
+    thread.start()
+
+    return ProductAnalysisRunResponse(
+        job_id=job_id,
+        status="running",
+        message="Product analysis started. Poll GET /product-analysis/status/{job_id} for progress.",
+    )
+
+
+@app.get(
+    "/product-analysis/status/{job_id}",
+    response_model=ProductAnalysisStatusResponse,
+    summary="Get Product Analysis job status",
+    description="Returns current phase, progress, pending questions, and completion status.",
+)
+def get_product_analysis_status(job_id: str) -> ProductAnalysisStatusResponse:
+    """Get the status of a Product Analysis job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    pending_questions_raw = data.get("pending_questions", [])
+    pending_questions = [
+        PendingQuestion(
+            id=q.get("id", ""),
+            question_text=q.get("question_text", ""),
+            context=q.get("context"),
+            options=[
+                QuestionOption(id=opt.get("id", ""), label=opt.get("label", ""))
+                for opt in q.get("options", [])
+            ],
+            required=q.get("required", False),
+            source=q.get("source", "spec_review"),
+        )
+        for q in pending_questions_raw
+    ]
+
+    return ProductAnalysisStatusResponse(
+        job_id=job_id,
+        status=data.get("status", JOB_STATUS_PENDING),
+        repo_path=data.get("repo_path"),
+        current_phase=data.get("current_phase"),
+        progress=data.get("progress", 0),
+        iterations=data.get("iterations", 0),
+        pending_questions=pending_questions,
+        waiting_for_answers=data.get("waiting_for_answers", False),
+        error=data.get("error"),
+        summary=data.get("summary"),
+        validated_spec_path=data.get("validated_spec_path"),
+    )
+
+
+@app.post(
+    "/product-analysis/{job_id}/answers",
+    response_model=ProductAnalysisStatusResponse,
+    summary="Submit answers to Product Analysis open questions",
+    description="Submit user answers to open questions identified during spec review.",
+)
+def submit_product_analysis_answers(job_id: str, request: SubmitAnswersRequest) -> ProductAnalysisStatusResponse:
+    """Submit answers to open questions and resume Product Analysis workflow."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("job_type") != "product_analysis":
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is only for product-analysis jobs.",
+        )
+
+    if not data.get("waiting_for_answers"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job is not waiting for answers.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    if not pending_questions:
+        raise HTTPException(status_code=400, detail="No pending questions to answer.")
+
+    pending_ids = {q["id"] for q in pending_questions}
+    required_ids = {q["id"] for q in pending_questions if q.get("required", True)}
+    answered_ids = {a.question_id for a in request.answers}
+
+    missing_required = required_ids - answered_ids
+    if missing_required:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing answers for required questions: {', '.join(sorted(missing_required))}",
+        )
+
+    invalid_ids = answered_ids - pending_ids
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown question IDs: {', '.join(sorted(invalid_ids))}",
+        )
+
+    answers_dicts = [
+        {
+            "question_id": a.question_id,
+            "selected_option_id": a.selected_option_id,
+            "other_text": a.other_text,
+        }
+        for a in request.answers
+    ]
+    store_submit_answers(job_id, answers_dicts)
+
+    return get_product_analysis_status(job_id)
+
+
+@app.post(
+    "/product-analysis/{job_id}/auto-answer/{question_id}",
+    response_model=AutoAnswerResponse,
+    summary="Auto-answer a pending question for Product Analysis job",
+    description="Use LLM to automatically answer a pending question based on industry best practices.",
+)
+def auto_answer_product_analysis_question(
+    job_id: str,
+    question_id: str,
+    request: Optional[AutoAnswerRequest] = None,
+) -> AutoAnswerResponse:
+    """Auto-answer a pending question using LLM analysis."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if data.get("job_type") != "product_analysis":
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is only for product-analysis jobs.",
+        )
+
+    pending_questions = data.get("pending_questions", [])
+    question_data = next(
+        (q for q in pending_questions if q.get("id") == question_id), None
+    )
+    if not question_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question {question_id} not found in pending questions.",
+        )
+
+    spec_content = _get_spec_content_for_job(data)
+    additional_context = request.spec_context if request else None
+
+    try:
+        from product_requirements_analysis_agent import get_auto_answer_for_job
+        from shared.llm import get_llm_for_agent
+
+        llm = get_llm_for_agent("backend")
+        result = get_auto_answer_for_job(
+            llm=llm,
+            job_id=job_id,
+            question_id=question_id,
+            spec_content=spec_content,
+            additional_context=additional_context,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=500,
+                detail="Auto-answer failed to produce a result.",
+            )
+
+        return AutoAnswerResponse(
+            question_id=result.question_id,
+            selected_option_id=result.selected_option_id,
+            selected_answer=result.selected_answer,
+            rationale=result.rationale,
+            confidence=result.confidence,
+            risks=result.risks,
+            applied=False,
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer module not available: {e}",
+        )
+    except Exception as e:
+        logger.exception("Auto-answer failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Auto-answer failed: {e}",
+        )
+
+
+@app.get(
+    "/product-analysis/jobs",
+    response_model=RunningJobsResponse,
+    summary="List Product Analysis jobs",
+    description="Returns all product-analysis jobs with status pending or running.",
+)
+def get_product_analysis_jobs() -> RunningJobsResponse:
+    """List running and pending product-analysis jobs."""
+    raw = list_jobs(running_only=True, job_type="product_analysis")
+    jobs = [
+        RunningJobSummary(
+            job_id=item["job_id"],
+            status=item["status"],
+            repo_path=item.get("repo_path"),
+            job_type=item.get("job_type") or "product_analysis",
         )
         for item in raw
     ]

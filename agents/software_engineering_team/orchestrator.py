@@ -1313,7 +1313,7 @@ def _run_backend_frontend_workers(
                     repo_path=backend_dir,
                     task=task,
                     spec_content=spec_content,
-                    architecture=architecture,
+                    architecture=None,
                     qa_agent=agents["qa"],
                     security_agent=agents["security"],
                     dbc_agent=agents["dbc_comments"],
@@ -1490,7 +1490,7 @@ def _run_backend_frontend_workers(
                     backend_dir=backend_dir,
                     task=task,
                     spec_content=spec_content,
-                    architecture=architecture,
+                    architecture=None,
                     qa_agent=agents["qa"],
                     accessibility_agent=agents["accessibility"],
                     security_agent=agents["security"],
@@ -1721,12 +1721,55 @@ def run_orchestrator(
         plan_dir = ensure_plan_dir(path)
         logger.info("Plan folder ensured at %s", plan_dir)
 
-        # Run planning-v2 workflow (replaces Spec Intake + Project Planning + domain agents)
+        # ── Step 1: Product Requirements Analysis Agent ───────────────────────
+        # Validates spec, asks user questions, produces validated_spec.md
+        from product_requirements_analysis_agent import ProductRequirementsAnalysisAgent
+
+        PRA_PHASE_ORDER = ["spec_review", "communicate", "spec_update", "spec_cleanup"]
+
+        def _pra_job_updater(**kwargs: Any) -> None:
+            try:
+                analysis_phase = kwargs.pop("current_phase", None)
+                if analysis_phase:
+                    kwargs["analysis_subprocess"] = analysis_phase
+                    completed_phases = []
+                    for p in PRA_PHASE_ORDER:
+                        if p == analysis_phase:
+                            break
+                        completed_phases.append(p)
+                    kwargs["analysis_completed_phases"] = completed_phases
+                update_job(job_id, phase="product_analysis", **kwargs)
+            except Exception:
+                pass
+
+        update_job(job_id, phase="product_analysis", message="Starting product requirements analysis...")
+        pra_agent = ProductRequirementsAnalysisAgent(get_llm_for_agent("product_analysis"))
+        pra_result = pra_agent.run_workflow(
+            spec_content=spec_content,
+            repo_path=path,
+            job_id=job_id,
+            job_updater=_pra_job_updater,
+        )
+        if not pra_result.success:
+            err = pra_result.failure_reason or "Product Requirements Analysis did not complete successfully."
+            logger.error("Product Requirements Analysis failed: %s", err)
+            update_job(job_id, status=JOB_STATUS_FAILED, error=err, phase="completed")
+            return
+
+        # Use validated spec for all downstream agents
+        validated_spec = pra_result.final_spec_content or spec_content
+        logger.info(
+            "Product Requirements Analysis complete: %d iterations, validated spec ready",
+            pra_result.iterations,
+        )
+
+        # ── Step 2: Planning V2 Team ──────────────────────────────────────────
+        # Receives validated spec, performs planning (skips spec review)
         from planning_v2_team import PlanningV2TeamLead
         from planning_v2_adapter import adapt_planning_v2_result, PlanningV2AdapterResult
 
         PLANNING_V2_PHASE_ORDER = [
-            "intake", "spec_review_gap", "planning", "implementation", "review", "problem_solving", "deliver"
+            "intake", "planning", "implementation", "review", "problem_solving", "deliver"
         ]
 
         def _planning_v2_job_updater(**kwargs: Any) -> None:
@@ -1746,10 +1789,11 @@ def run_orchestrator(
 
         planning_v2_lead = PlanningV2TeamLead(get_llm_for_agent("project_planning"))
         p2_result = planning_v2_lead.run_workflow(
-            spec_content=spec_content,
+            spec_content=validated_spec,
             repo_path=path,
             inspiration_content=None,
             job_updater=_planning_v2_job_updater,
+            skip_spec_review=True,
         )
         if not p2_result.success:
             err = p2_result.failure_reason or "Planning-v2 workflow did not complete successfully."
@@ -1768,7 +1812,8 @@ def run_orchestrator(
         project_overview = adapter_result.project_overview
         spec_intake_open_questions = adapter_result.open_questions
         spec_intake_assumptions = adapter_result.assumptions
-        spec_content_for_planning = spec_content
+        # Use the final approved product spec from Planning V2 if available
+        spec_content_for_planning = adapter_result.final_spec_content or spec_content
         update_job(job_id, requirements_title=requirements.title)
 
         # Planning process: (1) features doc from planning-v2 adapter; (2) tasks from Tech Lead; (3) architecture from Architecture Expert;
@@ -1818,7 +1863,7 @@ def run_orchestrator(
                 spec_content=spec_content_for_planning,
                 existing_codebase=existing_code if existing_code != "# No code files found" else None,
                 project_overview=project_overview,
-                open_questions=spec_intake_open_questions if spec_intake_open_questions else None,
+                open_questions=[q.question_text if hasattr(q, 'question_text') else str(q) for q in spec_intake_open_questions] if spec_intake_open_questions else None,
                 assumptions=spec_intake_assumptions if spec_intake_assumptions else None,
                 resolved_questions=resolved_questions_override,
                 planning_hierarchy=planning_v2_hierarchy,
@@ -2003,7 +2048,7 @@ def run_orchestrator(
                     completed=completed,
                     failed=failed,
                     completed_code_task_ids=completed_code_task_ids,
-                    architecture=architecture,
+                    architecture=None,
                     agents=agents,
                     repo_path=backend_dir,
                 ),
@@ -2023,7 +2068,7 @@ def run_orchestrator(
                     completed=completed,
                     failed=failed,
                     completed_code_task_ids=completed_code_task_ids,
-                    architecture=architecture,
+                    architecture=None,
                     agents=agents,
                     repo_path=frontend_dir,
                 ),
@@ -2406,7 +2451,7 @@ def run_failed_tasks(job_id: str) -> None:
                     completed=completed,
                     failed=failed_retry,
                     completed_code_task_ids=completed_code_task_ids,
-                    architecture=architecture,
+                    architecture=None,
                     agents=agents,
                     repo_path=backend_dir,
                 ),
@@ -2426,7 +2471,7 @@ def run_failed_tasks(job_id: str) -> None:
                     completed=completed,
                     failed=failed_retry,
                     completed_code_task_ids=completed_code_task_ids,
-                    architecture=architecture,
+                    architecture=None,
                     agents=agents,
                     repo_path=frontend_dir,
                 ),

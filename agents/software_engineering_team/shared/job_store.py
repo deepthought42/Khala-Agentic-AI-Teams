@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -89,6 +90,7 @@ def create_job(
         "pending_questions": [],
         "waiting_for_answers": False,
         "submitted_answers": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if job_type is not None:
         data["job_type"] = job_type
@@ -136,6 +138,7 @@ def list_jobs(
                 "status": status,
                 "repo_path": data.get("repo_path"),
                 "job_type": data.get("job_type"),
+                "created_at": data.get("created_at"),
             })
     return result
 
