@@ -223,16 +223,88 @@ class ProductRequirementsAnalysisAgent:
         repo_path: Path,
     ) -> SpecReviewResult:
         """Run the Spec Review phase to identify gaps and questions."""
-        prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
+        # Read previously answered questions to avoid asking duplicates
+        qa_history = self._read_qa_history(repo_path)
+        
+        if qa_history:
+            prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
+            prompt += f"""
+
+IMPORTANT: The following questions have ALREADY been answered. Do NOT ask these questions again or any variations of them. Only ask NEW questions about topics NOT covered below:
+
+Previously Answered Questions:
+---
+{qa_history}
+---
+"""
+        else:
+            prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
 
         try:
             raw = self.llm.complete_json(prompt)
-            return self._parse_spec_review_response(raw)
+            result = self._parse_spec_review_response(raw)
+            
+            # Filter out any questions that are duplicates of previously answered ones
+            if qa_history and result.open_questions:
+                result.open_questions = self._filter_duplicate_questions(
+                    result.open_questions, qa_history
+                )
+            
+            return result
         except Exception as e:
             logger.warning("Spec review LLM call failed: %s", e)
             return SpecReviewResult(
                 summary=f"Spec review failed: {e}",
             )
+
+    def _read_qa_history(self, repo_path: Path) -> str:
+        """Read the QA history file if it exists."""
+        qa_file = repo_path / "plan" / "qa_history.md"
+        if qa_file.exists():
+            try:
+                return qa_file.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning("Failed to read qa_history.md: %s", e)
+        return ""
+
+    def _filter_duplicate_questions(
+        self,
+        new_questions: List[OpenQuestion],
+        qa_history: str,
+    ) -> List[OpenQuestion]:
+        """Filter out questions that appear to be duplicates of answered ones."""
+        qa_history_lower = qa_history.lower()
+        filtered = []
+        
+        for q in new_questions:
+            q_text_lower = q.question_text.lower()
+            
+            # Check for exact or near-exact matches in qa_history
+            # Extract key phrases from the question (simplified heuristic)
+            key_words = [w for w in q_text_lower.split() if len(w) > 4]
+            
+            # If most key words appear in qa_history, likely a duplicate
+            if key_words:
+                matches = sum(1 for w in key_words if w in qa_history_lower)
+                match_ratio = matches / len(key_words)
+                
+                if match_ratio > 0.6:
+                    logger.debug(
+                        "Filtering duplicate question (%.0f%% match): %s",
+                        match_ratio * 100,
+                        q.question_text[:60],
+                    )
+                    continue
+            
+            filtered.append(q)
+        
+        if len(filtered) < len(new_questions):
+            logger.info(
+                "Filtered %d duplicate questions based on qa_history",
+                len(new_questions) - len(filtered),
+            )
+        
+        return filtered
 
     def _parse_spec_review_response(self, raw: Any) -> SpecReviewResult:
         """Parse LLM response into SpecReviewResult."""
