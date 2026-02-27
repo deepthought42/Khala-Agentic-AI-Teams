@@ -33,12 +33,15 @@ from spec_parser import validate_work_path
 from shared.clarification_store import clarification_store
 from shared.execution_tracker import execution_tracker
 from shared.job_store import (
+    JOB_STATUS_CANCELLED,
+    JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_PENDING,
     JOB_STATUS_PAUSED_LLM_CONNECTIVITY,
     create_job,
     get_job,
     list_jobs,
+    request_cancel,
     update_job,
     submit_answers as store_submit_answers,
 )
@@ -601,6 +604,50 @@ def retry_failed_tasks(job_id: str) -> RetryResponse:
         status="running",
         retrying_tasks=failed_ids,
         message=f"Retrying {len(failed_ids)} failed tasks. Poll GET /run-team/{job_id} for status.",
+    )
+
+
+class CancelJobResponse(BaseModel):
+    """Response from POST /run-team/{job_id}/cancel."""
+
+    job_id: str = Field(..., description="Job ID.")
+    status: str = Field(default="cancelled", description="New status after cancellation.")
+    message: str = Field(default="Job cancellation requested.")
+
+
+@app.post(
+    "/run-team/{job_id}/cancel",
+    response_model=CancelJobResponse,
+    summary="Cancel a running job",
+    description="Request cancellation for a running or pending job. Sets a cancellation flag that running agents "
+    "check cooperatively and exit gracefully. Returns 200 if cancellation was requested, 404 if job not found, "
+    "400 if job is already in a terminal state (completed, failed, or cancelled).",
+)
+def cancel_job(job_id: str) -> CancelJobResponse:
+    """Request cancellation for a job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    current_status = data.get("status", JOB_STATUS_PENDING)
+    terminal_statuses = (JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, JOB_STATUS_CANCELLED)
+    if current_status in terminal_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {current_status}. Cannot cancel.",
+        )
+
+    success = request_cancel(job_id)
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to request cancellation. Job may have changed state.",
+        )
+
+    return CancelJobResponse(
+        job_id=job_id,
+        status="cancelled",
+        message="Job cancellation requested. Running agents will stop at the next checkpoint.",
     )
 
 

@@ -128,6 +128,8 @@ export interface JobStatusResponse {
   pending_questions?: PendingQuestion[];
   /** True when job is blocked waiting for user to answer pending questions. */
   waiting_for_answers?: boolean;
+  /** True when cancellation has been requested for this job. */
+  cancel_requested?: boolean;
   /** Current subprocess within planning phase (planning, implementation, etc.). */
   planning_subprocess?: string;
   /** Completed subprocesses within the planning phase. */

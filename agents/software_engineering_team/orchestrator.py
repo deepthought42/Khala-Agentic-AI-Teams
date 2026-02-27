@@ -55,6 +55,7 @@ from shared.llm import (
 )
 from shared.job_store import (
     JOB_STATUS_AGENT_CRASH,
+    JOB_STATUS_CANCELLED,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_RUNNING,
@@ -65,6 +66,7 @@ from shared.job_store import (
     update_job_team_progress,
     add_pending_questions,
     is_waiting_for_answers,
+    is_cancel_requested,
     get_job,
 )
 from shared.command_runner import run_command_with_nvm
@@ -110,6 +112,18 @@ DEFAULT_CLARIFICATION_OPTIONS = [
 
 # Poll interval for waiting for user answers (in seconds)
 ANSWER_WAIT_POLL_INTERVAL = 5.0
+
+
+class CancellationError(Exception):
+    """Raised when a job cancellation is detected."""
+    pass
+
+
+def _check_cancellation(job_id: str) -> None:
+    """Check if cancellation has been requested and raise CancellationError if so."""
+    if is_cancel_requested(job_id):
+        logger.info("Cancellation detected for job %s", job_id)
+        raise CancellationError(f"Job {job_id} was cancelled")
 
 
 def _convert_to_structured_questions(
@@ -1112,6 +1126,11 @@ def _backend_code_v2_worker(
         return
 
     while backend_code_v2_queue:
+        # Check for cancellation before starting each task
+        if is_cancel_requested(job_id):
+            logger.info("Backend worker: cancellation detected, stopping")
+            return
+            
         task_id = backend_code_v2_queue.pop(0)
         task = all_tasks.get(task_id)
         if not task:
@@ -1188,6 +1207,11 @@ def _frontend_code_v2_worker(
         return
 
     while frontend_code_v2_queue:
+        # Check for cancellation before starting each task
+        if is_cancel_requested(job_id):
+            logger.info("Frontend worker: cancellation detected, stopping")
+            return
+            
         task_id = frontend_code_v2_queue.pop(0)
         task = all_tasks.get(task_id)
         if not task:
@@ -1278,6 +1302,10 @@ def _run_backend_frontend_workers(
 
     def _backend_worker() -> None:
         while True:
+            # Check for cancellation
+            if is_cancel_requested(job_id):
+                logger.info("Legacy backend worker: cancellation detected, stopping")
+                return
             with state_lock:
                 if llm_limit_exceeded[0] or llm_connectivity_failed[0]:
                     break
@@ -1455,6 +1483,10 @@ def _run_backend_frontend_workers(
 
     def _frontend_worker() -> None:
         while True:
+            # Check for cancellation
+            if is_cancel_requested(job_id):
+                logger.info("Legacy frontend worker: cancellation detected, stopping")
+                return
             with state_lock:
                 if llm_limit_exceeded[0] or llm_connectivity_failed[0]:
                     break
@@ -1733,6 +1765,9 @@ def run_orchestrator(
     backend_dir = path / "backend"
     frontend_dir = path / "frontend"
     try:
+        # Check for cancellation at start
+        _check_cancellation(job_id)
+        
         update_job(job_id, status=JOB_STATUS_RUNNING, phase="planning", status_text="Starting pipeline")
 
         agents = _get_agents()
@@ -1756,6 +1791,9 @@ def run_orchestrator(
             update_job(job_id, status=JOB_STATUS_FAILED, error=f"Spec parsing failed: {e}", phase="completed")
             return
         update_job(job_id, requirements_title=requirements.title, status_text="Specification parsed successfully")
+        
+        # Check for cancellation after spec parsing
+        _check_cancellation(job_id)
 
         # Create plan folder after spec is ingested successfully (all planning artifacts go here)
         plan_dir = ensure_plan_dir(path)
@@ -1804,6 +1842,9 @@ def run_orchestrator(
             "Product Requirements Analysis complete: %d iterations, validated spec ready",
             pra_result.iterations,
         )
+        
+        # Check for cancellation after PRA
+        _check_cancellation(job_id)
 
         # ── Step 2: Planning V2 Team ──────────────────────────────────────────
         # Receives validated spec, performs planning (skips spec review)
@@ -1859,6 +1900,9 @@ def run_orchestrator(
         # Use the final approved product spec from Planning V2 if available
         spec_content_for_planning = adapter_result.final_spec_content or spec_content
         update_job(job_id, requirements_title=requirements.title)
+
+        # Check for cancellation after Planning V2
+        _check_cancellation(job_id)
 
         # Planning process: (1) features doc from planning-v2 adapter; (2) tasks from Tech Lead; (3) architecture from Architecture Expert;
         # (4) consolidation; (5) execution.
@@ -2006,6 +2050,10 @@ def run_orchestrator(
             phase="execution",
             status_text="Starting task execution",
         )
+        
+        # Check for cancellation before execution
+        _check_cancellation(job_id)
+        
         if planning_only:
             logger.info("Planning-only run: stopping before execution (re-plan-with-clarifications)")
             update_job(job_id, status="completed", phase="completed")
@@ -2358,6 +2406,9 @@ def run_orchestrator(
             )
             update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, current_task=None, phase="completed", status_text="All tasks completed successfully")
 
+    except CancellationError:
+        logger.info("Orchestrator stopped due to job cancellation: %s", job_id)
+        update_job(job_id, status=JOB_STATUS_CANCELLED, status_text="Job cancelled by user", phase="completed")
     except Exception as e:
         logger.exception("Orchestrator failed")
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e), phase="completed")
@@ -2633,6 +2684,9 @@ def run_failed_tasks(job_id: str) -> None:
             )
             update_job(job_id, failed_tasks=failed_details, status=JOB_STATUS_COMPLETED, current_task=None, status_text="Retry completed")
 
+    except CancellationError:
+        logger.info("Retry orchestrator stopped due to job cancellation: %s", job_id)
+        update_job(job_id, status=JOB_STATUS_CANCELLED, status_text="Job cancelled by user")
     except Exception as e:
         logger.exception("Retry orchestrator failed")
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))

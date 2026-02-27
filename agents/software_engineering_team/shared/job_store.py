@@ -20,6 +20,7 @@ JOB_STATUS_PENDING = "pending"
 JOB_STATUS_RUNNING = "running"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
+JOB_STATUS_CANCELLED = "cancelled"
 # Agent process crashed (NameError, ImportError, etc.) - distinct from build/LLM failure
 JOB_STATUS_AGENT_CRASH = "agent_crash"
 # Frontend (or other agent) could not reach LLM after retries; user must confirm connectivity and resume
@@ -91,6 +92,7 @@ def create_job(
         "pending_questions": [],
         "waiting_for_answers": False,
         "submitted_answers": [],
+        "cancel_requested": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if job_type is not None:
@@ -257,3 +259,40 @@ def get_submitted_answers(
         path = _job_file(job_id, cache_dir)
         data = _read_job_file(path) or {}
         return list(data.get("submitted_answers", []))
+
+
+def request_cancel(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> bool:
+    """Request cancellation for a job. Sets cancel_requested=True and status to cancelled.
+    
+    Returns True if the job was found and cancellation was requested.
+    Returns False if the job was not found or is already in a terminal state.
+    """
+    terminal_statuses = (JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, JOB_STATUS_CANCELLED)
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path)
+        if data is None:
+            return False
+        current_status = data.get("status", JOB_STATUS_PENDING)
+        if current_status in terminal_statuses:
+            return False
+        data["cancel_requested"] = True
+        data["status"] = JOB_STATUS_CANCELLED
+        data["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        logger.info("Job %s cancellation requested", job_id)
+        return True
+
+
+def is_cancel_requested(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> bool:
+    """Check if cancellation has been requested for a job."""
+    with _lock:
+        path = _job_file(job_id, cache_dir)
+        data = _read_job_file(path) or {}
+        return bool(data.get("cancel_requested", False))

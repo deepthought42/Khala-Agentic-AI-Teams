@@ -45,6 +45,7 @@
             <th class="col-activity">Current Activity</th>
             <th class="col-agents">Active Agents</th>
             <th class="col-time">Started</th>
+            <th class="col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -107,6 +108,16 @@
               </td>
               <td class="col-time">
                 <span class="time-ago">{{ getTimeAgo(job.summary.created_at) }}</span>
+              </td>
+              <td class="col-actions">
+                @if (canCancelJob(job)) {
+                  <button mat-icon-button 
+                          class="stop-button"
+                          (click)="cancelJob($event, job)"
+                          matTooltip="Stop job">
+                    <mat-icon>stop</mat-icon>
+                  </button>
+                }
               </td>
             </tr>
           }

@@ -82,6 +82,17 @@ export class SoftwareEngineeringApiService {
   }
 
   /**
+   * POST /run-team/{job_id}/cancel
+   * Request cancellation for a running or pending job.
+   */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/run-team/${jobId}/cancel`,
+      {}
+    );
+  }
+
+  /**
    * POST /run-team/{job_id}/re-plan-with-clarifications
    */
   rePlanWithClarifications(

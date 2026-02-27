@@ -251,6 +251,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       case 'running': return 'status-running';
       case 'completed': return 'status-completed';
       case 'failed': return 'status-failed';
+      case 'cancelled': return 'status-cancelled';
       default: return 'status-pending';
     }
   }
@@ -295,6 +296,31 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       queryParams['tab'] = info.tabIndex;
     }
     this.router.navigate([info.route], { queryParams });
+  }
+
+  cancelJob(event: Event, job: DashboardJob): void {
+    event.stopPropagation();
+    const jobId = job.summary.job_id;
+    const repoName = this.getRepoName(job.summary.repo_path);
+    
+    if (!confirm(`Are you sure you want to stop the job for "${repoName}"?`)) {
+      return;
+    }
+
+    this.api.cancelJob(jobId).subscribe({
+      next: () => {
+        this.refresh();
+      },
+      error: (err) => {
+        console.error('Failed to cancel job:', err);
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  canCancelJob(job: DashboardJob): boolean {
+    const status = job.summary.status;
+    return status === 'running' || status === 'pending';
   }
 
   trackByJobId(_index: number, job: DashboardJob): string {
