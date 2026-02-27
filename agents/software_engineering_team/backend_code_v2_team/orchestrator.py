@@ -207,15 +207,25 @@ class BackendDevelopmentAgent:
         result.current_phase = Phase.EXECUTION
         _update_job(current_phase="execution", current_microtask="", progress=15, status_text="Starting code implementation")
 
-        def _progress_cb(done: int, total: int, title: str, microtask_phase: str = "coding", phase_detail: str = "") -> None:
-            phase_labels = {"coding": "Writing code", "review": "Reviewing code", "problem_solving": "Fixing issues"}
-            phase_label = phase_labels.get(microtask_phase, microtask_phase)
-            status = f"{phase_label}: {title} ({done}/{total})"
+        def _progress_cb(current_index: int, done: int, total: int, title: str, microtask_phase: str = "coding", phase_detail: str = "") -> None:
+            phase_labels = {
+                "coding": "Writing code",
+                "code_review": "Code Review",
+                "qa_testing": "QA Testing",
+                "security_testing": "Security Testing",
+                "documentation": "Documentation",
+                "review": "Reviewing code",
+                "problem_solving": "Fixing issues",
+                "completed": "Completed",
+            }
+            phase_label = phase_labels.get(microtask_phase, microtask_phase.replace("_", " ").title())
+            status = f"{phase_label}: {title} ({current_index}/{total})"
             _update_job(
                 current_phase="execution",
                 current_microtask=title,
                 current_microtask_phase=microtask_phase,
                 phase_detail=phase_detail,
+                current_microtask_index=current_index,
                 microtasks_completed=done,
                 microtasks_total=total,
                 progress=min(15 + int(done / max(total, 1) * 60), 75),

@@ -31,6 +31,9 @@ class Phase(str, Enum):
 class MicrotaskStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    IN_CODE_REVIEW = "in_code_review"
+    IN_QA_TESTING = "in_qa_testing"
+    IN_SECURITY_TESTING = "in_security_testing"
     IN_REVIEW = "in_review"
     IN_DOCUMENTATION = "in_documentation"
     COMPLETED = "completed"
@@ -126,6 +129,15 @@ class ReviewResult(BaseModel):
     build_ok: bool = Field(default=False)
     lint_ok: bool = Field(default=False)
     summary: str = Field(default="")
+
+
+class PhaseReviewResult(BaseModel):
+    """Output of a single phase-specific review (code review, QA, security, or documentation)."""
+
+    passed: bool = Field(default=False)
+    issues: List[ReviewIssue] = Field(default_factory=list)
+    summary: str = Field(default="")
+    phase_name: str = Field(default="", description="Name of the phase: code_review, qa, security, documentation")
 
 
 class ProblemSolvingResult(BaseModel):
@@ -242,11 +254,27 @@ class ToolAgentOutput(BaseModel):
 # ---------------------------------------------------------------------------
 
 class MicrotaskReviewConfig(BaseModel):
-    """Configuration for per-microtask review gates."""
+    """Configuration for per-microtask review gates with per-phase retry limits."""
 
     max_retries: int = Field(
-        default=3,
-        description="Max problem-solving attempts per microtask before marking as failed",
+        default=20,
+        description="Max problem-solving attempts per microtask before marking as failed (legacy, used if per-phase not set)",
+    )
+    code_review_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for code review phase (build + lint + code review)",
+    )
+    qa_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for QA testing phase",
+    )
+    security_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for security testing phase",
+    )
+    documentation_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for documentation phase",
     )
     on_failure: Literal["stop", "skip_continue"] = Field(
         default="skip_continue",

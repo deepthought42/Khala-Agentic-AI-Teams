@@ -1,6 +1,6 @@
 # Strands Agents User Interface
 
-Angular application providing an interactive UI for all Strands agent APIs: Blogging, Software Engineering Team, Market Research, SOC2 Compliance, Social Media Marketing, and Branding.
+Angular application providing an interactive UI for all Strands agent APIs: Blogging, Software Engineering Team, Personal Assistant, Market Research, SOC2 Compliance, Social Media Marketing, and Branding.
 
 ## Prerequisites
 
@@ -27,12 +27,16 @@ API base URLs are configured in `src/environments/environment.ts` (development) 
 
 | API | Default URL | Port |
 |-----|-------------|------|
-| Blogging | `http://localhost:8000` | 8000 |
+| Blogging | `http://localhost:8001` | 8001 |
 | Software Engineering Team | `http://localhost:8000` | 8000 |
+| Personal Assistant | `http://localhost:8015` | 8015 |
 | Market Research | `http://localhost:8011` | 8011 |
 | SOC2 Compliance | `http://localhost:8020` | 8020 |
 | Social Media Marketing | `http://localhost:8010` | 8010 |
 | Branding | `http://localhost:8012` | 8012 |
+| **Unified API** | `http://localhost:8080` | 8080 |
+
+**Note:** The Unified API provides all team APIs under a single endpoint with namespaced prefixes (e.g., `/api/blogging`, `/api/personal-assistant`).
 
 To override, edit `src/environments/environment.ts` before building.
 

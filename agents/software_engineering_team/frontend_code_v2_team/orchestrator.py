@@ -195,12 +195,13 @@ class FrontendDevelopmentAgent:
         result.current_phase = Phase.EXECUTION
         _update_job(current_phase="execution", current_microtask="", progress=15)
 
-        def _progress_cb(done: int, total: int, title: str, microtask_phase: str = "coding", phase_detail: str = "") -> None:
+        def _progress_cb(current_index: int, done: int, total: int, title: str, microtask_phase: str = "coding", phase_detail: str = "") -> None:
             _update_job(
                 current_phase="execution",
                 current_microtask=title,
                 current_microtask_phase=microtask_phase,
                 phase_detail=phase_detail,
+                current_microtask_index=current_index,
                 microtasks_completed=done,
                 microtasks_total=total,
                 progress=min(15 + int(done / max(total, 1) * 60), 75),

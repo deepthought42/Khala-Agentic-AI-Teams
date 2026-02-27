@@ -4,11 +4,13 @@ This repository provides **multiple Strands-style agent systems** in a monorepo:
 
 - **Blogging** – Research, review, draft, copy-edit, and publication agents for content creation (web + arXiv research, title/outline generation, draft with style guide, copy-editor loop, platform-specific output for Medium/dev.to/Substack).
 - **Software engineering team** – Full dev team simulation from spec: architecture, Tech Lead, backend/frontend workers, DevOps, security, QA, code review, accessibility, and more. Reads `initial_spec.md` from a git repo and produces working code.
+- **Personal assistant team** – AI-powered personal assistant managing email, calendar, tasks, deals, reservations, and document generation with comprehensive user profile management and robust JSON extraction.
 - **Social media marketing team** – Campaign planning with collaboration agents, human approval gate, and platform specialists (LinkedIn, Facebook, Instagram, X). Produces execution-ready content plans.
 - **SOC2 compliance team** – Multi-agent SOC2 audit for a code repository: Security, Availability, Processing Integrity, Confidentiality, and Privacy TSC agents review the repo and produce a compliance report or a next-steps-for-certification document.
 - **Investment team** – Multi-asset investment organization with IPS hard constraints, strategy validation, promotion gates (`reject/revise/paper/live`), separation-of-duties, risk veto, and monitor-only safety degradation.
 - **Market research team** – Human-AI collaborative workflow for user discovery and product concept viability; transcript ingestion, UX synthesis, experiment scripts, and human approval gates.
 - **Branding team** – Brand strategy codification, moodboard ideation, design and writing standards, plus an asynchronous open-question feed and answer workflow.
+- **Agent provisioning team** – Provisions agent environments with databases, git repos, Docker containers, and secure credential management.
 
 ## Project structure
 
@@ -17,11 +19,18 @@ strands-agents/
 ├── api/                         # Blog research-and-review HTTP API (port 8000)
 ├── blogging/                    # Blogging agent suite (research, review, draft, copy-edit, publication)
 ├── software_engineering_team/   # Full software dev team simulation
+│   ├── planning_v2_team/       # Standalone planning system (8 tool agents, 6 phases)
+│   ├── backend_code_v2_team/   # Backend development (10 tool agents, 7 phases)
+│   ├── frontend_code_v2_team/  # Frontend development (17 tool agents, 7 phases)
+│   ├── devops_team/            # DevOps automation (9 core + 9 tool agents)
+│   └── shared/                 # Common utilities, LLM client, models
+├── personal_assistant_team/     # Personal assistant (email, calendar, tasks, deals)
 ├── social_media_marketing_team/ # Campaign planning with platform specialists
 ├── soc2_compliance_team/       # SOC2 compliance audit and certification team
 ├── investment_team/            # Multi-asset investment organization (IPS-first)
 ├── market_research_team/       # Market research and concept viability
 ├── branding_team/              # Branding strategy + interactive clarification API
+├── agent_provisioning_team/    # Agent environment provisioning
 └── requirements.txt            # Shared dependencies
 ```
 
@@ -30,41 +39,57 @@ strands-agents/
 | [api/](api/README.md) | Blog research-and-review HTTP API; research + review pipeline only. |
 | [blogging/](blogging/README.md) | Research, review, draft, copy-editor, and publication agents. Full pipeline from brief to platform-ready posts. |
 | [software_engineering_team/](software_engineering_team/README.md) | Multi-agent dev team: architecture, Tech Lead, backend/frontend, DevOps, security, QA, code review, accessibility, documentation. |
+| [personal_assistant_team/](personal_assistant_team/README.md) | Personal assistant for email, calendar, tasks, deals, reservations, document generation, and comprehensive user profile management. |
 | [social_media_marketing_team/](social_media_marketing_team/README.md) | Cross-platform campaign planning with human approval, collaboration agents, and LinkedIn/Facebook/Instagram/X specialists. |
 | [soc2_compliance_team/](soc2_compliance_team/README.md) | SOC2 compliance audit: Security, Availability, Processing Integrity, Confidentiality, Privacy TSC agents; produces compliance report or next-steps document. |
 | [investment_team/](investment_team/README.md) | Multi-asset investment organization with IPS constraints, validation/promotion gates, and safety-first orchestration. |
 | [market_research_team/](market_research_team/README.md) | Market research and business concept viability; transcript ingestion, UX synthesis, experiment scripts, human approval gates. |
+| [agent_provisioning_team/](agent_provisioning_team/README.md) | Agent environment provisioning with databases, git repos, Docker containers, and credential management. |
+
+### Software Engineering Team Sub-Teams
+
+| Sub-Team | Description |
+|----------|-------------|
+| [planning_v2_team/](software_engineering_team/planning_v2_team/README.md) | Standalone planning system with 8 tool agents across 6 phases for comprehensive project planning. |
+| [backend_code_v2_team/](software_engineering_team/backend_code_v2_team/README.md) | Backend development with 10 specialized tool agents and 7-phase workflow. |
+| [frontend_code_v2_team/](software_engineering_team/frontend_code_v2_team/README.md) | Frontend development with 17 tool agents supporting Angular, React, and Vue. |
+| [devops_team/](software_engineering_team/devops_team/README.md) | DevOps automation with 9 core agents and 9 tool agents for infrastructure and deployment. |
+| [shared/](software_engineering_team/shared/README.md) | Common utilities, LLM client, models, and infrastructure used across SE team agents. |
 
 ```mermaid
 flowchart LR
   Root[Repository Root]
   Blog[blogging]
   SW[software_engineering_team]
+  PA[personal_assistant_team]
   Soc[social_media_marketing_team]
   Soc2[soc2_compliance_team]
   Inv[investment_team]
   MR[market_research_team]
-  Root --> Blog
-  Root --> SW
-  Root --> Soc
-  Root --> Soc2
-  Root --> Inv
-  Root --> MR
+  Brand[branding_team]
+  Prov[agent_provisioning_team]
+  Root --> Blog & SW & PA & Soc & Soc2 & Inv & MR & Brand & Prov
   Blog --> Research[Research]
   Blog --> Review[Review]
   Blog --> Draft[Draft]
   Blog --> CopyEd[Copy Editor]
   Blog --> Pub[Publication]
   SW --> Orch[Orchestrator]
-  Orch --> Plan[Project Planning]
-  Orch --> Arch[Architecture]
-  Orch --> Workers[Backend Frontend DevOps ...]
+  Orch --> Plan[Planning V2]
+  Orch --> Backend[Backend V2]
+  Orch --> Frontend[Frontend V2]
+  Orch --> DevOps[DevOps Team]
+  PA --> Email[Email]
+  PA --> Calendar[Calendar]
+  PA --> Tasks[Tasks]
+  PA --> Deals[Deals]
   Soc --> SMM[SMM Orchestrator]
-  SMM --> Collab[Collaboration Agents]
   SMM --> Platform[Platform Specialists]
   Soc2 --> TSC[TSC Agents]
   Inv --> IPS[IPS Orchestrator]
   MR --> UX[UX Synthesis]
+  Brand --> Strategy[Brand Strategy]
+  Prov --> Infra[Infrastructure]
 ```
 
 ## Quick start

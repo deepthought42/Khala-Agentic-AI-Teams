@@ -97,9 +97,9 @@
                     <mat-icon>code</mat-icon>
                     <span class="microtask-label">Microtask:</span>
                     <span>{{ team.progress.current_microtask }}</span>
-                    @if (team.progress.microtasks_completed != null && team.progress.microtasks_total != null) {
+                    @if (team.progress.current_microtask_index != null && team.progress.microtasks_total != null) {
                       <span class="microtask-count">
-                        ({{ team.progress.microtasks_completed }}/{{ team.progress.microtasks_total }})
+                        ({{ team.progress.current_microtask_index }}/{{ team.progress.microtasks_total }})
                       </span>
                     }
                   </div>

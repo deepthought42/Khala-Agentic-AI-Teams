@@ -51,6 +51,7 @@ export interface TeamProgressEntry {
   current_microtask?: string;
   current_microtask_phase?: string;
   phase_detail?: string;
+  current_microtask_index?: number;
   microtasks_completed?: number;
   microtasks_total?: number;
 }
@@ -89,8 +90,10 @@ export const CODE_TEAM_PHASES: PhaseDefinition[] = [
 /** Microtask lifecycle phases within execution. */
 export const MICROTASK_PHASES: PhaseDefinition[] = [
   { id: 'coding', label: 'Coding', icon: 'code' },
-  { id: 'review', label: 'Review', icon: 'rate_review' },
-  { id: 'problem_solving', label: 'Problem Solving', icon: 'psychology' },
+  { id: 'code_review', label: 'Code Review', icon: 'rate_review' },
+  { id: 'qa_testing', label: 'QA Testing', icon: 'bug_report' },
+  { id: 'security_testing', label: 'Security', icon: 'security' },
+  { id: 'documentation', label: 'Documentation', icon: 'description' },
 ];
 
 /** Product Analysis subprocesses (spec_review, communicate, spec_update, spec_cleanup). */
