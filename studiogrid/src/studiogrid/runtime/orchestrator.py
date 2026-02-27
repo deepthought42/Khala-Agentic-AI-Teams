@@ -204,7 +204,11 @@ class Orchestrator:
             "format": "json",
             "payload": {
                 "run_id": ctx.run_id,
-                "latest_artifacts": self.store.artifact_latest,
+                "latest_artifacts": [
+                    {"run_id": run_id, "artifact_type": atype, "artifact_id": aid}
+                    for (run_id, atype), aid in self.store.artifact_latest.items()
+                    if run_id == ctx.run_id
+                ],
             },
         }
         return self.persist_artifact(ctx=ctx, artifact_payload=payload, raw_bytes=None, idempotency_key=idempotency_key)

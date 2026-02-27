@@ -3,15 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 
+from temporalio.client import Client
+from temporalio.worker import Worker
+
 from studiogrid.runtime import temporal_activities as acts
 from studiogrid.runtime.temporal_workflow import StudioGridWorkflow
-
-try:
-    from temporalio.client import Client
-    from temporalio.worker import Worker
-except Exception:  # pragma: no cover
-    Client = None
-    Worker = None
 
 
 def env(key: str, default: str | None = None) -> str:
@@ -22,9 +18,10 @@ def env(key: str, default: str | None = None) -> str:
 
 
 async def main() -> None:
-    if Client is None or Worker is None:
-        raise RuntimeError("temporalio is required to run worker")
-    client = await Client.connect(env("STUDIOGRID_TEMPORAL_SERVER", "localhost:7233"), namespace=env("STUDIOGRID_TEMPORAL_NAMESPACE", "default"))
+    client = await Client.connect(
+        env("STUDIOGRID_TEMPORAL_SERVER", "localhost:7233"),
+        namespace=env("STUDIOGRID_TEMPORAL_NAMESPACE", "default"),
+    )
     worker = Worker(
         client,
         task_queue=env("STUDIOGRID_TEMPORAL_TASK_QUEUE", "studiogrid"),
@@ -37,7 +34,10 @@ async def main() -> None:
             acts.get_decision,
             acts.set_waiting,
             acts.set_running,
+            acts.run_revision_loop,
+            acts.fail_run,
             acts.assemble_handoff,
+            acts.set_done,
         ],
     )
     await worker.run()

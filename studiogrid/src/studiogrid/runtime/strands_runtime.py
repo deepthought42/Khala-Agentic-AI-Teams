@@ -1,44 +1,33 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from typing import Any
 
 from studiogrid.runtime.errors import SchemaValidationError
 
-try:
-    from strands import Agent
-except Exception:  # pragma: no cover - fallback for dev envs without strands sdk
-    class Agent:  # type: ignore[no-redef]
-        def __init__(self, tools: list[Any] | None = None) -> None:
-            self.tools = tools or []
-
-        def __call__(self, prompt: str) -> str:
-            return json.dumps(
-                {
-                    "kind": "ARTIFACT",
-                    "payload": {
-                        "artifact_type": "draft",
-                        "format": "json",
-                        "payload": {"prompt_preview": prompt[:60]},
-                    },
-                }
-            )
-
 
 class StrandsAgentExecutor:
+    """Runs a configured Strands agent and enforces single-envelope JSON output."""
+
     def __init__(self, registry, tool_factory):
         self.registry = registry
         self.tool_factory = tool_factory
 
+    def _agent_class(self):
+        module = import_module("strands")
+        return module.Agent
+
     def run(self, *, agent_id: str, task_envelope: dict[str, Any]) -> dict[str, Any]:
         agent_cfg = self.registry.get_agent(agent_id)
         tools = self.tool_factory.build_tools(agent_cfg.get("tools", []), agent_cfg.get("permissions", []))
-        agent = Agent(tools=tools)
+        agent_cls = self._agent_class()
+        agent = agent_cls(tools=tools)
         prompt = self._build_prompt(agent_cfg, task_envelope)
         result_text = agent(prompt)
         try:
             return json.loads(result_text)
-        except Exception as exc:
+        except json.JSONDecodeError as exc:
             raise SchemaValidationError(f"Agent {agent_id} did not output valid JSON: {exc}")
 
     def _build_prompt(self, agent_cfg: dict[str, Any], task_envelope: dict[str, Any]) -> str:
