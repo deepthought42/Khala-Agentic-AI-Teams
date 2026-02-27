@@ -11,6 +11,18 @@ This repository provides **multiple Strands-style agent systems** in a monorepo:
 - **Branding team** – Brand strategy codification, moodboard ideation, design and writing standards, plus an asynchronous open-question feed and answer workflow.
 - **AI systems team** – Agent-factory workflow that takes a structured spec and designs/builds a goal-aligned AI agent system with orchestration, safety gates, and evaluation criteria.
 
+## Shared integrations layer
+
+This repository now includes a shared integrations module at `integrations/` that can be used by **any** agent team.
+
+- Provider-neutral contracts (`discover/read/create/update/notify/schedule` via request metadata)
+- Capability routing (`ticketing.create`, `chat.notify`, `cloud.deploy`, etc.)
+- Registry-driven provider configuration from YAML (Slack, Fireflies.ai, Jira, Trello, Obsidian, Figma, Google Drive/Workspace, Dropbox, AWS/GCP/DigitalOcean/Heroku, Zapier/n8n, GitHub/GitLab)
+- Discovery metadata so agents can inspect each integration's capabilities/actions before use
+- API/MCP transport abstraction to support both vendor APIs and MCP servers
+
+See [integrations/README.md](integrations/README.md) for architecture and setup.
+
 ## Project structure
 
 ```
@@ -24,6 +36,7 @@ strands-agents/
 ├── market_research_team/       # Market research and concept viability
 ├── branding_team/              # Branding strategy + interactive clarification API
 ├── ai_systems_team/            # Spec-to-agent-system blueprint and build workflow
+├── integrations/               # Shared API/MCP integration layer used by all teams
 └── requirements.txt            # Shared dependencies
 ```
 
@@ -37,6 +50,7 @@ strands-agents/
 | [investment_team/](investment_team/README.md) | Multi-asset investment organization with IPS constraints, validation/promotion gates, and safety-first orchestration. |
 | [market_research_team/](market_research_team/README.md) | Market research and business concept viability; transcript ingestion, UX synthesis, experiment scripts, human approval gates. |
 | [ai_systems_team/](ai_systems_team/README.md) | Spec-driven AI agent factory: maps goals to agent roles, orchestration, guardrails, and acceptance tests. |
+| [integrations/](integrations/README.md) | Shared tool integration layer (provider registry, capability router, API/MCP adapter service) reusable by every team. |
 
 ```mermaid
 flowchart LR
