@@ -160,6 +160,7 @@ class BackendDevelopmentAgent:
         tool_runners = self._build_tool_runners(tool_agents)
 
         # ── Phase 1: Planning ──────────────────────────────────────────
+        logger.info("[%s] Next step -> Starting Phase 1: Planning", task_id)
         result.current_phase = Phase.PLANNING
         _update_job(current_phase="planning", progress=5, status_text="Analyzing task and creating implementation plan")
 
@@ -204,6 +205,7 @@ class BackendDevelopmentAgent:
                 logger.warning("[%s] Git agent create_feature_branch raised: %s", task_id, exc)
 
         # ── Phase 2: Execution with per-microtask review gates ─────────
+        logger.info("[%s] Next step -> Starting Phase 2: Execution", task_id)
         result.current_phase = Phase.EXECUTION
         _update_job(current_phase="execution", current_microtask="", progress=15, status_text="Starting code implementation")
 
@@ -284,6 +286,7 @@ class BackendDevelopmentAgent:
         result.final_files = current_files
 
         # ── Phase: Documentation ────────────────────────────────────────
+        logger.info("[%s] Next step -> Starting Phase: Documentation", task_id)
         result.current_phase = Phase.DOCUMENTATION
         _update_job(current_phase="documentation", progress=80, status_text="Generating documentation and API specs")
 
@@ -304,9 +307,13 @@ class BackendDevelopmentAgent:
                 result.final_files = current_files
             logger.info("[%s] Documentation phase complete: %s", task_id, doc_result.summary)
         except Exception as exc:
-            logger.warning("[%s] Documentation phase failed: %s", task_id, exc)
+            logger.warning(
+                "[%s] Documentation phase failed: %s. Next step -> Continuing to Deliver phase",
+                task_id, exc,
+            )
 
         # ── Phase: Deliver ───────────────────────────────────────────
+        logger.info("[%s] Next step -> Starting Phase: Deliver", task_id)
         result.current_phase = Phase.DELIVER
         _update_job(current_phase="deliver", progress=90, status_text="Committing changes and preparing delivery")
 

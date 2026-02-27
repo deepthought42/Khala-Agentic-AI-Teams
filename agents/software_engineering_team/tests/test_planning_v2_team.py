@@ -6,6 +6,8 @@ Tests:
 - Tool agent phase methods
 - Orchestrator 3-layer architecture
 - Phase invocation with tool agents
+
+Note: This team expects a pre-validated specification - no spec review tests.
 """
 
 import pytest
@@ -19,7 +21,6 @@ from planning_v2_team.models import (
     ToolAgentPhaseInput,
     ToolAgentPhaseOutput,
     PlanningPhaseResult,
-    SpecReviewResult,
 )
 from planning_v2_team.orchestrator import (
     PlanningV2ProductLead,
@@ -282,12 +283,6 @@ class TestTaskDependencyToolAgent:
 class TestPhaseToolAgentMapping:
     """Tests for phase-tool agent mapping."""
     
-    def test_spec_review_has_system_design_and_architecture(self):
-        """Spec Review phase should have System Design and Architecture."""
-        agents = PHASE_TOOL_AGENTS[Phase.SPEC_REVIEW_GAP]
-        assert ToolAgentKind.SYSTEM_DESIGN in agents
-        assert ToolAgentKind.ARCHITECTURE in agents
-    
     def test_planning_has_5_agents(self):
         """Planning phase should have 5 agents."""
         agents = PHASE_TOOL_AGENTS[Phase.PLANNING]
@@ -425,25 +420,6 @@ class TestWorkflowExecution:
 # ---------------------------------------------------------------------------
 # Phase Tests
 # ---------------------------------------------------------------------------
-
-
-class TestSpecReviewPhase:
-    """Tests for spec_review_gap phase."""
-    
-    def test_invokes_tool_agents(self, mock_llm: MagicMock, temp_repo: Path):
-        """Test spec review invokes System Design and Architecture agents."""
-        from planning_v2_team.phases.spec_review_gap import run_spec_review_gap
-        
-        tool_agents = _build_tool_agents(mock_llm)
-        
-        result = run_spec_review_gap(
-            llm=mock_llm,
-            spec_content="Test spec",
-            repo_path=temp_repo,
-            tool_agents=tool_agents,
-        )
-        
-        assert isinstance(result, SpecReviewResult)
 
 
 class TestPlanningPhase:

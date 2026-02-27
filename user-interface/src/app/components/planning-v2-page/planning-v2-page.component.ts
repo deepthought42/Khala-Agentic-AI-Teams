@@ -1,4 +1,5 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -30,7 +31,9 @@ import type { PlanningV2RunRequest, RunningJobSummary } from '../../models';
 })
 export class PlanningV2PageComponent implements OnInit, OnDestroy {
   private readonly api = inject(SoftwareEngineeringApiService);
+  private readonly route = inject(ActivatedRoute);
   private jobsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
 
   loading = false;
   error: string | null = null;
@@ -42,6 +45,13 @@ export class PlanningV2PageComponent implements OnInit, OnDestroy {
     this.api.health();
 
   ngOnInit(): void {
+    this.route.queryParams.subscribe((params) => {
+      const jobId = params['jobId'];
+      if (jobId) {
+        this.pendingJobId = jobId;
+      }
+    });
+
     this.jobsSub = timer(0, 15000).pipe(
       switchMap(() => this.api.getPlanningV2Jobs())
     ).subscribe({
@@ -52,7 +62,16 @@ export class PlanningV2PageComponent implements OnInit, OnDestroy {
         } else if (this.selectedJob && !this.planningV2Jobs.find(j => j.job_id === this.selectedJob!.job_id)) {
           this.selectedJob = null;
         }
-        if (this.planningV2Jobs.length > 0 && !this.selectedJob && !this.jobId) {
+
+        if (this.pendingJobId) {
+          const job = this.planningV2Jobs.find(j => j.job_id === this.pendingJobId);
+          if (job) {
+            this.selectJob(job);
+          } else {
+            this.jobId = this.pendingJobId;
+          }
+          this.pendingJobId = null;
+        } else if (this.planningV2Jobs.length > 0 && !this.selectedJob && !this.jobId) {
           this.selectJob(this.planningV2Jobs[0]);
         }
       },

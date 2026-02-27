@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 import { AppShellComponent } from './components/app-shell/app-shell.component';
+import { JobsDashboardComponent } from './components/jobs-dashboard/jobs-dashboard.component';
 import { BloggingDashboardComponent } from './components/blogging-dashboard/blogging-dashboard.component';
 import { MarketResearchDashboardComponent } from './components/market-research-dashboard/market-research-dashboard.component';
 import { Soc2ComplianceDashboardComponent } from './components/soc2-compliance-dashboard/soc2-compliance-dashboard.component';
@@ -14,7 +15,8 @@ export const routes: Routes = [
     path: '',
     component: AppShellComponent,
     children: [
-      { path: '', redirectTo: '/blogging', pathMatch: 'full' },
+      { path: '', redirectTo: '/dashboard', pathMatch: 'full' },
+      { path: 'dashboard', component: JobsDashboardComponent },
       { path: 'blogging', component: BloggingDashboardComponent },
       { path: 'software-engineering', component: SoftwareEngineeringDashboardComponent },
       { path: 'software-engineering/planning-v2', component: PlanningV2PageComponent },
@@ -25,5 +27,5 @@ export const routes: Routes = [
       { path: 'personal-assistant', component: PersonalAssistantDashboardComponent },
     ],
   },
-  { path: '**', redirectTo: '/blogging' },
+  { path: '**', redirectTo: '/dashboard' },
 ];

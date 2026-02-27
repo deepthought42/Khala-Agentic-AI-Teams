@@ -74,7 +74,9 @@ def create_feature_branch(repo_path: str | Path, base_branch: str, feature_name:
                     logger.info("Created branch '%s' from '%s' (disposable files cleared)", branch_name, base_branch)
                     return True, branch_name
             # Working tree still dirty — try stash
-            logger.info("Checkout failed due to local changes, trying stash")
+            logger.info(
+                "Checkout failed due to local changes. Next step -> Trying stash to preserve changes"
+            )
             stash_code, stash_out = _run_git(path, ["git", "stash", "push", "-u", "-m", "pre-feature-branch"])
             if stash_code == 0:
                 code, out = _run_git(path, ["git", "checkout", "-b", branch_name, base_branch])

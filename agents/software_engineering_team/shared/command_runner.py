@@ -296,7 +296,7 @@ def ensure_nvm_installed() -> NvmInstallResult:  # pragma: no cover
     if _get_nvm_script_prefix() is not None:
         return NvmInstallResult(success=True)
 
-    logger.info("NVM not found; attempting to install via official install script")
+    logger.info("NVM not found. Next step -> Attempting to install via official install script")
     env = os.environ.copy()
     env["PROFILE"] = "/dev/null"
 
@@ -321,7 +321,11 @@ def ensure_nvm_installed() -> NvmInstallResult:  # pragma: no cover
 
     stderr = result.stderr or ""
     if result.returncode != 0:
-        logger.warning("NVM install script failed: exit_code=%s stderr=%s", result.returncode, stderr)
+        logger.warning(
+            "NVM install failed. Recovery summary: 1) Tried curl, 2) Tried wget, "
+            "both failed. exit_code=%s stderr=%s",
+            result.returncode, stderr[:200],
+        )
         return NvmInstallResult(success=False, stderr=stderr)
 
     if _get_nvm_script_prefix() is not None:
@@ -370,12 +374,14 @@ def run_command_with_nvm(  # pragma: no cover
         f"{shlex.join(cmd)}"
     )
     logger.info(
-        "Running command with NVM (node %s, fallback %s): %s in %s (timeout=%ss)",
+        "Running command with NVM (node %s, fallback %s): %s in %s (timeout=%ss). "
+        "Next step -> Attempting primary Node version, falling back to %s if unavailable",
         node_version,
         NVM_NODE_FALLBACK_VERSION,
         " ".join(cmd),
         cwd,
         timeout,
+        NVM_NODE_FALLBACK_VERSION,
     )
     try:
         result = subprocess.run(
@@ -401,7 +407,11 @@ def run_command_with_nvm(  # pragma: no cover
             stderr=result.stderr or "",
         )
     except subprocess.TimeoutExpired as e:
-        logger.warning("Command with NVM timed out after %ss: %s", timeout, " ".join(cmd))
+        logger.warning(
+            "Command with NVM timed out after %ss: %s. Recovery summary: "
+            "1) Attempted Node %s, 2) Fallback to Node %s, 3) Command execution timeout",
+            timeout, " ".join(cmd), node_version, NVM_NODE_FALLBACK_VERSION,
+        )
         return CommandResult(
             success=False,
             exit_code=-1,
@@ -478,13 +488,20 @@ def run_ng_build_with_nvm_fallback(project_path: str | Path) -> CommandResult:  
     _ensure_reactive_forms_module_in_components(cwd)
     _normalize_double_at_angular(cwd)
     if _get_nvm_script_prefix() is not None:
-        logger.info("Running ng build with NVM (node %s)", FRONTEND_NODE_VERSION)
+        logger.info(
+            "Running ng build with NVM (node %s). Next step -> Executing Angular build with version management",
+            FRONTEND_NODE_VERSION,
+        )
         return run_command_with_nvm(
             ["npx", "ng", "build", "--configuration=development"],
             cwd=cwd,
             node_version=FRONTEND_NODE_VERSION,
             timeout=BUILD_TIMEOUT,
         )
+    logger.warning(
+        "NVM not found. Recovery summary: 1) No NVM available, 2) Cannot guarantee correct Node version. "
+        "Angular CLI requires Node v20.19+ or v22.12+."
+    )
     msg = (
         "NVM not found. Angular CLI requires Node v20.19+ or v22.12+. "
         "Install NVM (https://github.com/nvm-sh/nvm) and run: nvm install 22"

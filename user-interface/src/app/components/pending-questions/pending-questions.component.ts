@@ -2,7 +2,7 @@ import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, injec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
-import { MatRadioModule } from '@angular/material/radio';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
@@ -20,7 +20,8 @@ export type SubmitEndpointType = 'run-team' | 'planning-v2' | 'product-analysis'
 
 interface QuestionAnswer {
   questionId: string;
-  selectedOptionId: string | null;
+  /** Selected option IDs (multi-select) */
+  selectedOptionIds: Set<string>;
   otherText: string;
   wasAutoAnswered: boolean;
   autoAnswerRationale: string;
@@ -35,7 +36,7 @@ interface QuestionAnswer {
     CommonModule,
     FormsModule,
     MatCardModule,
-    MatRadioModule,
+    MatCheckboxModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
@@ -89,7 +90,7 @@ export class PendingQuestionsComponent implements OnChanges {
       if (!this.answers.has(q.id)) {
         this.answers.set(q.id, {
           questionId: q.id,
-          selectedOptionId: null,
+          selectedOptionIds: new Set<string>(),
           otherText: '',
           wasAutoAnswered: false,
           autoAnswerRationale: '',
@@ -104,17 +105,39 @@ export class PendingQuestionsComponent implements OnChanges {
     return this.answers.get(questionId);
   }
 
-  onOptionChange(questionId: string, optionId: string): void {
+  /** Handle option toggle (checkboxes) */
+  onMultiOptionToggle(questionId: string, optionId: string, checked: boolean): void {
     const answer = this.answers.get(questionId);
     if (answer) {
-      answer.selectedOptionId = optionId;
-      if (optionId !== 'other') {
-        answer.otherText = '';
+      if (checked) {
+        answer.selectedOptionIds.add(optionId);
+        // If selecting a regular option, deselect "other"
+        if (optionId !== 'other') {
+          // Keep other text if "other" is also selected
+        }
+      } else {
+        answer.selectedOptionIds.delete(optionId);
+        // If deselecting "other", clear the text
+        if (optionId === 'other') {
+          answer.otherText = '';
+        }
       }
       if (answer.wasAutoAnswered) {
         answer.wasAutoAnswered = false;
       }
     }
+  }
+
+  /** Check if an option is selected */
+  isOptionSelected(questionId: string, optionId: string): boolean {
+    const answer = this.answers.get(questionId);
+    return answer?.selectedOptionIds.has(optionId) ?? false;
+  }
+
+  /** Check if "other" is selected */
+  isOtherSelected(questionId: string): boolean {
+    const answer = this.answers.get(questionId);
+    return answer?.selectedOptionIds.has('other') ?? false;
   }
 
   onOtherTextChange(questionId: string, text: string): void {
@@ -124,16 +147,14 @@ export class PendingQuestionsComponent implements OnChanges {
     }
   }
 
-  isOtherSelected(questionId: string): boolean {
-    const answer = this.answers.get(questionId);
-    return answer?.selectedOptionId === 'other';
-  }
-
   isQuestionAnswered(question: PendingQuestion): boolean {
     const answer = this.answers.get(question.id);
     if (!answer) return false;
-    if (!answer.selectedOptionId) return false;
-    if (answer.selectedOptionId === 'other' && !answer.otherText.trim()) {
+
+    // All questions use multi-select (checkboxes)
+    if (answer.selectedOptionIds.size === 0) return false;
+    // If "other" is selected, require text
+    if (answer.selectedOptionIds.has('other') && !answer.otherText.trim()) {
       return false;
     }
     return true;
@@ -206,6 +227,7 @@ export class PendingQuestionsComponent implements OnChanges {
     const submission: AnswerSubmission = {
       question_id: questionId,
       selected_option_id: result.selected_option_id,
+      selected_option_ids: [result.selected_option_id],
       other_text: null,
     };
     const request = { answers: [submission] };
@@ -259,11 +281,16 @@ export class PendingQuestionsComponent implements OnChanges {
     const submissions: AnswerSubmission[] = [];
     for (const q of this.questions) {
       const answer = this.answers.get(q.id);
-      if (answer && answer.selectedOptionId) {
+      if (!answer) continue;
+
+      // All questions use multi-select (checkboxes)
+      if (answer.selectedOptionIds.size > 0) {
+        const selectedIds = Array.from(answer.selectedOptionIds);
         submissions.push({
           question_id: q.id,
-          selected_option_id: answer.selectedOptionId,
-          other_text: answer.selectedOptionId === 'other' ? answer.otherText : null,
+          selected_option_id: selectedIds[0] || null, // Primary selection for backward compatibility
+          selected_option_ids: selectedIds,
+          other_text: answer.selectedOptionIds.has('other') ? answer.otherText : null,
         });
       }
     }

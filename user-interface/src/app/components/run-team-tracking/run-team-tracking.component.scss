@@ -577,7 +577,7 @@ mat-progress-bar {
   padding: 8px 0;
 
   .subprocess-step {
-    min-width: 56px;
+    min-width: 112px;
 
     &.has-connector::after {
       top: 14px;
@@ -588,7 +588,7 @@ mat-progress-bar {
 
   .subprocess-label {
     font-size: 10px;
-    max-width: 56px;
+    max-width: 90px;
   }
 }
 
@@ -731,7 +731,7 @@ mat-progress-bar {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  min-width: 64px;
+  min-width: 100px;
   position: relative;
   z-index: 1;
 
@@ -851,4 +851,905 @@ mat-progress-bar {
   100% {
     transform: rotate(360deg);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Progress Tree View Styles
+// ---------------------------------------------------------------------------
+
+.progress-tree-card {
+  margin-top: 16px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: linear-gradient(180deg, 
+    rgba(25, 25, 30, 0.98) 0%, 
+    rgba(18, 18, 22, 0.99) 100%);
+  box-shadow: 
+    0 2px 12px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+
+  mat-card-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.02);
+
+    mat-card-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.8);
+    }
+  }
+
+  mat-card-content {
+    padding: 0;
+  }
+}
+
+.tree-container {
+  font-family: 'Roboto Mono', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tree-node {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 0;
+}
+
+.tree-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.2));
+
+  &.tree-guide-empty {
+    background: transparent;
+  }
+}
+
+.tree-branch {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 100%;
+  margin-right: 8px;
+  flex-shrink: 0;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: -16px;
+    top: 0;
+    bottom: 50%;
+    width: 1px;
+    background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.2));
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    left: -16px;
+    top: 50%;
+    width: 16px;
+    height: 1px;
+    background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.2));
+  }
+
+  &:not(.tree-branch-last)::before {
+    bottom: 0;
+  }
+}
+
+.tree-node-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-node-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+  }
+}
+
+.tree-node-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node-detail {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--mat-sys-surface-container-high, rgba(255, 255, 255, 0.08));
+  color: var(--mat-sys-on-surface-variant, rgba(255, 255, 255, 0.7));
+}
+
+// Tree node status styles
+.tree-node-completed {
+  .tree-node-icon {
+    background: #4caf50;
+
+    mat-icon {
+      color: white;
+    }
+  }
+
+  .tree-node-label {
+    color: #4caf50;
+  }
+
+  .tree-node-detail {
+    background: rgba(76, 175, 80, 0.15);
+    color: #4caf50;
+  }
+}
+
+.tree-node-current {
+  .tree-node-icon {
+    background: #2196f3;
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.2);
+
+    mat-icon {
+      color: white;
+    }
+  }
+
+  .tree-node-label {
+    color: #2196f3;
+    font-weight: 600;
+  }
+
+  .tree-node-detail {
+    background: rgba(33, 150, 243, 0.15);
+    color: #2196f3;
+  }
+}
+
+.tree-node-pending {
+  .tree-node-icon {
+    background: var(--mat-sys-surface-container-high, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.2));
+
+    mat-icon {
+      color: var(--mat-sys-on-surface-variant, #9e9e9e);
+    }
+  }
+
+  .tree-node-label {
+    color: var(--mat-sys-on-surface-variant, #9e9e9e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DAG Tree View Styles (Visual Graph Layout) - Professional Compact Design
+// ---------------------------------------------------------------------------
+
+.dag-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 12px;
+  overflow-x: auto;
+  min-height: 200px;
+}
+
+// Main phases layout - compact horizontal row at top
+.dag-main-phases {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+// Each phase column - contains phase node and its children below
+.dag-phase-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 60px;
+  padding: 0 2px;
+}
+
+// Horizontal connector between main phases
+.dag-phase-connector {
+  display: flex;
+  align-items: center;
+  padding-top: 16px;
+  
+  .dag-connector-line-horizontal {
+    width: 12px;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 1px;
+  }
+}
+
+// Vertical connector from parent to children
+.dag-vertical-connector {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+  
+  .dag-connector-line-vertical {
+    width: 2px;
+    height: 12px;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 1px;
+  }
+}
+
+.dag-vertical-connector-small {
+  padding: 3px 0;
+  
+  .dag-connector-line-vertical {
+    height: 10px;
+  }
+}
+
+.dag-vertical-connector-tiny {
+  padding: 2px 0;
+  
+  .dag-connector-line-vertical {
+    height: 8px;
+  }
+}
+
+// Fan-out connector for multiple children - FIXED alignment
+.dag-fanout-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.dag-fanout-horizontal {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 1px;
+}
+
+.dag-fanout-branches {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.dag-fanout-branch {
+  width: 2px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 1px;
+}
+
+.dag-fanout-connector-small {
+  margin-bottom: 3px;
+  
+  .dag-fanout-horizontal {
+    height: 1.5px;
+  }
+  
+  .dag-fanout-branch {
+    height: 6px;
+    width: 1.5px;
+  }
+}
+
+.dag-fanout-connector-tiny {
+  margin-bottom: 2px;
+  
+  .dag-fanout-horizontal {
+    height: 1px;
+  }
+  
+  .dag-fanout-branch {
+    height: 5px;
+    width: 1px;
+  }
+}
+
+// Sub-phases container with visual grouping
+.dag-subphases-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 8px;
+  margin-top: 4px;
+}
+
+.dag-subphases-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dag-subphase-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+// Level 3 containers
+.dag-level3-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 8px 6px;
+  margin-top: 4px;
+}
+
+.dag-level3-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.dag-level3-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+// Level 4 containers
+.dag-level4-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 6px 4px;
+  margin-top: 3px;
+}
+
+.dag-level4-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+// Node wrapper - compact with hover
+.dag-node-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 6px;
+  transition: background 0.15s ease, transform 0.15s ease;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.05);
+    transform: scale(1.02);
+  }
+}
+
+.dag-node-wrapper-small {
+  gap: 3px;
+  padding: 2px;
+}
+
+.dag-node-wrapper-tiny {
+  gap: 2px;
+  padding: 2px;
+}
+
+.dag-node-wrapper-micro {
+  gap: 1px;
+  padding: 1px;
+}
+
+// DAG Node Styles - Compact circular nodes
+.dag-node {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.3));
+  background: var(--mat-sys-surface-container, rgba(40, 40, 40, 0.9));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+
+  mat-icon {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+    color: var(--mat-sys-on-surface-variant, rgba(255, 255, 255, 0.7));
+  }
+
+  &:hover {
+    transform: scale(1.1);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
+    z-index: 10;
+  }
+}
+
+// Main phase nodes - prominent
+.dag-node-phase {
+  width: 40px;
+  height: 40px;
+  border-width: 2.5px;
+
+  mat-icon {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+  }
+}
+
+// Sub-phase nodes
+.dag-node-small {
+  width: 32px;
+  height: 32px;
+  border-width: 2px;
+
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+}
+
+// Team phase nodes
+.dag-node-tiny {
+  width: 26px;
+  height: 26px;
+  border-width: 1.5px;
+
+  mat-icon {
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+  }
+}
+
+// Microtask phase nodes
+.dag-node-micro {
+  width: 20px;
+  height: 20px;
+  border-width: 1.5px;
+
+  mat-icon {
+    font-size: 10px;
+    width: 10px;
+    height: 10px;
+  }
+}
+
+// DAG Node Status Styles - Clean and professional
+.dag-node-completed {
+  background: linear-gradient(135deg, #4caf50 0%, #388e3c 100%);
+  border-color: #388e3c;
+  box-shadow: 0 2px 6px rgba(76, 175, 80, 0.35);
+
+  mat-icon {
+    color: white;
+  }
+
+  &:hover {
+    box-shadow: 0 3px 10px rgba(76, 175, 80, 0.5);
+  }
+}
+
+.dag-node-current {
+  background: linear-gradient(135deg, #42a5f5 0%, #1e88e5 100%);
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3);
+
+  mat-icon {
+    color: white;
+  }
+
+  &:hover {
+    box-shadow: 0 0 0 4px rgba(33, 150, 243, 0.4);
+  }
+}
+
+.dag-node-pending {
+  background: rgba(60, 60, 60, 0.6);
+  border-color: rgba(255, 255, 255, 0.15);
+
+  mat-icon {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  &:hover {
+    background: rgba(70, 70, 70, 0.7);
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+}
+
+// DAG Node Labels - Compact and readable
+.dag-node-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  text-align: center;
+  max-width: 70px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 3px;
+}
+
+// Phase label styling
+.dag-node-label-phase {
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 80px;
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+.dag-node-label-small {
+  font-size: 9px;
+  max-width: 60px;
+  font-weight: 500;
+}
+
+.dag-node-label-tiny {
+  font-size: 8px;
+  max-width: 50px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.dag-node-label-micro {
+  font-size: 7px;
+  max-width: 40px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+// Pending labels are lighter
+.dag-node-wrapper-pending .dag-node-label {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+// Current labels are emphasized
+.dag-node-wrapper-current .dag-node-label {
+  color: #64b5f6;
+  font-weight: 600;
+}
+
+// Completed labels
+.dag-node-wrapper-completed .dag-node-label {
+  color: #81c784;
+}
+
+.dag-node-detail {
+  font-size: 8px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(33, 150, 243, 0.25);
+  color: #64b5f6;
+  margin-top: 2px;
+  margin-top: 4px;
+  transition: background 0.2s ease;
+}
+
+// Tooltip styling for full label display
+.dag-node-wrapper {
+  position: relative;
+
+  &[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(30, 30, 30, 0.95);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    pointer-events: none;
+    animation: tooltipFadeIn 0.15s ease;
+  }
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+// DAG Connector Styles - Clean, professional lines
+.dag-connector-row {
+  height: 28px;
+  width: 100%;
+  position: relative;
+}
+
+.dag-connectors {
+  width: 100%;
+  height: 100%;
+}
+
+.dag-connectors-vertical {
+  width: 100%;
+  height: 20px;
+}
+
+.dag-edge {
+  stroke: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.25));
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+// DAG Group Styles (boxed sub-trees) - Enhanced with gradients and shadows
+.dag-groups-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 32px;
+  margin-top: 12px;
+  padding: 0 16px;
+}
+
+.dag-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 120px;
+  transition: transform 0.2s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+  }
+}
+
+.dag-group-empty {
+  min-width: 60px;
+}
+
+.dag-group-connector {
+  height: 18px;
+  width: 2px;
+  display: flex;
+  justify-content: center;
+}
+
+.dag-group-content {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 20px;
+  background: linear-gradient(180deg, 
+    rgba(255, 255, 255, 0.06) 0%, 
+    rgba(255, 255, 255, 0.02) 100%);
+  box-shadow: 
+    0 4px 16px rgba(0, 0, 0, 0.12),
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  backdrop-filter: blur(8px);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+
+  &:hover {
+    box-shadow: 
+      0 6px 24px rgba(0, 0, 0, 0.18),
+      0 2px 6px rgba(0, 0, 0, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+}
+
+// DAG Subgroup Styles (nested groups for teams) - Professional nested containers
+.dag-subgroup {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  background: linear-gradient(180deg, 
+    rgba(255, 255, 255, 0.04) 0%, 
+    rgba(255, 255, 255, 0.01) 100%);
+  box-shadow: 
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: linear-gradient(180deg, 
+      rgba(255, 255, 255, 0.06) 0%, 
+      rgba(255, 255, 255, 0.02) 100%);
+  }
+}
+
+.dag-subgroup-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--mat-sys-on-surface-variant, rgba(255, 255, 255, 0.7));
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// DAG Microtask Phases - Subtle nested section
+.dag-microtask-phases {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+// DAG Fan-out Connector (one parent to many children) - Improved visual connection
+.dag-connector-fanout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 36px;
+  width: 100%;
+  position: relative;
+}
+
+.dag-connector-stem {
+  width: 2px;
+  height: 14px;
+  background: linear-gradient(180deg, 
+    rgba(76, 175, 80, 0.6) 0%, 
+    var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.35)) 100%);
+  border-radius: 1px;
+}
+
+.dag-connector-stem-short {
+  width: 2px;
+  height: 14px;
+  background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.35));
+  border-radius: 1px;
+}
+
+.dag-connector-horizontal {
+  height: 2px;
+  background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.35));
+  width: calc(100% - 80px);
+  max-width: 420px;
+  border-radius: 1px;
+}
+
+.dag-connector-branches {
+  display: flex;
+  justify-content: space-between;
+  width: calc(100% - 80px);
+  max-width: 420px;
+}
+
+.dag-connector-branch {
+  width: 2px;
+  height: 10px;
+  background: var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.35));
+  border-radius: 1px;
+}
+
+// DAG Horizontal Chain (nodes connected with clean lines - no arrows)
+.dag-horizontal-chain {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 8px 0;
+}
+
+.dag-horizontal-chain-small {
+  gap: 0;
+  padding: 6px 0;
+}
+
+.dag-horizontal-chain-micro {
+  gap: 0;
+  padding: 4px 0;
+}
+
+.dag-chain-item {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+}
+
+.dag-chain-connector {
+  display: flex;
+  align-items: center;
+  margin: 0 6px;
+
+  .dag-chain-line {
+    width: 20px;
+    height: 2px;
+    background: linear-gradient(90deg,
+      var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.4)) 0%,
+      var(--mat-sys-outline-variant, rgba(255, 255, 255, 0.25)) 100%);
+    border-radius: 1px;
+  }
+}
+
+.dag-chain-connector-small {
+  margin: 0 4px;
+
+  .dag-chain-line {
+    width: 12px;
+    height: 1.5px;
+  }
+}
+
+.dag-chain-connector-micro {
+  margin: 0 3px;
+
+  .dag-chain-line {
+    width: 8px;
+    height: 1px;
+  }
+}
+
+// DAG Subgroup Detail - Status badge
+.dag-subgroup-detail {
+  font-size: 10px;
+  font-weight: 500;
+  color: #64b5f6;
+  background: rgba(33, 150, 243, 0.15);
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 4px;
 }

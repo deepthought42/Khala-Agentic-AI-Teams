@@ -146,7 +146,10 @@ def run_review(
                     recommendation=getattr(item, "recommendation", ""),
                 ))
         except Exception as exc:
-            logger.warning("[%s] Code review agent failed, using LLM fallback: %s", task_id, exc)
+            logger.warning(
+                "[%s] Code review agent failed: %s. Next step -> Using LLM fallback for code review",
+                task_id, exc,
+            )
             issues.extend(_run_llm_review(llm=llm, task=task, files=execution_result.files))
     else:
         issues.extend(_run_llm_review(llm=llm, task=task, files=execution_result.files))
@@ -247,7 +250,7 @@ def run_microtask_review(
     microtask_id = microtask.id
     issues: List[ReviewIssue] = []
 
-    logger.info("[%s] Running microtask review for %s (%d files)", task_id, microtask_id, len(files))
+    logger.info("[%s] Microtask review for %s (%d files). Next step -> Build verification, lint, code review", task_id, microtask_id, len(files))
 
     if detail_callback:
         detail_callback("Running build verification...")
@@ -315,7 +318,10 @@ def run_microtask_review(
                     recommendation=getattr(item, "recommendation", ""),
                 ))
         except Exception as exc:
-            logger.warning("[%s] Code review agent failed for microtask %s, using LLM fallback: %s", task_id, microtask_id, exc)
+            logger.warning(
+                "[%s] Code review agent failed for microtask %s: %s. Next step -> Using LLM fallback for code review",
+                task_id, microtask_id, exc,
+            )
             issues.extend(_run_llm_review(llm=llm, task=task, files=files))
     else:
         if detail_callback:

@@ -18,6 +18,28 @@ export interface TaskWithId {
   state: TaskStateEntry;
 }
 
+/** Flattened tree node for progress tree view. */
+export interface FlatTreeNode {
+  id: string;
+  label: string;
+  icon: string;
+  status: 'completed' | 'current' | 'pending';
+  level: number;
+  detail?: string;
+  isLast: boolean;
+  parentIsLast: boolean[];
+}
+
+/** Hierarchical DAG node for visual tree view. */
+export interface DAGNode {
+  id: string;
+  label: string;
+  icon: string;
+  status: 'completed' | 'current' | 'pending';
+  detail?: string;
+  children?: DAGNode[];
+}
+
 @Component({
   selector: 'app-run-team-tracking',
   standalone: true,
@@ -368,11 +390,20 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
     return MICROTASK_PHASES;
   }
 
+  /** Normalize microtask phase ID for comparison (handles Frontend V2's simpler phase names). */
+  private normalizeMicrotaskPhase(phase: string | undefined): string | undefined {
+    if (!phase) return undefined;
+    if (phase === 'review') return 'code_review';
+    if (phase === 'problem_solving') return 'code_review';
+    return phase;
+  }
+
   /** Check if a microtask phase has been completed for a team. */
   isMicrotaskPhaseCompleted(teamId: string, phaseId: string): boolean {
-    const currentPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    const rawPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    const currentPhase = this.normalizeMicrotaskPhase(rawPhase);
     if (!currentPhase) return false;
-    if (currentPhase === 'completed') return true;
+    if (rawPhase === 'completed') return true;
     const phaseOrder = MICROTASK_PHASES.map(p => p.id);
     const currentIdx = phaseOrder.indexOf(currentPhase);
     const targetIdx = phaseOrder.indexOf(phaseId);
@@ -381,7 +412,8 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
 
   /** Check if a microtask phase is currently active for a team. */
   isMicrotaskPhaseCurrent(teamId: string, phaseId: string): boolean {
-    const currentPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    const rawPhase = this.status?.team_progress?.[teamId]?.current_microtask_phase;
+    const currentPhase = this.normalizeMicrotaskPhase(rawPhase);
     return currentPhase === phaseId;
   }
 
@@ -394,5 +426,368 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
   showMicrotaskPhases(teamId: string): boolean {
     const teamProgress = this.status?.team_progress?.[teamId];
     return teamProgress?.current_phase === 'execution' && !!teamProgress?.current_microtask;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Progress Tree View
+  // ---------------------------------------------------------------------------
+
+  /** Build the flattened progress tree for the tree view card. */
+  buildProgressTree(): FlatTreeNode[] {
+    if (!this.status) return [];
+
+    const nodes: FlatTreeNode[] = [];
+    const parentIsLast: boolean[] = [];
+
+    // Root node - Job
+    nodes.push({
+      id: 'job',
+      label: this.status.repo_path || 'Job',
+      icon: 'folder',
+      status: this.getJobRootStatus(),
+      level: 0,
+      isLast: true,
+      parentIsLast: [],
+    });
+
+    // Main phases
+    const mainPhases = this.ALL_PHASES;
+    mainPhases.forEach((phase, phaseIdx) => {
+      const isLastPhase = phaseIdx === mainPhases.length - 1;
+      const phaseStatus = this.getPhaseStatus(phase.id);
+
+      nodes.push({
+        id: `phase-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status: phaseStatus,
+        level: 1,
+        isLast: isLastPhase,
+        parentIsLast: [true],
+      });
+
+      // Add sub-phases based on the phase type
+      if (phase.id === 'product_analysis') {
+        this.addProductAnalysisSubtree(nodes, isLastPhase);
+      } else if (phase.id === 'planning') {
+        this.addPlanningSubtree(nodes, isLastPhase);
+      } else if (phase.id === 'execution') {
+        this.addExecutionSubtree(nodes, isLastPhase);
+      }
+    });
+
+    return nodes;
+  }
+
+  private getJobRootStatus(): 'completed' | 'current' | 'pending' {
+    if (this.status?.status === 'completed') return 'completed';
+    if (this.status?.status === 'running') return 'current';
+    return 'pending';
+  }
+
+  private getPhaseStatus(phaseId: string): 'completed' | 'current' | 'pending' {
+    if (this.isPhaseCompleted(phaseId)) return 'completed';
+    if (this.isCurrentPhase(phaseId)) return 'current';
+    return 'pending';
+  }
+
+  private addProductAnalysisSubtree(nodes: FlatTreeNode[], parentIsLast: boolean): void {
+    const phases = PRODUCT_ANALYSIS_PHASES;
+    phases.forEach((phase, idx) => {
+      const isLast = idx === phases.length - 1;
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isAnalysisSubprocessCompleted(phase.id)) {
+        status = 'completed';
+      } else if (this.isAnalysisSubprocessCurrent(phase.id)) {
+        status = 'current';
+      }
+
+      nodes.push({
+        id: `analysis-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+        level: 2,
+        isLast,
+        parentIsLast: [true, parentIsLast],
+      });
+    });
+  }
+
+  private addPlanningSubtree(nodes: FlatTreeNode[], parentIsLast: boolean): void {
+    const phases = PLANNING_V2_PHASES;
+    phases.forEach((phase, idx) => {
+      const isLast = idx === phases.length - 1;
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isPlanningSubprocessCompleted(phase.id)) {
+        status = 'completed';
+      } else if (this.isPlanningSubprocessCurrent(phase.id)) {
+        status = 'current';
+      }
+
+      nodes.push({
+        id: `planning-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+        level: 2,
+        isLast,
+        parentIsLast: [true, parentIsLast],
+      });
+    });
+  }
+
+  private addExecutionSubtree(nodes: FlatTreeNode[], parentIsLast: boolean): void {
+    const teams = this.getExecutionTeams();
+    teams.forEach((team, teamIdx) => {
+      const isLastTeam = teamIdx === teams.length - 1;
+      const teamStatus = this.getTeamStatus(team.teamId);
+      const progressDetail = team.progress.progress != null ? `${team.progress.progress}%` : undefined;
+
+      nodes.push({
+        id: `team-${team.teamId}`,
+        label: team.label,
+        icon: 'groups',
+        status: teamStatus,
+        level: 2,
+        detail: progressDetail,
+        isLast: isLastTeam,
+        parentIsLast: [true, parentIsLast],
+      });
+
+      // Add current task if exists
+      const taskTitle = this.getTaskTitle(team.teamId);
+      if (taskTitle) {
+        nodes.push({
+          id: `team-${team.teamId}-task`,
+          label: `Task: ${taskTitle}`,
+          icon: 'assignment',
+          status: 'current',
+          level: 3,
+          isLast: false,
+          parentIsLast: [true, parentIsLast, isLastTeam],
+        });
+
+        // Add current microtask if exists
+        const progress = team.progress;
+        if (progress.current_microtask) {
+          const microtaskDetail = progress.current_microtask_index != null && progress.microtasks_total != null
+            ? `(${progress.current_microtask_index}/${progress.microtasks_total})`
+            : undefined;
+
+          nodes.push({
+            id: `team-${team.teamId}-microtask`,
+            label: progress.current_microtask,
+            icon: 'code',
+            status: 'current',
+            level: 4,
+            detail: microtaskDetail,
+            isLast: true,
+            parentIsLast: [true, parentIsLast, isLastTeam, false],
+          });
+
+          // Add microtask phases
+          if (this.showMicrotaskPhases(team.teamId)) {
+            this.addMicrotaskPhasesSubtree(nodes, team.teamId, [true, parentIsLast, isLastTeam, false, true]);
+          }
+        }
+      }
+
+      // Add team phases (Setup, Planning, Execution, Documentation, Deliver)
+      this.addTeamPhasesSubtree(nodes, team.teamId, [true, parentIsLast, isLastTeam]);
+    });
+  }
+
+  private getTeamStatus(teamId: string): 'completed' | 'current' | 'pending' {
+    const progress = this.status?.team_progress?.[teamId];
+    if (!progress) return 'pending';
+    if (progress.current_phase === 'deliver' && progress.progress === 100) return 'completed';
+    if (progress.current_phase) return 'current';
+    return 'pending';
+  }
+
+  private addMicrotaskPhasesSubtree(nodes: FlatTreeNode[], teamId: string, parentIsLastArr: boolean[]): void {
+    const phases = MICROTASK_PHASES;
+    phases.forEach((phase, idx) => {
+      const isLast = idx === phases.length - 1;
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isMicrotaskPhaseCompleted(teamId, phase.id)) {
+        status = 'completed';
+      } else if (this.isMicrotaskPhaseCurrent(teamId, phase.id)) {
+        status = 'current';
+      }
+
+      nodes.push({
+        id: `team-${teamId}-microtask-phase-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+        level: 5,
+        isLast,
+        parentIsLast: parentIsLastArr,
+      });
+    });
+  }
+
+  private addTeamPhasesSubtree(nodes: FlatTreeNode[], teamId: string, parentIsLastArr: boolean[]): void {
+    const phases = CODE_TEAM_PHASES;
+    phases.forEach((phase, idx) => {
+      const isLast = idx === phases.length - 1;
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isCodeTeamPhaseCompleted(teamId, phase.id)) {
+        status = 'completed';
+      } else if (this.isCodeTeamPhaseCurrent(teamId, phase.id)) {
+        status = 'current';
+      }
+
+      nodes.push({
+        id: `team-${teamId}-phase-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+        level: 3,
+        isLast,
+        parentIsLast: parentIsLastArr,
+      });
+    });
+  }
+
+  /** Get the tree connector class for a node based on its position. */
+  getTreeConnectorClass(node: FlatTreeNode): string {
+    if (node.level === 0) return '';
+    return node.isLast ? 'tree-connector-last' : 'tree-connector-mid';
+  }
+
+  // ---------------------------------------------------------------------------
+  // DAG Tree View (Visual Graph Layout)
+  // ---------------------------------------------------------------------------
+
+  /** Build the hierarchical DAG tree for the visual graph view.
+   * Returns an array of main phases (no root node).
+   */
+  buildDAGTree(): DAGNode[] {
+    if (!this.status) return [];
+
+    const phases: DAGNode[] = [];
+
+    // Build each main phase with its sub-phases
+    for (const phase of this.ALL_PHASES) {
+      const phaseNode: DAGNode = {
+        id: `phase-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status: this.getPhaseStatus(phase.id),
+        children: [],
+      };
+
+      // Add sub-phases based on phase type
+      if (phase.id === 'product_analysis') {
+        phaseNode.children = this.buildProductAnalysisDAGChildren();
+      } else if (phase.id === 'planning') {
+        phaseNode.children = this.buildPlanningDAGChildren();
+      } else if (phase.id === 'execution') {
+        phaseNode.children = this.buildExecutionDAGChildren();
+      }
+      // 'completed' phase has no children
+
+      phases.push(phaseNode);
+    }
+
+    return phases;
+  }
+
+  private buildProductAnalysisDAGChildren(): DAGNode[] {
+    return PRODUCT_ANALYSIS_PHASES.map(phase => {
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isAnalysisSubprocessCompleted(phase.id)) {
+        status = 'completed';
+      } else if (this.isAnalysisSubprocessCurrent(phase.id)) {
+        status = 'current';
+      }
+      return {
+        id: `analysis-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+      };
+    });
+  }
+
+  private buildPlanningDAGChildren(): DAGNode[] {
+    return PLANNING_V2_PHASES.map(phase => {
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isPlanningSubprocessCompleted(phase.id)) {
+        status = 'completed';
+      } else if (this.isPlanningSubprocessCurrent(phase.id)) {
+        status = 'current';
+      }
+      return {
+        id: `planning-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+      };
+    });
+  }
+
+  private buildExecutionDAGChildren(): DAGNode[] {
+    const teams = this.getExecutionTeams();
+    return teams.map(team => {
+      const teamNode: DAGNode = {
+        id: `team-${team.teamId}`,
+        label: team.label,
+        icon: 'groups',
+        status: this.getTeamStatus(team.teamId),
+        detail: team.progress.progress != null ? `${team.progress.progress}%` : undefined,
+        children: [],
+      };
+
+      // Add team phases as children
+      teamNode.children = this.buildTeamPhasesDAGChildren(team.teamId);
+
+      return teamNode;
+    });
+  }
+
+  private buildTeamPhasesDAGChildren(teamId: string): DAGNode[] {
+    return CODE_TEAM_PHASES.map(phase => {
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isCodeTeamPhaseCompleted(teamId, phase.id)) {
+        status = 'completed';
+      } else if (this.isCodeTeamPhaseCurrent(teamId, phase.id)) {
+        status = 'current';
+      }
+
+      const phaseNode: DAGNode = {
+        id: `team-${teamId}-phase-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+      };
+
+      // If this is the execution phase and there's a current microtask, add microtask phases
+      if (phase.id === 'execution' && this.showMicrotaskPhases(teamId)) {
+        phaseNode.children = this.buildMicrotaskPhasesDAGChildren(teamId);
+      }
+
+      return phaseNode;
+    });
+  }
+
+  private buildMicrotaskPhasesDAGChildren(teamId: string): DAGNode[] {
+    return MICROTASK_PHASES.map(phase => {
+      let status: 'completed' | 'current' | 'pending' = 'pending';
+      if (this.isMicrotaskPhaseCompleted(teamId, phase.id)) {
+        status = 'completed';
+      } else if (this.isMicrotaskPhaseCurrent(teamId, phase.id)) {
+        status = 'current';
+      }
+      return {
+        id: `team-${teamId}-microtask-${phase.id}`,
+        label: phase.label,
+        icon: phase.icon,
+        status,
+      };
+    });
   }
 }

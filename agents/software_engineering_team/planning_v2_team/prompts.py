@@ -3,62 +3,14 @@ Prompts for planning-v2 phases and tool agent orchestration.
 
 No reuse from planning_team. Tool agents have their own embedded prompts.
 These prompts are used by the orchestrator and phase implementations.
+
+Note: This team expects a pre-validated specification - no spec review prompts
+are included. Use the Product Requirements Analysis agent for spec validation.
 """
 
 # ---------------------------------------------------------------------------
 # Phase-level prompts (used by orchestrator phases)
 # ---------------------------------------------------------------------------
-
-SPEC_REVIEW_PROMPT = """You are a Product Requirement Analysis expert. Review the following product specification.
-
-Perform a thorough analysis to identify:
-1. Issues - Problems or inconsistencies in the specification
-2. Product gaps - Missing features, requirements, or considerations
-3. Open questions - Items that need clarification from the product owner. For each question, provide 2-3 reasonable answer options based on industry standards and best practices. Mark one option as the recommended default (most conservative or most reasonable choice).
-4. Plan summary - A brief outline of how this product could be built
-
-Respond with a JSON object only, no markdown, with these exact keys:
-- "issues": list of strings (problems or inconsistencies identified in the spec)
-- "product_gaps": list of strings (missing features or requirements)
-- "open_questions": list of objects, each with:
-  - "id": unique identifier (e.g., "q1", "q2", "q3")
-  - "question_text": the question requiring clarification
-  - "context": why this question matters for the project (1-2 sentences)
-  - "options": list of 2-3 objects, each with:
-    - "id": option identifier (e.g., "opt1", "opt2")
-    - "label": the answer option text
-    - "is_default": boolean (true for exactly one option - the recommended default)
-- "plan_summary": string (brief outline of the implementation approach)
-- "summary": string (one paragraph overview of the analysis)
-
-Specification:
----
-{spec_content}
----
-"""
-
-SPEC_UPDATE_PROMPT = """You are a Product Specification Writer. Your task is to update the product specification to incorporate the answers to open questions.
-
-For each answered question, integrate the answer naturally into the specification, adding more detail and clarity where the original spec was unclear or incomplete.
-
-IMPORTANT:
-- Preserve all existing content that is still valid
-- Add new sections or details based on the answers
-- Make the spec more specific and actionable
-- Write in clear, professional language
-
-Current Specification:
----
-{spec_content}
----
-
-Answered Questions:
----
-{answered_questions}
----
-
-Respond with the FULL updated specification as plain text (markdown format). Include all original content plus the new details from the answered questions.
-"""
 
 PLANNING_PROMPT = """You are a Product Planning expert. Using the spec and any prior review, produce a comprehensive product plan.
 

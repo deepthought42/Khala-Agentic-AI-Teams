@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 def _merge_devops_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Merge devops results from multiple chunks."""
     merged: Dict[str, Any] = {
+        "needs_clarification": False,
+        "clarification_questions": [],
         "pipeline_stages": [],
         "infrastructure": {},
         "deployment_strategy": "",
@@ -34,6 +36,12 @@ def _merge_devops_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     summaries = []
 
     for r in results:
+        if r.get("needs_clarification"):
+            merged["needs_clarification"] = True
+        if isinstance(r.get("clarification_questions"), list):
+            for q in r["clarification_questions"]:
+                if q not in merged["clarification_questions"]:
+                    merged["clarification_questions"].append(q)
         if isinstance(r.get("pipeline_stages"), list):
             for stage in r["pipeline_stages"]:
                 if stage not in merged["pipeline_stages"]:
@@ -64,15 +72,27 @@ Specification:
 
 Plan summary from spec review: {plan_summary}
 
+CRITICAL RULES:
+1. Do NOT assume any deployment target or cloud provider if not explicitly stated in the specification.
+2. If the spec does not clearly specify WHERE the application should be deployed (e.g., Heroku, AWS, DigitalOcean, on-premises), you MUST:
+   - Set "needs_clarification": true
+   - Add questions about deployment target to "clarification_questions"
+   - Do NOT generate provider-specific infrastructure recommendations
+3. If deployment IS specified, prefer cost-effective solutions:
+   - For simple apps: Heroku, Railway, Render, DigitalOcean App Platform
+   - Only suggest AWS/GCP/Azure if the requirements explicitly justify it (scale, compliance, specific services)
+
 Plan for:
 1. CI/CD pipeline stages
-2. Infrastructure requirements
+2. Infrastructure requirements (ONLY if deployment target is specified)
 3. Deployment strategy
 4. Monitoring and observability
 5. Security considerations
 
 Respond with JSON:
 {{
+  "needs_clarification": false,
+  "clarification_questions": [],
   "pipeline_stages": ["build", "test", "deploy"],
   "infrastructure": {{"compute": "...", "database": "...", "networking": "..."}},
   "deployment_strategy": "blue-green|rolling|canary",
@@ -80,6 +100,23 @@ Respond with JSON:
   "security": ["secrets management", "network policies"],
   "recommendations": ["devops recommendations"],
   "summary": "brief summary"
+}}
+
+If deployment target is NOT specified, respond with:
+{{
+  "needs_clarification": true,
+  "clarification_questions": [
+    "Where should this application be deployed? (e.g., Heroku, Railway, DigitalOcean, AWS, on-premises)",
+    "What are the expected SLA requirements (uptime, RTO, RPO)?",
+    "Are there any budget constraints for infrastructure?"
+  ],
+  "pipeline_stages": ["build", "test"],
+  "infrastructure": {{}},
+  "deployment_strategy": "",
+  "monitoring": [],
+  "security": [],
+  "recommendations": ["Deployment target must be specified before infrastructure planning can proceed"],
+  "summary": "Cannot complete DevOps planning - deployment target not specified in specification"
 }}
 """
 
@@ -144,10 +181,21 @@ class DevOpsToolAgent:
         if not isinstance(recommendations, list):
             recommendations = [str(recommendations)]
         
+        needs_clarification = data.get("needs_clarification", False)
+        clarification_questions = data.get("clarification_questions", [])
+        
+        if needs_clarification and clarification_questions:
+            logger.warning(
+                "DevOps planning requires clarification: %s",
+                "; ".join(clarification_questions[:3])
+            )
+        
         return ToolAgentPhaseOutput(
             summary=data.get("summary", "DevOps planning complete."),
             recommendations=recommendations,
             metadata={
+                "needs_clarification": needs_clarification,
+                "clarification_questions": clarification_questions,
                 "pipeline_stages": data.get("pipeline_stages", []),
                 "infrastructure": data.get("infrastructure", {}),
                 "deployment_strategy": data.get("deployment_strategy", ""),

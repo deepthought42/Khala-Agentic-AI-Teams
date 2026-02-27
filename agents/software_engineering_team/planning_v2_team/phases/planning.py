@@ -78,7 +78,10 @@ def run_planning(
                 metadata["system_design"] = sd_result.metadata
                 logger.info("Planning: SystemDesign provided %d recommendations", len(sd_result.recommendations))
             except Exception as e:
-                logger.warning("SystemDesign plan failed: %s", e)
+                logger.warning(
+                    "SystemDesign plan failed: %s. Next step -> Continuing with other planning agents",
+                    e,
+                )
         
         architecture_agent = tool_agents.get(ToolAgentKind.ARCHITECTURE)
         if architecture_agent and hasattr(architecture_agent, "plan"):
@@ -88,7 +91,10 @@ def run_planning(
                 metadata["architecture"] = arch_result.metadata
                 logger.info("Planning: Architecture provided %d recommendations", len(arch_result.recommendations))
             except Exception as e:
-                logger.warning("Architecture plan failed: %s", e)
+                logger.warning(
+                    "Architecture plan failed: %s. Next step -> Continuing with other planning agents",
+                    e,
+                )
         
         user_story_agent = tool_agents.get(ToolAgentKind.USER_STORY)
         if user_story_agent and hasattr(user_story_agent, "plan"):
@@ -99,7 +105,10 @@ def run_planning(
                     hierarchy = us_result.hierarchy
                     logger.info("Planning: UserStory created hierarchy with %d initiatives", len(hierarchy.initiatives))
             except Exception as e:
-                logger.warning("UserStory plan failed: %s", e)
+                logger.warning(
+                    "UserStory plan failed: %s. Next step -> Continuing with other planning agents",
+                    e,
+                )
         
         devops_agent = tool_agents.get(ToolAgentKind.DEVOPS)
         if devops_agent and hasattr(devops_agent, "plan"):
@@ -109,7 +118,10 @@ def run_planning(
                 metadata["devops"] = devops_result.metadata
                 logger.info("Planning: DevOps provided %d recommendations", len(devops_result.recommendations))
             except Exception as e:
-                logger.warning("DevOps plan failed: %s", e)
+                logger.warning(
+                    "DevOps plan failed: %s. Next step -> Continuing with other planning agents",
+                    e,
+                )
         
         ui_design_agent = tool_agents.get(ToolAgentKind.UI_DESIGN)
         if ui_design_agent and hasattr(ui_design_agent, "plan"):
@@ -119,7 +131,10 @@ def run_planning(
                 metadata["ui_design"] = ui_result.metadata
                 logger.info("Planning: UIDesign provided %d recommendations", len(ui_result.recommendations))
             except Exception as e:
-                logger.warning("UIDesign plan failed: %s", e)
+                logger.warning(
+                    "UIDesign plan failed: %s. Next step -> Continuing to LLM synthesis",
+                    e,
+                )
     
     review_summary = (spec_review_result.summary if spec_review_result else "") or "None"
     prompt = PLANNING_PROMPT.format(

@@ -65,7 +65,10 @@ class TechLeadAgent:
                 if content.strip():
                     artifacts.append(f"--- {md_file.name} ---\n{content}")
             except Exception as e:
-                logger.warning("Tech Lead: failed to read %s: %s", md_file, e)
+                logger.warning(
+                    "Tech Lead: failed to read %s: %s. Next step -> Continuing with remaining artifacts",
+                    md_file, e,
+                )
         
         if artifacts:
             logger.info("Tech Lead: read %d plan artifacts from %s", len(artifacts), plan_dir)
@@ -241,6 +244,9 @@ class TechLeadAgent:
         assignment = flatten_hierarchy_to_assignment(hierarchy)
 
         if not assignment.tasks:
+            logger.info(
+                "Tech Lead: hierarchy flattening produced no tasks. Next step -> Using fallback assignment parsing"
+            )
             assignment = parse_assignment_from_data(data)
 
         mapping = data.get("requirement_task_mapping") or []

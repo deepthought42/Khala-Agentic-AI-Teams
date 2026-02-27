@@ -88,7 +88,10 @@ def run_implementation(
                             all_files.update(result.files)
                             logger.info("Implementation: %s generated %d files", agent_kind.value, len(result.files))
                     except Exception as e:
-                        logger.warning("Implementation: %s execute failed: %s", agent_kind.value, e)
+                        logger.warning(
+                            "Implementation: %s execute failed: %s. Next step -> Continuing with other agents",
+                            agent_kind.value, e,
+                        )
         
         for rel_path, content in all_files.items():
             full_path = repo_path / rel_path
@@ -200,7 +203,10 @@ def run_implementation(
                     assets_created.append(hierarchy_rel_path)
                 logger.info("Implementation: wrote full hierarchy to %s", hierarchy_file)
             except Exception as e:
-                logger.warning("Implementation: failed to write hierarchy file: %s", e)
+                logger.warning(
+                    "Implementation: failed to write hierarchy file: %s. Next step -> Continuing with main artifacts",
+                    e,
+                )
         
         out_file = plan_dir / "planning_artifacts.md"
         out_file.write_text("".join(parts), encoding="utf-8")

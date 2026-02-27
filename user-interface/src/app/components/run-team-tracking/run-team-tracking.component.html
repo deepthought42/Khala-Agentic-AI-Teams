@@ -265,4 +265,170 @@
       }
     </mat-card-content>
   </mat-card>
+
+  <!-- Job Progress Tree View (DAG Layout) -->
+  <mat-card class="progress-tree-card">
+    <mat-card-header>
+      <mat-card-title>Job Progress Tree View</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      @if (buildDAGTree(); as phases) {
+        <div class="dag-container">
+          <!-- Top Level: Main Phases in a horizontal row -->
+          <div class="dag-main-phases">
+            @for (phase of phases; track phase.id; let isFirst = $first; let isLast = $last) {
+              <div class="dag-phase-column">
+                <!-- Phase node -->
+                <div class="dag-node-wrapper"
+                     [title]="phase.label"
+                     [class.dag-node-wrapper-completed]="phase.status === 'completed'"
+                     [class.dag-node-wrapper-current]="phase.status === 'current'"
+                     [class.dag-node-wrapper-pending]="phase.status === 'pending'">
+                  <div class="dag-node dag-node-phase"
+                       [class.dag-node-completed]="phase.status === 'completed'"
+                       [class.dag-node-current]="phase.status === 'current'"
+                       [class.dag-node-pending]="phase.status === 'pending'">
+                    <mat-icon>{{ phase.icon }}</mat-icon>
+                  </div>
+                  <span class="dag-node-label dag-node-label-phase">{{ phase.label }}</span>
+                </div>
+
+                <!-- Connector and children -->
+                @if (phase.children?.length) {
+                  <!-- Vertical connector from phase to children -->
+                  <div class="dag-vertical-connector">
+                    <div class="dag-connector-line-vertical"></div>
+                  </div>
+
+                  <!-- Sub-phases container -->
+                  <div class="dag-subphases-container">
+                    <!-- Fan-out connector to children (width = (n-1) * (nodeWidth + gap)) -->
+                    @if (phase.children!.length > 1) {
+                      <div class="dag-fanout-connector">
+                        <div class="dag-fanout-horizontal" [style.width.px]="(phase.children!.length - 1) * 44"></div>
+                        <div class="dag-fanout-branches">
+                          @for (child of phase.children; track child.id) {
+                            <div class="dag-fanout-branch"></div>
+                          }
+                        </div>
+                      </div>
+                    }
+
+                    <!-- Sub-phase nodes -->
+                    <div class="dag-subphases-row">
+                      @for (child of phase.children; track child.id) {
+                        <div class="dag-subphase-column">
+                          <div class="dag-node-wrapper dag-node-wrapper-small"
+                               [title]="child.label"
+                               [class.dag-node-wrapper-completed]="child.status === 'completed'"
+                               [class.dag-node-wrapper-current]="child.status === 'current'"
+                               [class.dag-node-wrapper-pending]="child.status === 'pending'">
+                            <div class="dag-node dag-node-small"
+                                 [class.dag-node-completed]="child.status === 'completed'"
+                                 [class.dag-node-current]="child.status === 'current'"
+                                 [class.dag-node-pending]="child.status === 'pending'">
+                              <mat-icon>{{ child.icon }}</mat-icon>
+                            </div>
+                            <span class="dag-node-label dag-node-label-small">{{ child.label }}</span>
+                            @if (child.detail) {
+                              <span class="dag-node-detail">{{ child.detail }}</span>
+                            }
+                          </div>
+
+                          <!-- Level 3: Children of sub-phases (e.g., team phases) -->
+                          @if (child.children?.length) {
+                            <div class="dag-vertical-connector dag-vertical-connector-small">
+                              <div class="dag-connector-line-vertical"></div>
+                            </div>
+
+                            <div class="dag-level3-container">
+                              @if (child.children!.length > 1) {
+                                <div class="dag-fanout-connector dag-fanout-connector-small">
+                                  <div class="dag-fanout-horizontal" [style.width.px]="(child.children!.length - 1) * 34"></div>
+                                  <div class="dag-fanout-branches">
+                                    @for (grandchild of child.children; track grandchild.id) {
+                                      <div class="dag-fanout-branch"></div>
+                                    }
+                                  </div>
+                                </div>
+                              }
+
+                              <div class="dag-level3-row">
+                                @for (grandchild of child.children; track grandchild.id) {
+                                  <div class="dag-level3-column">
+                                    <div class="dag-node-wrapper dag-node-wrapper-tiny"
+                                         [title]="grandchild.label"
+                                         [class.dag-node-wrapper-completed]="grandchild.status === 'completed'"
+                                         [class.dag-node-wrapper-current]="grandchild.status === 'current'"
+                                         [class.dag-node-wrapper-pending]="grandchild.status === 'pending'">
+                                      <div class="dag-node dag-node-tiny"
+                                           [class.dag-node-completed]="grandchild.status === 'completed'"
+                                           [class.dag-node-current]="grandchild.status === 'current'"
+                                           [class.dag-node-pending]="grandchild.status === 'pending'">
+                                        <mat-icon>{{ grandchild.icon }}</mat-icon>
+                                      </div>
+                                      <span class="dag-node-label dag-node-label-tiny">{{ grandchild.label }}</span>
+                                    </div>
+
+                                    <!-- Level 4: Microtask phases -->
+                                    @if (grandchild.children?.length) {
+                                      <div class="dag-vertical-connector dag-vertical-connector-tiny">
+                                        <div class="dag-connector-line-vertical"></div>
+                                      </div>
+
+                                      <div class="dag-level4-container">
+                                        @if (grandchild.children!.length > 1) {
+                                          <div class="dag-fanout-connector dag-fanout-connector-tiny">
+                                            <div class="dag-fanout-horizontal" [style.width.px]="(grandchild.children!.length - 1) * 26"></div>
+                                            <div class="dag-fanout-branches">
+                                              @for (micro of grandchild.children; track micro.id) {
+                                                <div class="dag-fanout-branch"></div>
+                                              }
+                                            </div>
+                                          </div>
+                                        }
+
+                                        <div class="dag-level4-row">
+                                          @for (micro of grandchild.children; track micro.id) {
+                                            <div class="dag-node-wrapper dag-node-wrapper-micro"
+                                                 [title]="micro.label"
+                                                 [class.dag-node-wrapper-completed]="micro.status === 'completed'"
+                                                 [class.dag-node-wrapper-current]="micro.status === 'current'"
+                                                 [class.dag-node-wrapper-pending]="micro.status === 'pending'">
+                                              <div class="dag-node dag-node-micro"
+                                                   [class.dag-node-completed]="micro.status === 'completed'"
+                                                   [class.dag-node-current]="micro.status === 'current'"
+                                                   [class.dag-node-pending]="micro.status === 'pending'">
+                                                <mat-icon>{{ micro.icon }}</mat-icon>
+                                              </div>
+                                              <span class="dag-node-label dag-node-label-micro">{{ micro.label }}</span>
+                                            </div>
+                                          }
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                }
+                              </div>
+                            </div>
+                          }
+                        </div>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Horizontal connector between main phases -->
+              @if (!isLast) {
+                <div class="dag-phase-connector">
+                  <div class="dag-connector-line-horizontal"></div>
+                </div>
+              }
+            }
+          </div>
+        </div>
+      }
+    </mat-card-content>
+  </mat-card>
 }

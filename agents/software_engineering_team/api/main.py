@@ -213,7 +213,7 @@ class JobStatusResponse(BaseModel):
     )
     planning_subprocess: Optional[str] = Field(
         None,
-        description="Current subprocess within planning phase (spec_review_gap, planning, implementation, review, problem_solving, deliver).",
+        description="Current subprocess within planning phase (planning, implementation, review, problem_solving, deliver).",
     )
     planning_completed_phases: List[str] = Field(
         default_factory=list,
@@ -1885,11 +1885,17 @@ def _run_product_analysis_background(
             ProductRequirementsAnalysisAgent,
         )
         from shared.llm import get_llm_for_agent
+        from spec_parser import gather_context_files
 
         update_job(job_id, status="running")
 
         def _job_updater(**kwargs: Any) -> None:
             update_job(job_id, **kwargs)
+
+        # Gather context files for PRA agent
+        context_files = gather_context_files(repo_path)
+        if context_files:
+            logger.info("Product analysis: Gathered %d context files", len(context_files))
 
         agent = ProductRequirementsAnalysisAgent(get_llm_for_agent("backend"))
         result = agent.run_workflow(
@@ -1897,6 +1903,7 @@ def _run_product_analysis_background(
             repo_path=_Path(repo_path),
             job_id=job_id,
             job_updater=_job_updater,
+            context_files=context_files,
         )
 
         final_status = "completed" if result.success else "failed"

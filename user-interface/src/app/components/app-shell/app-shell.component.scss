@@ -170,6 +170,28 @@
   }
 }
 
+.nav-link-primary {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  font-weight: 500;
+
+  mat-icon {
+    color: #58a6ff;
+  }
+
+  &:hover {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+  }
+
+  &.active {
+    background: rgba(59, 130, 246, 0.2);
+    border-color: #3b82f6;
+  }
+}
+
 // ============================================================================
 // Sidenav Footer
 // ============================================================================

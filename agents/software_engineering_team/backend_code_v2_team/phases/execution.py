@@ -83,7 +83,9 @@ def _run_general_microtask(
     )
     raw = llm.complete_text(prompt)
     data = parse_files_and_summary_template(raw)
-    return data.get("files") or {}
+    files = data.get("files") or {}
+
+    return files
 
 
 def run_execution(
@@ -309,7 +311,7 @@ def run_execution_with_review_gates(
         # ── Phase 2: Code Review (build + lint + code review) ─────────────────
         mt.status = MicrotaskStatus.IN_CODE_REVIEW
         current_phase = "code_review"
-        logger.info("[%s] Microtask %s: starting code review phase", task_id, mt.id)
+        logger.info("[%s] Microtask %s: Next step -> Running code review phase (build, lint, review)", task_id, mt.id)
 
         if progress_callback:
             progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", "Starting code review...")
@@ -329,8 +331,10 @@ def run_execution_with_review_gates(
         retry_count = 0
         while not cr_result.passed and retry_count < config.code_review_max_retries:
             retry_count += 1
-            logger.info("[%s] Microtask %s: code review failed, fix attempt %d/%d",
-                        task_id, mt.id, retry_count, config.code_review_max_retries)
+            logger.info(
+                "[%s] Microtask %s: code review failed. Next step -> Attempting fix %d/%d",
+                task_id, mt.id, retry_count, config.code_review_max_retries,
+            )
 
             if progress_callback:
                 progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", f"Fixing issues (attempt {retry_count})...")
@@ -372,7 +376,11 @@ def run_execution_with_review_gates(
             mt.status = MicrotaskStatus.REVIEW_FAILED
             review_failed_ids.add(mt.id)
             mt.notes = f"Code review failed after {config.code_review_max_retries} retries: {cr_result.summary}"
-            logger.warning("[%s] Microtask %s: CODE_REVIEW_FAILED", task_id, mt.id)
+            logger.warning(
+                "[%s] Microtask %s: CODE_REVIEW_FAILED. Recovery summary: "
+                "1) Initial code review failed, 2) Attempted %d fix iterations. Final issues: %s",
+                task_id, mt.id, config.code_review_max_retries, cr_result.summary[:200],
+            )
             if config.on_failure == "stop":
                 raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=cr_result.issues, summary=cr_result.summary))
 
@@ -380,7 +388,7 @@ def run_execution_with_review_gates(
         if not phase_failed:
             mt.status = MicrotaskStatus.IN_QA_TESTING
             current_phase = "qa_testing"
-            logger.info("[%s] Microtask %s: starting QA testing phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Next step -> Running QA testing phase", task_id, mt.id)
 
             if progress_callback:
                 progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", "Starting QA testing...")
@@ -398,8 +406,10 @@ def run_execution_with_review_gates(
             retry_count = 0
             while not qa_result.passed and retry_count < config.qa_max_retries:
                 retry_count += 1
-                logger.info("[%s] Microtask %s: QA testing failed, fix attempt %d/%d",
-                            task_id, mt.id, retry_count, config.qa_max_retries)
+                logger.info(
+                    "[%s] Microtask %s: QA testing failed. Next step -> Attempting fix %d/%d",
+                    task_id, mt.id, retry_count, config.qa_max_retries,
+                )
 
                 if progress_callback:
                     progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", f"Fixing QA issues (attempt {retry_count})...")
@@ -439,7 +449,11 @@ def run_execution_with_review_gates(
                 mt.status = MicrotaskStatus.REVIEW_FAILED
                 review_failed_ids.add(mt.id)
                 mt.notes = f"QA testing failed after {config.qa_max_retries} retries: {qa_result.summary}"
-                logger.warning("[%s] Microtask %s: QA_TESTING_FAILED", task_id, mt.id)
+                logger.warning(
+                    "[%s] Microtask %s: QA_TESTING_FAILED. Recovery summary: "
+                    "1) Initial QA failed, 2) Attempted %d fix iterations. Final issues: %s",
+                    task_id, mt.id, config.qa_max_retries, qa_result.summary[:200],
+                )
                 if config.on_failure == "stop":
                     raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=qa_result.issues, summary=qa_result.summary))
 
@@ -447,7 +461,7 @@ def run_execution_with_review_gates(
         if not phase_failed:
             mt.status = MicrotaskStatus.IN_SECURITY_TESTING
             current_phase = "security_testing"
-            logger.info("[%s] Microtask %s: starting security testing phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Next step -> Running security testing phase", task_id, mt.id)
 
             if progress_callback:
                 progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", "Starting security testing...")
@@ -465,8 +479,10 @@ def run_execution_with_review_gates(
             retry_count = 0
             while not sec_result.passed and retry_count < config.security_max_retries:
                 retry_count += 1
-                logger.info("[%s] Microtask %s: security testing failed, fix attempt %d/%d",
-                            task_id, mt.id, retry_count, config.security_max_retries)
+                logger.info(
+                    "[%s] Microtask %s: security testing failed. Next step -> Attempting fix %d/%d",
+                    task_id, mt.id, retry_count, config.security_max_retries,
+                )
 
                 if progress_callback:
                     progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", f"Fixing security issues (attempt {retry_count})...")
@@ -506,7 +522,11 @@ def run_execution_with_review_gates(
                 mt.status = MicrotaskStatus.REVIEW_FAILED
                 review_failed_ids.add(mt.id)
                 mt.notes = f"Security testing failed after {config.security_max_retries} retries: {sec_result.summary}"
-                logger.warning("[%s] Microtask %s: SECURITY_TESTING_FAILED", task_id, mt.id)
+                logger.warning(
+                    "[%s] Microtask %s: SECURITY_TESTING_FAILED. Recovery summary: "
+                    "1) Initial security scan failed, 2) Attempted %d fix iterations. Final issues: %s",
+                    task_id, mt.id, config.security_max_retries, sec_result.summary[:200],
+                )
                 if config.on_failure == "stop":
                     raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=sec_result.issues, summary=sec_result.summary))
 
@@ -514,7 +534,7 @@ def run_execution_with_review_gates(
         if not phase_failed:
             mt.status = MicrotaskStatus.IN_DOCUMENTATION
             current_phase = "documentation"
-            logger.info("[%s] Microtask %s: starting documentation phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Next step -> Running documentation phase", task_id, mt.id)
 
             if progress_callback:
                 progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", "Starting documentation...")
@@ -549,8 +569,10 @@ def run_execution_with_review_gates(
             retry_count = 0
             while not doc_review_result.passed and retry_count < config.documentation_max_retries:
                 retry_count += 1
-                logger.info("[%s] Microtask %s: documentation review failed, fix attempt %d/%d",
-                            task_id, mt.id, retry_count, config.documentation_max_retries)
+                logger.info(
+                    "[%s] Microtask %s: documentation review failed. Next step -> Attempting fix %d/%d",
+                    task_id, mt.id, retry_count, config.documentation_max_retries,
+                )
 
                 if progress_callback:
                     progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", f"Fixing documentation (attempt {retry_count})...")
@@ -585,7 +607,11 @@ def run_execution_with_review_gates(
                 )
 
             if not doc_review_result.passed:
-                logger.warning("[%s] Microtask %s: documentation review failed but continuing (low priority)", task_id, mt.id)
+                logger.warning(
+                    "[%s] Microtask %s: documentation review failed after %d attempts (continuing - low priority). "
+                    "Recovery summary: documentation fixes did not resolve all issues.",
+                    task_id, mt.id, config.documentation_max_retries,
+                )
 
             mt.status = MicrotaskStatus.COMPLETED
             completed_ids.add(mt.id)

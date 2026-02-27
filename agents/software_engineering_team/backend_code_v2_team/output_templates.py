@@ -10,7 +10,7 @@ can still yield useful results.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Execution / tool agents: files + summary
@@ -87,6 +87,23 @@ def parse_files_and_summary_template(text: str) -> Dict[str, Any]:
             summary = rest.split("\n")[0].strip()[:2000]
 
     return {"files": files, "summary": summary}
+
+
+def parse_files_with_validation(text: str) -> Tuple[Dict[str, Any], List[str], Dict[str, str]]:
+    """Parse files from template output.
+
+    Note: Truncation detection is now handled at the LLM client level via
+    finish_reason checks. This function simply parses the output without
+    additional validation.
+
+    Returns:
+        Tuple of:
+        - parsed: Dict with "files" and "summary" keys
+        - truncated_paths: Always empty list (deprecated)
+        - validation_errors: Always empty dict (deprecated)
+    """
+    parsed = parse_files_and_summary_template(text)
+    return parsed, [], {}
 
 
 # ---------------------------------------------------------------------------

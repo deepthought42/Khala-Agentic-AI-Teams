@@ -113,7 +113,10 @@ def run_documentation_phase(
             logger.info("[%s] Documentation review passed - no issues found", task_id)
             break
         
-        logger.info("[%s] Documentation review found %d issue(s), fixing...", task_id, len(issues))
+        logger.info(
+            "[%s] Documentation review found %d issue(s). Next step -> Applying fixes",
+            task_id, len(issues),
+        )
         
         problem_solve_input = ToolAgentPhaseInput(
             phase=Phase.DOCUMENTATION,
@@ -139,7 +142,11 @@ def run_documentation_phase(
             logger.info("[%s] Documentation fixed %d issue(s), updated %d file(s)", 
                         task_id, len(issues), len(fix_result.files))
         else:
-            logger.warning("[%s] Documentation problem_solve returned no files", task_id)
+            logger.warning(
+                "[%s] Documentation problem_solve returned no files. Recovery summary: "
+                "1) Review found issues, 2) Problem-solve completed without file changes. Stopping.",
+                task_id,
+            )
             break
     
     summary = f"Documentation phase completed: {iteration} iteration(s), {total_issues_fixed} issue(s) fixed."

@@ -19,9 +19,11 @@ from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarc
 # ---------------------------------------------------------------------------
 
 class Phase(str, Enum):
-    """Lifecycle phases of the planning-v2 workflow (Product Planning Tool Agents)."""
+    """Lifecycle phases of the planning-v2 workflow (5 phases).
+    
+    The team expects a pre-validated specification - no spec review is performed.
+    """
 
-    SPEC_REVIEW_GAP = "spec_review_gap"
     PLANNING = "planning"
     IMPLEMENTATION = "implementation"
     REVIEW = "review"
@@ -88,7 +90,7 @@ class ToolAgentPhaseOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Open Question Models (for iterative spec review)
+# Open Question Models (legacy - kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 
@@ -233,14 +235,13 @@ class PlanningV2WorkflowResult(BaseModel):
     """
     Full result of the planning-v2 team's workflow.
 
-    Captures outcome of the 6-phase lifecycle.
+    Captures outcome of the 5-phase lifecycle.
     """
 
     success: bool = Field(default=False)
     current_phase: Optional[Phase] = None
     summary: str = Field(default="")
     failure_reason: str = Field(default="")
-    spec_review_result: Optional[SpecReviewResult] = None
     planning_result: Optional[PlanningPhaseResult] = None
     implementation_result: Optional[ImplementationPhaseResult] = None
     review_result: Optional[ReviewPhaseResult] = None

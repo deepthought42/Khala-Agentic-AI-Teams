@@ -27,6 +27,12 @@ class DevOpsTaskClarifierAgent:
 
         if not spec.goal.summary.strip():
             gaps.append(ClarificationGap(area="goal", message="Missing desired outcome summary", blocking=True))
+        if not spec.platform_scope.cloud.strip():
+            gaps.append(ClarificationGap(
+                area="deployment_target",
+                message="Deployment target/cloud provider not specified. Cannot proceed without knowing where to deploy (e.g., Heroku, Railway, DigitalOcean, AWS, on-premises).",
+                blocking=True
+            ))
         if not spec.platform_scope.environments:
             gaps.append(ClarificationGap(area="environment_scope", message="Missing environments list", blocking=True))
         if not spec.acceptance_criteria:

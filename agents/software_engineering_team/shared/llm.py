@@ -136,6 +136,29 @@ class LLMJsonParseError(LLMPermanentError):
         self.response_preview = response_preview
 
 
+class LLMTruncatedError(LLMError):
+    """Raised when LLM response was truncated due to token limit (finish_reason=length).
+
+    This exception signals that the response is incomplete and the caller should
+    decompose the task into smaller pieces rather than attempting partial recovery.
+
+    Attributes:
+        partial_content: The truncated content returned by the LLM.
+        finish_reason: The finish_reason from the API response.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_content: str = "",
+        finish_reason: str = "length",
+    ):
+        super().__init__(message)
+        self.partial_content = partial_content
+        self.finish_reason = finish_reason
+
+
 def get_llm_config_summary() -> str:
     """
     Return a short summary of the effective LLM provider and model from env vars.
@@ -672,32 +695,41 @@ def call_llm_with_retries(
             if attempt < max_attempts - 1:
                 wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
                 logger.warning(
-                    "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    "LLM call failed (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
                     attempt + 1,
                     max_attempts,
-                    wait,
                     e,
+                    wait,
                 )
                 time.sleep(wait)
             else:
+                logger.error(
+                    "LLM call exhausted. Recovery summary: attempted %d calls with exponential backoff, "
+                    "all failed. Final error: %s",
+                    max_attempts, e,
+                )
                 raise LLMUnreachableAfterRetriesError(
                     f"LLM unreachable after {max_attempts} attempts: {e}",
                     cause=e,
                 ) from e
         except Exception as e:
-            # Network or other transient-like errors
             last_error = e
             if attempt < max_attempts - 1:
                 wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
                 logger.warning(
-                    "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    "LLM call failed (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
                     attempt + 1,
                     max_attempts,
-                    wait,
                     e,
+                    wait,
                 )
                 time.sleep(wait)
             else:
+                logger.error(
+                    "LLM call exhausted. Recovery summary: attempted %d calls with exponential backoff, "
+                    "all failed. Final error: %s",
+                    max_attempts, e,
+                )
                 raise LLMUnreachableAfterRetriesError(
                     f"LLM unreachable after {max_attempts} attempts: {e}",
                     cause=e,
@@ -811,50 +843,6 @@ class OllamaLLMClient(LLMClient):
         s = re.sub(r",\s*([}\]])", r"\1", s)
         return s
 
-    def _try_repair_truncated_json(self, s: str) -> str:
-        """Attempt to close truncated JSON (e.g. response cut off by max_tokens)."""
-        in_string = False
-        escape = False
-        quote_char = None
-        depth_brace = 0
-        depth_bracket = 0
-        i = 0
-        n = len(s)
-        while i < n:
-            c = s[i]
-            if escape:
-                escape = False
-                i += 1
-                continue
-            if c == "\\" and in_string:
-                escape = True
-                i += 1
-                continue
-            if in_string:
-                if c == quote_char:
-                    in_string = False
-                i += 1
-                continue
-            if c == '"':
-                in_string = True
-                quote_char = c
-                i += 1
-                continue
-            if c == "{":
-                depth_brace += 1
-            elif c == "}":
-                depth_brace -= 1
-            elif c == "[":
-                depth_bracket += 1
-            elif c == "]":
-                depth_bracket -= 1
-            i += 1
-        suffix = ""
-        if in_string:
-            suffix += quote_char or '"'
-        suffix += "]" * max(0, depth_bracket) + "}" * max(0, depth_brace)
-        return s + suffix if suffix else s
-
     def _extract_json(self, text: str) -> Dict[str, Any]:
         # #region agent log
         _log_path = "/home/deepthought/Dev/strands-agents/.cursor/debug-c656da.log"
@@ -898,14 +886,7 @@ class OllamaLLMClient(LLMClient):
         try:
             return json.loads(repaired)
         except (json.JSONDecodeError, ValueError):
-            logger.debug("Repaired JSON parse failed; attempting truncation repair")
-        truncated_repaired = self._try_repair_truncated_json(text)
-        try:
-            parsed = json.loads(truncated_repaired)
-            if isinstance(parsed, dict) and parsed:
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            logger.debug("Truncation repair parse failed; attempting object extraction fallback")
+            logger.debug("Repaired JSON parse failed; attempting object extraction fallback")
         obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if obj_match:
             raw = obj_match.group(0)
@@ -915,10 +896,7 @@ class OllamaLLMClient(LLMClient):
                 try:
                     return json.loads(self._repair_json(raw))
                 except (json.JSONDecodeError, ValueError):
-                    try:
-                        return json.loads(self._try_repair_truncated_json(raw))
-                    except (json.JSONDecodeError, ValueError):
-                        logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
+                    logger.debug("Object extraction JSON parse failed; trying noise-stripped retry")
         # Retry once after stripping common leading/trailing noise
         stripped = text.strip()
         for pattern in (
@@ -1002,34 +980,7 @@ class OllamaLLMClient(LLMClient):
             ],
         }
         content = self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
-        try:
-            return self._extract_json(content)
-        except LLMJsonParseError:
-            # One "continue" attempt: response may be truncated; ask for remainder and re-parse.
-            logger.debug("JSON parse failed; requesting continuation from model")
-            continue_payload = {
-                "model": self.model,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Continue. Output only the remainder of the JSON so that when appended "
-                            "to the previous output it completes the object. No explanation."
-                        ),
-                    },
-                ],
-            }
-            content2 = self._ollama_post(
-                continue_payload, max_retries, backoff_base, backoff_max, sem
-            )
-            merged = content.rstrip() + "\n" + content2.lstrip()
-            return self._extract_json(merged)
+        return self._extract_json(content)
 
     def complete_text(self, prompt: str, *, temperature: float = 0.0) -> str:
         """Return raw text from the model (no JSON mode). Use for template-based output."""
@@ -1104,7 +1055,10 @@ class OllamaLLMClient(LLMClient):
                             )
                             wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
                             if attempt < max_retries:
-                                logger.warning("LLM 429, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                                logger.warning(
+                                    "LLM 429 rate limited (attempt %d/%d). Next step -> Retrying in %.1fs",
+                                    attempt + 1, max_retries + 1, wait,
+                                )
                                 time.sleep(wait)
                                 continue
                             raise last_error
@@ -1115,7 +1069,10 @@ class OllamaLLMClient(LLMClient):
                             )
                             if attempt < max_retries:
                                 wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                                logger.warning("LLM 5xx, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                                logger.warning(
+                                    "LLM %d server error (attempt %d/%d). Next step -> Retrying in %.1fs",
+                                    status, attempt + 1, max_retries + 1, wait,
+                                )
                                 time.sleep(wait)
                                 continue
                             raise last_error
@@ -1157,16 +1114,29 @@ class OllamaLLMClient(LLMClient):
                 last_error = LLMTemporaryError(f"LLM connection/timeout error: {e}", cause=e)
                 if attempt < max_retries:
                     wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                    logger.warning("LLM connection error, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                    logger.warning(
+                        "LLM connection error (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
+                        attempt + 1, max_retries + 1, type(e).__name__, wait,
+                    )
                     time.sleep(wait)
                     continue
                 raise last_error
         if last_error:
+            logger.error(
+                "LLM request failed. Recovery summary: 1) Attempted %d requests with exponential backoff, "
+                "2) All attempts exhausted. Final error: %s",
+                max_retries + 1, last_error,
+            )
             raise last_error
         raise LLMTemporaryError("LLM request failed after all retries")
 
     def _parse_response_content(self, data: dict) -> str:
-        """Extract content from Ollama/OpenAI-compatible response. Raises LLMPermanentError if malformed."""
+        """Extract content from Ollama/OpenAI-compatible response.
+
+        Raises:
+            LLMTruncatedError: If finish_reason indicates token limit truncation.
+            LLMPermanentError: If response format is malformed.
+        """
         try:
             choices = data.get("choices")
             if not choices or not isinstance(choices, list):
@@ -1174,6 +1144,21 @@ class OllamaLLMClient(LLMClient):
             first = choices[0]
             if not isinstance(first, dict):
                 raise LLMPermanentError("Unexpected response format from LLM: invalid choice object")
+
+            finish_reason = first.get("finish_reason", "")
+            if finish_reason == "length":
+                msg = first.get("message", {})
+                partial_content = msg.get("content", "") if isinstance(msg, dict) else ""
+                logger.warning(
+                    "LLM response truncated (finish_reason=length). Partial content: %d chars",
+                    len(partial_content),
+                )
+                raise LLMTruncatedError(
+                    "Response truncated due to token limit (finish_reason=length)",
+                    partial_content=str(partial_content) if partial_content else "",
+                    finish_reason=finish_reason,
+                )
+
             msg = first.get("message")
             if not msg or not isinstance(msg, dict):
                 raise LLMPermanentError("Unexpected response format from LLM: missing or invalid 'message'")
@@ -1181,7 +1166,7 @@ class OllamaLLMClient(LLMClient):
             if content is None:
                 raise LLMPermanentError("Unexpected response format from LLM: missing 'content'")
             return str(content)
-        except LLMPermanentError:
+        except (LLMPermanentError, LLMTruncatedError):
             raise
         except (KeyError, IndexError, TypeError) as e:
             raise LLMPermanentError(f"Unexpected response format from LLM: {e}") from e

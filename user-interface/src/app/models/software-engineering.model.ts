@@ -67,10 +67,9 @@ export interface PhaseDefinition {
   icon: string;
 }
 
-/** Planning-v2 subprocesses (spec review, planning, implementation, etc.). */
+/** Planning-v2 subprocesses (planning, implementation, etc.). */
 export const PLANNING_V2_PHASES: PhaseDefinition[] = [
   { id: 'intake', label: 'Intake', icon: 'input' },
-  { id: 'spec_review_gap', label: 'Spec Review & Gap Analysis', icon: 'description' },
   { id: 'planning', label: 'Planning', icon: 'event_note' },
   { id: 'implementation', label: 'Implementation', icon: 'build' },
   { id: 'review', label: 'Review', icon: 'rate_review' },
@@ -129,7 +128,7 @@ export interface JobStatusResponse {
   pending_questions?: PendingQuestion[];
   /** True when job is blocked waiting for user to answer pending questions. */
   waiting_for_answers?: boolean;
-  /** Current subprocess within planning phase (spec_review_gap, planning, etc.). */
+  /** Current subprocess within planning phase (planning, implementation, etc.). */
   planning_subprocess?: string;
   /** Completed subprocesses within the planning phase. */
   planning_completed_phases?: string[];
@@ -173,12 +172,21 @@ export interface PendingQuestion {
   options: QuestionOption[];
   required: boolean;
   source: string;
+  /** Whether multiple options can be selected for this question. */
+  allow_multiple?: boolean;
+  /** Category of the question (e.g., architecture, security, ux). */
+  category?: string;
+  /** Priority of the question (high, medium, low). */
+  priority?: string;
 }
 
 /** A user's answer to a pending question. */
 export interface AnswerSubmission {
   question_id: string;
+  /** Selected option ID (for single-select questions). */
   selected_option_id: string | null;
+  /** Selected option IDs (for multi-select questions). */
+  selected_option_ids?: string[];
   other_text: string | null;
 }
 

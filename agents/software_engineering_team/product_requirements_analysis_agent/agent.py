@@ -70,6 +70,7 @@ class ProductRequirementsAnalysisAgent:
         job_id: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
         max_iterations: int = MAX_ITERATIONS,
+        context_files: Optional[Dict[str, str]] = None,
     ) -> AnalysisWorkflowResult:
         """
         Execute the full Product Requirements Analysis workflow.
@@ -80,6 +81,7 @@ class ProductRequirementsAnalysisAgent:
             job_id: Job ID for question tracking (required for user communication)
             job_updater: Callback to update job status
             max_iterations: Maximum number of spec review cycles
+            context_files: Optional dict of additional context files (path -> content)
 
         Returns:
             AnalysisWorkflowResult with validated spec and answered questions
@@ -89,6 +91,7 @@ class ProductRequirementsAnalysisAgent:
         current_spec = spec_content
         all_answered_questions: List[AnsweredQuestion] = []
         iteration = 0
+        self._context_files = context_files or {}
 
         def _update_job(**kwargs: Any) -> None:
             if job_updater:
@@ -249,18 +252,15 @@ class ProductRequirementsAnalysisAgent:
         chunk_prompt_template: Optional[str] = None,
         _depth: int = 0,
     ) -> Dict[str, Any]:
-        """Parse LLM JSON response with multi-stage recovery.
+        """Parse LLM JSON response with truncation-triggered decomposition.
 
-        Recovery stages:
-        1. llm.complete_json() - uses LLMClient's built-in continuation retry
-        2. Regex extraction - find {...} in raw response (handles truncation)
-        3. Explicit continuation request - ask LLM to complete truncated JSON
-        4. Decompose into chunks and merge results (recursive)
+        When a truncated response is detected (via LLMTruncatedError), immediately
+        decomposes the task into smaller chunks rather than attempting partial recovery.
 
         Args:
             prompt: The prompt to send to the LLM
             phase_name: Name for logging purposes
-            max_retries: Number of retry attempts for the same prompt
+            max_retries: Number of retry attempts for non-truncation errors
             decompose_fn: Optional function to split content into chunks
             merge_fn: Optional function to merge results from chunks
             original_content: The original content being processed (for decomposition)
@@ -269,13 +269,30 @@ class ProductRequirementsAnalysisAgent:
 
         Returns empty dict only if all recovery attempts fail.
         """
+        from shared.llm import LLMTruncatedError, LLMJsonParseError
+
         last_error: Optional[Exception] = None
-        partial_response = ""
 
         for attempt in range(max_retries + 1):
             try:
                 return self.llm.complete_json(prompt)
-            except Exception as e:
+            except LLMTruncatedError as e:
+                logger.warning(
+                    "PRA %s: Response truncated (%d chars partial). Next step -> Decomposing task",
+                    phase_name,
+                    len(e.partial_content),
+                )
+                return self._decompose_and_process(
+                    prompt=prompt,
+                    phase_name=phase_name,
+                    max_retries=max_retries,
+                    decompose_fn=decompose_fn,
+                    merge_fn=merge_fn,
+                    original_content=original_content,
+                    chunk_prompt_template=chunk_prompt_template,
+                    _depth=_depth,
+                )
+            except LLMJsonParseError as e:
                 last_error = e
                 logger.warning(
                     "PRA %s: JSON parse failed (attempt %d/%d): %s",
@@ -284,94 +301,147 @@ class ProductRequirementsAnalysisAgent:
                     max_retries + 1,
                     str(e)[:200],
                 )
-
-                # Extract partial response for continuation attempts
-                partial_response = getattr(e, "response_preview", "") or str(e)
-
-                # Stage 2: Try regex extraction from partial response
-                extracted = self._extract_json_fallback(partial_response)
-                if extracted:
+                if attempt < max_retries:
                     logger.info(
-                        "PRA %s: Recovered JSON via regex extraction", phase_name
+                        "PRA %s: Next step -> Re-prompting LLM (attempt %d/%d)",
+                        phase_name,
+                        attempt + 2,
+                        max_retries + 1,
                     )
-                    return extracted
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "PRA %s: LLM call failed (attempt %d/%d): %s",
+                    phase_name,
+                    attempt + 1,
+                    max_retries + 1,
+                    str(e)[:200],
+                )
+                if attempt < max_retries:
+                    logger.info(
+                        "PRA %s: Next step -> Re-prompting LLM (attempt %d/%d)",
+                        phase_name,
+                        attempt + 2,
+                        max_retries + 1,
+                    )
 
-        # Stage 3: Try explicit continuation request
-        if partial_response:
+        # All retries exhausted - try decomposition as last resort
+        if decompose_fn is not None and merge_fn is not None and original_content:
             logger.info(
-                "PRA %s: Attempting LLM continuation for truncated response", phase_name
-            )
-            continuation = self._request_continuation(partial_response)
-            if continuation:
-                # Merge partial and continuation
-                json_start = partial_response.find("{")
-                if json_start != -1:
-                    partial_json = partial_response[json_start:]
-                    merged = partial_json.rstrip() + "\n" + continuation.lstrip()
-                    extracted = self._extract_json_fallback(merged)
-                    if extracted:
-                        logger.info(
-                            "PRA %s: Recovered JSON via continuation", phase_name
-                        )
-                        return extracted
-
-        # Stage 4: Decompose into chunks if possible
-        if (
-            decompose_fn is not None
-            and merge_fn is not None
-            and original_content
-            and _depth < MAX_DECOMPOSITION_DEPTH
-        ):
-            logger.info(
-                "PRA %s: Decomposing content into chunks (depth %d)",
+                "PRA %s: All retries exhausted. Next step -> Attempting decomposition",
                 phase_name,
-                _depth + 1,
             )
-            chunks = decompose_fn(original_content)
-
-            if len(chunks) > 1:
-                results: List[Dict[str, Any]] = []
-                for i, chunk in enumerate(chunks):
-                    logger.debug(
-                        "PRA %s: Processing chunk %d/%d (%d chars)",
-                        phase_name,
-                        i + 1,
-                        len(chunks),
-                        len(chunk),
-                    )
-
-                    # Use chunk prompt template if provided
-                    if chunk_prompt_template:
-                        chunk_prompt = chunk_prompt_template.format(chunk_content=chunk)
-                    else:
-                        chunk_prompt = self._create_generic_chunk_prompt(prompt, chunk)
-
-                    # Recursively process each chunk
-                    chunk_result = self._parse_json_with_recovery(
-                        prompt=chunk_prompt,
-                        phase_name=f"{phase_name}_chunk{i + 1}",
-                        max_retries=max_retries,
-                        decompose_fn=decompose_fn,
-                        merge_fn=merge_fn,
-                        original_content=chunk,
-                        chunk_prompt_template=chunk_prompt_template,
-                        _depth=_depth + 1,
-                    )
-                    if chunk_result:
-                        results.append(chunk_result)
-
-                if results:
-                    merged_result = merge_fn(results)
-                    logger.info(
-                        "PRA %s: Merged %d chunk results successfully",
-                        phase_name,
-                        len(results),
-                    )
-                    return merged_result
+            result = self._decompose_and_process(
+                prompt=prompt,
+                phase_name=phase_name,
+                max_retries=max_retries,
+                decompose_fn=decompose_fn,
+                merge_fn=merge_fn,
+                original_content=original_content,
+                chunk_prompt_template=chunk_prompt_template,
+                _depth=_depth,
+            )
+            if result:
+                return result
 
         logger.error(
-            "PRA %s: All JSON recovery attempts failed: %s", phase_name, last_error
+            "PRA %s: All recovery attempts exhausted. Recovery summary: "
+            "1) Retried LLM %d times, 2) Attempted decomposition. Final error: %s",
+            phase_name,
+            max_retries + 1,
+            last_error,
         )
+        return {}
+
+    def _decompose_and_process(
+        self,
+        prompt: str,
+        phase_name: str,
+        max_retries: int,
+        decompose_fn: Optional[Callable[[str], List[str]]],
+        merge_fn: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]],
+        original_content: Optional[str],
+        chunk_prompt_template: Optional[str],
+        _depth: int,
+    ) -> Dict[str, Any]:
+        """Decompose content into chunks and process each recursively."""
+        if decompose_fn is None or merge_fn is None:
+            logger.info(
+                "PRA %s: Decomposition not available (no decompose/merge functions)",
+                phase_name,
+            )
+            return {}
+
+        if not original_content:
+            logger.info(
+                "PRA %s: Decomposition not possible (no content to decompose)",
+                phase_name,
+            )
+            return {}
+
+        if _depth >= MAX_DECOMPOSITION_DEPTH:
+            logger.warning(
+                "PRA %s: Maximum decomposition depth (%d) reached",
+                phase_name,
+                MAX_DECOMPOSITION_DEPTH,
+            )
+            return {}
+
+        chunks = decompose_fn(original_content)
+        if len(chunks) <= 1:
+            logger.warning(
+                "PRA %s: Cannot decompose further (only %d chunk)",
+                phase_name,
+                len(chunks),
+            )
+            return {}
+
+        logger.info(
+            "PRA %s: Decomposing into %d chunks (depth %d/%d)",
+            phase_name,
+            len(chunks),
+            _depth + 1,
+            MAX_DECOMPOSITION_DEPTH,
+        )
+
+        results: List[Dict[str, Any]] = []
+        for i, chunk in enumerate(chunks):
+            logger.debug(
+                "PRA %s: Processing chunk %d/%d (%d chars)",
+                phase_name,
+                i + 1,
+                len(chunks),
+                len(chunk),
+            )
+
+            if chunk_prompt_template:
+                chunk_prompt = chunk_prompt_template.format(chunk_content=chunk)
+            else:
+                chunk_prompt = self._create_generic_chunk_prompt(prompt, chunk)
+
+            chunk_result = self._parse_json_with_recovery(
+                prompt=chunk_prompt,
+                phase_name=f"{phase_name}_chunk{i + 1}",
+                max_retries=max_retries,
+                decompose_fn=decompose_fn,
+                merge_fn=merge_fn,
+                original_content=chunk,
+                chunk_prompt_template=chunk_prompt_template,
+                _depth=_depth + 1,
+            )
+            if chunk_result:
+                results.append(chunk_result)
+
+        if results:
+            merged = merge_fn(results)
+            logger.info(
+                "PRA %s: Merged %d chunk results successfully",
+                phase_name,
+                len(results),
+            )
+            return merged
+
+        logger.warning("PRA %s: Chunk processing produced no valid results", phase_name)
         return {}
 
     def _create_generic_chunk_prompt(self, original_prompt: str, chunk: str) -> str:
@@ -391,78 +461,6 @@ CONTENT CHUNK:
 
 Keep your response concise. Only include findings from THIS chunk.
 """
-
-    def _extract_json_fallback(self, raw: str) -> Dict[str, Any]:
-        """Extract JSON object from raw text using regex."""
-        # Find the outermost JSON object
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if match:
-            json_str = match.group()
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError:
-                # Try cleaning trailing commas
-                cleaned = re.sub(r",\s*([}\]])", r"\1", json_str)
-                try:
-                    return json.loads(cleaned)
-                except json.JSONDecodeError:
-                    # Try truncating to last complete field
-                    truncated = self._truncate_to_valid_json(cleaned)
-                    if truncated:
-                        try:
-                            return json.loads(truncated)
-                        except json.JSONDecodeError:
-                            pass
-        return {}
-
-    def _truncate_to_valid_json(self, json_str: str) -> str:
-        """Try to truncate a malformed JSON string to make it valid.
-
-        Useful for responses that were cut off mid-stream.
-        """
-        # Find where arrays/objects might have been truncated
-        # Try progressively removing content from the end
-        for end_char in ["}]}", "]}", "}", "]"]:
-            idx = json_str.rfind(end_char[0])
-            if idx > 0:
-                candidate = json_str[: idx + 1]
-                # Count braces/brackets to see if we can close them
-                open_braces = candidate.count("{") - candidate.count("}")
-                open_brackets = candidate.count("[") - candidate.count("]")
-                if open_braces >= 0 and open_brackets >= 0:
-                    # Add missing closing characters
-                    candidate += "]" * open_brackets + "}" * open_braces
-                    return candidate
-        return ""
-
-    def _request_continuation(self, partial_response: str) -> str:
-        """Request LLM to continue from a truncated JSON response.
-
-        Args:
-            partial_response: The partial/truncated JSON from the previous attempt
-
-        Returns:
-            The continuation text from the LLM
-        """
-        json_start = partial_response.find("{")
-        if json_start == -1:
-            return ""
-
-        partial_json = partial_response[json_start:]
-
-        continuation_prompt = (
-            "The previous JSON response was truncated. Here is what was generated so far:\n\n"
-            f"```json\n{partial_json}\n```\n\n"
-            "Continue from where it stopped. Output ONLY the remainder of the JSON "
-            "so that when appended to the previous output it completes the object. "
-            "Do not repeat any content. No explanation, just the missing JSON."
-        )
-
-        try:
-            return self.llm.complete_text(continuation_prompt)
-        except Exception as e:
-            logger.warning("PRA continuation request failed: %s", e)
-            return ""
 
     def _decompose_spec_for_review(
         self, spec_content: str, chunk_size: int = 4000
@@ -559,6 +557,28 @@ Keep your response concise. Only include findings from THIS chunk.
         merged["summary"] = f"Cleanup completed for {len(results)} sections"
         return merged
 
+    def _format_context_for_review(self) -> str:
+        """Format context files for inclusion in the spec review prompt."""
+        if not self._context_files:
+            return ""
+        
+        from spec_parser import format_context_for_prompt
+        formatted = format_context_for_prompt(self._context_files)
+        
+        if not formatted:
+            return ""
+        
+        return f"""
+
+## Additional Context Files
+
+The following additional files were provided in the project folder. Review these alongside the main specification to understand the full context:
+
+{formatted}
+
+---
+"""
+
     def _run_spec_review(
         self,
         spec_content: str,
@@ -579,8 +599,18 @@ Keep your response concise. Only include findings from THIS chunk.
         # Read previously answered questions to avoid asking duplicates
         qa_history = self._read_qa_history(repo_path)
 
+        # Build the full content including context files
+        context_section = self._format_context_for_review()
+        full_spec_content = spec_content
+        if context_section:
+            full_spec_content = spec_content + context_section
+            logger.info(
+                "Spec review: Including %d context files in review",
+                len(self._context_files),
+            )
+
         if qa_history:
-            prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
+            prompt = SPEC_REVIEW_PROMPT.format(spec_content=full_spec_content[:20000])
             prompt += f"""
 
 IMPORTANT: The following questions have ALREADY been answered. Do NOT ask these questions again or any variations of them. Only ask NEW questions about topics NOT covered below:
@@ -591,7 +621,7 @@ Previously Answered Questions:
 ---
 """
         else:
-            prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
+            prompt = SPEC_REVIEW_PROMPT.format(spec_content=full_spec_content[:20000])
 
         raw = self._parse_json_with_recovery(
             prompt=prompt,
@@ -826,6 +856,7 @@ Previously Answered Questions:
                 question_text=str(q_data.get("question_text", "")),
                 context=str(q_data.get("context", "")),
                 options=options,
+                allow_multiple=bool(q_data.get("allow_multiple", False)),
                 source="spec_review",
                 category=str(q_data.get("category", "general")),
                 priority=str(q_data.get("priority", "medium")),
@@ -843,6 +874,7 @@ Previously Answered Questions:
                     id="opt2", label="No", is_default=False, rationale="", confidence=0.5
                 ),
             ],
+            allow_multiple=False,
             source="spec_review",
         )
 
@@ -950,6 +982,7 @@ Previously Answered Questions:
                     "question_text": q.question_text,
                     "context": q.context,
                     "options": options,
+                    "allow_multiple": q.allow_multiple,
                     "required": True,
                     "source": q.source,
                     "category": q.category,
@@ -993,21 +1026,42 @@ Previously Answered Questions:
         for q in open_questions:
             sub = submitted_by_id.get(q.id)
             if sub:
-                selected_id = sub.get("selected_option_id", "")
                 other_text = sub.get("other_text") or ""
                 was_auto = sub.get("was_auto_answered", False)
-
-                if selected_id == "other" and other_text:
-                    selected_answer = other_text
+                
+                # Handle multi-select questions
+                selected_ids = sub.get("selected_option_ids", [])
+                selected_id = sub.get("selected_option_id", "")
+                
+                if selected_ids:
+                    # Multi-select: build combined answer from all selected options
+                    selected_labels = []
+                    for opt_id in selected_ids:
+                        if opt_id == "other" and other_text:
+                            selected_labels.append(other_text)
+                        else:
+                            opt = next((o for o in q.options if o.id == opt_id), None)
+                            if opt:
+                                selected_labels.append(opt.label)
+                    selected_answer = "; ".join(selected_labels) if selected_labels else "Unknown"
+                    # Use first selected ID for backward compatibility
+                    primary_selected_id = selected_ids[0] if selected_ids else ""
                 else:
-                    opt = next((o for o in q.options if o.id == selected_id), None)
-                    selected_answer = opt.label if opt else other_text or "Unknown"
+                    # Single-select: use the single selected option
+                    selected_ids = [selected_id] if selected_id else []
+                    primary_selected_id = selected_id
+                    if selected_id == "other" and other_text:
+                        selected_answer = other_text
+                    else:
+                        opt = next((o for o in q.options if o.id == selected_id), None)
+                        selected_answer = opt.label if opt else other_text or "Unknown"
 
                 answered.append(
                     AnsweredQuestion(
                         question_id=q.id,
                         question_text=q.question_text,
-                        selected_option_id=selected_id,
+                        selected_option_id=primary_selected_id,
+                        selected_option_ids=selected_ids,
                         selected_answer=selected_answer,
                         was_auto_answered=was_auto,
                         was_default=False,
@@ -1023,6 +1077,7 @@ Previously Answered Questions:
                         question_id=q.id,
                         question_text=q.question_text,
                         selected_option_id=default_opt.id if default_opt else "unknown",
+                        selected_option_ids=[default_opt.id] if default_opt else [],
                         selected_answer=default_opt.label
                         if default_opt
                         else "No default available",

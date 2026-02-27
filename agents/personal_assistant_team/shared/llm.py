@@ -17,6 +17,29 @@ class LLMError(Exception):
     """Raised when LLM operations fail."""
 
 
+class LLMTruncatedError(LLMError):
+    """Raised when LLM response was truncated due to token limit.
+
+    This exception signals that the response is incomplete and the caller should
+    decompose the task into smaller pieces rather than attempting partial recovery.
+
+    Attributes:
+        partial_content: The truncated content returned by the LLM.
+        done_reason: The done_reason from the Ollama API response.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_content: str = "",
+        done_reason: str = "length",
+    ):
+        super().__init__(message)
+        self.partial_content = partial_content
+        self.done_reason = done_reason
+
+
 class JSONExtractionFailure(LLMError):
     """
     Raised when JSON extraction fails after all recovery attempts.
@@ -76,7 +99,6 @@ class LLMClient:
     - Loud, informative failures with recovery suggestions
     """
 
-    MAX_CONTINUATION_ATTEMPTS = 3
     MAX_DECOMPOSITION_ATTEMPTS = 10
 
     def __init__(
@@ -186,70 +208,45 @@ class LLMClient:
         decomposition_hints: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Robust JSON extraction with multiple recovery strategies.
-        
-        NEVER attempts partial JSON extraction. If information is missing,
-        this is treated as critical and recovery is attempted.
+        Robust JSON extraction with truncation-triggered decomposition.
+
+        When truncation is detected via LLMTruncatedError, immediately decomposes
+        the task into smaller pieces rather than attempting partial recovery.
         """
         raw_responses: List[str] = []
         total_attempts = 0
-        continuation_attempts = 0
         decomposition_attempts = 0
-        
-        response = self._ollama_complete(
-            prompt,
-            temperature=temperature,
-            system_prompt=system_prompt,
-            json_mode=True,
-        )
-        raw_responses.append(response)
-        total_attempts += 1
-        
-        parsed = self._try_parse_json(response)
-        if parsed is not None:
-            return parsed
-        
-        if self._is_json_truncated(response):
-            logger.info("Detected truncated JSON, attempting continuation...")
-            
-            accumulated = response
-            for i in range(self.MAX_CONTINUATION_ATTEMPTS):
-                continuation_attempts += 1
-                total_attempts += 1
-                
-                continuation_prompt = self._build_continuation_prompt(accumulated)
-                
-                continuation = self._ollama_complete(
-                    continuation_prompt,
-                    temperature=temperature,
-                    json_mode=False,
-                )
-                raw_responses.append(continuation)
-                
-                accumulated = self._merge_json_responses(accumulated, continuation)
-                
-                parsed = self._try_parse_json(accumulated)
-                if parsed is not None:
-                    logger.info(
-                        "JSON extraction succeeded after %d continuation attempt(s)",
-                        i + 1
-                    )
-                    return parsed
-                
-                if not self._is_json_truncated(accumulated):
-                    logger.warning(
-                        "Response no longer appears truncated but JSON is still invalid"
-                    )
-                    break
-        
-        logger.info("Attempting task decomposition...")
-        
+
+        try:
+            response = self._ollama_complete(
+                prompt,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                json_mode=True,
+            )
+            raw_responses.append(response)
+            total_attempts += 1
+
+            parsed = self._try_parse_json(response)
+            if parsed is not None:
+                return parsed
+
+            logger.info("JSON parse failed, attempting task decomposition...")
+
+        except LLMTruncatedError as e:
+            logger.warning(
+                "Response truncated (%d chars partial). Next step -> Decomposing task",
+                len(e.partial_content),
+            )
+            raw_responses.append(e.partial_content)
+            total_attempts += 1
+
         subtasks = self._decompose_task(prompt, expected_keys, decomposition_hints)
-        
+
         if subtasks:
             combined_result: Dict[str, Any] = {}
             subtask_success = True
-            
+
             for subtask in subtasks:
                 if decomposition_attempts >= self.MAX_DECOMPOSITION_ATTEMPTS:
                     logger.error(
@@ -258,48 +255,48 @@ class LLMClient:
                     )
                     subtask_success = False
                     break
-                
+
                 decomposition_attempts += 1
                 total_attempts += 1
-                
-                subtask_response = self._ollama_complete(
-                    subtask["prompt"],
-                    temperature=temperature,
-                    json_mode=True,
-                )
-                raw_responses.append(subtask_response)
-                
-                subtask_parsed = self._try_parse_json(subtask_response)
-                
-                if subtask_parsed is None and self._is_json_truncated(subtask_response):
-                    subtask_parsed = self._attempt_subtask_continuation(
+
+                try:
+                    subtask_response = self._ollama_complete(
                         subtask["prompt"],
-                        subtask_response,
-                        temperature,
-                        raw_responses,
+                        temperature=temperature,
+                        json_mode=True,
                     )
-                    total_attempts += 1
-                
-                if subtask_parsed is not None:
-                    if subtask["key"]:
-                        combined_result[subtask["key"]] = subtask_parsed.get(
-                            subtask["key"], subtask_parsed
-                        )
+                    raw_responses.append(subtask_response)
+
+                    subtask_parsed = self._try_parse_json(subtask_response)
+
+                    if subtask_parsed is not None:
+                        if subtask["key"]:
+                            combined_result[subtask["key"]] = subtask_parsed.get(
+                                subtask["key"], subtask_parsed
+                            )
+                        else:
+                            combined_result.update(subtask_parsed)
+                        logger.info("Subtask '%s' completed successfully", subtask["key"])
                     else:
-                        combined_result.update(subtask_parsed)
-                    logger.info("Subtask '%s' completed successfully", subtask["key"])
-                else:
-                    logger.warning("Subtask '%s' failed", subtask["key"])
+                        logger.warning("Subtask '%s' failed to parse", subtask["key"])
+                        subtask_success = False
+                except LLMTruncatedError as e:
+                    logger.warning(
+                        "Subtask '%s' truncated (%d chars)",
+                        subtask["key"],
+                        len(e.partial_content),
+                    )
+                    raw_responses.append(e.partial_content)
                     subtask_success = False
-            
+
             if combined_result and subtask_success:
                 return combined_result
-        
+
         raise JSONExtractionFailure(
             message="Failed to extract valid JSON after all recovery attempts",
             original_prompt=prompt,
             attempts_made=total_attempts,
-            continuation_attempts=continuation_attempts,
+            continuation_attempts=0,
             decomposition_attempts=decomposition_attempts,
             raw_responses=raw_responses,
             recovery_suggestions=self._generate_recovery_suggestions(prompt, raw_responses),
@@ -342,69 +339,6 @@ class LLMClient:
                 pass
         
         return None
-
-    def _is_json_truncated(self, text: str) -> bool:
-        """Detect if JSON appears to be truncated/incomplete."""
-        if not text:
-            return False
-        
-        text = text.strip()
-        
-        open_braces = text.count("{") - text.count("}")
-        open_brackets = text.count("[") - text.count("]")
-        
-        if open_braces > 0 or open_brackets > 0:
-            return True
-        
-        if text.endswith(",") or text.endswith(":") or text.endswith('"'):
-            if text.count('"') % 2 != 0:
-                return True
-            if text.endswith(",") or text.endswith(":"):
-                return True
-        
-        return False
-
-    def _build_continuation_prompt(self, partial_response: str) -> str:
-        """Build a prompt asking the LLM to continue the JSON."""
-        truncated_part = partial_response[-2000:] if len(partial_response) > 2000 else partial_response
-        
-        return (
-            "Your previous JSON response was cut off before completion. "
-            "Continue EXACTLY from where you stopped. Do NOT restart or repeat earlier content. "
-            "Output ONLY the remaining JSON content needed to complete the response.\n\n"
-            "The response ended with:\n"
-            f"```\n{truncated_part}\n```\n\n"
-            "Continue the JSON (start immediately with the next character):"
-        )
-
-    def _merge_json_responses(self, base: str, continuation: str) -> str:
-        """Merge a base JSON response with its continuation."""
-        base = base.rstrip()
-        continuation = continuation.strip()
-        
-        if continuation.startswith("```"):
-            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", continuation)
-            if json_match:
-                continuation = json_match.group(1).strip()
-        
-        while continuation and continuation[0] in "{[ \n\t":
-            if continuation[0] in "{[":
-                inner_close = "}" if continuation[0] == "{" else "]"
-                depth = 1
-                for i, c in enumerate(continuation[1:], 1):
-                    if c == continuation[0]:
-                        depth += 1
-                    elif c == inner_close:
-                        depth -= 1
-                        if depth == 0:
-                            continuation = continuation[i+1:].strip()
-                            break
-                else:
-                    break
-            else:
-                continuation = continuation[1:]
-        
-        return base + continuation
 
     def _decompose_task(
         self,
@@ -450,36 +384,6 @@ class LLMClient:
         ]
         
         return subtasks
-
-    def _attempt_subtask_continuation(
-        self,
-        subtask_prompt: str,
-        partial_response: str,
-        temperature: float,
-        raw_responses: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """Attempt continuation for a subtask."""
-        accumulated = partial_response
-        
-        for _ in range(2):
-            continuation_prompt = self._build_continuation_prompt(accumulated)
-            continuation = self._ollama_complete(
-                continuation_prompt,
-                temperature=temperature,
-                json_mode=False,
-            )
-            raw_responses.append(continuation)
-            
-            accumulated = self._merge_json_responses(accumulated, continuation)
-            
-            parsed = self._try_parse_json(accumulated)
-            if parsed is not None:
-                return parsed
-            
-            if not self._is_json_truncated(accumulated):
-                break
-        
-        return None
 
     def _generate_recovery_suggestions(
         self,
@@ -539,7 +443,12 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         json_mode: bool = False,
     ) -> str:
-        """Make a completion request to Ollama."""
+        """Make a completion request to Ollama.
+
+        Raises:
+            LLMTruncatedError: If response was truncated due to token limit.
+            LLMError: If request fails after retries.
+        """
         url = f"{self.base_url}/api/generate"
         
         payload = {
@@ -567,7 +476,24 @@ class LLMClient:
                     response = client.post(url, json=payload)
                     response.raise_for_status()
                     data = response.json()
-                    return data.get("response", "")
+
+                    content = data.get("response", "")
+                    done_reason = data.get("done_reason", "")
+
+                    if done_reason == "length":
+                        logger.warning(
+                            "LLM response truncated (done_reason=length). Partial: %d chars",
+                            len(content),
+                        )
+                        raise LLMTruncatedError(
+                            "Response truncated due to token limit (done_reason=length)",
+                            partial_content=content,
+                            done_reason=done_reason,
+                        )
+
+                    return content
+            except LLMTruncatedError:
+                raise
             except httpx.HTTPError as e:
                 last_error = e
                 logger.warning(

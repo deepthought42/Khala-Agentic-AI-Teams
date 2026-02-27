@@ -52,6 +52,10 @@ class OpenQuestion(BaseModel):
     options: List[QuestionOption] = Field(
         default_factory=list, description="2-3 selectable options with rationale"
     )
+    allow_multiple: bool = Field(
+        default=False,
+        description="Whether user can select multiple options for this question",
+    )
     source: str = Field(
         default="spec_review", description="Origin of this question"
     )
@@ -70,8 +74,14 @@ class AnsweredQuestion(BaseModel):
 
     question_id: str = Field(description="ID of the original question")
     question_text: str = Field(description="The question text")
-    selected_option_id: str = Field(description="ID of the selected option")
-    selected_answer: str = Field(description="Text of the selected answer")
+    selected_option_id: str = Field(
+        default="", description="ID of the selected option (for single-select)"
+    )
+    selected_option_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of selected options (for multi-select questions)",
+    )
+    selected_answer: str = Field(description="Text of the selected answer(s)")
     was_auto_answered: bool = Field(
         default=False, description="Whether auto-answer was used"
     )

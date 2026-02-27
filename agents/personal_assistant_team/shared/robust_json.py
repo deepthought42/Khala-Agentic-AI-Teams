@@ -84,11 +84,9 @@ class RobustJSONExtractor:
     
     Recovery strategies (in order):
     1. Direct parsing with cleanup
-    2. Request LLM to continue incomplete JSON (up to 3 times)
-    3. Decompose task into smaller subtasks (up to 10 decompositions)
+    2. Decompose task into smaller subtasks (up to 10 decompositions)
     """
 
-    MAX_CONTINUATION_ATTEMPTS = 3
     MAX_DECOMPOSITION_ATTEMPTS = 10
 
     def __init__(
@@ -151,15 +149,8 @@ class RobustJSONExtractor:
         attempt.error = error
         result.attempts.append(attempt)
         
-        incomplete_json = self._detect_incomplete_json(response)
-        if incomplete_json:
-            continuation_result = self._attempt_continuation(
-                prompt, response, raw_responses, result
-            )
-            if continuation_result is not None:
-                result.success = True
-                result.data = continuation_result
-                return result
+        if self._detect_incomplete_json(response):
+            logger.info("Detected truncated JSON, skipping to decomposition")
         
         decomposition_result = self._attempt_decomposition(
             prompt, expected_keys, decomposition_hints, raw_responses, result
@@ -235,85 +226,6 @@ class RobustJSONExtractor:
                 return True
         
         return False
-
-    def _attempt_continuation(
-        self,
-        original_prompt: str,
-        partial_response: str,
-        raw_responses: List[str],
-        result: ExtractionResult,
-    ) -> Optional[Dict[str, Any]]:
-        """Attempt to continue an incomplete JSON response."""
-        accumulated_response = partial_response
-        
-        for i in range(self.MAX_CONTINUATION_ATTEMPTS):
-            result.continuation_attempts += 1
-            result.total_attempts += 1
-            
-            continuation_prompt = self._build_continuation_prompt(
-                original_prompt, accumulated_response
-            )
-            
-            continuation = self._make_request(continuation_prompt, json_mode=False)
-            raw_responses.append(continuation)
-            
-            accumulated_response = self._merge_responses(accumulated_response, continuation)
-            
-            attempt = ExtractionAttempt(
-                attempt_number=result.total_attempts,
-                strategy=f"continuation_{i+1}",
-                prompt_used=continuation_prompt[:500],
-                raw_response=continuation[:500],
-                success=False,
-            )
-            
-            parsed, error = self._try_parse(accumulated_response)
-            if parsed is not None:
-                attempt.success = True
-                attempt.parsed_result = parsed
-                result.attempts.append(attempt)
-                logger.info(
-                    "JSON extraction succeeded after %d continuation attempts",
-                    i + 1
-                )
-                return parsed
-            
-            attempt.error = error
-            result.attempts.append(attempt)
-            
-            if not self._detect_incomplete_json(accumulated_response):
-                logger.warning("Response no longer appears incomplete but still invalid")
-                break
-        
-        return None
-
-    def _build_continuation_prompt(self, original_prompt: str, partial_response: str) -> str:
-        """Build a prompt asking the LLM to continue from where it left off."""
-        return (
-            "The previous response was cut off before the JSON was complete. "
-            "Please continue EXACTLY from where you left off to complete the JSON. "
-            "Do NOT restart or repeat - just continue the JSON from this point:\n\n"
-            f"```\n{partial_response[-1500:]}\n```\n\n"
-            "Continue the JSON (starting immediately with the next character):"
-        )
-
-    def _merge_responses(self, base: str, continuation: str) -> str:
-        """Merge a base response with its continuation."""
-        base = base.rstrip()
-        continuation = continuation.strip()
-        
-        if continuation.startswith("```"):
-            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", continuation)
-            if json_match:
-                continuation = json_match.group(1).strip()
-        
-        if continuation.startswith("{") or continuation.startswith("["):
-            for i, char in enumerate(continuation):
-                if char not in "{[ \n\t":
-                    continuation = continuation[i:]
-                    break
-        
-        return base + continuation
 
     def _attempt_decomposition(
         self,

@@ -49,6 +49,7 @@ from shared.llm import (
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
+    LLMTruncatedError,
     OLLAMA_WEEKLY_LIMIT_MESSAGE,
     get_llm_for_agent,
 )
@@ -354,13 +355,13 @@ def _get_agents() -> Dict[str, Any]:
     Each agent uses get_llm_for_agent(key) for per-agent model configuration.
     Main pipeline uses planning_v2_team for planning; spec_intake/project_planning/domain planning agents
     are not used in the main flow (clarification_store may still use Spec Intake elsewhere)."""
-    from frontend_team.accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
+    from accessibility_agent import AccessibilityExpertAgent, AccessibilityInput
     from architecture_expert import ArchitectureExpertAgent, ArchitectureInput
     from code_review_agent import CodeReviewAgent, CodeReviewInput
     from technical_writers.dbc_comments_agent import DbcCommentsAgent, DbcCommentsInput
     from devops_team import DevOpsTeamLeadAgent
     from technical_writers.documentation_agent import DocumentationAgent, DocumentationInput
-    from frontend_team.feature_agent import FrontendExpertAgent, FrontendInput
+    from frontend_team_deprecated.feature_agent import FrontendExpertAgent, FrontendInput
     from git_setup_agent import GitSetupAgent
     from integration_team import IntegrationAgent, IntegrationInput
     from qa_agent import QAExpertAgent, QAInput
@@ -960,6 +961,10 @@ def _try_build_fix_one_at_a_time(
             break
         issue = issues.pop(0)
         desc = issue["description"]
+        logger.info(
+            "[%s] Build fix attempt %d/%d: Next step -> Fixing issue: %s",
+            task_id, attempt + 1, max_fix_attempts, desc[:80],
+        )
         file_path = issue.get("file_path") or ""
         rec = issue.get("recommendation") or "Fix the issue."
         # Build relevant code snippet
@@ -992,7 +997,10 @@ def _try_build_fix_one_at_a_time(
         try:
             raw = llm.complete_text(prompt)
         except Exception as e:
-            logger.warning("Build fix: LLM call failed (issue %s): %s", desc[:50], e)
+            logger.warning(
+                "[%s] Build fix attempt %d/%d failed: LLM call error: %s. Next step -> Skipping to next issue",
+                task_id, attempt + 1, max_fix_attempts, e,
+            )
             continue
         parsed = parse_problem_solving_single_issue_template(raw)
         fixed_files = parsed.get("files") or {}
@@ -1050,6 +1058,11 @@ def _try_build_fix_one_at_a_time(
                         issues.append({"description": result.pytest_error_summary()[:500], "file_path": "", "recommendation": "Fix."})
 
     error_summary = result.error_summary if hasattr(result, "error_summary") else "Build still failing after fix attempts"
+    logger.error(
+        "[%s] Build fix exhausted. Recovery summary: attempted %d fix iterations, "
+        "each applying LLM-generated patches then re-running build. Final error: %s",
+        task_id, max_fix_attempts, error_summary[:200],
+    )
     return False, error_summary
 
 
@@ -1391,6 +1404,10 @@ def _run_backend_frontend_workers(
                 update_job(job_id, status=JOB_STATUS_AGENT_CRASH, error=str(e), agent_crash_details=agent_crash_details)
                 repair_applied = False
                 if type(e) in REPAIRABLE_EXCEPTIONS and task_id not in repaired_tasks:
+                    logger.info(
+                        "%s[%s] Exception is repairable (%s). Next step -> Attempting automatic repair",
+                        log_prefix, task_id, type(e).__name__,
+                    )
                     repair_agent = agents.get("repair")
                     if repair_agent:
                         try:
@@ -1409,13 +1426,20 @@ def _run_backend_frontend_workers(
                                     repaired_tasks.add(task_id)
                                     backend_queue.append(task_id)
                                 update_job(job_id, status=JOB_STATUS_RUNNING, error=None, agent_crash_details=None)
-                                logger.info("%s[%s] Repair applied, re-queued task", log_prefix, task_id)
+                                logger.info("%s[%s] Repair applied. Next step -> Re-queuing task for retry", log_prefix, task_id)
                         except Exception as repair_err:
-                            logger.warning("Repair agent failed for %s: %s", task_id, repair_err)
+                            logger.warning("%s[%s] Repair agent failed: %s", log_prefix, task_id, repair_err)
                 if not repair_applied:
                     update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=str(e))
                     with state_lock:
                         failed[task_id] = f"Unhandled exception: {e}"
+                    logger.error(
+                        "%s[%s] Backend task failed. Recovery summary: 1) Workflow execution failed, "
+                        "2) Repair %s. Final error: %s",
+                        log_prefix, task_id,
+                        "attempted but unsuccessful" if type(e) in REPAIRABLE_EXCEPTIONS else "not applicable (non-repairable exception)",
+                        e,
+                    )
                 logger.exception("%s[%s] Backend task exception", log_prefix, task_id)
             logger.info("%s[%s] <<< Backend worker done", log_prefix, task_id)
 
@@ -1627,6 +1651,10 @@ def _run_backend_frontend_workers(
                 update_job(job_id, status=JOB_STATUS_AGENT_CRASH, error=str(e), agent_crash_details=agent_crash_details)
                 repair_applied = False
                 if type(e) in REPAIRABLE_EXCEPTIONS and task_id not in repaired_tasks:
+                    logger.info(
+                        "%s[%s] Exception is repairable (%s). Next step -> Attempting automatic repair",
+                        log_prefix, task_id, type(e).__name__,
+                    )
                     repair_agent = agents.get("repair")
                     if repair_agent:
                         try:
@@ -1645,13 +1673,20 @@ def _run_backend_frontend_workers(
                                     repaired_tasks.add(task_id)
                                     frontend_queue.append(task_id)
                                 update_job(job_id, status=JOB_STATUS_RUNNING, error=None, agent_crash_details=None)
-                                logger.info("%s[%s] Repair applied, re-queued task", log_prefix, task_id)
+                                logger.info("%s[%s] Repair applied. Next step -> Re-queuing task for retry", log_prefix, task_id)
                         except Exception as repair_err:
-                            logger.warning("Repair agent failed for %s: %s", task_id, repair_err)
+                            logger.warning("%s[%s] Repair agent failed: %s", log_prefix, task_id, repair_err)
                 if not repair_applied:
                     update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=str(e))
                     with state_lock:
                         failed[task_id] = f"Unhandled exception: {e}"
+                    logger.error(
+                        "%s[%s] Frontend task failed. Recovery summary: 1) Workflow execution failed, "
+                        "2) Repair %s. Final error: %s",
+                        log_prefix, task_id,
+                        "attempted but unsuccessful" if type(e) in REPAIRABLE_EXCEPTIONS else "not applicable (non-repairable exception)",
+                        e,
+                    )
                 logger.exception("%s[%s] Frontend task exception", log_prefix, task_id)
                 checkout_branch(frontend_dir, DEVELOPMENT_BRANCH)
 
@@ -1703,8 +1738,13 @@ def run_orchestrator(
         agents = _get_agents()
 
         # 1. Read spec from work path or use override (no git required at root)
-        from spec_parser import load_spec_from_repo, parse_spec_with_llm
+        from spec_parser import load_spec_from_repo, parse_spec_with_llm, gather_context_files
         spec_content = spec_content_override if spec_content_override is not None else load_spec_from_repo(path)
+        
+        # Gather all context files from the repo for PRA agent
+        context_files = gather_context_files(path)
+        if context_files:
+            logger.info("Gathered %d context files for PRA agent", len(context_files))
         try:
             requirements = parse_spec_with_llm(spec_content, get_llm_for_agent("spec_intake"))
         except LLMRateLimitError:
@@ -1743,12 +1783,14 @@ def run_orchestrator(
                 pass
 
         update_job(job_id, phase="product_analysis", message="Starting product requirements analysis...", status_text="Starting product requirements analysis")
+        logger.info("Next step -> Running Product Requirements Analysis agent to validate spec and gather clarifications")
         pra_agent = ProductRequirementsAnalysisAgent(get_llm_for_agent("product_analysis"))
         pra_result = pra_agent.run_workflow(
             spec_content=spec_content,
             repo_path=path,
             job_id=job_id,
             job_updater=_pra_job_updater,
+            context_files=context_files,
         )
         if not pra_result.success:
             err = pra_result.failure_reason or "Product Requirements Analysis did not complete successfully."
@@ -1766,6 +1808,7 @@ def run_orchestrator(
         # ── Step 2: Planning V2 Team ──────────────────────────────────────────
         # Receives validated spec, performs planning (skips spec review)
         update_job(job_id, phase="planning", message="Starting planning workflow...", status_text="Starting planning workflow")
+        logger.info("Next step -> Running Planning V2 team to generate architecture and task breakdown")
 
         from planning_v2_team import PlanningV2TeamLead
         from planning_v2_adapter import adapt_planning_v2_result, PlanningV2AdapterResult
@@ -1795,7 +1838,6 @@ def run_orchestrator(
             repo_path=path,
             inspiration_content=None,
             job_updater=_planning_v2_job_updater,
-            skip_spec_review=True,
         )
         if not p2_result.success:
             err = p2_result.failure_reason or "Planning-v2 workflow did not complete successfully."
@@ -2167,6 +2209,7 @@ def run_orchestrator(
         # DevOps: containerize every git repo created by the pipeline (backend and frontend)
         devops_agent = agents.get("devops")
         if devops_agent and backend_dir.is_dir() and (backend_dir / ".git").exists():
+            logger.info("Next step -> Running DevOps agent to containerize backend repo")
             existing_pipeline = _read_repo_code(backend_dir, [".yml", ".yaml"])
             tech_lead.trigger_devops_for_backend(
                 devops_agent, backend_dir, architecture, spec_content,
@@ -2174,6 +2217,7 @@ def run_orchestrator(
                 build_verifier=_run_build_verification,
             )
         if devops_agent and frontend_dir.is_dir() and (frontend_dir / ".git").exists():
+            logger.info("Next step -> Running DevOps agent to containerize frontend repo")
             existing_pipeline = _read_repo_code(frontend_dir, [".yml", ".yaml"])
             tech_lead.trigger_devops_for_frontend(
                 devops_agent, frontend_dir, architecture, spec_content,
@@ -2528,7 +2572,11 @@ def run_failed_tasks(job_id: str) -> None:
             job_id=job_id,
         )
         if failed_retry:
-            logger.warning("=== Still-failed task report ===")
+            logger.warning(
+                "=== Still-failed task report. Recovery summary: re-attempted %d tasks, "
+                "%d completed successfully, %d remain failed ===",
+                total_tasks, len(completed), len(failed_retry),
+            )
             for tid, reason in sorted(failed_retry.items()):
                 task_obj = all_tasks.get(tid)
                 title = task_obj.title if task_obj else tid

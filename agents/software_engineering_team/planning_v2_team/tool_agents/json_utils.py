@@ -1,6 +1,5 @@
 """Shared JSON parsing utilities for planning_v2_team tool agents."""
 
-import json
 import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -25,19 +24,16 @@ def parse_json_with_recovery(
     chunk_prompt_template: Optional[str] = None,
     _depth: int = 0,
 ) -> Dict[str, Any]:
-    """Parse LLM JSON response with multi-stage recovery.
+    """Parse LLM JSON response with truncation-triggered decomposition.
 
-    Recovery stages:
-    1. llm.complete_json() - uses LLMClient's built-in continuation retry
-    2. Regex extraction - find {...} in raw response
-    3. Explicit continuation request - ask LLM to complete truncated JSON
-    4. Decompose into chunks and merge results (recursive)
+    When a truncated response is detected (via LLMTruncatedError), immediately
+    decomposes the task into smaller chunks rather than attempting partial recovery.
 
     Args:
         llm: LLM client for completions
         prompt: The prompt to send to the LLM
         agent_name: Name for logging purposes
-        max_retries: Number of retry attempts for the same prompt
+        max_retries: Number of retry attempts for non-truncation errors
         decompose_fn: Optional function to split content into chunks
         merge_fn: Optional function to merge results from chunks
         original_content: The original content being processed (for decomposition)
@@ -47,192 +43,184 @@ def parse_json_with_recovery(
     Returns:
         Parsed JSON dict, or empty dict if all recovery fails
     """
+    from shared.llm import LLMTruncatedError, LLMJsonParseError
+
     last_error: Optional[Exception] = None
-    partial_response = ""
 
     for attempt in range(max_retries + 1):
         try:
             return llm.complete_json(prompt)
-        except Exception as e:
+        except LLMTruncatedError as e:
+            logger.warning(
+                "%s: Response truncated (%d chars partial). Next step -> Decomposing task",
+                agent_name,
+                len(e.partial_content),
+            )
+            return _decompose_and_process(
+                llm=llm,
+                prompt=prompt,
+                agent_name=agent_name,
+                max_retries=max_retries,
+                decompose_fn=decompose_fn,
+                merge_fn=merge_fn,
+                original_content=original_content,
+                chunk_prompt_template=chunk_prompt_template,
+                _depth=_depth,
+            )
+        except LLMJsonParseError as e:
             last_error = e
             logger.warning(
-                "%s LLM call failed (attempt %d/%d): %s",
+                "%s: JSON parse failed (attempt %d/%d): %s",
                 agent_name,
                 attempt + 1,
                 max_retries + 1,
                 str(e)[:200],
             )
-
-            # Extract partial response for continuation attempts
-            partial_response = getattr(e, "response_preview", "") or str(e)
-
-            # Stage 2: Try regex extraction from partial response
-            extracted = _extract_json_fallback(partial_response)
-            if extracted:
-                logger.info("%s: Recovered JSON via regex extraction", agent_name)
-                return extracted
-
-    # Stage 3: Try explicit continuation request
-    if partial_response:
-        logger.info("%s: Attempting LLM continuation for truncated response", agent_name)
-        continued = _request_continuation(llm, prompt, partial_response, agent_name)
-        if continued:
-            return continued
-
-    # Stage 4: Decompose into chunks if possible
-    if (
-        decompose_fn is not None
-        and merge_fn is not None
-        and original_content
-        and _depth < MAX_DECOMPOSITION_DEPTH
-    ):
-        logger.info(
-            "%s: Decomposing content into chunks (depth %d)", agent_name, _depth + 1
-        )
-        chunks = decompose_fn(original_content)
-
-        if len(chunks) > 1:
-            results: List[Dict[str, Any]] = []
-            for i, chunk in enumerate(chunks):
-                logger.debug(
-                    "%s: Processing chunk %d/%d (%d chars)",
-                    agent_name,
-                    i + 1,
-                    len(chunks),
-                    len(chunk),
-                )
-
-                # Use chunk prompt template if provided, otherwise use a generic one
-                if chunk_prompt_template:
-                    chunk_prompt = chunk_prompt_template.format(chunk_content=chunk)
-                else:
-                    chunk_prompt = _create_generic_chunk_prompt(prompt, chunk)
-
-                # Recursively process each chunk
-                chunk_result = parse_json_with_recovery(
-                    llm=llm,
-                    prompt=chunk_prompt,
-                    agent_name=f"{agent_name}_chunk{i + 1}",
-                    max_retries=max_retries,
-                    decompose_fn=decompose_fn,
-                    merge_fn=merge_fn,
-                    original_content=chunk,
-                    chunk_prompt_template=chunk_prompt_template,
-                    _depth=_depth + 1,
-                )
-                if chunk_result:
-                    results.append(chunk_result)
-
-            if results:
-                merged = merge_fn(results)
+            if attempt < max_retries:
                 logger.info(
-                    "%s: Merged %d chunk results successfully", agent_name, len(results)
+                    "%s: Next step -> Re-prompting LLM (attempt %d/%d)",
+                    agent_name,
+                    attempt + 2,
+                    max_retries + 1,
                 )
-                return merged
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "%s: LLM call failed (attempt %d/%d): %s",
+                agent_name,
+                attempt + 1,
+                max_retries + 1,
+                str(e)[:200],
+            )
+            if attempt < max_retries:
+                logger.info(
+                    "%s: Next step -> Re-prompting LLM (attempt %d/%d)",
+                    agent_name,
+                    attempt + 2,
+                    max_retries + 1,
+                )
 
-    logger.error("%s: All JSON recovery attempts failed: %s", agent_name, last_error)
+    # All retries exhausted - try decomposition as last resort
+    if decompose_fn is not None and merge_fn is not None and original_content:
+        logger.info(
+            "%s: All retries exhausted. Next step -> Attempting decomposition",
+            agent_name,
+        )
+        result = _decompose_and_process(
+            llm=llm,
+            prompt=prompt,
+            agent_name=agent_name,
+            max_retries=max_retries,
+            decompose_fn=decompose_fn,
+            merge_fn=merge_fn,
+            original_content=original_content,
+            chunk_prompt_template=chunk_prompt_template,
+            _depth=_depth,
+        )
+        if result:
+            return result
+
+    logger.error(
+        "%s: All recovery attempts exhausted. Recovery summary: "
+        "1) Retried LLM %d times, 2) Attempted decomposition. Final error: %s",
+        agent_name,
+        max_retries + 1,
+        last_error,
+    )
     return {}
 
 
-def _request_continuation(
+def _decompose_and_process(
     llm: "LLMClient",
-    original_prompt: str,
-    partial_response: str,
+    prompt: str,
     agent_name: str,
+    max_retries: int,
+    decompose_fn: Optional[Callable[[str], List[str]]],
+    merge_fn: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]],
+    original_content: Optional[str],
+    chunk_prompt_template: Optional[str],
+    _depth: int,
 ) -> Dict[str, Any]:
-    """Request LLM to continue from a truncated JSON response.
-
-    Returns parsed JSON if successful, empty dict otherwise.
-    """
-    # Clean up partial response - extract just the JSON part
-    json_start = partial_response.find("{")
-    if json_start == -1:
+    """Decompose content into chunks and process each recursively."""
+    if decompose_fn is None or merge_fn is None:
+        logger.info(
+            "%s: Decomposition not available (no decompose/merge functions)",
+            agent_name,
+        )
         return {}
 
-    partial_json = partial_response[json_start:]
+    if not original_content:
+        logger.info(
+            "%s: Decomposition not possible (no content to decompose)",
+            agent_name,
+        )
+        return {}
 
-    continuation_prompt = (
-        "The previous JSON response was truncated. Here is what was generated so far:\n\n"
-        f"```json\n{partial_json}\n```\n\n"
-        "Continue from where it stopped. Output ONLY the remainder of the JSON "
-        "so that when appended to the previous output it completes the object. "
-        "Do not repeat any content. No explanation, just the missing JSON."
+    if _depth >= MAX_DECOMPOSITION_DEPTH:
+        logger.warning(
+            "%s: Maximum decomposition depth (%d) reached",
+            agent_name,
+            MAX_DECOMPOSITION_DEPTH,
+        )
+        return {}
+
+    chunks = decompose_fn(original_content)
+    if len(chunks) <= 1:
+        logger.warning(
+            "%s: Cannot decompose further (only %d chunk)",
+            agent_name,
+            len(chunks),
+        )
+        return {}
+
+    logger.info(
+        "%s: Decomposing into %d chunks (depth %d/%d)",
+        agent_name,
+        len(chunks),
+        _depth + 1,
+        MAX_DECOMPOSITION_DEPTH,
     )
 
-    try:
-        continuation = llm.complete_text(continuation_prompt)
-        if not continuation:
-            return {}
+    results: List[Dict[str, Any]] = []
+    for i, chunk in enumerate(chunks):
+        logger.debug(
+            "%s: Processing chunk %d/%d (%d chars)",
+            agent_name,
+            i + 1,
+            len(chunks),
+            len(chunk),
+        )
 
-        # Merge the partial and continuation
-        merged = partial_json.rstrip() + "\n" + continuation.lstrip()
+        if chunk_prompt_template:
+            chunk_prompt = chunk_prompt_template.format(chunk_content=chunk)
+        else:
+            chunk_prompt = _create_generic_chunk_prompt(prompt, chunk)
 
-        # Try to parse the merged result
-        extracted = _extract_json_fallback(merged)
-        if extracted:
-            logger.info("%s: Successfully recovered JSON via continuation", agent_name)
-            return extracted
+        chunk_result = parse_json_with_recovery(
+            llm=llm,
+            prompt=chunk_prompt,
+            agent_name=f"{agent_name}_chunk{i + 1}",
+            max_retries=max_retries,
+            decompose_fn=decompose_fn,
+            merge_fn=merge_fn,
+            original_content=chunk,
+            chunk_prompt_template=chunk_prompt_template,
+            _depth=_depth + 1,
+        )
+        if chunk_result:
+            results.append(chunk_result)
 
-        # Try direct parse
-        try:
-            return json.loads(merged)
-        except json.JSONDecodeError:
-            pass
+    if results:
+        merged = merge_fn(results)
+        logger.info(
+            "%s: Merged %d chunk results successfully",
+            agent_name,
+            len(results),
+        )
+        return merged
 
-    except Exception as e:
-        logger.warning("%s: Continuation request failed: %s", agent_name, e)
-
+    logger.warning("%s: Chunk processing produced no valid results", agent_name)
     return {}
-
-
-def _extract_json_fallback(raw: str) -> Dict[str, Any]:
-    """Extract JSON object from raw text using regex and repair strategies."""
-    match = re.search(r"\{[\s\S]*\}", raw)
-    if match:
-        json_str = match.group()
-
-        # Try direct parse
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
-
-        # Try cleaning trailing commas
-        cleaned = re.sub(r",\s*([}\]])", r"\1", json_str)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-
-        # Try truncating to valid JSON
-        truncated = _truncate_to_valid_json(cleaned)
-        if truncated:
-            try:
-                return json.loads(truncated)
-            except json.JSONDecodeError:
-                pass
-
-    return {}
-
-
-def _truncate_to_valid_json(json_str: str) -> str:
-    """Try to truncate a malformed JSON string to make it valid.
-
-    Useful for responses that were cut off mid-stream.
-    """
-    # Find where arrays/objects might have been truncated
-    for end_char in ["}]}", "]}", "}", "]"]:
-        idx = json_str.rfind(end_char[0])
-        if idx > 0:
-            candidate = json_str[: idx + 1]
-            # Count braces/brackets to see if we can close them
-            open_braces = candidate.count("{") - candidate.count("}")
-            open_brackets = candidate.count("[") - candidate.count("]")
-            if open_braces >= 0 and open_brackets >= 0:
-                # Add missing closing characters
-                candidate += "]" * open_brackets + "}" * open_braces
-                return candidate
-    return ""
 
 
 def _create_generic_chunk_prompt(original_prompt: str, chunk: str) -> str:

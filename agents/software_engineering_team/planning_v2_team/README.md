@@ -1,6 +1,8 @@
 # Planning V2 Team
 
-The Planning V2 Team is a standalone 3-layer planning system that produces comprehensive project plans from specifications. It uses 8 specialized tool agents organized across 6 workflow phases.
+The Planning V2 Team is a standalone 3-layer planning system that produces comprehensive project plans from **pre-validated specifications**. It uses 8 specialized tool agents organized across 5 workflow phases.
+
+**Important:** This team expects to receive a complete, validated specification that requires no expansion or clarification. Use the Product Requirements Analysis agent or similar upstream process to validate specs before passing them to Planning V2. The team will not expand or clarify the specification.
 
 ## Architecture
 
@@ -34,15 +36,14 @@ graph TB
 | Layer | Component | Responsibility |
 |-------|-----------|----------------|
 | 1 | `PlanningV2ProductLead` | Spec intake, inspiration handling, optional Product Analysis integration |
-| 2 | `PlanningV2PlanningAgent` | Orchestrates tool agents across 6 phases |
+| 2 | `PlanningV2PlanningAgent` | Orchestrates tool agents across 5 phases |
 | 3 | Tool Agents (8) | Specialized planning tasks (design, architecture, stories, etc.) |
 
 ## Workflow Phases
 
 ```mermaid
 stateDiagram-v2
-    [*] --> SpecReview
-    SpecReview --> Planning
+    [*] --> Planning
     Planning --> Implementation
     Implementation --> Review
     Review --> ProblemSolving: Issues Found
@@ -55,7 +56,6 @@ stateDiagram-v2
 
 | Phase | Purpose | Tool Agents Involved |
 |-------|---------|---------------------|
-| **Spec Review** | Analyze specification for gaps, issues, and open questions | System Design, Architecture |
 | **Planning** | Generate high-level design, architecture, milestones | System Design, Architecture, User Story, DevOps, UI Design |
 | **Implementation** | Create detailed task breakdown, user stories, file structure | All 8 agents |
 | **Review** | Verify consistency, completeness, spec alignment | System Design, Architecture, User Story, Task Dependency |
@@ -115,29 +115,9 @@ result = lead.run_workflow(
     spec_content=spec,
     repo_path=repo,
     job_updater=update_job,
-    job_id="job-123",  # Enables open questions support
+    job_id="job-123",
 )
 ```
-
-## Open Questions Flow
-
-When the Spec Review phase identifies ambiguities, it generates structured open questions:
-
-```python
-class OpenQuestion(BaseModel):
-    id: str                      # Unique identifier
-    question_text: str           # The question
-    context: str                 # Why this matters
-    options: List[QuestionOption]  # 2-3 options with rationale
-```
-
-Each option includes:
-- `label`: Display text
-- `is_default`: Recommended choice
-- `rationale`: Why this option is suggested
-- `confidence`: AI confidence score (0.0-1.0)
-
-The workflow pauses after Planning if open questions exist, waiting for user answers (up to 1 hour timeout).
 
 ## Output Artifacts
 
@@ -159,7 +139,6 @@ The workflow creates/updates files in `{repo_path}/plan/`:
 ### Phase Results
 
 ```python
-SpecReviewResult      # Issues, gaps, open questions
 PlanningPhaseResult   # Goals, architecture, milestones, dependencies
 ImplementationPhaseResult  # Assets created/updated
 ReviewPhaseResult     # Pass/fail with issues
@@ -175,7 +154,6 @@ class PlanningV2WorkflowResult(BaseModel):
     current_phase: Optional[Phase]
     summary: str
     failure_reason: str
-    spec_review_result: Optional[SpecReviewResult]
     planning_result: Optional[PlanningPhaseResult]
     implementation_result: Optional[ImplementationPhaseResult]
     review_result: Optional[ReviewPhaseResult]
@@ -190,8 +168,6 @@ class PlanningV2WorkflowResult(BaseModel):
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MAX_REVIEW_ITERATIONS` | Max review → problem-solving cycles | 5 |
-| `OPEN_QUESTIONS_TIMEOUT` | Seconds to wait for user answers | 3600 |
-| `OPEN_QUESTIONS_POLL_INTERVAL` | Seconds between answer checks | 5 |
 
 ## Directory Structure
 
@@ -201,7 +177,6 @@ planning_v2_team/
 ├── models.py              # Phase, ToolAgentKind, all result models
 ├── prompts.py             # LLM prompts for phases
 ├── phases/
-│   ├── iterative_spec_review.py  # Spec Review with open questions
 │   ├── planning.py        # Planning phase
 │   ├── implementation.py  # Implementation phase
 │   ├── review.py          # Review phase
@@ -223,8 +198,9 @@ planning_v2_team/
 Planning V2 can be integrated with the Software Engineering Team orchestrator:
 
 1. SE Team receives a job request
-2. If `use_planning_v2=True`, delegates to Planning V2
-3. Planning V2 produces artifacts in `plan/`
-4. SE Team reads plan and proceeds to execution
+2. Product Requirements Analysis validates the spec
+3. If `use_planning_v2=True`, delegates to Planning V2
+4. Planning V2 produces artifacts in `plan/`
+5. SE Team reads plan and proceeds to execution
 
-The `skip_spec_review` flag allows skipping the iterative review when the spec has already been validated by the Product Requirements Analysis agent.
+**Note:** The specification must be validated before passing to Planning V2. The team does not perform spec review or expansion.

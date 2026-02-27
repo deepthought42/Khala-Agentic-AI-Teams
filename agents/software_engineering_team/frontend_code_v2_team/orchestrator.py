@@ -161,6 +161,7 @@ class FrontendDevelopmentAgent:
         tool_agents = _build_tool_agents(self.llm)
         tool_runners = self._build_tool_runners(tool_agents)
 
+        logger.info("[%s] Next step -> Starting Phase: Planning", task_id)
         result.current_phase = Phase.PLANNING
         _update_job(current_phase="planning", progress=5)
 
@@ -192,6 +193,7 @@ class FrontendDevelopmentAgent:
             except Exception as exc:
                 logger.warning("[%s] Git agent create_feature_branch raised: %s", task_id, exc)
 
+        logger.info("[%s] Next step -> Starting Phase: Execution", task_id)
         result.current_phase = Phase.EXECUTION
         _update_job(current_phase="execution", current_microtask="", progress=15)
 
@@ -259,6 +261,7 @@ class FrontendDevelopmentAgent:
         result.final_files = current_files
 
         # ── Phase: Documentation ────────────────────────────────────────
+        logger.info("[%s] Next step -> Starting Phase: Documentation", task_id)
         result.current_phase = Phase.DOCUMENTATION
         _update_job(current_phase="documentation", progress=80)
 
@@ -279,9 +282,13 @@ class FrontendDevelopmentAgent:
                 result.final_files = current_files
             logger.info("[%s] Documentation phase complete: %s", task_id, doc_result.summary)
         except Exception as exc:
-            logger.warning("[%s] Documentation phase failed: %s", task_id, exc)
+            logger.warning(
+                "[%s] Documentation phase failed: %s. Next step -> Continuing to Deliver phase",
+                task_id, exc,
+            )
 
         # ── Phase: Deliver ───────────────────────────────────────────
+        logger.info("[%s] Next step -> Starting Phase: Deliver", task_id)
         result.current_phase = Phase.DELIVER
         _update_job(current_phase="deliver", progress=90)
 

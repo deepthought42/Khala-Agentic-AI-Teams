@@ -72,6 +72,12 @@ TEAM_CONFIGS: Dict[str, TeamConfig] = {
         description="Provision agent environments with databases, git, docker",
         tags=["provisioning", "infrastructure"],
     ),
+    "accessibility_audit": TeamConfig(
+        name="Accessibility Audit",
+        prefix="/api/accessibility-audit",
+        description="Accessibility auditing (WCAG 2.2, Section 508) for web and mobile",
+        tags=["accessibility", "audit", "wcag", "508"],
+    ),
 }
 
 

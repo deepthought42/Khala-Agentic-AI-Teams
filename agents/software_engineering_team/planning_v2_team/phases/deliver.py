@@ -69,7 +69,10 @@ def run_deliver(
                         summaries.append(f"{agent_kind.value}: {result.summary}")
                     logger.info("Deliver: %s completed", agent_kind.value)
                 except Exception as e:
-                    logger.warning("Deliver: %s failed: %s", agent_kind.value, e)
+                    logger.warning(
+                        "Deliver: %s failed: %s. Next step -> Continuing with other agents",
+                        agent_kind.value, e,
+                    )
     
     # Finalize the product spec: rename updated_spec.md to product_spec.md
     # and clean up intermediate versioned files
@@ -105,7 +108,10 @@ def run_deliver(
                 logger.info("Deliver: no changes to commit")
                 committed = True
     except Exception as e:
-        logger.warning("Deliver git commit failed (non-fatal): %s", e)
+        logger.warning(
+            "Deliver git commit failed (non-fatal): %s. Next step -> Continuing to build summary",
+            e,
+        )
     
     hierarchy_summary = ""
     if hierarchy:

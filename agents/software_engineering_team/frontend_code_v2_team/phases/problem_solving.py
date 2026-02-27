@@ -102,6 +102,7 @@ def run_problem_solving(
                 if parsed.get("resolved"):
                     resolved_this = True
                 break
+
             working.update(fixed_files)
             merged.update(fixed_files)
             fixes_applied.append({

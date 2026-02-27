@@ -118,27 +118,37 @@
             }
 
             <div class="options-list">
-              <mat-radio-group
-                [value]="getAnswer(question.id)?.selectedOptionId"
-                (change)="onOptionChange(question.id, $event.value)"
-              >
-                @for (option of question.options; track option.id) {
-                  <div class="option-wrapper">
-                    <mat-radio-button [value]="option.id" class="option-button">
-                      {{ option.label }}
-                      @if (option.is_default) {
-                        <span class="default-badge">Recommended</span>
-                      }
-                    </mat-radio-button>
-                    @if (option.rationale) {
-                      <p class="option-rationale">{{ option.rationale }}</p>
+              <!-- All questions use checkboxes for multi-select -->
+              <div class="multi-select-hint">
+                <mat-icon>info_outline</mat-icon>
+                <span>Select all that apply</span>
+              </div>
+              @for (option of question.options; track option.id) {
+                <div class="option-wrapper">
+                  <mat-checkbox
+                    [checked]="isOptionSelected(question.id, option.id)"
+                    (change)="onMultiOptionToggle(question.id, option.id, $event.checked)"
+                    class="option-checkbox"
+                  >
+                    {{ option.label }}
+                    @if (option.is_default) {
+                      <span class="default-badge">Recommended</span>
                     }
-                  </div>
-                }
-                <mat-radio-button value="other" class="option-button other-option">
+                  </mat-checkbox>
+                  @if (option.rationale) {
+                    <p class="option-rationale">{{ option.rationale }}</p>
+                  }
+                </div>
+              }
+              <div class="option-wrapper">
+                <mat-checkbox
+                  [checked]="isOtherSelected(question.id)"
+                  (change)="onMultiOptionToggle(question.id, 'other', $event.checked)"
+                  class="option-checkbox other-option"
+                >
                   Other (specify below)
-                </mat-radio-button>
-              </mat-radio-group>
+                </mat-checkbox>
+              </div>
 
               @if (isOtherSelected(question.id)) {
                 <mat-form-field appearance="outline" class="other-input">

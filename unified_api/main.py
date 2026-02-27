@@ -196,6 +196,28 @@ def _try_mount_agent_provisioning(app: FastAPI) -> bool:
         return False
 
 
+def _try_mount_accessibility_audit(app: FastAPI) -> bool:
+    """Mount accessibility audit team API."""
+    try:
+        from accessibility_audit_team.api.main import router as a11y_router
+        from fastapi import FastAPI as SubApp
+
+        # Create sub-app for accessibility audit
+        a11y_app = SubApp(
+            title="Accessibility Audit API",
+            description="WCAG 2.2 and Section 508 accessibility auditing for web and mobile",
+        )
+        a11y_app.include_router(a11y_router)
+
+        config = TEAM_CONFIGS["accessibility_audit"]
+        app.mount(config.prefix, a11y_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Accessibility Audit API: %s", e)
+        return False
+
+
 def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
     """Mount all enabled team APIs and return mount status."""
     mount_functions = {
@@ -207,6 +229,7 @@ def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
         "social_marketing": _try_mount_social_marketing,
         "branding": _try_mount_branding,
         "agent_provisioning": _try_mount_agent_provisioning,
+        "accessibility_audit": _try_mount_accessibility_audit,
     }
 
     results = {}
@@ -254,6 +277,7 @@ Unified API server providing access to all Strands Agent team capabilities.
 - **Social Marketing** (`/api/social-marketing`) - Campaign planning
 - **Branding** (`/api/branding`) - Brand strategy and design
 - **Agent Provisioning** (`/api/agent-provisioning`) - Environment provisioning
+- **Accessibility Audit** (`/api/accessibility-audit`) - WCAG 2.2 and Section 508 auditing
 
 Each team's endpoints are available under their respective prefix.
 Visit the team-specific `/docs` endpoint for detailed API documentation

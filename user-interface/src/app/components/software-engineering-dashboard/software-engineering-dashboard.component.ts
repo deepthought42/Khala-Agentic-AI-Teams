@@ -1,4 +1,5 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
@@ -85,7 +86,10 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
     planning_v2: 6,
   };
   private readonly api = inject(SoftwareEngineeringApiService);
+  private readonly route = inject(ActivatedRoute);
   private runningJobsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
+  private pendingTabIndex: number | null = null;
 
   loading = false;
   error: string | null = null;
@@ -117,6 +121,17 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
     this.api.health();
 
   ngOnInit(): void {
+    this.route.queryParams.subscribe((params) => {
+      const jobId = params['jobId'];
+      const tab = params['tab'];
+      if (jobId) {
+        this.pendingJobId = jobId;
+      }
+      if (tab !== undefined) {
+        this.pendingTabIndex = parseInt(tab, 10);
+      }
+    });
+
     this.runningJobsSub = timer(0, 30000).pipe(
       switchMap(() => this.api.getRunningJobs())
     ).subscribe({
@@ -129,7 +144,19 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
           this.selectedRunningJob = null;
           this.panelRunTeamStatus = null;
         }
-        if (this.runningJobs.length > 0 && !this.selectedRunningJob) {
+
+        if (this.pendingJobId) {
+          const job = this.runningJobs.find(j => j.job_id === this.pendingJobId);
+          if (job) {
+            this.selectRunningJob(job);
+            this.pendingJobId = null;
+            this.pendingTabIndex = null;
+          } else {
+            this.selectJobById(this.pendingJobId, this.pendingTabIndex);
+            this.pendingJobId = null;
+            this.pendingTabIndex = null;
+          }
+        } else if (this.runningJobs.length > 0 && !this.selectedRunningJob) {
           this.selectRunningJob(this.runningJobs[0]);
         }
       },
@@ -166,6 +193,33 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
         break;
       case 'planning_v2':
         this.planningV2JobId = job.job_id;
+        break;
+    }
+  }
+
+  selectJobById(jobId: string, tabIndex?: number | null): void {
+    if (tabIndex !== undefined && tabIndex !== null) {
+      this.selectedTabIndex = tabIndex;
+    }
+
+    switch (tabIndex) {
+      case 0:
+        this.jobId = jobId;
+        break;
+      case 1:
+        this.productAnalysisJobId = jobId;
+        break;
+      case 4:
+        this.backendCodeV2JobId = jobId;
+        break;
+      case 5:
+        this.frontendCodeV2JobId = jobId;
+        break;
+      case 6:
+        this.planningV2JobId = jobId;
+        break;
+      default:
+        this.jobId = jobId;
         break;
     }
   }

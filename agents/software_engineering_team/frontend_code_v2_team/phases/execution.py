@@ -76,7 +76,9 @@ def _run_general_microtask(
     )
     raw = llm.complete_text(prompt)
     data = parse_files_and_summary_template(raw)
-    return data.get("files") or {}
+    files = data.get("files") or {}
+
+    return files
 
 
 def run_execution(
@@ -282,7 +284,7 @@ def run_execution_with_review_gates(
 
         mt.status = MicrotaskStatus.IN_REVIEW
         current_phase = "review"
-        logger.info("[%s] Microtask %s: starting review", task_id, mt.id)
+        logger.info("[%s] Microtask %s: Next step -> Running review phase (build, lint, code review)", task_id, mt.id)
 
         if progress_callback:
             progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "review", "Starting review...")
@@ -305,8 +307,10 @@ def run_execution_with_review_gates(
         retry_count = 0
         while not review_result.passed and retry_count < config.max_retries:
             retry_count += 1
-            logger.info("[%s] Microtask %s: review failed, problem-solving attempt %d/%d",
-                        task_id, mt.id, retry_count, config.max_retries)
+            logger.info(
+                "[%s] Microtask %s: review failed. Next step -> Problem-solving attempt %d/%d",
+                task_id, mt.id, retry_count, config.max_retries,
+            )
 
             current_phase = "problem_solving"
             if progress_callback:
@@ -350,7 +354,7 @@ def run_execution_with_review_gates(
 
         if review_result.passed:
             mt.status = MicrotaskStatus.IN_DOCUMENTATION
-            logger.info("[%s] Microtask %s: starting documentation update", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Next step -> Running documentation update", task_id, mt.id)
             
             doc_agent = deps.tool_agents.get(ToolAgentKind.DOCUMENTATION) if deps.tool_agents else None
             if doc_agent and hasattr(doc_agent, "document_microtask"):
@@ -377,7 +381,11 @@ def run_execution_with_review_gates(
             mt.status = MicrotaskStatus.REVIEW_FAILED
             review_failed_ids.add(mt.id)
             mt.notes = f"Review failed after {config.max_retries} retries: {review_result.summary}"
-            logger.warning("[%s] Microtask %s: REVIEW_FAILED after %d retries", task_id, mt.id, config.max_retries)
+            logger.warning(
+                "[%s] Microtask %s: REVIEW_FAILED. Recovery summary: "
+                "1) Initial review failed, 2) Attempted %d problem-solving iterations. Final issues: %s",
+                task_id, mt.id, config.max_retries, review_result.summary[:200],
+            )
 
             if config.on_failure == "stop":
                 raise MicrotaskReviewFailedError(mt, review_result)

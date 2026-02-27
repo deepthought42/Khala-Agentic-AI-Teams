@@ -98,7 +98,10 @@ def run_problem_solving(
 
     for issue_idx, issue in enumerate(actionable):
         desc_short = (issue.description or "")[:80]
-        logger.info("[%s] Problem-solving: issue %d/%d — %s", task_id, issue_idx + 1, len(actionable), desc_short)
+        logger.info(
+            "[%s] Problem-solving: issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
         working = dict(merged)
         resolved_this = False
         for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
@@ -123,6 +126,7 @@ def run_problem_solving(
                 if parsed.get("resolved"):
                     resolved_this = True
                 break
+
             working.update(fixed_files)
             merged.update(fixed_files)
             fixes_applied.append({
@@ -135,7 +139,11 @@ def run_problem_solving(
                 break
         if not resolved_this:
             unresolved_issues.append(issue)
-            logger.warning("[%s] Issue unresolved after %d attempts: %s", task_id, MAX_ITERATIONS_PER_ISSUE, desc_short)
+            logger.warning(
+                "[%s] Issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -218,7 +226,10 @@ def run_problem_solving_for_microtask(
         desc_short = (issue.description or "")[:80]
         if detail_callback:
             detail_callback(f"Fixing issue {issue_idx + 1}/{len(actionable)}: {desc_short[:50]}...")
-        logger.info("[%s] Microtask %s: fixing issue %d/%d — %s", task_id, microtask_id, issue_idx + 1, len(actionable), desc_short)
+        logger.info(
+            "[%s] Microtask %s: fixing issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, microtask_id, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
         working = dict(merged)
         resolved_this = False
 
@@ -261,7 +272,11 @@ def run_problem_solving_for_microtask(
 
         if not resolved_this:
             unresolved_issues.append(issue)
-            logger.warning("[%s] Microtask %s: issue unresolved after %d attempts: %s", task_id, microtask_id, MAX_ITERATIONS_PER_ISSUE, desc_short)
+            logger.warning(
+                "[%s] Microtask %s: issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, microtask_id, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -341,7 +356,10 @@ def _run_phase_fixes(
         desc_short = (issue.description or "")[:80]
         if detail_callback:
             detail_callback(f"Fixing {phase_name} issue {issue_idx + 1}/{len(actionable)}: {desc_short[:50]}...")
-        logger.info("[%s] Microtask %s: fixing %s issue %d/%d — %s", task_id, microtask_id, phase_name, issue_idx + 1, len(actionable), desc_short)
+        logger.info(
+            "[%s] Microtask %s: fixing %s issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, microtask_id, phase_name, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
         working = dict(merged)
         resolved_this = False
 
@@ -385,8 +403,11 @@ def _run_phase_fixes(
 
         if not resolved_this:
             unresolved_issues.append(issue)
-            logger.warning("[%s] Microtask %s: %s issue unresolved after %d attempts: %s", 
-                           task_id, microtask_id, phase_name, MAX_ITERATIONS_PER_ISSUE, desc_short)
+            logger.warning(
+                "[%s] Microtask %s: %s issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, microtask_id, phase_name, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
 
     resolved = len(unresolved_issues) == 0
     summary = f"Microtask {microtask_id} {phase_name}: applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."

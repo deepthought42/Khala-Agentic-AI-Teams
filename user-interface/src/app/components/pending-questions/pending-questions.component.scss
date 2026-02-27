@@ -227,8 +227,28 @@
     gap: 0.5rem;
   }
 
+  .multi-select-hint {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background-color: var(--mat-sys-surface-container-high);
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    color: var(--mat-sys-on-surface-variant);
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      color: var(--mat-sys-primary);
+    }
+  }
+
   .option-wrapper {
-    .option-button {
+    .option-button,
+    .option-checkbox {
       margin-bottom: 0;
     }
 
@@ -252,7 +272,8 @@
     }
   }
 
-  .option-button {
+  .option-button,
+  .option-checkbox {
     margin-bottom: 4px;
   }
 

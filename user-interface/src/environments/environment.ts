@@ -1,21 +1,21 @@
 /**
  * Development environment configuration.
- * API base URLs for each agent service (default ports per agents/README.md).
+ * All APIs are served through the unified gateway at port 8080.
  */
 export const environment = {
   production: false,
-  /** Blogging API (research-and-review, full-pipeline) - default port 8000 */
-  bloggingApiUrl: 'http://localhost:8000',
-  /** Software Engineering Team API - default port 8000 */
-  softwareEngineeringApiUrl: 'http://localhost:8000',
-  /** Market Research Team API - default port 8011 */
-  marketResearchApiUrl: 'http://localhost:8011',
-  /** SOC2 Compliance Team API - default port 8020 */
-  soc2ComplianceApiUrl: 'http://localhost:8020',
-  /** Social Media Marketing Team API - default port 8010 */
-  socialMarketingApiUrl: 'http://localhost:8010',
-  /** Branding Team API - default port 8012 */
-  brandingApiUrl: 'http://localhost:8012',
-  /** Personal Assistant Team API - default port 8015 */
-  personalAssistantApiUrl: 'http://localhost:8015',
+  /** Blogging API (research-and-review, full-pipeline) */
+  bloggingApiUrl: 'http://localhost:8080/api/blogging',
+  /** Software Engineering Team API */
+  softwareEngineeringApiUrl: 'http://localhost:8080/api/software-engineering',
+  /** Market Research Team API */
+  marketResearchApiUrl: 'http://localhost:8080/api/market-research',
+  /** SOC2 Compliance Team API */
+  soc2ComplianceApiUrl: 'http://localhost:8080/api/soc2-compliance',
+  /** Social Media Marketing Team API */
+  socialMarketingApiUrl: 'http://localhost:8080/api/social-marketing',
+  /** Branding Team API */
+  brandingApiUrl: 'http://localhost:8080/api/branding',
+  /** Personal Assistant Team API */
+  personalAssistantApiUrl: 'http://localhost:8080/api/personal-assistant',
 };

@@ -8,10 +8,20 @@ SPEC_REVIEW_PROMPT = """You are a Product Requirements Analysis expert. Review t
 
 Your goal is to ensure the specification is complete and unambiguous before it moves to the planning phase.
 
+NOTE: The specification may include additional context files (documentation, config files, code samples, etc.) that were provided alongside the main spec. Review ALL provided content to understand the full picture before identifying gaps.
+
 Analyze the spec for:
 1. **Issues** - Problems, inconsistencies, or conflicts in the specification
 2. **Gaps** - Missing requirements, undefined behaviors, or incomplete features
 3. **Open Questions** - Items that need clarification from the product owner
+4. **Infrastructure & Deployment** - If not explicitly specified, you MUST ask about:
+   - Deployment target/hosting platform (where will this run?)
+   - Environment requirements (dev, staging, production)
+   - SLA requirements (uptime targets, recovery time objective, recovery point objective)
+   - Budget constraints for hosting/infrastructure
+   - CI/CD preferences (GitHub Actions, GitLab CI, etc.)
+
+IMPORTANT: Do NOT assume any deployment target or cloud provider. If the spec does not explicitly state where the application should be deployed, this is a HIGH PRIORITY gap that MUST be surfaced as an open question.
 
 For each open question, provide 2-3 answer options based on industry best practices. For each option, include:
 - A clear label describing the choice
@@ -19,7 +29,9 @@ For each open question, provide 2-3 answer options based on industry best practi
 - A confidence score (0.0-1.0) based on how likely this is the best choice
 - Mark exactly one option as the recommended default (highest confidence)
 
-Categorize questions as: architecture, security, ux, performance, business, integration, or general.
+For questions where multiple options can be selected together (e.g., "Which features should be included?", "Which authentication methods should be supported?"), set "allow_multiple": true.
+
+Categorize questions as: architecture, security, ux, performance, business, integration, infrastructure, or general.
 Prioritize questions as: high (blocking), medium (important), or low (nice to clarify).
 
 Respond with a JSON object only, no markdown:
@@ -28,11 +40,43 @@ Respond with a JSON object only, no markdown:
   "gaps": ["gap 1", "gap 2"],
   "open_questions": [
     {{
-      "id": "q1",
-      "question_text": "What authentication method should be used?",
-      "context": "The spec mentions user login but doesn't specify the authentication approach.",
+      "id": "q_deploy",
+      "question_text": "Where should this application be deployed/hosted?",
+      "context": "The spec does not specify a deployment target. This decision impacts cost, complexity, and operational requirements.",
+      "category": "infrastructure",
+      "priority": "high",
+      "allow_multiple": false,
+      "options": [
+        {{
+          "id": "opt1",
+          "label": "Heroku or Railway (managed PaaS)",
+          "is_default": true,
+          "rationale": "Simple deployment, low operational overhead, cost-effective for small-to-medium apps, easy to scale later",
+          "confidence": 0.8
+        }},
+        {{
+          "id": "opt2",
+          "label": "DigitalOcean App Platform or Render",
+          "is_default": false,
+          "rationale": "Modern PaaS with good pricing, more control than Heroku, suitable for growing applications",
+          "confidence": 0.7
+        }},
+        {{
+          "id": "opt3",
+          "label": "AWS, GCP, or Azure (cloud infrastructure)",
+          "is_default": false,
+          "rationale": "Maximum flexibility and scale, but higher complexity and cost - recommended only for enterprise requirements or specific compliance needs",
+          "confidence": 0.4
+        }}
+      ]
+    }},
+    {{
+      "id": "q_auth",
+      "question_text": "Which authentication methods should be supported?",
+      "context": "The spec mentions user login but doesn't specify the authentication approach. Multiple methods can be supported.",
       "category": "security",
       "priority": "high",
+      "allow_multiple": true,
       "options": [
         {{
           "id": "opt1",
@@ -173,7 +217,7 @@ Respond with JSON only:
   "id": "q_unique_id",
   "question_text": "Clear question to resolve the gap",
   "context": "Why this question matters and what impact the answer will have",
-  "category": "architecture|security|ux|performance|business|integration|general",
+  "category": "architecture|security|ux|performance|business|integration|infrastructure|general",
   "priority": "high|medium|low",
   "options": [
     {{
@@ -244,7 +288,7 @@ Keep your response under 2000 tokens.
       "id": "q1",
       "question_text": "Question about this section",
       "context": "Why this matters",
-      "category": "architecture|security|ux|performance|business|integration|general",
+      "category": "architecture|security|ux|performance|business|integration|infrastructure|general",
       "priority": "high|medium|low",
       "options": [
         {{

@@ -34,7 +34,6 @@ export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
   error: string | null = null;
 
   readonly phases = [
-    'spec_review_gap',
     'planning',
     'implementation',
     'review',
@@ -109,7 +108,6 @@ export class PlanningV2JobStatusComponent implements OnInit, OnDestroy {
 
   phaseLabel(phase: string): string {
     const labels: Record<string, string> = {
-      spec_review_gap: 'Spec Review & Gap',
       planning: 'Planning',
       implementation: 'Implementation',
       review: 'Review',
