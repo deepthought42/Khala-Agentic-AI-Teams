@@ -16,4 +16,6 @@ export const environment = {
   socialMarketingApiUrl: 'http://localhost:8010',
   /** Branding Team API - default port 8012 */
   brandingApiUrl: 'http://localhost:8012',
+  /** Personal Assistant Team API - default port 8015 */
+  personalAssistantApiUrl: 'http://localhost:8015',
 };

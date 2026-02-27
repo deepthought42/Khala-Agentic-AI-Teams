@@ -26,7 +26,9 @@ from .models import (
     SpecReviewResult,
 )
 from .prompts import (
+    SPEC_CLEANUP_CHUNK_PROMPT,
     SPEC_CLEANUP_PROMPT,
+    SPEC_REVIEW_CHUNK_PROMPT,
     SPEC_REVIEW_PROMPT,
     SPEC_UPDATE_PROMPT,
 )
@@ -39,6 +41,7 @@ logger = logging.getLogger(__name__)
 OPEN_QUESTIONS_POLL_INTERVAL = 5.0
 MAX_ITERATIONS = 5
 JSON_RECOVERY_MAX_RETRIES = 2
+MAX_DECOMPOSITION_DEPTH = 10
 
 
 class ProductRequirementsAnalysisAgent:
@@ -111,7 +114,9 @@ class ProductRequirementsAnalysisAgent:
 
             try:
                 _update_job(status_text="Performing gap analysis on the specification")
-                spec_review_result = self._run_spec_review(current_spec, repo_path)
+                spec_review_result, current_spec = self._run_spec_review(
+                    current_spec, repo_path, iteration
+                )
                 result.spec_review_result = spec_review_result
                 if spec_review_result.open_questions:
                     _update_job(
@@ -238,17 +243,34 @@ class ProductRequirementsAnalysisAgent:
         prompt: str,
         phase_name: str = "LLM",
         max_retries: int = JSON_RECOVERY_MAX_RETRIES,
+        decompose_fn: Optional[Callable[[str], List[str]]] = None,
+        merge_fn: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]] = None,
+        original_content: Optional[str] = None,
+        chunk_prompt_template: Optional[str] = None,
+        _depth: int = 0,
     ) -> Dict[str, Any]:
         """Parse LLM JSON response with multi-stage recovery.
 
         Recovery stages:
         1. llm.complete_json() - uses LLMClient's built-in continuation retry
         2. Regex extraction - find {...} in raw response (handles truncation)
-        3. Retry with simplified prompt (if max_retries > 0)
+        3. Explicit continuation request - ask LLM to complete truncated JSON
+        4. Decompose into chunks and merge results (recursive)
+
+        Args:
+            prompt: The prompt to send to the LLM
+            phase_name: Name for logging purposes
+            max_retries: Number of retry attempts for the same prompt
+            decompose_fn: Optional function to split content into chunks
+            merge_fn: Optional function to merge results from chunks
+            original_content: The original content being processed (for decomposition)
+            chunk_prompt_template: Template for chunk prompts (must have {chunk_content})
+            _depth: Internal recursion depth tracker
 
         Returns empty dict only if all recovery attempts fail.
         """
         last_error: Optional[Exception] = None
+        partial_response = ""
 
         for attempt in range(max_retries + 1):
             try:
@@ -263,19 +285,112 @@ class ProductRequirementsAnalysisAgent:
                     str(e)[:200],
                 )
 
-                # Try regex extraction from the error message or raw response
-                raw_preview = getattr(e, "response_preview", "") or str(e)
-                extracted = self._extract_json_fallback(raw_preview)
+                # Extract partial response for continuation attempts
+                partial_response = getattr(e, "response_preview", "") or str(e)
+
+                # Stage 2: Try regex extraction from partial response
+                extracted = self._extract_json_fallback(partial_response)
                 if extracted:
                     logger.info(
                         "PRA %s: Recovered JSON via regex extraction", phase_name
                     )
                     return extracted
 
+        # Stage 3: Try explicit continuation request
+        if partial_response:
+            logger.info(
+                "PRA %s: Attempting LLM continuation for truncated response", phase_name
+            )
+            continuation = self._request_continuation(partial_response)
+            if continuation:
+                # Merge partial and continuation
+                json_start = partial_response.find("{")
+                if json_start != -1:
+                    partial_json = partial_response[json_start:]
+                    merged = partial_json.rstrip() + "\n" + continuation.lstrip()
+                    extracted = self._extract_json_fallback(merged)
+                    if extracted:
+                        logger.info(
+                            "PRA %s: Recovered JSON via continuation", phase_name
+                        )
+                        return extracted
+
+        # Stage 4: Decompose into chunks if possible
+        if (
+            decompose_fn is not None
+            and merge_fn is not None
+            and original_content
+            and _depth < MAX_DECOMPOSITION_DEPTH
+        ):
+            logger.info(
+                "PRA %s: Decomposing content into chunks (depth %d)",
+                phase_name,
+                _depth + 1,
+            )
+            chunks = decompose_fn(original_content)
+
+            if len(chunks) > 1:
+                results: List[Dict[str, Any]] = []
+                for i, chunk in enumerate(chunks):
+                    logger.debug(
+                        "PRA %s: Processing chunk %d/%d (%d chars)",
+                        phase_name,
+                        i + 1,
+                        len(chunks),
+                        len(chunk),
+                    )
+
+                    # Use chunk prompt template if provided
+                    if chunk_prompt_template:
+                        chunk_prompt = chunk_prompt_template.format(chunk_content=chunk)
+                    else:
+                        chunk_prompt = self._create_generic_chunk_prompt(prompt, chunk)
+
+                    # Recursively process each chunk
+                    chunk_result = self._parse_json_with_recovery(
+                        prompt=chunk_prompt,
+                        phase_name=f"{phase_name}_chunk{i + 1}",
+                        max_retries=max_retries,
+                        decompose_fn=decompose_fn,
+                        merge_fn=merge_fn,
+                        original_content=chunk,
+                        chunk_prompt_template=chunk_prompt_template,
+                        _depth=_depth + 1,
+                    )
+                    if chunk_result:
+                        results.append(chunk_result)
+
+                if results:
+                    merged_result = merge_fn(results)
+                    logger.info(
+                        "PRA %s: Merged %d chunk results successfully",
+                        phase_name,
+                        len(results),
+                    )
+                    return merged_result
+
         logger.error(
             "PRA %s: All JSON recovery attempts failed: %s", phase_name, last_error
         )
         return {}
+
+    def _create_generic_chunk_prompt(self, original_prompt: str, chunk: str) -> str:
+        """Create a generic chunk prompt based on the original prompt."""
+        # Extract the JSON schema hint from the original prompt if present
+        schema_match = re.search(r"(\{[^}]*\"[^\"]+\"[^}]*\})", original_prompt)
+        schema_hint = schema_match.group(1) if schema_match else ""
+
+        return f"""Process this portion of the content and return JSON with the same structure.
+
+CONTENT CHUNK:
+---
+{chunk}
+---
+
+{f"Expected JSON structure: {schema_hint}" if schema_hint else "Return JSON with the relevant fields found in this chunk."}
+
+Keep your response concise. Only include findings from THIS chunk.
+"""
 
     def _extract_json_fallback(self, raw: str) -> Dict[str, Any]:
         """Extract JSON object from raw text using regex."""
@@ -320,12 +435,147 @@ class ProductRequirementsAnalysisAgent:
                     return candidate
         return ""
 
+    def _request_continuation(self, partial_response: str) -> str:
+        """Request LLM to continue from a truncated JSON response.
+
+        Args:
+            partial_response: The partial/truncated JSON from the previous attempt
+
+        Returns:
+            The continuation text from the LLM
+        """
+        json_start = partial_response.find("{")
+        if json_start == -1:
+            return ""
+
+        partial_json = partial_response[json_start:]
+
+        continuation_prompt = (
+            "The previous JSON response was truncated. Here is what was generated so far:\n\n"
+            f"```json\n{partial_json}\n```\n\n"
+            "Continue from where it stopped. Output ONLY the remainder of the JSON "
+            "so that when appended to the previous output it completes the object. "
+            "Do not repeat any content. No explanation, just the missing JSON."
+        )
+
+        try:
+            return self.llm.complete_text(continuation_prompt)
+        except Exception as e:
+            logger.warning("PRA continuation request failed: %s", e)
+            return ""
+
+    def _decompose_spec_for_review(
+        self, spec_content: str, chunk_size: int = 4000
+    ) -> List[str]:
+        """Split spec into reviewable sections by markdown headers or fixed chunks.
+
+        Args:
+            spec_content: The full specification content
+            chunk_size: Maximum size for fixed chunks (fallback)
+
+        Returns:
+            List of spec sections/chunks
+        """
+        # Try splitting by ## headers first
+        sections = re.split(r"\n(?=## )", spec_content)
+        if len(sections) > 1:
+            return [s.strip() for s in sections if s.strip()]
+
+        # Try splitting by # headers
+        sections = re.split(r"\n(?=# )", spec_content)
+        if len(sections) > 1:
+            return [s.strip() for s in sections if s.strip()]
+
+        # Fall back to fixed-size chunks
+        chunks = []
+        for i in range(0, len(spec_content), chunk_size):
+            chunk = spec_content[i : i + chunk_size]
+            if chunk.strip():
+                chunks.append(chunk)
+        return chunks if chunks else [spec_content]
+
+    def _merge_spec_review_results(
+        self, results: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Combine issues, gaps, and questions from multiple chunk reviews.
+
+        Args:
+            results: List of parsed JSON dicts from chunk reviews
+
+        Returns:
+            Merged dict with concatenated lists
+        """
+        merged: Dict[str, Any] = {
+            "issues": [],
+            "gaps": [],
+            "open_questions": [],
+            "summary": "",
+        }
+
+        summaries = []
+        for r in results:
+            if isinstance(r.get("issues"), list):
+                merged["issues"].extend(r["issues"])
+            if isinstance(r.get("gaps"), list):
+                merged["gaps"].extend(r["gaps"])
+            if isinstance(r.get("open_questions"), list):
+                merged["open_questions"].extend(r["open_questions"])
+            if r.get("summary"):
+                summaries.append(str(r["summary"]))
+
+        merged["summary"] = (
+            f"Reviewed {len(results)} sections. " + " ".join(summaries[:3])
+        )
+        return merged
+
+    def _merge_spec_cleanup_results(
+        self, results: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Combine cleanup results from multiple chunks.
+
+        Args:
+            results: List of parsed JSON dicts from chunk cleanup
+
+        Returns:
+            Merged dict with combined validation issues and cleaned spec
+        """
+        merged: Dict[str, Any] = {
+            "is_valid": True,
+            "validation_issues": [],
+            "cleaned_spec": "",
+            "summary": "",
+        }
+
+        cleaned_parts = []
+        for r in results:
+            if r.get("is_valid") is False:
+                merged["is_valid"] = False
+            if isinstance(r.get("validation_issues"), list):
+                merged["validation_issues"].extend(r["validation_issues"])
+            if r.get("cleaned_spec"):
+                cleaned_parts.append(str(r["cleaned_spec"]))
+
+        merged["cleaned_spec"] = "\n\n".join(cleaned_parts)
+        merged["summary"] = f"Cleanup completed for {len(results)} sections"
+        return merged
+
     def _run_spec_review(
         self,
         spec_content: str,
         repo_path: Path,
-    ) -> SpecReviewResult:
-        """Run the Spec Review phase to identify gaps and questions."""
+        iteration: int = 1,
+    ) -> tuple[SpecReviewResult, str]:
+        """Run the Spec Review phase to identify gaps and questions.
+        
+        Args:
+            spec_content: Current specification content.
+            repo_path: Path to the repository.
+            iteration: Current iteration number for versioning.
+            
+        Returns:
+            Tuple of (SpecReviewResult, updated_spec_content). The spec may be
+            updated if duplicate questions were found and clarified.
+        """
         # Read previously answered questions to avoid asking duplicates
         qa_history = self._read_qa_history(repo_path)
 
@@ -343,29 +593,52 @@ Previously Answered Questions:
         else:
             prompt = SPEC_REVIEW_PROMPT.format(spec_content=spec_content[:12000])
 
-        raw = self._parse_json_with_recovery(prompt, "spec_review")
+        raw = self._parse_json_with_recovery(
+            prompt=prompt,
+            phase_name="spec_review",
+            decompose_fn=self._decompose_spec_for_review,
+            merge_fn=self._merge_spec_review_results,
+            original_content=spec_content,
+            chunk_prompt_template=SPEC_REVIEW_CHUNK_PROMPT,
+        )
 
         if not raw:
             # All recovery failed - return a result indicating retry is needed
             logger.warning(
                 "PRA spec_review: No JSON recovered, will retry in next iteration"
             )
-            return SpecReviewResult(
-                summary="Spec review JSON parsing failed - will retry",
-                issues=["JSON parsing failed - response may have been truncated"],
-                gaps=[],
-                open_questions=[],
+            return (
+                SpecReviewResult(
+                    summary="Spec review JSON parsing failed - will retry",
+                    issues=["JSON parsing failed - response may have been truncated"],
+                    gaps=[],
+                    open_questions=[],
+                ),
+                spec_content,
             )
 
         result = self._parse_spec_review_response(raw)
+        updated_spec = spec_content
 
         # Filter out any questions that are duplicates of previously answered ones
         if qa_history and result.open_questions:
-            result.open_questions = self._filter_duplicate_questions(
+            filtered, duplicates = self._filter_duplicate_questions(
                 result.open_questions, qa_history
             )
+            result.open_questions = filtered
+            
+            # If duplicates found, update spec with their existing answers
+            # This fills gaps that caused questions to be re-asked
+            if duplicates:
+                logger.info(
+                    "Found %d duplicate questions - clarifying spec with existing answers",
+                    len(duplicates),
+                )
+                updated_spec = self._update_spec_from_duplicates(
+                    duplicates, qa_history, spec_content, repo_path, iteration
+                )
 
-        return result
+        return result, updated_spec
 
     def _read_qa_history(self, repo_path: Path) -> str:
         """Read the QA history file if it exists."""
@@ -381,10 +654,17 @@ Previously Answered Questions:
         self,
         new_questions: List[OpenQuestion],
         qa_history: str,
-    ) -> List[OpenQuestion]:
-        """Filter out questions that appear to be duplicates of answered ones."""
+    ) -> tuple[List[OpenQuestion], List[OpenQuestion]]:
+        """Filter out questions that appear to be duplicates of answered ones.
+        
+        Returns:
+            Tuple of (filtered_questions, duplicate_questions).
+            - filtered_questions: Questions that are NOT duplicates (should be asked)
+            - duplicate_questions: Questions that ARE duplicates (already answered)
+        """
         qa_history_lower = qa_history.lower()
         filtered = []
+        duplicates = []
         
         for q in new_questions:
             q_text_lower = q.question_text.lower()
@@ -404,17 +684,102 @@ Previously Answered Questions:
                         match_ratio * 100,
                         q.question_text[:60],
                     )
+                    duplicates.append(q)
                     continue
             
             filtered.append(q)
         
-        if len(filtered) < len(new_questions):
+        if duplicates:
             logger.info(
                 "Filtered %d duplicate questions based on qa_history",
-                len(new_questions) - len(filtered),
+                len(duplicates),
             )
         
-        return filtered
+        return filtered, duplicates
+
+    def _extract_answer_from_qa_history(
+        self,
+        question: OpenQuestion,
+        qa_history: str,
+    ) -> Optional[AnsweredQuestion]:
+        """Extract a previously recorded answer from qa_history.md for a duplicate question.
+        
+        Parses the qa_history.md markdown format to find the best matching Q&A pair.
+        
+        Args:
+            question: The duplicate question to find an answer for.
+            qa_history: Raw content of qa_history.md file.
+            
+        Returns:
+            AnsweredQuestion if a matching answer was found, None otherwise.
+        """
+        import re
+        
+        if not qa_history:
+            return None
+        
+        q_text_lower = question.question_text.lower()
+        key_words = [w for w in q_text_lower.split() if len(w) > 4]
+        
+        if not key_words:
+            return None
+        
+        # Parse qa_history.md sections - format is:
+        # ### Question text
+        # **Answer:** Answer text
+        # **Rationale:** Optional rationale
+        # *(Auto-answered with X% confidence)* or *(Default applied)*
+        
+        # Split into Q&A blocks by "### " headers
+        blocks = re.split(r'\n###\s+', qa_history)
+        
+        best_match: Optional[tuple[float, str, str, str]] = None  # (score, question, answer, rationale)
+        
+        for block in blocks[1:]:  # Skip first block (header)
+            lines = block.strip().split('\n')
+            if not lines:
+                continue
+            
+            recorded_question = lines[0].strip()
+            recorded_question_lower = recorded_question.lower()
+            
+            # Calculate match score
+            matches = sum(1 for w in key_words if w in recorded_question_lower)
+            match_ratio = matches / len(key_words) if key_words else 0
+            
+            if match_ratio > 0.5:  # Good enough match
+                # Extract answer from block
+                answer = ""
+                rationale = ""
+                
+                for line in lines[1:]:
+                    if line.startswith("**Answer:**"):
+                        answer = line.replace("**Answer:**", "").strip()
+                    elif line.startswith("**Rationale:**"):
+                        rationale = line.replace("**Rationale:**", "").strip()
+                
+                if answer and (best_match is None or match_ratio > best_match[0]):
+                    best_match = (match_ratio, recorded_question, answer, rationale)
+        
+        if best_match:
+            _, matched_q, answer, rationale = best_match
+            logger.debug(
+                "Extracted answer for duplicate question: '%s' -> '%s'",
+                question.question_text[:40],
+                answer[:40],
+            )
+            return AnsweredQuestion(
+                question_id=question.id,
+                question_text=question.question_text,
+                selected_option_id="from_history",
+                selected_answer=answer,
+                was_auto_answered=False,
+                was_default=False,
+                rationale=rationale or f"Previously answered (matched: {matched_q[:50]})",
+                confidence=0.9,  # High confidence since it was user-answered before
+            )
+        
+        return None
 
     def _parse_spec_review_response(self, raw: Any) -> SpecReviewResult:
         """Parse LLM response into SpecReviewResult."""
@@ -734,6 +1099,76 @@ Previously Answered Questions:
             lines.append("")
         return "\n".join(lines)
 
+    def _update_spec_from_duplicates(
+        self,
+        duplicate_questions: List[OpenQuestion],
+        qa_history: str,
+        current_spec: str,
+        repo_path: Path,
+        iteration: int,
+    ) -> str:
+        """Update spec using answers from qa_history for duplicate questions.
+        
+        When a question is re-asked but was previously answered, this indicates
+        the spec wasn't updated clearly enough. This method extracts the existing
+        answers and re-applies them with emphasis on clarity.
+        
+        Args:
+            duplicate_questions: Questions that were filtered as duplicates.
+            qa_history: Raw content of qa_history.md file.
+            current_spec: Current specification content.
+            repo_path: Path to the repository.
+            iteration: Current iteration number.
+            
+        Returns:
+            Updated specification content.
+        """
+        from .prompts import SPEC_CLARIFICATION_PROMPT
+        
+        # Extract answers from qa_history for each duplicate
+        extracted_answers: List[AnsweredQuestion] = []
+        for q in duplicate_questions:
+            answer = self._extract_answer_from_qa_history(q, qa_history)
+            if answer:
+                extracted_answers.append(answer)
+        
+        if not extracted_answers:
+            logger.debug("No answers extracted from qa_history for duplicates")
+            return current_spec
+        
+        logger.info(
+            "Clarifying spec with %d previously answered questions that were re-asked",
+            len(extracted_answers),
+        )
+        
+        # Format the Q&A pairs for the clarification prompt
+        qa_pairs = self._format_answered_questions(extracted_answers)
+        
+        prompt = SPEC_CLARIFICATION_PROMPT.format(
+            spec_content=current_spec,
+            duplicate_qa_pairs=qa_pairs,
+        )
+        
+        try:
+            clarified_spec = self.llm.complete_text(prompt)
+        except Exception as e:
+            logger.error("Failed to clarify spec with LLM: %s", e)
+            return current_spec
+        
+        # Save the clarified spec
+        plan_dir = repo_path / "plan"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        
+        clarification_file = plan_dir / f"spec_clarification_v{iteration}.md"
+        clarification_file.write_text(clarified_spec, encoding="utf-8")
+        logger.info("Saved clarified spec to %s", clarification_file)
+        
+        # Also update the latest spec
+        latest_file = plan_dir / "updated_spec.md"
+        latest_file.write_text(clarified_spec, encoding="utf-8")
+        
+        return clarified_spec
+
     def _record_answers(
         self,
         repo_path: Path,
@@ -781,7 +1216,14 @@ Previously Answered Questions:
         """Run the Spec Cleanup phase to validate and clean the spec."""
         prompt = SPEC_CLEANUP_PROMPT.format(spec_content=spec_content)
 
-        raw = self._parse_json_with_recovery(prompt, "spec_cleanup")
+        raw = self._parse_json_with_recovery(
+            prompt=prompt,
+            phase_name="spec_cleanup",
+            decompose_fn=self._decompose_spec_for_review,
+            merge_fn=self._merge_spec_cleanup_results,
+            original_content=spec_content,
+            chunk_prompt_template=SPEC_CLEANUP_CHUNK_PROMPT,
+        )
 
         if not raw:
             # All recovery failed - return the original spec as valid

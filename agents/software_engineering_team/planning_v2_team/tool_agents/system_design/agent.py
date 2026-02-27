@@ -8,15 +8,47 @@ Focuses on component layout, system boundaries, and integration points.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_system_design_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge system design results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "component_design": [],
+        "data_flow": "",
+        "integration_strategy": "",
+        "recommendations": [],
+        "summary": "",
+    }
+    data_flows = []
+    integration_strategies = []
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("component_design"), list):
+            merged["component_design"].extend(r["component_design"])
+        if r.get("data_flow"):
+            data_flows.append(str(r["data_flow"]))
+        if r.get("integration_strategy"):
+            integration_strategies.append(str(r["integration_strategy"]))
+        if isinstance(r.get("recommendations"), list):
+            merged["recommendations"].extend(r["recommendations"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["data_flow"] = " ".join(data_flows)
+    merged["integration_strategy"] = " ".join(integration_strategies)
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 SYSTEM_DESIGN_SPEC_REVIEW_PROMPT = """You are a System Design expert. Review this specification and identify:
 1. Component boundaries and responsibilities
@@ -74,7 +106,22 @@ Respond with JSON:
 }}
 """
 
+SYSTEM_DESIGN_PLANNING_CHUNK_PROMPT = """You are a System Design expert. Analyze this SECTION of a specification for system design:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Respond with concise JSON for THIS section only:
+{{
+  "component_design": [{{"name": "component_name", "responsibility": "what it does", "dependencies": ["dep1"]}}],
+  "data_flow": "data flow in this section",
+  "integration_strategy": "integration points",
+  "recommendations": ["design recommendations"],
+  "summary": "brief summary"
+}}
+"""
 
 
 class SystemDesignToolAgent:
@@ -99,11 +146,20 @@ class SystemDesignToolAgent:
         if inp.spec_review_result:
             prior_analysis = getattr(inp.spec_review_result, "plan_summary", "") or ""
 
+        spec_content = inp.spec_content or ""
         prompt = SYSTEM_DESIGN_PLANNING_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:8000],
+            spec_content=spec_content[:8000],
             prior_analysis=prior_analysis[:2000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="SystemDesign")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="SystemDesign",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_system_design_results,
+            original_content=spec_content,
+            chunk_prompt_template=SYSTEM_DESIGN_PLANNING_CHUNK_PROMPT,
+        )
         
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):

@@ -11,12 +11,42 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_ux_design_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge UX design results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "personas": [],
+        "user_journeys": [],
+        "user_flows": [],
+        "interaction_patterns": [],
+        "usability": [],
+        "summary": "",
+    }
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("personas"), list):
+            merged["personas"].extend(r["personas"])
+        if isinstance(r.get("user_journeys"), list):
+            merged["user_journeys"].extend(r["user_journeys"])
+        if isinstance(r.get("user_flows"), list):
+            merged["user_flows"].extend(r["user_flows"])
+        if isinstance(r.get("interaction_patterns"), list):
+            merged["interaction_patterns"].extend(r["interaction_patterns"])
+        if isinstance(r.get("usability"), list):
+            merged["usability"].extend(r["usability"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 UX_DESIGN_IMPLEMENTATION_PROMPT = """You are a UX Design expert. Create UX artifacts for:
 
@@ -43,7 +73,23 @@ Respond with JSON:
 }}
 """
 
+UX_DESIGN_IMPLEMENTATION_CHUNK_PROMPT = """You are a UX Design expert. Analyze this SECTION for UX:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Respond with concise JSON for THIS section only:
+{{
+  "personas": [{{"name": "User type", "goals": ["goal"], "pain_points": ["pain"]}}],
+  "user_journeys": [{{"name": "Journey", "stages": ["stage"]}}],
+  "user_flows": [{{"name": "Flow", "steps": ["step"]}}],
+  "interaction_patterns": ["patterns"],
+  "usability": ["considerations"],
+  "summary": "brief summary"
+}}
+"""
 
 
 class UXDesignToolAgent:
@@ -68,10 +114,19 @@ class UXDesignToolAgent:
                 recommendations=["Define user personas", "Map user journeys"],
             )
         
+        spec_content = inp.spec_content or ""
         prompt = UX_DESIGN_IMPLEMENTATION_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:6000],
+            spec_content=spec_content[:6000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="UXDesign")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="UXDesign",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_ux_design_results,
+            original_content=spec_content,
+            chunk_prompt_template=UX_DESIGN_IMPLEMENTATION_CHUNK_PROMPT,
+        )
         
         personas = data.get("personas") or []
         user_journeys = data.get("user_journeys") or []

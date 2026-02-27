@@ -11,12 +11,49 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_devops_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge devops results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "pipeline_stages": [],
+        "infrastructure": {},
+        "deployment_strategy": "",
+        "monitoring": [],
+        "security": [],
+        "recommendations": [],
+        "summary": "",
+    }
+    strategies = []
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("pipeline_stages"), list):
+            for stage in r["pipeline_stages"]:
+                if stage not in merged["pipeline_stages"]:
+                    merged["pipeline_stages"].append(stage)
+        if isinstance(r.get("infrastructure"), dict):
+            merged["infrastructure"].update(r["infrastructure"])
+        if r.get("deployment_strategy"):
+            strategies.append(str(r["deployment_strategy"]))
+        if isinstance(r.get("monitoring"), list):
+            merged["monitoring"].extend(r["monitoring"])
+        if isinstance(r.get("security"), list):
+            merged["security"].extend(r["security"])
+        if isinstance(r.get("recommendations"), list):
+            merged["recommendations"].extend(r["recommendations"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["deployment_strategy"] = strategies[0] if strategies else ""
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 DEVOPS_PLANNING_PROMPT = """You are a DevOps expert. Create a DevOps plan for:
 
@@ -46,7 +83,24 @@ Respond with JSON:
 }}
 """
 
+DEVOPS_PLANNING_CHUNK_PROMPT = """You are a DevOps expert. Analyze this SECTION of a specification for DevOps:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Respond with concise JSON for THIS section only:
+{{
+  "pipeline_stages": ["relevant stages"],
+  "infrastructure": {{"relevant": "requirements"}},
+  "deployment_strategy": "strategy if applicable",
+  "monitoring": ["monitoring needs"],
+  "security": ["security considerations"],
+  "recommendations": ["devops recommendations"],
+  "summary": "brief summary"
+}}
+"""
 
 
 class DevOpsToolAgent:
@@ -71,11 +125,20 @@ class DevOpsToolAgent:
         if inp.spec_review_result:
             plan_summary = getattr(inp.spec_review_result, "plan_summary", "") or ""
 
+        spec_content = inp.spec_content or ""
         prompt = DEVOPS_PLANNING_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:6000],
+            spec_content=spec_content[:6000],
             plan_summary=plan_summary[:2000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="DevOps")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="DevOps",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_devops_results,
+            original_content=spec_content,
+            chunk_prompt_template=DEVOPS_PLANNING_CHUNK_PROMPT,
+        )
         
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):

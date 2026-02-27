@@ -13,12 +13,30 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_user_story_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge user story results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "initiatives": [],
+        "summary": "",
+    }
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("initiatives"), list):
+            merged["initiatives"].extend(r["initiatives"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 USER_STORY_PLANNING_PROMPT = """You are a Product Planning expert specializing in user story creation and prioritization.
 
@@ -101,7 +119,49 @@ Respond with JSON:
 }}
 """
 
+USER_STORY_PLANNING_CHUNK_PROMPT = """You are a Product Planning expert. Analyze this SECTION of a specification for user stories:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Create user stories and tasks for THIS section only. Respond with concise JSON:
+{{
+  "initiatives": [
+    {{
+      "id": "INIT-1",
+      "title": "Initiative for this section",
+      "description": "What this achieves",
+      "epics": [
+        {{
+          "id": "EPIC-1",
+          "title": "Epic title",
+          "description": "Feature description",
+          "acceptance_criteria": ["criterion"],
+          "stories": [
+            {{
+              "id": "STORY-1",
+              "title": "Story title",
+              "description": "As a user, I want...",
+              "acceptance_criteria": ["Given/When/Then"],
+              "tasks": [
+                {{
+                  "id": "TASK-1",
+                  "title": "Task title",
+                  "description": "Task details",
+                  "assigned_team": "frontend|backend|devops|qa"
+                }}
+              ]
+            }}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "summary": "Brief summary"
+}}
+"""
 
 
 def _build_hierarchy_from_data(data: Dict[str, Any]) -> Optional[PlanningHierarchy]:
@@ -251,11 +311,20 @@ class UserStoryToolAgent:
         if inp.spec_review_result:
             plan_summary = getattr(inp.spec_review_result, "plan_summary", "") or ""
 
+        spec_content = inp.spec_content or ""
         prompt = USER_STORY_PLANNING_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:10000],
+            spec_content=spec_content[:10000],
             plan_summary=plan_summary[:3000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="UserStory")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="UserStory",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_user_story_results,
+            original_content=spec_content,
+            chunk_prompt_template=USER_STORY_PLANNING_CHUNK_PROMPT,
+        )
         
         hierarchy = _build_hierarchy_from_data(data)
         

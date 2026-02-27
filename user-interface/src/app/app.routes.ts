@@ -7,6 +7,7 @@ import { SocialMarketingDashboardComponent } from './components/social-marketing
 import { BrandingDashboardComponent } from './components/branding-dashboard/branding-dashboard.component';
 import { SoftwareEngineeringDashboardComponent } from './components/software-engineering-dashboard/software-engineering-dashboard.component';
 import { PlanningV2PageComponent } from './components/planning-v2-page/planning-v2-page.component';
+import { PersonalAssistantDashboardComponent } from './components/personal-assistant-dashboard/personal-assistant-dashboard.component';
 
 export const routes: Routes = [
   {
@@ -21,6 +22,7 @@ export const routes: Routes = [
       { path: 'soc2-compliance', component: Soc2ComplianceDashboardComponent },
       { path: 'social-marketing', component: SocialMarketingDashboardComponent },
       { path: 'branding', component: BrandingDashboardComponent },
+      { path: 'personal-assistant', component: PersonalAssistantDashboardComponent },
     ],
   },
   { path: '**', redirectTo: '/blogging' },

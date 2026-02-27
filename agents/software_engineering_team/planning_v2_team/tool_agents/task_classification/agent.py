@@ -7,6 +7,7 @@ Classifies tasks into the right execution teams (frontend, backend, devops, qa).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -19,6 +20,52 @@ if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _decompose_tasks_into_batches(
+    tasks_json: str, batch_size: int = 10
+) -> List[str]:
+    """Decompose task list into smaller batches."""
+    try:
+        tasks = json.loads(tasks_json)
+        if not isinstance(tasks, list):
+            return [tasks_json]
+    except json.JSONDecodeError:
+        return [tasks_json]
+
+    if len(tasks) <= batch_size:
+        return [tasks_json]
+
+    batches = []
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i : i + batch_size]
+        batches.append(json.dumps(batch, indent=2))
+    return batches
+
+
+def _merge_task_classification_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge task classification results from multiple batches."""
+    merged: Dict[str, Any] = {
+        "classifications": [],
+        "team_summary": {"frontend": 0, "backend": 0, "devops": 0, "qa": 0},
+        "summary": "",
+    }
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("classifications"), list):
+            merged["classifications"].extend(r["classifications"])
+        if isinstance(r.get("team_summary"), dict):
+            for team, count in r["team_summary"].items():
+                if team in merged["team_summary"] and isinstance(count, (int, float)):
+                    merged["team_summary"][team] += int(count)
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["summary"] = (
+        f"Classified {len(merged['classifications'])} tasks. " + " ".join(summaries[:2])
+    )
+    return merged
 
 TASK_CLASSIFICATION_PROMPT = """You are a Task Classification expert. Classify these tasks into execution teams.
 
@@ -48,7 +95,24 @@ Respond with JSON:
 }}
 """
 
+TASK_CLASSIFICATION_CHUNK_PROMPT = """You are a Task Classification expert. Classify these tasks into teams:
 
+TASKS:
+---
+{chunk_content}
+---
+
+Teams: frontend, backend, devops, qa
+
+Respond with concise JSON:
+{{
+  "classifications": [
+    {{"task_id": "TASK-1", "team": "frontend|backend|devops|qa", "reason": "brief reason"}}
+  ],
+  "team_summary": {{"frontend": 0, "backend": 0, "devops": 0, "qa": 0}},
+  "summary": "brief summary"
+}}
+"""
 
 
 def _extract_tasks_from_hierarchy(hierarchy: Optional[PlanningHierarchy]) -> List[Dict[str, str]]:
@@ -102,9 +166,18 @@ class TaskClassificationToolAgent:
             f"- {t['id']}: {t['title']} - {t['description'][:100]}"
             for t in tasks[:50]
         )
+        tasks_json = json.dumps([{"id": t["id"], "title": t["title"], "description": t["description"][:100]} for t in tasks[:50]])
         
         prompt = TASK_CLASSIFICATION_PROMPT.format(tasks=tasks_text)
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="TaskClassification")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="TaskClassification",
+            decompose_fn=_decompose_tasks_into_batches,
+            merge_fn=_merge_task_classification_results,
+            original_content=tasks_json,
+            chunk_prompt_template=TASK_CLASSIFICATION_CHUNK_PROMPT,
+        )
         
         classifications = data.get("classifications") or []
         team_summary = data.get("team_summary") or {}

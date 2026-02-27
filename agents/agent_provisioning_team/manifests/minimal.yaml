@@ -1,0 +1,32 @@
+# Minimal Tool Manifest for Agent Provisioning
+# This manifest provisions a lightweight environment with basic tools.
+
+version: "1.0"
+base_image: "python:3.11-slim"
+
+environment:
+  PYTHONUNBUFFERED: "1"
+
+tools:
+  # Git Version Control Only
+  - name: git
+    provisioner: git_provisioner
+    access_level: contributor
+    config:
+      init_repos:
+        - workspace
+      generate_ssh_key: false
+    onboarding:
+      description: "Git version control for code management"
+      getting_started: |
+        Your workspace repository is initialized at /workspace.
+        
+        Git is configured with:
+          User: Agent {agent_id}
+          Email: agent-{agent_id}@provisioning.local
+        
+        Start working:
+          cd /workspace
+          # Your code here
+          git add .
+          git commit -m "Your changes"

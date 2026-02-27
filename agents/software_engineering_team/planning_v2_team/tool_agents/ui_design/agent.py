@@ -11,12 +11,53 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_ui_design_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge UI design results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "design_tokens": {},
+        "components": [],
+        "layouts": [],
+        "breakpoints": {},
+        "accessibility": [],
+        "recommendations": [],
+        "summary": "",
+    }
+    summaries = []
+
+    for r in results:
+        if isinstance(r.get("design_tokens"), dict):
+            for k, v in r["design_tokens"].items():
+                if k not in merged["design_tokens"]:
+                    merged["design_tokens"][k] = v
+                elif isinstance(v, list) and isinstance(merged["design_tokens"][k], list):
+                    merged["design_tokens"][k].extend(v)
+        if isinstance(r.get("components"), list):
+            for c in r["components"]:
+                if c not in merged["components"]:
+                    merged["components"].append(c)
+        if isinstance(r.get("layouts"), list):
+            for lay in r["layouts"]:
+                if lay not in merged["layouts"]:
+                    merged["layouts"].append(lay)
+        if isinstance(r.get("breakpoints"), dict):
+            merged["breakpoints"].update(r["breakpoints"])
+        if isinstance(r.get("accessibility"), list):
+            merged["accessibility"].extend(r["accessibility"])
+        if isinstance(r.get("recommendations"), list):
+            merged["recommendations"].extend(r["recommendations"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 UI_DESIGN_PLANNING_PROMPT = """You are a UI Design expert. Create a UI design plan for:
 
@@ -44,7 +85,23 @@ Respond with JSON:
 }}
 """
 
+UI_DESIGN_PLANNING_CHUNK_PROMPT = """You are a UI Design expert. Analyze this SECTION for UI design:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Respond with concise JSON for THIS section only:
+{{
+  "design_tokens": {{"relevant": "tokens"}},
+  "components": ["components needed"],
+  "layouts": ["layouts needed"],
+  "accessibility": ["considerations"],
+  "recommendations": ["recommendations"],
+  "summary": "brief summary"
+}}
+"""
 
 
 class UIDesignToolAgent:
@@ -65,10 +122,19 @@ class UIDesignToolAgent:
                 recommendations=["Define design tokens", "Plan component library"],
             )
         
+        spec_content = inp.spec_content or ""
         prompt = UI_DESIGN_PLANNING_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:6000],
+            spec_content=spec_content[:6000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="UIDesign")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="UIDesign",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_ui_design_results,
+            original_content=spec_content,
+            chunk_prompt_template=UI_DESIGN_PLANNING_CHUNK_PROMPT,
+        )
         
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):

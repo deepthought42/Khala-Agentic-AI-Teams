@@ -11,12 +11,46 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_architecture_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge architecture results from multiple chunks."""
+    merged: Dict[str, Any] = {
+        "architecture_style": "",
+        "layers": [],
+        "cross_cutting": [],
+        "deployment_model": "",
+        "recommendations": [],
+        "summary": "",
+    }
+    styles = []
+    deployments = []
+    summaries = []
+
+    for r in results:
+        if r.get("architecture_style"):
+            styles.append(str(r["architecture_style"]))
+        if isinstance(r.get("layers"), list):
+            merged["layers"].extend(r["layers"])
+        if isinstance(r.get("cross_cutting"), list):
+            merged["cross_cutting"].extend(r["cross_cutting"])
+        if r.get("deployment_model"):
+            deployments.append(str(r["deployment_model"]))
+        if isinstance(r.get("recommendations"), list):
+            merged["recommendations"].extend(r["recommendations"])
+        if r.get("summary"):
+            summaries.append(str(r["summary"]))
+
+    merged["architecture_style"] = styles[0] if styles else ""
+    merged["deployment_model"] = " ".join(deployments)
+    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    return merged
 
 ARCHITECTURE_SPEC_REVIEW_PROMPT = """You are an Architecture expert. Review this specification and identify:
 1. Architectural patterns needed (monolith, microservices, event-driven, etc.)
@@ -75,7 +109,23 @@ Respond with JSON:
 }}
 """
 
+ARCHITECTURE_PLANNING_CHUNK_PROMPT = """You are an Architecture expert. Analyze this SECTION of a specification for architecture:
 
+SECTION:
+---
+{chunk_content}
+---
+
+Respond with concise JSON for THIS section only:
+{{
+  "architecture_style": "suggested pattern for this section",
+  "layers": [{{"name": "layer_name", "technologies": ["tech1"], "responsibilities": "what it does"}}],
+  "cross_cutting": ["concerns relevant to this section"],
+  "deployment_model": "deployment considerations",
+  "recommendations": ["architecture recommendations"],
+  "summary": "brief summary"
+}}
+"""
 
 
 class ArchitectureToolAgent:
@@ -100,11 +150,20 @@ class ArchitectureToolAgent:
         if inp.spec_review_result:
             prior_analysis = getattr(inp.spec_review_result, "plan_summary", "") or ""
 
+        spec_content = inp.spec_content or ""
         prompt = ARCHITECTURE_PLANNING_PROMPT.format(
-            spec_content=(inp.spec_content or "")[:8000],
+            spec_content=spec_content[:8000],
             prior_analysis=prior_analysis[:2000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="Architecture")
+        data = parse_json_with_recovery(
+            self.llm,
+            prompt,
+            agent_name="Architecture",
+            decompose_fn=default_decompose_by_sections,
+            merge_fn=_merge_architecture_results,
+            original_content=spec_content,
+            chunk_prompt_template=ARCHITECTURE_PLANNING_CHUNK_PROMPT,
+        )
         
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):
