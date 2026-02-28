@@ -19,7 +19,6 @@ import type {
   ProvisionStatusResponse,
   ProvisionJobSummary,
   AgentStatusResponse,
-  ProvisioningHealthResponse,
   AccessTier,
 } from '../../models';
 import { PROVISIONING_PHASES } from '../../models';

@@ -24,4 +24,6 @@ export const environment = {
   agentProvisioningApiUrl: 'http://localhost:8080/api/agent-provisioning',
   /** AI Systems Team API */
   aiSystemsApiUrl: 'http://localhost:8080/api/ai-systems',
+  /** Investment Team API */
+  investmentApiUrl: 'http://localhost:8080/api/investment',
 };

@@ -115,7 +115,7 @@
                 }
               </div>
 
-              @if (currentJobStatus?.error) {
+              @if (currentJobStatus && currentJobStatus.error) {
                 <div class="error-message">
                   <mat-icon>error</mat-icon>
                   {{ currentJobStatus.error }}

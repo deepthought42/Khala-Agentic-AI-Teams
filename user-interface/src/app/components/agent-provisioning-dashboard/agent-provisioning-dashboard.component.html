@@ -125,7 +125,7 @@
                 }
               </div>
 
-              @if (currentJobStatus?.current_tool) {
+              @if (currentJobStatus && currentJobStatus.current_tool) {
                 <div class="current-tool">
                   <mat-icon>build</mat-icon>
                   <span>Provisioning: {{ currentJobStatus.current_tool }}</span>
@@ -135,14 +135,14 @@
                 </div>
               }
 
-              @if (currentJobStatus?.error) {
+              @if (currentJobStatus && currentJobStatus.error) {
                 <div class="error-message">
                   <mat-icon>error</mat-icon>
                   {{ currentJobStatus.error }}
                 </div>
               }
 
-              @if (isJobComplete && currentJobStatus?.result?.onboarding) {
+              @if (isJobComplete && currentJobStatus && currentJobStatus.result && currentJobStatus.result.onboarding) {
                 <div class="onboarding-summary">
                   <h3>Onboarding Summary</h3>
                   <p>{{ currentJobStatus.result.onboarding.summary }}</p>

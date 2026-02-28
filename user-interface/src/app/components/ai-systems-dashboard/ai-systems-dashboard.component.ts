@@ -19,7 +19,6 @@ import type {
   AISystemStatusResponse,
   AISystemJobSummary,
   AgentBlueprint,
-  AISystemsHealthResponse,
 } from '../../models';
 import { AI_SYSTEM_PHASES } from '../../models';
 
@@ -50,15 +49,12 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(AISystemsApiService);
   private readonly fb = inject(FormBuilder);
   
-  private healthSub: Subscription | null = null;
   private jobPollSub: Subscription | null = null;
 
   selectedTabIndex = 0;
   activeTab: DashboardTab = 'build';
 
-  healthStatus: AISystemsHealthResponse | null = null;
-  healthLoading = false;
-  healthError: string | null = null;
+  healthCheck: () => Observable<{ status?: string }> = () => this.api.healthCheck();
 
   buildForm: FormGroup;
   submitting = false;
@@ -88,30 +84,12 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
-    this.checkHealth();
     this.loadJobs();
     this.loadBlueprintNames();
   }
 
   ngOnDestroy(): void {
-    this.healthSub?.unsubscribe();
     this.jobPollSub?.unsubscribe();
-  }
-
-  checkHealth(): void {
-    this.healthLoading = true;
-    this.healthError = null;
-
-    this.healthSub = this.api.healthCheck().subscribe({
-      next: (res) => {
-        this.healthStatus = res;
-        this.healthLoading = false;
-      },
-      error: (err) => {
-        this.healthError = err?.message ?? 'API unavailable';
-        this.healthLoading = false;
-      },
-    });
   }
 
   onTabChange(index: number): void {

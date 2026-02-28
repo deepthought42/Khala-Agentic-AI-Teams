@@ -12,6 +12,7 @@ import { PersonalAssistantDashboardComponent } from './components/personal-assis
 import { AccessibilityDashboardComponent } from './components/accessibility-dashboard/accessibility-dashboard.component';
 import { AgentProvisioningDashboardComponent } from './components/agent-provisioning-dashboard/agent-provisioning-dashboard.component';
 import { AISystemsDashboardComponent } from './components/ai-systems-dashboard/ai-systems-dashboard.component';
+import { InvestmentDashboardComponent } from './components/investment-dashboard/investment-dashboard.component';
 
 export const routes: Routes = [
   {
@@ -31,6 +32,7 @@ export const routes: Routes = [
       { path: 'accessibility', component: AccessibilityDashboardComponent },
       { path: 'agent-provisioning', component: AgentProvisioningDashboardComponent },
       { path: 'ai-systems', component: AISystemsDashboardComponent },
+      { path: 'investment', component: InvestmentDashboardComponent },
     ],
   },
   { path: '**', redirectTo: '/dashboard' },

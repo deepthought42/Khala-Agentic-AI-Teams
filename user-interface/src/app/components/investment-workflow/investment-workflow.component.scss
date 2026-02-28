@@ -1,0 +1,249 @@
+.workflow-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.workflow-card {
+  mat-card-header {
+    position: relative;
+
+    mat-icon[mat-card-avatar] {
+      font-size: 40px;
+      width: 40px;
+      height: 40px;
+      color: var(--mat-primary);
+    }
+
+    .refresh-btn {
+      position: absolute;
+      top: 0;
+      right: 0;
+    }
+  }
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 48px;
+  color: rgba(0, 0, 0, 0.54);
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+
+  mat-icon {
+    color: #c62828;
+  }
+}
+
+.mode-section {
+  padding: 20px 0;
+}
+
+.mode-indicator {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, rgba(var(--mode-color-rgb, 63, 81, 181), 0.08), rgba(var(--mode-color-rgb, 63, 81, 181), 0.02));
+  border-radius: 12px;
+  border-left: 4px solid var(--mode-color);
+
+  mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+  }
+
+  .mode-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    .mode-label {
+      font-size: 0.85rem;
+      color: rgba(0, 0, 0, 0.54);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .mode-value {
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+  }
+}
+
+.queues-section {
+  padding: 20px 0;
+
+  h3 {
+    margin: 0 0 20px 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--mat-primary);
+  }
+}
+
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.queue-card {
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: rgba(0, 0, 0, 0.16);
+  }
+
+  &.has-items {
+    background: rgba(33, 150, 243, 0.04);
+    border-color: rgba(33, 150, 243, 0.2);
+  }
+
+  &.escalation.has-items {
+    background: rgba(244, 67, 54, 0.04);
+    border-color: rgba(244, 67, 54, 0.2);
+  }
+
+  .queue-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+
+    mat-icon {
+      color: var(--mat-primary);
+    }
+
+    .queue-name {
+      font-weight: 500;
+      font-size: 1.1rem;
+      flex: 1;
+    }
+
+    .queue-badge {
+      width: 24px;
+      height: 24px;
+    }
+  }
+
+  .queue-description {
+    font-size: 0.85rem;
+    color: rgba(0, 0, 0, 0.54);
+    margin: 0 0 16px 0;
+  }
+
+  .queue-count {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+
+    .count-value {
+      font-size: 2rem;
+      font-weight: 600;
+      color: var(--mat-primary);
+    }
+
+    .count-label {
+      font-size: 0.9rem;
+      color: rgba(0, 0, 0, 0.54);
+    }
+  }
+
+  .queue-items {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 150px;
+    overflow-y: auto;
+  }
+
+  .queue-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: white;
+    border-radius: 4px;
+    font-size: 0.85rem;
+
+    .item-id {
+      font-family: monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    &.priority-high mat-chip,
+    &.priority-critical mat-chip {
+      background: #ffebee;
+      color: #c62828;
+    }
+
+    &.priority-normal mat-chip {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+  }
+}
+
+.audit-section {
+  padding: 20px 0;
+
+  mat-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+.audit-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.audit-entry {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.no-items-text {
+  color: rgba(0, 0, 0, 0.54);
+  font-style: italic;
+  text-align: center;
+  padding: 24px;
+}
+
+mat-divider {
+  margin: 8px 0;
+}
+
+@media (max-width: 768px) {
+  .workflow-container {
+    padding: 12px;
+  }
+
+  .queue-grid {
+    grid-template-columns: 1fr;
+  }
+}
