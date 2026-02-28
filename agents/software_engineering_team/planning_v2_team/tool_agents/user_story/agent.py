@@ -52,6 +52,22 @@ IMPORTANT: Stories and Tasks must be highly detailed with:
 - Examples where appropriate
 - Team assignment (frontend, backend, devops, qa)
 
+TASK SIZING - CRITICAL:
+Each task MUST be small enough that an experienced engineer would estimate it as a 1 or 2 on the Fibonacci scale (1, 2, 3, 5, 8, 13...) during sprint planning.
+
+A 1-2 point task typically:
+- Can be completed in less than half a day to one day
+- Has a single, clear objective
+- Touches 1-3 files at most
+- Does NOT combine multiple concerns (e.g., "build API and UI" should be separate tasks)
+- Is independently testable
+
+If a task feels like a 3, 5, or larger, BREAK IT DOWN into smaller tasks. For example:
+- BAD: "Implement user authentication" (too broad, likely 8+ points)
+- GOOD: Split into: "Create login form UI", "Add form validation", "Create /login API endpoint", "Add JWT token generation", "Store session in localStorage", "Add auth middleware"
+
+Prefer MORE granular tasks over fewer large ones.
+
 Specification:
 ---
 {spec_content}
@@ -102,8 +118,9 @@ Respond with JSON:
 USER_STORY_REVIEW_PROMPT = """You are a Product Planning expert. Review these user stories and tasks for:
 1. Completeness of acceptance criteria
 2. Clear team assignments
-3. Proper story/task granularity
+3. Task granularity - each task should be Fibonacci 1-2 points (small, single-objective, completable in under a day)
 4. Dependency clarity
+5. Tasks that are too large (3+ points) should be flagged for splitting
 
 Artifacts:
 ---
@@ -126,7 +143,11 @@ SECTION:
 {chunk_content}
 ---
 
-Create user stories and tasks for THIS section only. Respond with concise JSON:
+Create user stories and tasks for THIS section only.
+
+TASK SIZING: Each task must be Fibonacci 1-2 points (half-day to one-day effort, single objective, 1-3 files). Break larger work into multiple small tasks.
+
+Respond with concise JSON:
 {{
   "initiatives": [
     {{
