@@ -1,5 +1,5 @@
 <h1>Software Engineering Team API</h1>
-<p>Run team, job status, clarification sessions, execution tasks.</p>
+<p>Run team, job status, open questions, execution tasks.</p>
 
 <div class="header-row">
   <app-health-indicator [healthCheck]="healthCheck" label="Software Engineering API" />
@@ -13,22 +13,41 @@
   <app-error-message [message]="error" />
 }
 
-<mat-tab-group>
+<div class="dashboard-layout">
+  <div class="main-content">
+<mat-tab-group [(selectedIndex)]="selectedTabIndex">
   <mat-tab label="Run Team">
     <div class="tab-content">
       <app-run-team-form (submitRequest)="onRunTeamSubmit($event)" />
       @if (jobId) {
-        <app-job-status [jobId]="jobId" (statusChange)="jobStatus = $event" />
+        <app-pending-questions
+          [jobId]="jobId"
+          [questions]="jobStatus?.pending_questions ?? []"
+          (answersSubmitted)="onAnswersSubmitted($event)"
+        />
+        <app-run-team-tracking [jobId]="jobId" (statusChange)="jobStatus = $event" />
         <app-retry-failed
           [jobId]="jobId"
           [hasFailedTasks]="(jobStatus?.failed_tasks?.length ?? 0) > 0"
           [disabled]="loading"
           (retry)="onRetryFailed()"
         />
-        <app-re-plan-with-clarifications
-          [jobId]="jobId"
-          [disabled]="loading"
-          (submitRequest)="onRePlanSubmit($event)"
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Product Analysis">
+    <div class="tab-content">
+      <app-product-analysis-run-form (submitRequest)="onProductAnalysisSubmit($event)" />
+      @if (productAnalysisJobId) {
+        <app-product-analysis-job-status
+          [jobId]="productAnalysisJobId"
+          (statusChange)="onProductAnalysisStatusChange($event)"
+        />
+        <app-pending-questions
+          [jobId]="productAnalysisJobId"
+          [questions]="productAnalysisStatus?.pending_questions ?? []"
+          submitEndpoint="product-analysis"
+          (answersSubmitted)="onProductAnalysisAnswersSubmitted($event)"
         />
       }
     </div>
@@ -55,6 +74,31 @@
       }
     </div>
   </mat-tab>
+  <mat-tab label="Frontend Developer (v2)">
+    <div class="tab-content">
+      <app-frontend-code-v2-run-form (submitRequest)="onFrontendCodeV2Submit($event)" />
+      @if (frontendCodeV2JobId) {
+        <app-frontend-code-v2-job-status [jobId]="frontendCodeV2JobId" />
+      }
+    </div>
+  </mat-tab>
+  <mat-tab label="Planning (v2)">
+    <div class="tab-content">
+      <app-planning-v2-run-form (submitRequest)="onPlanningV2Submit($event)" />
+      @if (planningV2JobId) {
+        <app-planning-v2-job-status
+          [jobId]="planningV2JobId"
+          (statusChange)="onPlanningV2StatusChange($event)"
+        />
+        <app-pending-questions
+          [jobId]="planningV2JobId"
+          [questions]="planningV2Status?.pending_questions ?? []"
+          submitEndpoint="planning-v2"
+          (answersSubmitted)="onPlanningV2AnswersSubmitted($event)"
+        />
+      }
+    </div>
+  </mat-tab>
   <mat-tab label="Architecture">
     <div class="tab-content">
       <mat-card>
@@ -77,7 +121,7 @@
               mat-raised-button
               color="primary"
               (click)="onArchitectDesignSubmit()"
-              [disabled]="loading || !architectSpec?.trim()"
+              [disabled]="loading || !architectSpec.trim()"
             >
               Generate Architecture
             </button>
@@ -90,3 +134,35 @@
     </div>
   </mat-tab>
 </mat-tab-group>
+  </div>
+
+  @if (runningJobs.length > 0) {
+    <aside class="running-jobs-panel">
+      <mat-card>
+        <mat-card-header>
+          <mat-card-title>Running jobs</mat-card-title>
+          <mat-card-subtitle>{{ runningJobs.length }} job(s) in progress</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="running-jobs-list">
+            @for (job of runningJobs; track job.job_id) {
+              <button
+                type="button"
+                class="job-item"
+                [class.selected]="selectedRunningJob?.job_id === job.job_id"
+                (click)="selectRunningJob(job)"
+              >
+                <span class="job-type">{{ runningJobTypeLabel(job.job_type) }}</span>
+                <span class="job-id">{{ job.job_id }}</span>
+                @if (job.repo_path) {
+                  <span class="job-repo">{{ job.repo_path }}</span>
+                }
+              </button>
+            }
+          </div>
+
+        </mat-card-content>
+      </mat-card>
+    </aside>
+  }
+</div>

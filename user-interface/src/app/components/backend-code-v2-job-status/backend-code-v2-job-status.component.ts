@@ -29,11 +29,11 @@ export class BackendCodeV2JobStatusComponent implements OnInit, OnDestroy {
   status: BackendCodeV2StatusResponse | null = null;
   error: string | null = null;
 
-  readonly phases = ['planning', 'execution', 'review', 'problem_solving', 'deliver'];
+  readonly phases = ['setup', 'planning', 'execution', 'review', 'problem_solving', 'deliver'];
 
   ngOnInit(): void {
     this.poll();
-    this.pollTimer = setInterval(() => this.poll(), 3000);
+    this.pollTimer = setInterval(() => this.poll(), 120000);
   }
 
   ngOnDestroy(): void {
@@ -47,7 +47,7 @@ export class BackendCodeV2JobStatusComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.status = res;
         this.error = null;
-        if (res.status === 'completed' || res.status === 'failed') {
+        if (res.status === 'completed' || res.status === 'failed' || res.status === 'cancelled') {
           if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;

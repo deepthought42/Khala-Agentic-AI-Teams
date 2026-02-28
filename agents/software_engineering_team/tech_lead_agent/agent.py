@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from shared.llm import LLMClient
@@ -47,19 +48,175 @@ class TechLeadAgent:
         data = self.llm.complete_json(prompt, temperature=0.1)
         return json.dumps(data, indent=2)
 
+    def _read_plan_artifacts(self, repo_path: str) -> str:
+        """
+        Read all markdown planning artifacts from /plan folder.
+        
+        Returns concatenated content with file headers for context.
+        """
+        plan_dir = Path(repo_path) / "plan"
+        if not plan_dir.exists():
+            return ""
+        
+        artifacts: List[str] = []
+        for md_file in sorted(plan_dir.glob("*.md")):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                if content.strip():
+                    artifacts.append(f"--- {md_file.name} ---\n{content}")
+            except Exception as e:
+                logger.warning(
+                    "Tech Lead: failed to read %s: %s. Next step -> Continuing with remaining artifacts",
+                    md_file, e,
+                )
+        
+        if artifacts:
+            logger.info("Tech Lead: read %d plan artifacts from %s", len(artifacts), plan_dir)
+        
+        return "\n\n".join(artifacts)
+
+    def _generate_detailed_summary(
+        self,
+        hierarchy: "PlanningHierarchy",
+        init_count: int,
+        epic_count: int,
+        story_count: int,
+        task_count: int,
+        team_counts: Dict[str, int],
+        plan_artifacts: str,
+        requirements: "ProductRequirements",
+    ) -> str:
+        """
+        Generate a detailed development plan summary from the Planning V2 hierarchy
+        and plan artifacts.
+        """
+        from shared.models import PlanningHierarchy, ProductRequirements
+        
+        parts: List[str] = []
+        
+        # Header with project info
+        parts.append(f"# Development Plan: {requirements.title}\n")
+        parts.append(f"\n## Overview\n")
+        parts.append(f"This development plan covers {requirements.description[:200]}{'...' if len(requirements.description) > 200 else ''}\n")
+        
+        # Hierarchy summary
+        parts.append(f"\n## Planning Hierarchy Summary\n")
+        parts.append(f"- **Initiatives:** {init_count}\n")
+        parts.append(f"- **Epics:** {epic_count}\n")
+        parts.append(f"- **Stories:** {story_count}\n")
+        parts.append(f"- **Tasks:** {task_count}\n")
+        
+        # Team breakdown
+        parts.append(f"\n## Task Distribution by Team\n")
+        for team, count in sorted(team_counts.items()):
+            parts.append(f"- **{team.title()}:** {count} tasks\n")
+        
+        # Initiative details
+        parts.append(f"\n## Initiatives\n")
+        for init in hierarchy.initiatives:
+            parts.append(f"\n### {init.title}\n")
+            parts.append(f"{init.description}\n")
+            parts.append(f"\n**Epics ({len(init.epics)}):**\n")
+            for epic in init.epics:
+                story_tasks = sum(len(s.tasks) for s in epic.stories)
+                parts.append(f"- **{epic.title}**: {len(epic.stories)} stories, {story_tasks} tasks\n")
+                if epic.description:
+                    parts.append(f"  {epic.description[:150]}{'...' if len(epic.description) > 150 else ''}\n")
+        
+        # Key acceptance criteria from requirements
+        if requirements.acceptance_criteria:
+            parts.append(f"\n## Key Acceptance Criteria\n")
+            for i, criterion in enumerate(requirements.acceptance_criteria[:10], 1):
+                parts.append(f"{i}. {criterion}\n")
+        
+        # Architecture and design context from artifacts
+        if plan_artifacts:
+            # Extract key sections from artifacts
+            parts.append(f"\n## Planning Context\n")
+            parts.append("Planning artifacts include: ")
+            
+            artifact_names = []
+            for line in plan_artifacts.split("\n"):
+                if line.startswith("--- ") and line.endswith(" ---"):
+                    artifact_names.append(line.strip("- ").strip())
+            
+            if artifact_names:
+                parts.append(", ".join(artifact_names))
+            parts.append("\n")
+        
+        # Execution order hint
+        if hierarchy.execution_order:
+            parts.append(f"\n## Execution Order\n")
+            parts.append(f"Tasks will be executed in dependency order. First tasks: ")
+            parts.append(", ".join(hierarchy.execution_order[:5]))
+            if len(hierarchy.execution_order) > 5:
+                parts.append(f" (and {len(hierarchy.execution_order) - 5} more)")
+            parts.append("\n")
+        
+        summary = "".join(parts)
+        logger.info("Tech Lead: generated detailed summary (%d chars)", len(summary))
+        return summary
+
     def run(self, input_data: TechLeadInput) -> TechLeadOutput:
         """
-        Produce an Initiative -> Epic -> Story hierarchy.
+        Produce an Initiative -> Epic -> Story hierarchy based on the requirements, existing codebase, and system architecture, existing tasks, and the spec.
+
+        If a planning_hierarchy is provided (from Planning V2), use it directly
+        instead of generating new tasks. The Tech Lead still produces a development
+        plan summary but does not re-create the task breakdown.
 
         Single-path LLM call: build context, call LLM, parse hierarchy, flatten
         to TaskAssignment for execution.
         """
         logger.info("Tech Lead: planning for %s", input_data.requirements.title)
-        reqs = input_data.requirements
-        arch = input_data.architecture
 
-        spec_content = input_data.spec_content or ""
-        arch_doc = (arch.architecture_document or "") if arch else ""
+        # If Planning V2 hierarchy is provided, use it directly
+        if input_data.planning_hierarchy:
+            hierarchy = input_data.planning_hierarchy
+            assignment = flatten_hierarchy_to_assignment(hierarchy)
+            task_count = len(assignment.tasks)
+            epic_count = sum(len(i.epics) for i in hierarchy.initiatives)
+            story_count = sum(len(e.stories) for i in hierarchy.initiatives for e in i.epics)
+            init_count = len(hierarchy.initiatives)
+            
+            # Count tasks by team
+            team_counts: Dict[str, int] = {}
+            for task in assignment.tasks:
+                team = task.assignee or "unassigned"
+                team_counts[team] = team_counts.get(team, 0) + 1
+            
+            logger.info(
+                "Tech Lead: using Planning V2 hierarchy (%s tasks across %s stories)",
+                task_count,
+                story_count,
+            )
+            
+            # Read plan artifacts for additional context
+            plan_artifacts = ""
+            if input_data.repo_path:
+                plan_artifacts = input_data.plan_artifacts_content or self._read_plan_artifacts(input_data.repo_path)
+            
+            # Generate a detailed development plan summary
+            summary = self._generate_detailed_summary(
+                hierarchy=hierarchy,
+                init_count=init_count,
+                epic_count=epic_count,
+                story_count=story_count,
+                task_count=task_count,
+                team_counts=team_counts,
+                plan_artifacts=plan_artifacts,
+                requirements=input_data.requirements,
+            )
+            
+            return TechLeadOutput(
+                assignment=assignment,
+                planning_hierarchy=hierarchy,
+                summary=summary,
+                requirement_task_mapping=[],
+                spec_clarification_needed=False,
+                clarification_questions=[],
+            )
+
         existing_codebase = input_data.existing_codebase or ""
 
         codebase_analysis = ""
@@ -87,14 +244,17 @@ class TechLeadAgent:
         assignment = flatten_hierarchy_to_assignment(hierarchy)
 
         if not assignment.tasks:
+            logger.info(
+                "Tech Lead: hierarchy flattening produced no tasks. Next step -> Using fallback assignment parsing"
+            )
             assignment = parse_assignment_from_data(data)
 
         mapping = data.get("requirement_task_mapping") or []
         logger.info(
-            "Tech Lead: produced %s stories across %s epics, execution order: %s",
+            "Tech Lead: produced %s tasks across %s stories (execution order: %s)",
             len(assignment.tasks),
             sum(len(e.stories) for i in hierarchy.initiatives for e in i.epics),
-            assignment.execution_order,
+            assignment.execution_order[:10] if len(assignment.execution_order) > 10 else assignment.execution_order,
         )
         return TechLeadOutput(
             assignment=assignment,
@@ -182,6 +342,25 @@ class TechLeadAgent:
                 "---",
             ])
 
+        if input_data.existing_tasks:
+            task_lines = [
+                "",
+                "**Existing tasks (extend or reprioritize):**",
+                "---",
+            ]
+            for t in input_data.existing_tasks:
+                task_lines.append(f"- **id:** {t.id} | **type:** {t.type} | **title:** {t.title} | **status:** {t.status} | **assignee:** {t.assignee}")
+                task_lines.append(f"  **description:** {t.description[:500]}{'...' if len(t.description) > 500 else ''}")
+                if t.requirements:
+                    task_lines.append(f"  **requirements:** {t.requirements[:300]}{'...' if len(t.requirements) > 300 else ''}")
+                if t.acceptance_criteria:
+                    task_lines.append("  **acceptance_criteria:** " + "; ".join(t.acceptance_criteria[:5]))
+                if t.dependencies:
+                    task_lines.append(f"  **dependencies:** {t.dependencies}")
+                task_lines.append("")
+            context_parts.extend(task_lines)
+            context_parts.append("---")
+
         if input_data.architecture:
             arch = input_data.architecture
             context_parts.extend([
@@ -195,6 +374,20 @@ class TechLeadAgent:
 
         if input_data.repo_path:
             context_parts.extend(["", f"**Repo path:** {input_data.repo_path}"])
+        
+        # Include plan artifacts if available (from Planning V2 or explicit input)
+        plan_artifacts = input_data.plan_artifacts_content or ""
+        if not plan_artifacts and input_data.repo_path:
+            plan_artifacts = self._read_plan_artifacts(input_data.repo_path)
+        
+        if plan_artifacts:
+            context_parts.extend([
+                "",
+                "**Planning Artifacts (from /plan folder - use these for context):**",
+                "---",
+                plan_artifacts[:15000],
+                "---",
+            ])
 
         return TECH_LEAD_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
 
@@ -361,6 +554,13 @@ class TechLeadAgent:
         Identifies gaps in spec coverage and creates new tasks to fill them.
         Returns a list of new Task objects (may be empty).
         """
+        if getattr(task_update, "failure_class", None) == "llm_connectivity":
+            logger.info(
+                "Tech Lead: task %s failed due to LLM connectivity; not creating fix tasks (orchestrator will pause job).",
+                task_update.task_id,
+            )
+            return []
+
         logger.info(
             "Tech Lead: reviewing progress after task %s (%s) - %s completed, %s remaining",
             task_update.task_id,
@@ -630,11 +830,11 @@ class TechLeadAgent:
         try:
             workflow_result = devops_agent.run_workflow(
                 repo_path=path,
-                task_description="Add containerization and deployment for the frontend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Frontend is Angular/Node.",
-                requirements="Dockerfile: multi-stage build (npm ci, ng build; serve with nginx or Node). CI/CD: install deps, run tests, build image. Make repo self-contained for build and deploy.",
+                task_description="Add containerization and deployment for the frontend application. Produce a Dockerfile and CI/CD so this repo can be built and deployed. Frontend is a JavaScript/TypeScript application (React, Angular, or Vue).",
+                requirements="Dockerfile: multi-stage build (npm ci, npm run build; serve with nginx or Node). CI/CD: install deps, run tests, build image. Make repo self-contained for build and deploy.",
                 architecture=architecture,
                 existing_pipeline=existing_pipeline if existing_pipeline and existing_pipeline != "# No code files found" else None,
-                tech_stack=["Angular", "Node", "Docker"],
+                tech_stack=["JavaScript", "TypeScript", "Node", "Docker"],
                 target_repo="frontend",
                 build_verifier=build_verifier,
                 task_id="devops-frontend",

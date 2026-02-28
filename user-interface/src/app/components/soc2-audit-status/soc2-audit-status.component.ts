@@ -27,13 +27,13 @@ export class Soc2AuditStatusComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     if (this.jobId) {
-      this.sub = timer(0, 2000)
+      this.sub = timer(0, 60000)
         .pipe(switchMap(() => this.api.getStatus(this.jobId!)))
         .subscribe({
           next: (res) => {
             this.status = res;
             this.loading = false;
-            if (res.status === 'completed' || res.status === 'failed') {
+            if (res.status === 'completed' || res.status === 'failed' || res.status === 'cancelled') {
               this.sub?.unsubscribe();
               this.sub = null;
             }

@@ -27,7 +27,6 @@ export class RunTeamFormComponent {
   constructor(private readonly fb: FormBuilder) {
     this.form = this.fb.nonNullable.group({
       repo_path: ['', [Validators.required, Validators.minLength(1)]],
-      clarification_session_id: [''],
     });
   }
 
@@ -36,7 +35,6 @@ export class RunTeamFormComponent {
       const v = this.form.getRawValue();
       this.submitRequest.emit({
         repo_path: v.repo_path,
-        clarification_session_id: v.clarification_session_id || undefined,
       });
     }
   }

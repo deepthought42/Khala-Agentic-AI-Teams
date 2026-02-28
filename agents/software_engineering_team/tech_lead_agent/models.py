@@ -54,6 +54,14 @@ class TechLeadInput(BaseModel):
         None,
         description="User-provided answers from clarification chat; when set, use these instead of resolving with defaults",
     )
+    planning_hierarchy: Optional[PlanningHierarchy] = Field(
+        None,
+        description="Pre-existing planning hierarchy from Planning V2; Tech Lead uses this for creating the development plan instead of generating new tasks",
+    )
+    plan_artifacts_content: Optional[str] = Field(
+        None,
+        description="Concatenated content of planning artifacts from /plan folder; Tech Lead uses this for context when generating detailed plans",
+    )
 
 
 class TechLeadOutput(BaseModel):

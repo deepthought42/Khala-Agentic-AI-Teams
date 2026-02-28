@@ -44,9 +44,7 @@ JAVA_CONVENTIONS = """
 
 PLANNING_PROMPT = """You are the Planning Agent for a backend development team.
 
-Your job: break a task into a set of concrete microtasks that, when completed together,
-fully satisfy the task requirements. Each microtask should be small enough that a single
-specialist tool-agent (or a general code-generation step) can handle it.
+**Context:** You receive a single **task** (assigned to the backend team from the Tech Lead's plan). Your job is to produce **subtasks** (microtasks) that together implement this task. Each subtask should be small enough that a single specialist tool-agent (or a general code-generation step) can handle it. The task's acceptance criteria and detailed description define what "done" means; your subtasks must collectively satisfy them.
 
 **Available tool-agent domains you can assign microtasks to:**
 - data_engineering — schema design, migrations, data integrity, query optimisation
@@ -64,27 +62,65 @@ specialist tool-agent (or a general code-generation step) can handle it.
 - Optional project spec, architecture, existing code context
 - Target language (python or java)
 
-**Output (JSON):**
-Return a JSON object:
-{
-  "microtasks": [
-    {
-      "id": "mt-<short-kebab>",
-      "title": "short title",
-      "description": "what to do (2-4 sentences)",
-      "tool_agent": "<domain from list above>",
-      "depends_on": ["mt-other-id"]
-    }
-  ],
-  "language": "python" or "java",
-  "summary": "1-2 sentence overview of the plan"
-}
+**Output format (template – use exactly these section headers):**
+
+## MICROTASKS ##
+---
+id: mt-<short-kebab>
+title: short title
+description: what to do (2-4 sentences)
+tool_agent: <domain from list above>
+depends_on: mt-other-id|mt-another-id
+---
+## END MICROTASKS ##
+## LANGUAGE ##
+python
+## END LANGUAGE ##
+## SUMMARY ##
+1-2 sentence overview of the plan
+## END SUMMARY ##
 
 Rules:
 - Emit 2-10 microtasks. Prefer smaller, focused microtasks over large monolithic ones.
 - Include at least one testing_qa microtask unless the task is pure docs/config.
-- Dependency order matters: list prerequisites in depends_on.
-- Respond with valid JSON only (no markdown fences, no text before or after).
+- Dependency order matters: list prerequisites in depends_on (pipe-separated IDs).
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# Planning fix microtasks for unresolved review issues (escalation from problem-solving).
+PLANNING_FIXES_FOR_ISSUES_PROMPT = """You are the Planning Agent. The problem-solving phase could not fix these issues automatically. Create microtasks that implement the fixes.
+
+**Your job:** For each unresolved issue (or a small related group), emit one microtask that describes the exact fix. Each microtask should be implementable by a single code change or small set of changes.
+
+**Unresolved issues:**
+{issues_text}
+
+**Current codebase (excerpt):**
+{existing_code}
+
+**Language:** {language}
+
+**Output format (template – use exactly these section headers):**
+
+## MICROTASKS ##
+---
+id: mt-fix-<short-kebab>
+title: short title describing the fix
+description: what to change and why (2-4 sentences). Reference the issue (e.g. "Fix the build error in X").
+tool_agent: general
+depends_on:
+---
+## END MICROTASKS ##
+## LANGUAGE ##
+{language}
+## END LANGUAGE ##
+## SUMMARY ##
+1-2 sentence overview of the fix plan
+## END SUMMARY ##
+
+- Emit one microtask per issue (or group closely related issues into one microtask).
+- Use tool_agent: general for all fix microtasks.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -112,20 +148,26 @@ Implement the microtask described below. Produce complete, runnable code files.
 **Architecture context (if any):**
 {architecture_context}
 
-**Output (JSON):**
-Return a single JSON object:
-{{
-  "files": {{
-    "path/to/file.ext": "full file content",
-    ...
-  }},
-  "summary": "what you implemented",
-  "suggested_commit_message": "type(scope): description"
-}}
+**File path rules:**
+- Use paths relative to the project root (e.g. `src/main.py`, `src/services/user_service.py`)
+- Do NOT include `backend/` prefix in paths — you are already in the backend project
+- Example: use `src/main.py`, NOT `backend/src/main.py`
 
-- The "files" dict MUST be populated with complete file paths and full content.
+**Output format (template – use exactly these markers):**
+
+For each file, write:
+## FILE path/to/file.ext ##
+<full file content>
+## FILE path/to/next.ext ##
+<full file content>
+## SUMMARY ##
+what you implemented
+## END SUMMARY ##
+
+- Use "## FILE <path> ##" at the start of each file; the next "## FILE " or "## SUMMARY ##" ends the previous file.
+- Do not put the exact line "## FILE " or "## SUMMARY ##" inside file content (use a comment placeholder if needed).
 - All imports must be valid; all referenced modules must be included.
-- Respond with valid JSON only.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -150,22 +192,26 @@ Review the code below for:
 **Code to review:**
 {code}
 
-**Output (JSON):**
-{{
-  "passed": true/false,
-  "issues": [
-    {{
-      "source": "code_review",
-      "severity": "critical|high|medium|low|info",
-      "description": "what is wrong",
-      "file_path": "which file",
-      "recommendation": "how to fix it"
-    }}
-  ],
-  "summary": "overall assessment"
-}}
+**Output format (template – use exactly these section headers):**
 
-Respond with valid JSON only.
+## PASSED ##
+true
+## END PASSED ##
+## ISSUES ##
+---
+source: code_review
+severity: critical|high|medium|low|info
+description: what is wrong
+file_path: which file
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+overall assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------
@@ -187,22 +233,274 @@ updated file that resolves the issue.
 **Current code:**
 {current_code}
 
-**Output (JSON):**
-{{
-  "files": {{
-    "path/to/file.ext": "full updated file content"
-  }},
-  "fixes_applied": [
-    {{
-      "issue": "summary of the issue",
-      "fix": "what was changed"
-    }}
-  ],
-  "summary": "overview of all fixes",
-  "resolved": true/false
-}}
+**Output format (template – use exactly these markers):**
 
-Respond with valid JSON only.
+Files (same as execution): for each updated file:
+## FILE path/to/file.ext ##
+<full updated file content>
+## FILE path/to/next.ext ##
+...
+## FIXES_APPLIED ##
+---
+issue: summary of the issue
+fix: what was changed
+---
+## END FIXES_APPLIED ##
+## RESOLVED ##
+true
+## END RESOLVED ##
+## SUMMARY ##
+overview of all fixes
+## END SUMMARY ##
+
+- Use "## FILE <path> ##" for each file; "---" to separate each fix block.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# Single-issue problem-solving: one issue at a time to keep prompts small.
+PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT = """You are a Problem-Solving Specialist. Fix exactly ONE issue.
+
+""" + CODING_STANDARDS + """
+
+{language_conventions}
+
+**Single issue to fix:**
+- Source: {source}
+- Severity: {severity}
+- Description: {description}
+- File: {file_path}
+- Recommendation: {recommendation}
+
+**Relevant code (only the file(s) involved):**
+{current_code}
+
+**Your steps:**
+1. Identify the root cause of this issue.
+2. Implement the fix by outputting the complete updated file(s).
+
+**Output format (template – use exactly these markers):**
+
+## ROOT_CAUSE ##
+One or two sentences: why this issue occurs.
+## END ROOT_CAUSE ##
+## FILE path/to/file.ext ##
+<full updated file content>
+## FILE path/to/next.ext ##
+<content if you need to change more than one file>
+## RESOLVED ##
+true
+## END RESOLVED ##
+## SUMMARY ##
+one sentence: what you changed
+## END SUMMARY ##
+
+- Output only the file(s) you change. Use "## FILE <path> ##" for each.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# QA tool agent: review (find issues from testing/QA perspective)
+# ---------------------------------------------------------------------------
+
+QA_TOOL_AGENT_REVIEW_PROMPT = """You are a QA/Testing specialist. Review the code from a testing and quality perspective only.
+
+Focus on:
+1. Missing or weak unit tests, integration tests, or test coverage.
+2. Edge cases and error paths not covered.
+3. Flaky or brittle test patterns (e.g. non-determinism, poor isolation).
+4. Assertions that are too weak or missing.
+5. Test data or mocks that don't reflect real behaviour.
+
+**Task context:**
+{task_description}
+
+**Code to review:**
+{code}
+
+**Output format (template – use exactly these section headers):**
+
+## PASSED ##
+true
+## END PASSED ##
+## ISSUES ##
+---
+source: qa
+severity: critical|high|medium|low|info
+description: what is wrong from a QA/testing perspective
+file_path: which file
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+brief QA assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Use source: qa for every issue. Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# Security tool agent: review (find issues from security perspective)
+# ---------------------------------------------------------------------------
+
+SECURITY_TOOL_AGENT_REVIEW_PROMPT = """You are a Security specialist. Review the code from a security perspective only.
+
+Focus on:
+1. Injection — SQL, command, or template injection; unsanitized user input.
+2. Authentication/authorisation — bypass risks, weak or missing checks, privilege escalation.
+3. Secrets — hardcoded credentials, API keys, or tokens in code or config.
+4. Insecure defaults — weak crypto, missing HTTPS, or permissive CORS.
+5. Input validation and output encoding — missing or insufficient sanitisation.
+
+**Task context:**
+{task_description}
+
+**Code to review:**
+{code}
+
+**Output format (template – use exactly these section headers):**
+
+## PASSED ##
+true
+## END PASSED ##
+## ISSUES ##
+---
+source: security
+severity: critical|high|medium|low|info
+description: what is wrong from a security perspective
+file_path: which file
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+brief security assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Use source: security for every issue. Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# Tool agents: files + summary (template output, reused by execution and tool agents)
+# ---------------------------------------------------------------------------
+
+FILES_OUTPUT_TEMPLATE_INSTRUCTIONS = """
+**Output format (template – use exactly these markers):**
+For each file:
+## FILE path/to/file.ext ##
+<full file content>
+## FILE path/to/next.ext ##
+<content>
+## SUMMARY ##
+what you produced
+## END SUMMARY ##
+- Use "## FILE <path> ##" at the start of each file; the next "## FILE " or "## SUMMARY ##" ends the previous file.
+- Do not put the exact line "## FILE " or "## SUMMARY ##" inside file content.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# Documentation tool agent
+# ---------------------------------------------------------------------------
+
+DOCUMENTATION_MICROTASK_PROMPT = """You are a Documentation Specialist reviewing code changes for a completed microtask.
+
+**Your task:** Update inline documentation (docstrings, comments) for the code that was just added or modified. Ensure all public functions, classes, and methods have proper docstrings.
+
+**Microtask:** {microtask_title}
+**Microtask Description:** {microtask_description}
+**Task Context:** {task_description}
+
+**Code to document:**
+{code}
+
+**What to do:**
+1. Add or improve docstrings for all public functions, classes, and methods
+2. Add inline comments for complex or non-obvious logic
+3. Ensure docstrings include parameter descriptions, return values, and raised exceptions
+4. Keep existing functionality unchanged — only add/improve documentation
+
+**Output format (template – use exactly these markers):**
+For each file that needs documentation updates:
+## FILE path/to/file.ext ##
+<full file content with improved documentation>
+## SUMMARY ##
+what documentation you added or improved
+## END SUMMARY ##
+
+- Only output files that you actually changed. If no documentation updates are needed, output an empty SUMMARY.
+- Use "## FILE <path> ##" at the start of each file.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+DOCUMENTATION_REVIEW_PROMPT = """You are a Documentation Reviewer assessing the completeness and quality of documentation.
+
+**Task:** {task_title}
+**Task Description:** {task_description}
+
+**Existing Documentation Files:**
+{documentation}
+
+**Code to review:**
+{code}
+
+**What to check:**
+1. README.md exists and is up-to-date with features, installation, and usage instructions
+2. All public functions, classes, and methods have docstrings
+3. Docstrings include parameter descriptions, return values, and exceptions
+4. API endpoints are documented (if applicable)
+5. Complex logic has inline comments
+6. CONTRIBUTORS.md exists (if multiple contributors)
+7. Any existing documentation in /docs folder is current
+
+**Output format (template – use exactly these section headers):**
+
+## PASSED ##
+true|false
+## END PASSED ##
+## ISSUES ##
+---
+source: documentation
+severity: critical|high|medium|low|info
+description: what documentation is missing or incorrect
+file_path: which file needs documentation
+recommendation: how to fix it
+---
+## END ISSUES ##
+## SUMMARY ##
+brief documentation assessment
+## END SUMMARY ##
+
+- Use "---" to separate each issue block. Use source: documentation for every issue.
+- Omit ## ISSUES ## / ## END ISSUES ## if there are no issues.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+DOCUMENTATION_PROBLEM_SOLVE_PROMPT = """You are a Documentation Specialist fixing a specific documentation issue.
+
+{language_conventions}
+
+**Issue to fix:**
+- Source: {source}
+- Severity: {severity}
+- Description: {description}
+- File: {file_path}
+- Recommendation: {recommendation}
+
+**Current code:**
+{current_code}
+
+**Your task:** Fix ONLY this documentation issue. Do not change any code logic — only add or improve documentation.
+
+**Output format (template – use exactly these markers):**
+## FILE path/to/file.ext ##
+<full file content with documentation fix>
+## SUMMARY ##
+what documentation you fixed
+## END SUMMARY ##
+
+- Output the complete file content with the documentation fix.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
 """
 
 # ---------------------------------------------------------------------------

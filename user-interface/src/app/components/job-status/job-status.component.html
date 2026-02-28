@@ -1,10 +1,24 @@
 @if (jobId && status) {
-  <mat-card>
+  <mat-card [class.waiting-for-answers]="status.waiting_for_answers">
     <mat-card-header>
       <mat-card-title>Job Status</mat-card-title>
-      <mat-card-subtitle>{{ status.status }}</mat-card-subtitle>
+      <mat-card-subtitle>
+        @if (status.waiting_for_answers) {
+          <span class="waiting-badge">Waiting for your answers</span>
+        } @else {
+          {{ status.status }}
+        }
+      </mat-card-subtitle>
     </mat-card-header>
     <mat-card-content>
+      @if (status.waiting_for_answers && status.pending_questions?.length) {
+        <div class="waiting-notice">
+          <mat-icon>help_outline</mat-icon>
+          <span>
+            {{ status.pending_questions?.length ?? 0 }} question(s) require your response before the job can continue.
+          </span>
+        </div>
+      }
       @if (status.current_task) {
         <p><strong>Current task:</strong> {{ status.current_task }}</p>
       }
@@ -12,7 +26,7 @@
         <p><strong>Progress:</strong> {{ status.progress }}%</p>
         <mat-progress-bar [value]="status.progress"></mat-progress-bar>
       }
-      @if (status.status === 'running' || status.status === 'pending') {
+      @if ((status.status === 'running' || status.status === 'pending') && !status.waiting_for_answers) {
         <mat-progress-bar mode="indeterminate"></mat-progress-bar>
       }
       @if (status.error) {

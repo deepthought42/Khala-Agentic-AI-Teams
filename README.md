@@ -29,11 +29,13 @@ This repository provides **multiple Strands-style agent systems** in a unified m
 |------|---------|
 | **Software Engineering Team** | Full dev team simulation: architecture, Tech Lead, backend/frontend workers, DevOps, security, QA, code review, accessibility. Reads `initial_spec.md` and produces working code. |
 | **Blogging** | Research, review, draft, copy-edit, and publication agents for content creation (web + arXiv research, title/outline, draft with style guide, copy-editor loop, platform-specific output). |
+| **Personal Assistant** | AI assistant for managing email, calendar, tasks, deals, reservations, and documents. Maintains comprehensive user profile with preferences, goals, and personal details. |
 | **Social Media Marketing** | Campaign planning with collaboration agents, human approval gate, and platform specialists (LinkedIn, Facebook, Instagram, X). Produces execution-ready content plans. |
 | **SOC2 Compliance** | Multi-agent SOC2 audit: Security, Availability, Processing Integrity, Confidentiality, Privacy TSC agents review a repo and produce a compliance report or next-steps document. |
 | **Market Research** | Human-AI collaborative workflow for user discovery and product concept viability; transcript ingestion, UX synthesis, experiment scripts, human approval gates. |
 | **Investment Team** | Multi-asset investment organization with IPS hard constraints, strategy validation, promotion gates, separation-of-duties, risk veto, and monitor-only safety degradation. |
 | **Branding Team** | Brand strategy, codification, moodboard concepts, design/writing standards, and interactive async open-question workflow. |
+| **Agent Provisioning** | Provisions agent environments with databases, git repos, Docker containers, and secure credential management. |
 | **AI Systems Team** | Spec-driven agent factory sub-team that converts structured specs into deployable AI agent systems with orchestration, guardrails, and measurable acceptance criteria. |
 
 The **User Interface** is an Angular 19 application that provides interactive dashboards for all agent APIs.
@@ -42,7 +44,31 @@ The **User Interface** is an Angular 19 application that provides interactive da
 
 ## Quick Start
 
-### Option A: Docker (All 6 Agent APIs + Tools)
+### Option A: Unified API Server (Recommended)
+
+The **Unified API Server** consolidates all agent team APIs under a single entry point on port 8080:
+
+```bash
+# From project root
+python run_unified_api.py
+
+# All teams available at:
+# - http://localhost:8080/api/blogging
+# - http://localhost:8080/api/software-engineering
+# - http://localhost:8080/api/personal-assistant
+# - http://localhost:8080/api/market-research
+# - http://localhost:8080/api/soc2-compliance
+# - http://localhost:8080/api/social-marketing
+# - http://localhost:8080/api/branding
+# - http://localhost:8080/api/agent-provisioning
+
+# Interactive docs
+open http://localhost:8080/docs
+```
+
+See [unified_api/README.md](unified_api/README.md) for full documentation.
+
+### Option B: Docker (All Agent APIs + Tools)
 
 ```bash
 # Ensure Ollama is running on the host
@@ -97,6 +123,12 @@ cd agents && python -m uvicorn social_media_marketing_team.api.main:app --host 0
 
 # Branding (port 8012)
 cd agents && python -m uvicorn branding_team.api.main:app --host 0.0.0.0 --port 8012
+
+# Personal Assistant (port 8015)
+cd agents/personal_assistant_team && python3 -m agent_implementations.run_api_server
+
+# Agent Provisioning (port 8013)
+cd agents && python -m uvicorn agent_provisioning_team.api.main:app --host 0.0.0.0 --port 8013
 ```
 
 **3. Start the User Interface**
@@ -118,18 +150,24 @@ strands-agents/
 │   ├── api/                         # Blog research-and-review HTTP API
 │   ├── blogging/                    # Blogging agent suite
 │   ├── software_engineering_team/   # Full software dev team simulation
+│   ├── personal_assistant_team/     # Personal assistant (email, calendar, tasks, deals)
 │   ├── social_media_marketing_team/ # Campaign planning with platform specialists
 │   ├── soc2_compliance_team/        # SOC2 compliance audit
 │   ├── investment_team/             # Multi-asset investment (IPS-first)
 │   ├── market_research_team/        # Market research and concept viability
 │   ├── branding_team/               # Branding strategy + interactive clarification API
+│   ├── agent_provisioning_team/     # Agent environment provisioning
 │   ├── ai_systems_team/             # Spec-to-agent-system blueprint and build workflow
 │   ├── docker/                      # Docker config, default spec
-│   ├── Dockerfile                   # Multi-stage image (all 6 teams)
+│   ├── Dockerfile                   # Multi-stage image (all teams)
 │   ├── docker-compose.yml           # Run all APIs in one container
 │   ├── supervisord.conf             # Process manager for container
 │   ├── entrypoint.sh
 │   └── requirements.txt
+├── unified_api/                     # Unified API server
+│   ├── main.py                      # FastAPI app mounting all teams
+│   ├── config.py                    # Team configurations
+│   └── README.md                    # Unified API documentation
 ├── user-interface/                  # Angular 19 UI
 │   ├── src/
 │   │   ├── app/
@@ -141,6 +179,7 @@ strands-agents/
 │   │   └── environments/            # API base URLs
 │   ├── docs/                        # Architecture, API mapping, accessibility
 │   └── angular.json
+├── run_unified_api.py               # Unified API launcher script
 ├── README.md                        # This file
 └── CONTRIBUTORS.md                  # Contribution guidelines
 ```
@@ -185,12 +224,25 @@ Human-AI workflow: transcript ingestion, UX synthesis, viability recommendation,
 - **API:** `POST /market-research/run`
 - **Docs:** [agents/market_research_team/README.md](agents/market_research_team/README.md)
 
+### Personal Assistant
+
+AI-powered personal assistant that manages emails, calendar, tasks, deals, reservations, and document generation. Features comprehensive user profile management and robust JSON extraction with automatic recovery.
+
+- **API:** `POST /users/{user_id}/assistant`, `GET /users/{user_id}/profile`
+- **Docs:** [agents/personal_assistant_team/README.md](agents/personal_assistant_team/README.md)
+
 ### Investment Team
 
 IPS-first multi-asset organization with PolicyGuardian, Validation, PromotionGate, InvestmentCommittee agents. Separation-of-duties, risk veto, monitor-only safety.
 
 - **Docs:** [agents/investment_team/README.md](agents/investment_team/README.md)
 
+### Agent Provisioning
+
+Provisions agent environments through a 6-phase workflow: request parsing, capability mapping, infrastructure (databases, git repos, Docker), security setup, orchestration configuration, and verification.
+
+- **API:** `POST /provision`, `GET /provision/{request_id}/status`
+- **Docs:** [agents/agent_provisioning_team/README.md](agents/agent_provisioning_team/README.md)
 ### AI Systems Team
 
 Spec-driven sub-team for creating AI systems from requirements. Takes a structured spec and outputs an Agent System Blueprint, including role design, orchestration flow, safety gates, evaluation criteria, and rollout guidance.
@@ -210,6 +262,7 @@ Angular 19 standalone app with dashboards for each agent API.
 | `/` | Redirects to `/blogging` |
 | `/blogging` | Blogging (research-and-review, full-pipeline) |
 | `/software-engineering` | Software Engineering Team |
+| `/personal-assistant` | Personal Assistant (chat, profile, tasks, calendar, deals) |
 | `/market-research` | Market Research |
 | `/soc2-compliance` | SOC2 Compliance |
 | `/social-marketing` | Social Media Marketing |
@@ -343,6 +396,12 @@ See [agents/docker/README.md](agents/docker/README.md) for environment variables
 | `SOC2_LLM_PROVIDER` | SOC2 | `ollama` or `dummy` | `ollama` |
 | `SOC2_LLM_MODEL` | SOC2 | Model name | `llama3.1` |
 | `SOC2_LLM_BASE_URL` | SOC2 | Ollama API URL | `http://127.0.0.1:11434` |
+| `PA_LLM_PROVIDER` | Personal Assistant | `ollama` or `dummy` | `ollama` |
+| `PA_LLM_MODEL` | Personal Assistant | Model name | `llama3.1` |
+| `PA_LLM_BASE_URL` | Personal Assistant | Ollama API URL | `http://127.0.0.1:11434` |
+| `PA_CREDENTIAL_KEY` | Personal Assistant | Fernet key for email credentials | Auto-generated |
+| `UNIFIED_API_HOST` | Unified API | Host to bind | `0.0.0.0` |
+| `UNIFIED_API_PORT` | Unified API | Port to bind | `8080` |
 
 ### UI Environment Files
 

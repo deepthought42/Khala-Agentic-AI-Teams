@@ -1,0 +1,370 @@
+"""
+Unified API Server - Consolidates all Strands Agent team APIs.
+
+This server mounts all agent team APIs under namespaced prefixes,
+providing a single entry point for the entire platform.
+
+Route Prefixes:
+- /api/blogging          - Blog research, review, draft, publication
+- /api/software-engineering - Full dev team simulation
+- /api/personal-assistant   - Personal assistant (email, calendar, tasks)
+- /api/market-research      - Market research and UX synthesis
+- /api/soc2-compliance      - SOC2 compliance audit
+- /api/social-marketing     - Social media campaign planning
+- /api/branding             - Brand strategy and design
+- /api/agent-provisioning   - Agent environment provisioning
+"""
+
+import logging
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict, List
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+# Add agents directory to path for imports
+_project_root = Path(__file__).resolve().parent.parent
+_agents_dir = _project_root / "agents"
+if str(_agents_dir) not in sys.path:
+    sys.path.insert(0, str(_agents_dir))
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from unified_api.config import TEAM_CONFIGS, get_enabled_teams
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("unified_api")
+
+
+class TeamHealth(BaseModel):
+    """Health status for a single team."""
+
+    name: str
+    prefix: str
+    status: str
+    enabled: bool
+
+
+class UnifiedHealthResponse(BaseModel):
+    """Unified health check response."""
+
+    status: str
+    version: str
+    teams: List[TeamHealth]
+
+
+class TeamInfo(BaseModel):
+    """Information about a mounted team API."""
+
+    name: str
+    prefix: str
+    description: str
+    tags: List[str]
+    enabled: bool
+
+
+class ApiInfoResponse(BaseModel):
+    """API information response."""
+
+    name: str
+    version: str
+    description: str
+    teams: List[TeamInfo]
+    docs_url: str
+
+
+# Track mounted routers for health checks
+_mounted_teams: Dict[str, bool] = {}
+
+
+def _try_mount_blogging(app: FastAPI) -> bool:
+    """Mount blogging team API."""
+    try:
+        from blogging.api.main import app as blogging_app
+
+        config = TEAM_CONFIGS["blogging"]
+        app.mount(config.prefix, blogging_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Blogging API: %s", e)
+        return False
+
+
+def _try_mount_software_engineering(app: FastAPI) -> bool:
+    """Mount software engineering team API."""
+    try:
+        from software_engineering_team.api.main import app as se_app
+
+        config = TEAM_CONFIGS["software_engineering"]
+        app.mount(config.prefix, se_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Software Engineering API: %s", e)
+        return False
+
+
+def _try_mount_personal_assistant(app: FastAPI) -> bool:
+    """Mount personal assistant team API."""
+    try:
+        from personal_assistant_team.api.main import app as pa_app
+
+        config = TEAM_CONFIGS["personal_assistant"]
+        app.mount(config.prefix, pa_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Personal Assistant API: %s", e)
+        return False
+
+
+def _try_mount_market_research(app: FastAPI) -> bool:
+    """Mount market research team API."""
+    try:
+        from market_research_team.api.main import app as mr_app
+
+        config = TEAM_CONFIGS["market_research"]
+        app.mount(config.prefix, mr_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Market Research API: %s", e)
+        return False
+
+
+def _try_mount_soc2_compliance(app: FastAPI) -> bool:
+    """Mount SOC2 compliance team API."""
+    try:
+        from soc2_compliance_team.api.main import app as soc2_app
+
+        config = TEAM_CONFIGS["soc2_compliance"]
+        app.mount(config.prefix, soc2_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount SOC2 Compliance API: %s", e)
+        return False
+
+
+def _try_mount_social_marketing(app: FastAPI) -> bool:
+    """Mount social media marketing team API."""
+    try:
+        from social_media_marketing_team.api.main import app as smm_app
+
+        config = TEAM_CONFIGS["social_marketing"]
+        app.mount(config.prefix, smm_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Social Marketing API: %s", e)
+        return False
+
+
+def _try_mount_branding(app: FastAPI) -> bool:
+    """Mount branding team API."""
+    try:
+        from branding_team.api.main import app as branding_app
+
+        config = TEAM_CONFIGS["branding"]
+        app.mount(config.prefix, branding_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Branding API: %s", e)
+        return False
+
+
+def _try_mount_agent_provisioning(app: FastAPI) -> bool:
+    """Mount agent provisioning team API."""
+    try:
+        from agent_provisioning_team.api.main import app as ap_app
+
+        config = TEAM_CONFIGS["agent_provisioning"]
+        app.mount(config.prefix, ap_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Agent Provisioning API: %s", e)
+        return False
+
+
+def _try_mount_accessibility_audit(app: FastAPI) -> bool:
+    """Mount accessibility audit team API."""
+    try:
+        from accessibility_audit_team.api.main import router as a11y_router
+        from fastapi import FastAPI as SubApp
+
+        # Create sub-app for accessibility audit
+        a11y_app = SubApp(
+            title="Accessibility Audit API",
+            description="WCAG 2.2 and Section 508 accessibility auditing for web and mobile",
+        )
+        a11y_app.include_router(a11y_router)
+
+        config = TEAM_CONFIGS["accessibility_audit"]
+        app.mount(config.prefix, a11y_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Accessibility Audit API: %s", e)
+        return False
+
+
+def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
+    """Mount all enabled team APIs and return mount status."""
+    mount_functions = {
+        "blogging": _try_mount_blogging,
+        "software_engineering": _try_mount_software_engineering,
+        "personal_assistant": _try_mount_personal_assistant,
+        "market_research": _try_mount_market_research,
+        "soc2_compliance": _try_mount_soc2_compliance,
+        "social_marketing": _try_mount_social_marketing,
+        "branding": _try_mount_branding,
+        "agent_provisioning": _try_mount_agent_provisioning,
+        "accessibility_audit": _try_mount_accessibility_audit,
+    }
+
+    results = {}
+    enabled_teams = get_enabled_teams()
+
+    for team_key, mount_fn in mount_functions.items():
+        if team_key in enabled_teams:
+            results[team_key] = mount_fn(app)
+        else:
+            results[team_key] = False
+            logger.info("Team %s is disabled, skipping mount", team_key)
+
+    return results
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler."""
+    global _mounted_teams
+    logger.info("Starting Unified API Server...")
+    _mounted_teams = mount_all_teams(app)
+
+    mounted_count = sum(1 for v in _mounted_teams.values() if v)
+    total_count = len(get_enabled_teams())
+    logger.info("Mounted %d/%d team APIs", mounted_count, total_count)
+
+    yield
+
+    logger.info("Shutting down Unified API Server...")
+
+
+# Create the unified FastAPI application
+app = FastAPI(
+    title="Strands Agents Unified API",
+    description="""
+Unified API server providing access to all Strands Agent team capabilities.
+
+## Available Teams
+
+- **Blogging** (`/api/blogging`) - Research, review, draft, copy-edit, publication
+- **Software Engineering** (`/api/software-engineering`) - Full dev team simulation
+- **Personal Assistant** (`/api/personal-assistant`) - Email, calendar, tasks, deals
+- **Market Research** (`/api/market-research`) - User discovery, UX synthesis
+- **SOC2 Compliance** (`/api/soc2-compliance`) - Compliance audit workflow
+- **Social Marketing** (`/api/social-marketing`) - Campaign planning
+- **Branding** (`/api/branding`) - Brand strategy and design
+- **Agent Provisioning** (`/api/agent-provisioning`) - Environment provisioning
+- **Accessibility Audit** (`/api/accessibility-audit`) - WCAG 2.2 and Section 508 auditing
+
+Each team's endpoints are available under their respective prefix.
+Visit the team-specific `/docs` endpoint for detailed API documentation
+(e.g., `/api/blogging/docs`).
+""",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/", response_model=ApiInfoResponse, tags=["root"])
+async def root() -> ApiInfoResponse:
+    """Get unified API information and list of available teams."""
+    teams = []
+    for key, config in TEAM_CONFIGS.items():
+        teams.append(
+            TeamInfo(
+                name=config.name,
+                prefix=config.prefix,
+                description=config.description,
+                tags=config.tags,
+                enabled=config.enabled and _mounted_teams.get(key, False),
+            )
+        )
+
+    return ApiInfoResponse(
+        name="Strands Agents Unified API",
+        version="1.0.0",
+        description="Single entry point for all Strands Agent team APIs",
+        teams=teams,
+        docs_url="/docs",
+    )
+
+
+@app.get("/health", response_model=UnifiedHealthResponse, tags=["health"])
+async def health() -> UnifiedHealthResponse:
+    """
+    Unified health check for all mounted team APIs.
+
+    Returns the overall status and individual team statuses.
+    """
+    teams = []
+    all_healthy = True
+
+    for key, config in TEAM_CONFIGS.items():
+        mounted = _mounted_teams.get(key, False)
+        status = "healthy" if mounted else "unavailable"
+        if config.enabled and not mounted:
+            all_healthy = False
+
+        teams.append(
+            TeamHealth(
+                name=config.name,
+                prefix=config.prefix,
+                status=status,
+                enabled=config.enabled,
+            )
+        )
+
+    return UnifiedHealthResponse(
+        status="healthy" if all_healthy else "degraded",
+        version="1.0.0",
+        teams=teams,
+    )
+
+
+@app.get("/teams", tags=["root"])
+async def list_teams() -> Dict[str, Any]:
+    """List all available teams with their mount status."""
+    teams = {}
+    for key, config in TEAM_CONFIGS.items():
+        mounted = _mounted_teams.get(key, False)
+        teams[key] = {
+            "name": config.name,
+            "prefix": config.prefix,
+            "description": config.description,
+            "mounted": mounted,
+            "enabled": config.enabled,
+            "docs_url": f"{config.prefix}/docs" if mounted else None,
+        }
+    return {"teams": teams}

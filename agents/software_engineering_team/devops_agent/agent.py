@@ -348,6 +348,10 @@ class DevOpsExpertAgent:
         build_errors: str = ""
 
         for iteration in range(1, max_iterations + 1):
+            logger.info(
+                "DevOps WORKFLOW: iteration %d/%d. Next step -> Generating DevOps configuration",
+                iteration, max_iterations,
+            )
             # Generate (with build_errors from previous iteration if any)
             result = self.run(
                 DevOpsInput(
@@ -383,14 +387,18 @@ class DevOpsExpertAgent:
                         f"Validation failed {MAX_SAME_BUILD_FAILURES} times with the same errors; "
                         "stopping to avoid loop."
                     )
-                    logger.error("DevOps WORKFLOW: %s", repeated_reason)
+                    logger.error(
+                        "DevOps WORKFLOW: Recovery summary: 1) Attempted %d iterations, "
+                        "2) Same validation error repeated %d times. %s",
+                        iteration, consecutive_same_build_failures, repeated_reason,
+                    )
                     return DevOpsWorkflowResult(
                         success=False,
                         failure_reason=repeated_reason + " " + build_errors[:500],
                         iterations=iteration,
                     )
                 logger.warning(
-                    "DevOps WORKFLOW: iteration %d/%d validation failed, re-generating",
+                    "DevOps WORKFLOW: iteration %d/%d validation failed. Next step -> Re-generating with error context",
                     iteration,
                     max_iterations,
                 )

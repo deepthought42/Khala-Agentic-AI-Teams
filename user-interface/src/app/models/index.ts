@@ -7,3 +7,4 @@ export * from './soc2-compliance.model';
 export * from './social-marketing.model';
 
 export * from './branding.model';
+export * from './personal-assistant.model';

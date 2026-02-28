@@ -1,0 +1,128 @@
+<div class="jobs-dashboard">
+  <header class="dashboard-header">
+    <div class="header-content">
+      <h1>Jobs Dashboard</h1>
+      <p class="subtitle">Monitor all running agent jobs across teams</p>
+    </div>
+    <div class="header-actions">
+      @if (lastUpdated) {
+        <span class="last-updated">Updated {{ lastUpdated | date:'shortTime' }}</span>
+      }
+      <button mat-icon-button (click)="refresh()" [disabled]="loading" matTooltip="Refresh jobs">
+        <mat-icon [class.spinning]="loading">refresh</mat-icon>
+      </button>
+    </div>
+  </header>
+
+  @if (error) {
+    <div class="error-banner">
+      <mat-icon>error_outline</mat-icon>
+      <span>{{ error }}</span>
+    </div>
+  }
+
+  @if (loading && jobs.length === 0) {
+    <div class="loading-state">
+      <mat-icon class="spinning">sync</mat-icon>
+      <p>Loading jobs...</p>
+    </div>
+  } @else if (jobs.length === 0) {
+    <div class="empty-state">
+      <mat-icon>inbox</mat-icon>
+      <h2>No Active Jobs</h2>
+      <p>There are no running or pending jobs at the moment.</p>
+      <p class="hint">Start a new job from one of the team dashboards.</p>
+    </div>
+  } @else {
+    <div class="jobs-table-container">
+      <table class="jobs-table">
+        <thead>
+          <tr>
+            <th class="col-status">Status</th>
+            <th class="col-type">Type</th>
+            <th class="col-repo">Repository</th>
+            <th class="col-progress">Progress</th>
+            <th class="col-activity">Current Activity</th>
+            <th class="col-agents">Active Agents</th>
+            <th class="col-time">Started</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (job of jobs; track trackByJobId($index, job)) {
+            <tr class="job-row" [class]="getStatusClass(job)" (click)="navigateToJob(job)">
+              <td class="col-status">
+                <span class="status-badge" [class]="getStatusClass(job)">{{ getStatusLabel(job) }}</span>
+              </td>
+              <td class="col-type">
+                <div class="type-cell">
+                  <mat-icon class="type-icon">{{ getJobTypeInfo(job.summary.job_type).icon }}</mat-icon>
+                  <span>{{ getJobTypeInfo(job.summary.job_type).label }}</span>
+                </div>
+              </td>
+              <td class="col-repo">
+                <span class="repo-name" [matTooltip]="job.summary.repo_path || ''">{{ getRepoName(job.summary.repo_path) }}</span>
+              </td>
+              <td class="col-progress">
+                <div class="progress-cell">
+                  @if (job.progress != null) {
+                    <mat-progress-bar
+                      mode="determinate"
+                      [value]="job.progress"
+                      [color]="job.summary.status === 'failed' ? 'warn' : 'primary'"
+                    ></mat-progress-bar>
+                    <span class="progress-label">{{ job.progress }}%</span>
+                  } @else if (job.summary.status === 'running' && !job.waitingForAnswers) {
+                    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+                  } @else {
+                    <span class="progress-na">—</span>
+                  }
+                </div>
+              </td>
+              <td class="col-activity">
+                @if (getActivityText(job)) {
+                  <div class="activity-cell">
+                    <mat-icon class="activity-icon" [class.spinning]="job.summary.status === 'running' && !job.waitingForAnswers">
+                      {{ job.waitingForAnswers ? 'help_outline' : 'sync' }}
+                    </mat-icon>
+                    <span class="activity-text">{{ getActivityText(job) }}</span>
+                  </div>
+                } @else {
+                  <span class="activity-na">—</span>
+                }
+              </td>
+              <td class="col-agents">
+                @if (job.teamStatuses && job.teamStatuses.length > 0) {
+                  <div class="agents-cell">
+                    @for (team of job.teamStatuses; track trackByTeamId($index, team)) {
+                      <div class="agent-chip" [class]="getPhaseColorClass(team.phase)" [class.inactive]="!team.isActive"
+                           [matTooltip]="team.label + ': ' + team.phaseLabel">
+                        <mat-icon class="agent-icon">{{ team.icon }}</mat-icon>
+                        <span class="agent-phase">{{ team.phaseLabel }}</span>
+                      </div>
+                    }
+                  </div>
+                } @else {
+                  <span class="agents-na">—</span>
+                }
+              </td>
+              <td class="col-time">
+                <span class="time-ago">{{ getTimeAgo(job.summary.created_at) }}</span>
+              </td>
+              <td class="col-actions">
+                @if (canCancelJob(job)) {
+                  <button mat-icon-button 
+                          class="stop-button"
+                          (click)="cancelJob($event, job)"
+                          matTooltip="Stop job">
+                    <mat-icon>stop</mat-icon>
+                  </button>
+                }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</div>

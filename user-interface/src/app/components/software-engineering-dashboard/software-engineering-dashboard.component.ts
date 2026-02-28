@@ -1,18 +1,19 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
+import { Subscription, timer } from 'rxjs';
+import { switchMap } from 'rxjs/operators';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
 import { RunTeamFormComponent } from '../run-team-form/run-team-form.component';
-import { JobStatusComponent } from '../job-status/job-status.component';
 import { RetryFailedComponent } from '../retry-failed/retry-failed.component';
-import { RePlanWithClarificationsComponent } from '../re-plan-with-clarifications/re-plan-with-clarifications.component';
 import { ClarificationSessionsComponent } from '../clarification-sessions/clarification-sessions.component';
 import { ClarificationChatComponent } from '../clarification-chat/clarification-chat.component';
 import { ExecutionTasksComponent } from '../execution-tasks/execution-tasks.component';
@@ -20,13 +21,26 @@ import { ExecutionStreamComponent } from '../execution-stream/execution-stream.c
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
 import { BackendCodeV2RunFormComponent } from '../backend-code-v2-run-form/backend-code-v2-run-form.component';
 import { BackendCodeV2JobStatusComponent } from '../backend-code-v2-job-status/backend-code-v2-job-status.component';
+import { FrontendCodeV2RunFormComponent } from '../frontend-code-v2-run-form/frontend-code-v2-run-form.component';
+import { FrontendCodeV2JobStatusComponent } from '../frontend-code-v2-job-status/frontend-code-v2-job-status.component';
+import { PlanningV2RunFormComponent } from '../planning-v2-run-form/planning-v2-run-form.component';
+import { PlanningV2JobStatusComponent } from '../planning-v2-job-status/planning-v2-job-status.component';
+import { RunTeamTrackingComponent } from '../run-team-tracking/run-team-tracking.component';
+import { PendingQuestionsComponent } from '../pending-questions/pending-questions.component';
+import { ProductAnalysisRunFormComponent } from '../product-analysis-run-form/product-analysis-run-form.component';
+import { ProductAnalysisJobStatusComponent } from '../product-analysis-job-status/product-analysis-job-status.component';
 import type {
   RunTeamRequest,
   JobStatusResponse,
-  RePlanWithClarificationsRequest,
   ClarificationCreateRequest,
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
+  FrontendCodeV2RunRequest,
+  PlanningV2RunRequest,
+  PlanningV2StatusResponse,
+  ProductAnalysisRunRequest,
+  ProductAnalysisStatusResponse,
+  RunningJobSummary,
 } from '../../models';
 
 @Component({
@@ -43,9 +57,7 @@ import type {
     ErrorMessageComponent,
     HealthIndicatorComponent,
     RunTeamFormComponent,
-    JobStatusComponent,
     RetryFailedComponent,
-    RePlanWithClarificationsComponent,
     ClarificationSessionsComponent,
     ClarificationChatComponent,
     ExecutionTasksComponent,
@@ -53,24 +65,175 @@ import type {
     ArchitectureResultsComponent,
     BackendCodeV2RunFormComponent,
     BackendCodeV2JobStatusComponent,
+    FrontendCodeV2RunFormComponent,
+    FrontendCodeV2JobStatusComponent,
+    PlanningV2RunFormComponent,
+    PlanningV2JobStatusComponent,
+    RunTeamTrackingComponent,
+    PendingQuestionsComponent,
+    ProductAnalysisRunFormComponent,
+    ProductAnalysisJobStatusComponent,
   ],
   templateUrl: './software-engineering-dashboard.component.html',
   styleUrl: './software-engineering-dashboard.component.scss',
 })
-export class SoftwareEngineeringDashboardComponent {
+export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy {
+  private static readonly JOB_TYPE_TAB_MAP: Record<string, number> = {
+    run_team: 0,
+    product_analysis: 1,
+    backend_code_v2: 4,
+    frontend_code_v2: 5,
+    planning_v2: 6,
+  };
   private readonly api = inject(SoftwareEngineeringApiService);
+  private readonly route = inject(ActivatedRoute);
+  private runningJobsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
+  private pendingTabIndex: number | null = null;
 
   loading = false;
   error: string | null = null;
   jobId: string | null = null;
-  jobStatus: { failed_tasks?: unknown[] } | null = null;
+  selectedTabIndex = 0;
+  jobStatus: JobStatusResponse | null = null;
   clarificationSessionId: string | null = null;
   architectSpec = '';
   architectResults: ArchitectDesignResponse | null = null;
   backendCodeV2JobId: string | null = null;
+  frontendCodeV2JobId: string | null = null;
+  planningV2JobId: string | null = null;
+  productAnalysisJobId: string | null = null;
+
+  /** Running jobs from GET /run-team/jobs; used by the right-hand panel. */
+  runningJobs: RunningJobSummary[] = [];
+  /** Job selected in the running-jobs panel for monitoring. */
+  selectedRunningJob: RunningJobSummary | null = null;
+  /** Status for the selected run_team job in the panel (from JobStatusComponent). */
+  panelRunTeamStatus: JobStatusResponse | null = null;
+  /** Status for planning-v2 job in the main tab. */
+  planningV2Status: PlanningV2StatusResponse | null = null;
+  /** Status for product-analysis job in the main tab. */
+  productAnalysisStatus: ProductAnalysisStatusResponse | null = null;
+  /** Status for the selected planning_v2 job in the panel. */
+  panelPlanningV2Status: PlanningV2StatusResponse | null = null;
 
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
+
+  ngOnInit(): void {
+    this.route.queryParams.subscribe((params) => {
+      const jobId = params['jobId'];
+      const tab = params['tab'];
+      if (jobId) {
+        this.pendingJobId = jobId;
+      }
+      if (tab !== undefined) {
+        this.pendingTabIndex = parseInt(tab, 10);
+      }
+    });
+
+    this.runningJobsSub = timer(0, 30000).pipe(
+      switchMap(() => this.api.getRunningJobs())
+    ).subscribe({
+      next: (res) => {
+        this.runningJobs = res.jobs;
+        if (this.runningJobs.length === 0) {
+          this.selectedRunningJob = null;
+          this.panelRunTeamStatus = null;
+        } else if (this.selectedRunningJob && !this.runningJobs.find(j => j.job_id === this.selectedRunningJob!.job_id)) {
+          this.selectedRunningJob = null;
+          this.panelRunTeamStatus = null;
+        }
+
+        if (this.pendingJobId) {
+          const job = this.runningJobs.find(j => j.job_id === this.pendingJobId);
+          if (job) {
+            this.selectRunningJob(job);
+            this.pendingJobId = null;
+            this.pendingTabIndex = null;
+          } else {
+            this.selectJobById(this.pendingJobId, this.pendingTabIndex);
+            this.pendingJobId = null;
+            this.pendingTabIndex = null;
+          }
+        } else if (this.runningJobs.length > 0 && !this.selectedRunningJob) {
+          this.selectRunningJob(this.runningJobs[0]);
+        }
+      },
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.runningJobsSub?.unsubscribe();
+  }
+
+  selectRunningJob(job: RunningJobSummary): void {
+    this.selectedRunningJob = job;
+    if (job.job_type !== 'run_team') {
+      this.panelRunTeamStatus = null;
+    }
+
+    const tabIndex = SoftwareEngineeringDashboardComponent.JOB_TYPE_TAB_MAP[job.job_type];
+    if (tabIndex !== undefined) {
+      this.selectedTabIndex = tabIndex;
+    }
+
+    switch (job.job_type) {
+      case 'run_team':
+        this.jobId = job.job_id;
+        break;
+      case 'product_analysis':
+        this.productAnalysisJobId = job.job_id;
+        break;
+      case 'backend_code_v2':
+        this.backendCodeV2JobId = job.job_id;
+        break;
+      case 'frontend_code_v2':
+        this.frontendCodeV2JobId = job.job_id;
+        break;
+      case 'planning_v2':
+        this.planningV2JobId = job.job_id;
+        break;
+    }
+  }
+
+  selectJobById(jobId: string, tabIndex?: number | null): void {
+    if (tabIndex !== undefined && tabIndex !== null) {
+      this.selectedTabIndex = tabIndex;
+    }
+
+    switch (tabIndex) {
+      case 0:
+        this.jobId = jobId;
+        break;
+      case 1:
+        this.productAnalysisJobId = jobId;
+        break;
+      case 4:
+        this.backendCodeV2JobId = jobId;
+        break;
+      case 5:
+        this.frontendCodeV2JobId = jobId;
+        break;
+      case 6:
+        this.planningV2JobId = jobId;
+        break;
+      default:
+        this.jobId = jobId;
+        break;
+    }
+  }
+
+  runningJobTypeLabel(jobType: string): string {
+    const labels: Record<string, string> = {
+      run_team: 'Run Team',
+      product_analysis: 'Product Analysis',
+      backend_code_v2: 'Backend (v2)',
+      frontend_code_v2: 'Frontend (v2)',
+      planning_v2: 'Planning (v2)',
+    };
+    return labels[jobType] ?? jobType;
+  }
 
   onRunTeamSubmit(request: RunTeamRequest): void {
     this.loading = true;
@@ -98,21 +261,6 @@ export class SoftwareEngineeringDashboardComponent {
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Retry failed';
-        this.loading = false;
-      },
-    });
-  }
-
-  onRePlanSubmit(request: RePlanWithClarificationsRequest): void {
-    if (!this.jobId) return;
-    this.loading = true;
-    this.error = null;
-    this.api.rePlanWithClarifications(this.jobId, request).subscribe({
-      next: () => {
-        this.loading = false;
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Re-plan failed';
         this.loading = false;
       },
     });
@@ -146,6 +294,38 @@ export class SoftwareEngineeringDashboardComponent {
     });
   }
 
+  onFrontendCodeV2Submit(request: FrontendCodeV2RunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.frontendCodeV2JobId = null;
+    this.api.runFrontendCodeV2(request).subscribe({
+      next: (res) => {
+        this.frontendCodeV2JobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Frontend-Code-V2 request failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onPlanningV2Submit(request: PlanningV2RunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.planningV2JobId = null;
+    this.api.runPlanningV2(request).subscribe({
+      next: (res) => {
+        this.planningV2JobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Planning-V2 request failed';
+        this.loading = false;
+      },
+    });
+  }
+
   onArchitectDesignSubmit(): void {
     if (!this.architectSpec?.trim()) return;
     this.loading = true;
@@ -161,5 +341,53 @@ export class SoftwareEngineeringDashboardComponent {
         this.loading = false;
       },
     });
+  }
+
+  onAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.jobStatus = response as JobStatusResponse;
+  }
+
+  onPlanningV2StatusChange(status: PlanningV2StatusResponse): void {
+    this.planningV2Status = status;
+  }
+
+  onPlanningV2AnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.planningV2Status = response as PlanningV2StatusResponse;
+  }
+
+  onPanelRunTeamAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.panelRunTeamStatus = response as JobStatusResponse;
+  }
+
+  onPanelPlanningV2StatusChange(status: PlanningV2StatusResponse): void {
+    this.panelPlanningV2Status = status;
+  }
+
+  onPanelPlanningV2AnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.panelPlanningV2Status = response as PlanningV2StatusResponse;
+  }
+
+  onProductAnalysisSubmit(request: ProductAnalysisRunRequest): void {
+    this.loading = true;
+    this.error = null;
+    this.productAnalysisJobId = null;
+    this.api.runProductAnalysis(request).subscribe({
+      next: (res) => {
+        this.productAnalysisJobId = res.job_id;
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Product Analysis request failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onProductAnalysisStatusChange(status: ProductAnalysisStatusResponse): void {
+    this.productAnalysisStatus = status;
+  }
+
+  onProductAnalysisAnswersSubmitted(response: JobStatusResponse | PlanningV2StatusResponse): void {
+    this.productAnalysisStatus = response as unknown as ProductAnalysisStatusResponse;
   }
 }

@@ -10,6 +10,7 @@ This document describes the architecture of the Software Engineering Team — a 
 - [4. Task Execution Model](#4-task-execution-model)
 - [5. Backend Worker Workflow](#5-backend-worker-workflow)
 - [5b. Backend-Code-V2 Team Workflow](#5b-backend-code-v2-team-workflow)
+- [5c. Frontend-Code-V2 Team Workflow](#5c-frontend-code-v2-team-workflow)
 - [6. Frontend Worker Workflow](#6-frontend-worker-workflow)
 - [7. Frontend Team Full Pipeline](#7-frontend-team-full-pipeline)
 - [8. DevOps Team Pipeline](#8-devops-team-pipeline)
@@ -59,25 +60,22 @@ The API also exposes `GET /run-team/{job_id}` for polling job status, `POST /run
 
 ## 2. End-to-End Pipeline
 
-A single run goes through four major phases: Discovery, Design, Execution, and Integration. The orchestrator (`orchestrator.py`) drives this pipeline sequentially. Tiers within domain planning run sequentially, but agents within each tier run in parallel.
+A single run goes through four major phases: Discovery, Design, Execution, and Integration. The orchestrator (`orchestrator.py`) drives this pipeline sequentially. Planning is handled by **planning_v2_team** (6-phase workflow); its output is adapted by **planning_v2_adapter** for Tech Lead and Architecture Expert.
 
 ```mermaid
 flowchart TB
     subgraph discovery ["1 - Discovery"]
         LoadSpec["Load Spec\n(initial_spec.md or override)"]
         ParseSpec["Parse Spec with LLM\n(ProductRequirements)"]
-        SpecIntake["Spec Intake\n(optional: REQ-IDs, glossary)"]
-        ProjectPlanning["Project Planning\n(features doc, project overview)"]
-        LoadSpec --> ParseSpec --> SpecIntake --> ProjectPlanning
+        PlanningV2["Planning (v2)\n6-phase workflow"]
+        Adapter["planning_v2_adapter\n(ProductRequirements, project_overview)"]
+        LoadSpec --> ParseSpec --> PlanningV2 --> Adapter
     end
 
     subgraph design ["2 - Design"]
-        PlanLoop["Tech Lead + Architecture Expert\n(alignment + conformance loop)"]
-        Tier1["Tier 1: API Contract, Data Arch,\nUI/UX, Infrastructure"]
-        Tier2["Tier 2: Frontend Arch, DevOps,\nQA Strategy, Security"]
-        Tier3["Tier 3: Observability,\nPerformance"]
+        PlanLoop["Tech Lead + Architecture Expert"]
         MasterPlan["Planning Consolidation\n(master_plan.md)"]
-        PlanLoop --> Tier1 --> Tier2 --> Tier3 --> MasterPlan
+        PlanLoop --> MasterPlan
     end
 
     subgraph execution ["3 - Execution"]
@@ -105,30 +103,17 @@ Each phase produces artifacts that feed the next. Planning artifacts are written
 
 ## 3. Agent Registry and Roles
 
-The orchestrator instantiates all agents via `_get_agents()`. Agents are grouped by function: planning, domain planning, setup, execution, quality gates, integration, and recovery support.
+The orchestrator instantiates agents via `_get_agents()`. The main pipeline uses **planning_v2_team** (PlanningV2TeamLead) for discovery/planning, with **planning_v2_adapter** mapping its result to ProductRequirements and project_overview for Tech Lead and Architecture. Legacy planning_team agents (Spec Intake, Project Planning, domain planning) are not in the main flow; clarification sessions still use Spec Intake.
 
 ```mermaid
 flowchart TB
     Orch["Orchestrator"]
 
-    subgraph planning [Planning]
-        specIntake["Spec Intake"]
-        projPlan["Project Planning"]
+    subgraph planning [Planning - main pipeline]
+        planningV2["Planning (v2)\n6-phase workflow"]
+        adapter["planning_v2_adapter"]
         archExpert["Architecture Expert"]
         techLead["Tech Lead"]
-    end
-
-    subgraph domain [Domain Planning]
-        apiContract["API Contract"]
-        dataArch["Data Architecture"]
-        uiUx["UI/UX Design"]
-        feArch["Frontend Architecture"]
-        infraPlan["Infrastructure"]
-        devopsPlan["DevOps Planning"]
-        qaStrat["QA Test Strategy"]
-        secPlan["Security Planning"]
-        obsPlan["Observability"]
-        perfPlan["Performance"]
     end
 
     subgraph setupGroup [Setup]
@@ -254,39 +239,69 @@ On agent crash, the Repair Agent analyzes the traceback and applies fixes. If th
 
 ## 5b. Backend-Code-V2 Team Workflow
 
-The **backend-code-v2** agent team is a standalone, experimental backend development team that operates independently from `BackendExpertAgent`. It is assigned tasks with `assignee = "backend-code-v2"` and runs its own 5-phase lifecycle. No code from `backend_agent/` is imported or reused.
+The **backend-code-v2** agent team is a standalone, experimental backend development team that operates independently from `BackendExpertAgent`. It uses a **three-layer architecture**: a Backend Tech Lead Agent runs Setup then delegates to a Backend Development Agent, which runs the 5-phase cycle and consults **tool agents in every phase**. No code from `backend_agent/` is imported or reused.
 
 ```mermaid
 flowchart TB
-    subgraph team ["Backend-Code-V2 Team (standalone)"]
-        Planning["1. Planning\n(decompose into microtasks,\nassign to tool agents)"]
-        Execution["2. Execution\n(run microtasks via tool agents\nor LLM code gen)"]
-        Review["3. Review\n(build, lint, code review,\nQA, security)"]
-        ProblemSolving["4. Problem-Solving\n(root-cause analysis,\napply fixes)"]
-        Deliver["5. Deliver\n(feature branch, commit,\nmerge to development)"]
-
-        Planning --> Execution --> Review
-        Review -->|"issues found"| ProblemSolving
-        ProblemSolving --> Execution
-        Review -->|"passed"| Deliver
+    subgraph techLead ["Backend Tech Lead Agent"]
+        Setup["Setup\n(git init, README, dev branch)"]
+        TLPlanning["Planning"]
+        TLExecution["Execution"]
+        TLReview["Review"]
+        TLProblemSolving["Problem-solving"]
+        TLDeliver["Deliver"]
+        Setup --> TLPlanning --> TLExecution --> TLReview --> TLProblemSolving --> TLDeliver
     end
 
-    subgraph toolAgents ["Team-Owned Tool Agents"]
-        DataEng["Data Engineering\n(schema, migrations)"]
-        ApiOA["API / OpenAPI\n(contracts, routes)"]
-        Auth["Auth\n(login, RBAC)"]
-        CICD["CI/CD (stub)"]
-        Container["Containerization (stub)"]
+    subgraph devAgent ["Backend Development Agent"]
+        DAPlanning["Planning\n(microtask decomposition)"]
+        DAExecution["Execution\n(delegate to tool agents)"]
+        DAReview["Review\n(build, lint, coverage, UAT)"]
+        DAProblemSolving["Problem-solving\n(root-cause, fix loop)"]
+        DADeliver["Deliver\n(commit to branch)"]
+        DAPlanning --> DAExecution --> DAReview --> DAProblemSolving --> DADeliver
     end
 
-    team -.->|"delegate microtasks"| toolAgents
+    subgraph toolGrid ["Tool Agents (participate in all phases)"]
+        direction LR
+        DataEng["DataEng"]
+        Auth["Auth"]
+        ApiOA["API/OpenAPI"]
+        CICD["CI/CD"]
+        Container["Container"]
+        GitBranch["Git branch mgmt"]
+        BuildSpec["Build Specialist"]
+    end
+
+    techLead -->|"delegates"| devAgent
+    devAgent -->|"each phase consults"| toolGrid
 ```
 
-The team supports both Python and Java projects (auto-detected from the repository). Quality gate agents (QA, Security, Code Review) are passed in as dependencies by the main orchestrator; the team invokes them during its Review phase. The review/fix loop iterates up to 5 times before proceeding to Deliver.
+- **Layer 1 — Backend Tech Lead Agent**: Runs the **Setup** phase (git init if needed, README with project title, rename master→main, create `development` branch), then delegates the 5-phase development cycle to the Backend Development Agent.
+- **Layer 2 — Backend Development Agent**: Owns Planning (microtask decomposition, language detection), Execution (tool agents + LLM fallback), Review (build, lint, QA, security, code review), Problem-solving (fix loop), and Deliver (feature branch, commit, merge to `development`). The review/fix loop runs up to 5 iterations.
+- **Layer 3 — Tool agents**: Data Engineering, API/OpenAPI, Auth, CI/CD, Containerization, **Git branch management**, and **Build Specialist** agents each implement `plan()`, `execute()`, `review()`, `problem_solve()`, and `deliver()`, so they participate in every phase. The **Git branch management** agent creates a feature branch off `development` at the start of Execution, commits changes after each iteration ("commit along the way"), and in Deliver merges the feature branch back into `development`. The **Build Specialist** (stub) is intended to assist when the project doesn't build; it can be wired to the existing build verifier or a dedicated build-fix flow.
+
+The team supports both Python and Java (auto-detected). Quality gate agents (QA, Security, Code Review) are passed in by the main orchestrator and invoked during Review.
 
 **API endpoints:**
-- `POST /backend-code-v2/run` — Submit a task and repo path; starts the 5-phase workflow in a background thread.
-- `GET /backend-code-v2/status/{job_id}` — Returns current phase, completed phases, progress percentage, and microtask status.
+- `POST /backend-code-v2/run` — Submit a task and repo path; starts Setup then the 5-phase workflow in a background thread.
+- `GET /backend-code-v2/status/{job_id}` — Returns current phase (including `setup`), completed phases, progress percentage, and microtask status.
+
+---
+
+## 5c. Frontend-Code-V2 Team Workflow
+
+The **frontend-code-v2** agent team is a standalone, experimental frontend development team that does **not** import or reuse any code from `frontend_team/` or `feature_agent/`. It mirrors the backend-code-v2 **three-layer architecture**: a Frontend Tech Lead Agent runs Setup then delegates to a Frontend Development Agent, which runs the 5-phase cycle and consults **tool agents in every phase**.
+
+- **Layer 1 — Frontend Tech Lead Agent**: Runs **Setup** (git init if needed, README, development branch), then delegates the 5-phase cycle to the Frontend Development Agent.
+- **Layer 2 — Frontend Development Agent**: Planning (microtask decomposition; stack inferred as Angular/React/TypeScript/JavaScript), Execution (tool agents + LLM fallback), Review (build, lint, QA, security, code review), Problem-solving (fix loop), Deliver (feature branch, commit, merge to `development`). Review/fix loop runs up to 5 iterations.
+- **Layer 3 — Tool agents**: State Management, Auth, API/OpenAPI, CI/CD, Containerization, Documentation, Testing/QA, Security, **Git branch management**, UI Design, Branding/Theme, UX/Usability, Accessibility, **Build Specialist**, Linter. Each participates in plan, execute, review, problem_solve, and deliver. Git branch management creates a feature branch off `development`, commits along the way, and merges in Deliver.
+
+**API endpoints:**
+- `POST /frontend-code-v2/run` — Submit a task and repo path; starts Setup then the 6-phase workflow (setup + 5-phase cycle) in a background thread.
+- `GET /frontend-code-v2/status/{job_id}` — Returns current phase (including `setup`), completed phases, progress percentage, and microtask status.
+
+The Software Engineering UI dashboard includes a **Frontend Developer (v2)** tab with a run form and job-status panel; the main orchestrator supports assignee **frontend-code-v2** (task_parsing and a dedicated frontend_code_v2_queue + worker).
 
 ---
 
@@ -448,18 +463,18 @@ Hard gates that must pass: `iac_validate`, `iac_validate_fmt`, `policy_checks`, 
 
 ## 9. Planning Loop
 
-The Tech Lead and Architecture Expert iterate until tasks and architecture converge. An optional planning cache short-circuits the loop when the spec, architecture, and project overview are unchanged from a previous run.
+The Tech Lead and Architecture Expert run after **Planning (v2)** and **planning_v2_adapter** produce ProductRequirements and project_overview. An optional planning cache short-circuits when the spec, architecture, and project overview are unchanged from a previous run.
 
 ```mermaid
 flowchart TB
-    StartPlan["Start Planning\n(after Project Planning)"]
+    StartPlan["Start Planning\n(after Planning v2 + adapter)"]
     TechLeadRun["Tech Lead\nGenerate task assignment"]
     ArchRun["Architecture Expert\nDesign architecture"]
     CacheHit{"Planning\ncache hit?"}
     AlignCheck{"Tasks and architecture\naligned?"}
     ConformCheck{"Conforms to\ninitial_spec?"}
     SaveCache["Save to\nplanning cache"]
-    ProceedExec["Proceed to\nDomain Planning"]
+    ProceedExec["Proceed to\nExecution"]
 
     StartPlan --> TechLeadRun --> ArchRun --> CacheHit
     CacheHit -->|"yes"| ProceedExec
@@ -476,26 +491,23 @@ The alignment inner loop runs up to `SW_MAX_ALIGNMENT_ITERATIONS` (default 20) a
 
 ## 10. Plan Folder and Artifacts
 
-All planning outputs are written to a `plan/` directory at the work path root. Each agent writes specific artifacts grouped by SDLC phase.
+Planning (v2) writes to `planning_v2/` under the repo path. The rest of planning outputs are written to `plan/` at the work path root.
 
 ```mermaid
 flowchart LR
     PlanDir["plan/"]
+    P2Dir["planning_v2/"]
 
-    PlanDir --> DiscoveryArt["Discovery\nspec_lint_report.md\nglossary.md\nassumptions_and_questions.md\nacceptance_criteria_index.md"]
-
-    PlanDir --> ProjPlanArt["Project Planning\nproject_overview.md\nfeatures_and_functionality.md"]
+    P2Dir --> P2Art["Planning (v2)\nplanning_artifacts.md"]
 
     PlanDir --> ArchArt["Architecture\narchitecture.md"]
-
-    PlanDir --> DomainArt["Domain Planning\nopenapi.yaml, data_schema.md,\nui_ux.md, frontend_architecture.md,\ninfrastructure.md, devops_pipeline.md,\ntest_strategy.md, security_and_compliance.md,\nobservability.md, performance.md"]
 
     PlanDir --> ConsolArt["Consolidation\ntech_lead.md\nmaster_plan.md"]
 
     PlanDir --> PerTaskArt["Per-Task Plans\nbackend_task_ID.md\nfrontend_task_ID.md"]
 ```
 
-Additional API contract artifacts (`api_error_model.md`, `api_versioning.md`, `contract_tests_plan.md`) and the backend `openapi.yaml` are also produced during domain planning. The `master_plan.md` consolidation includes a risk register and ship checklist.
+The `master_plan.md` consolidation includes a risk register and ship checklist.
 
 ---
 
@@ -513,7 +525,8 @@ flowchart TB
     SWTeam --> swOrch["orchestrator.py"]
     SWTeam --> swAPI["api/"]
     SWTeam --> swCLI["agent_implementations/"]
-    SWTeam --> swPlanning["planning_team/\n(20+ planning agents)"]
+    SWTeam --> swPlanningV2["planning_v2_team/\n(6-phase workflow)\nplanning_v2_adapter"]
+    SWTeam --> swPlanning["planning_team/\n(legacy; clarification)"]
     SWTeam --> swBackend["backend_agent/"]
     SWTeam --> swBackendV2["backend_code_v2_team/\n(standalone 5-phase team,\n3 tool agents)"]
     SWTeam --> swFrontend["frontend_team/\n(12 agents)"]

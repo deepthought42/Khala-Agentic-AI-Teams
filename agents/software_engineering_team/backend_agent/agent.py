@@ -897,7 +897,7 @@ class BackendExpertAgent:
         for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
             iter_start = time.monotonic()
             logger.info(
-                "[%s] WORKFLOW ── Review iteration %d/%d ──",
+                "[%s] WORKFLOW ── Review iteration %d/%d ──. Next step -> Running review checks",
                 task_id,
                 iteration,
                 MAX_REVIEW_ITERATIONS,
@@ -1815,8 +1815,9 @@ class BackendExpertAgent:
         else:
             # Loop exhausted without a clean pass
             logger.warning(
-                "[%s] WORKFLOW   Review loop exhausted after %d iterations "
-                "-- proceeding to merge with remaining issues",
+                "[%s] WORKFLOW   Review loop exhausted. Recovery summary: "
+                "1) Attempted %d review iterations, 2) Issues remain unresolved. "
+                "Next step -> Proceeding to merge with remaining issues",
                 task_id,
                 MAX_REVIEW_ITERATIONS,
             )

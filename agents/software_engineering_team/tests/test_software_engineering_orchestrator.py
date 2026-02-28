@@ -7,12 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared.command_runner import CommandResult
-from shared.llm import LLMRateLimitError, OLLAMA_WEEKLY_LIMIT_MESSAGE
+from shared.llm import LLMJsonParseError, LLMRateLimitError, OLLAMA_WEEKLY_LIMIT_MESSAGE
 from shared.models import (
     ProductRequirements,
     SystemArchitecture,
     Task,
     TaskAssignment,
+    TaskUpdate,
     TaskType,
 )
 import orchestrator
@@ -155,7 +156,7 @@ def test_run_failed_tasks_pauses_on_llm_rate_limit(tmp_path: Path) -> None:
 
 
 def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: Path) -> None:
-    """When project planning raises, job fails (no fallback overview)."""
+    """When planning-v2 workflow fails (success=False), job fails with planning error."""
     (tmp_path / "initial_spec.md").write_text("# Test App\n\nBuild a todo app.", encoding="utf-8")
     job_id = "test-planning-fail"
     update_job_calls = []
@@ -163,8 +164,9 @@ def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: P
     def capture_update_job(jid, **kwargs):
         update_job_calls.append((jid, kwargs))
 
-    mock_project_planning = MagicMock()
-    mock_project_planning.run.side_effect = Exception("LLM failed")
+    mock_p2_result = MagicMock()
+    mock_p2_result.success = False
+    mock_p2_result.failure_reason = "Planning-v2 workflow did not complete."
 
     mock_arch = MagicMock()
     arch_inputs_received = []
@@ -191,7 +193,6 @@ def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: P
     mock_tech_lead.llm.get_max_context_tokens.return_value = 262144
 
     mock_agents = {
-        "project_planning": mock_project_planning,
         "architecture": mock_arch,
         "tech_lead": mock_tech_lead,
         "devops": MagicMock(),
@@ -219,7 +220,11 @@ def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: P
                     constraints=[],
                 ),
             ):
-                orchestrator.run_orchestrator(job_id, str(tmp_path))
+                with patch("planning_v2_team.PlanningV2TeamLead") as MockP2Lead:
+                    mock_lead_instance = MagicMock()
+                    mock_lead_instance.run_workflow.return_value = mock_p2_result
+                    MockP2Lead.return_value = mock_lead_instance
+                    orchestrator.run_orchestrator(job_id, str(tmp_path))
 
     failed_calls = [(jid, kw) for jid, kw in update_job_calls if kw.get("status") == "failed"]
     assert len(failed_calls) >= 1
@@ -228,7 +233,7 @@ def test_run_orchestrator_fails_job_when_planning_raises_no_fallback(tmp_path: P
 
 
 def test_run_orchestrator_fails_job_when_project_planning_raises(tmp_path: Path) -> None:
-    """When project planning raises, job is marked failed (fail fast, no fallback)."""
+    """When planning-v2 workflow fails (success=False), job is marked failed."""
     (tmp_path / "initial_spec.md").write_text("# Test\n\nSpec.", encoding="utf-8")
     job_id = "test-planning-total-fail"
     update_job_calls = []
@@ -236,11 +241,11 @@ def test_run_orchestrator_fails_job_when_project_planning_raises(tmp_path: Path)
     def capture_update_job(jid, **kwargs):
         update_job_calls.append((jid, kwargs))
 
-    mock_project_planning = MagicMock()
-    mock_project_planning.run.side_effect = Exception("LLM failed")
+    mock_p2_result = MagicMock()
+    mock_p2_result.success = False
+    mock_p2_result.failure_reason = "Planning failed"
 
     mock_agents = {
-        "project_planning": mock_project_planning,
         "architecture": MagicMock(),
         "tech_lead": MagicMock(),
         "devops": MagicMock(),
@@ -268,130 +273,121 @@ def test_run_orchestrator_fails_job_when_project_planning_raises(tmp_path: Path)
                     constraints=[],
                 ),
             ):
-                orchestrator.run_orchestrator(job_id, str(tmp_path))
+                with patch("planning_v2_team.PlanningV2TeamLead") as MockP2Lead:
+                    mock_lead_instance = MagicMock()
+                    mock_lead_instance.run_workflow.return_value = mock_p2_result
+                    MockP2Lead.return_value = mock_lead_instance
+                    orchestrator.run_orchestrator(job_id, str(tmp_path))
 
     failed_calls = [
         (jid, kw) for jid, kw in update_job_calls
         if kw.get("status") == "failed"
     ]
     assert len(failed_calls) >= 1
-    assert "fallback" in failed_calls[0][1].get("error", "").lower() or "planning" in failed_calls[0][1].get("error", "").lower()
+    assert "planning" in failed_calls[0][1].get("error", "").lower()
 
 
-def test_run_tier1_agent_returns_data_lifecycle_from_data_architecture(tmp_path: Path) -> None:
-    """Tier 1 data_architecture agent returns data_lifecycle in result."""
-    from shared.models import ProductRequirements
+def test_frontend_json_parse_failure_triggers_tech_lead_review_for_task_breakdown(
+    tmp_path: Path,
+) -> None:
+    """When frontend run_workflow raises LLMJsonParseError, _run_tech_lead_review is called to break task."""
+    from shared.job_store import create_job, update_job
 
-    plan_dir = tmp_path / "plan"
-    plan_dir.mkdir()
-    requirements = ProductRequirements(
-        title="Test",
-        description="Desc",
-        acceptance_criteria=[],
-        constraints=[],
-    )
-    mock_data_agent = MagicMock()
-    mock_data_agent.run.return_value = MagicMock(data_lifecycle_policy="retain 30 days")
-    agents = {"data_architecture": mock_data_agent}
-
-    key, result = orchestrator._run_tier1_agent(
-        "data_architecture",
-        agents,
-        "spec",
-        "arch",
-        plan_dir,
-        requirements,
-        "features",
-        "",
-    )
-    assert key == "data_architecture"
-    assert result is not None
-    assert result.get("data_lifecycle") == "retain 30 days"
-
-
-def test_run_tier1_agent_returns_none_on_exception() -> None:
-    """Tier 1 agent returns None on exception (skipped)."""
-    from shared.models import ProductRequirements
-
-    requirements = ProductRequirements(
-        title="Test",
-        description="Desc",
-        acceptance_criteria=[],
-        constraints=[],
-    )
-    mock_agent = MagicMock()
-    mock_agent.run.side_effect = Exception("LLM failed")
-    agents = {"api_contract": mock_agent}
-
-    key, result = orchestrator._run_tier1_agent(
-        "api_contract",
-        agents,
-        "spec",
-        "arch",
-        Path("/tmp/plan"),
-        requirements,
-        "",
-        "",
-    )
-    assert key == "api_contract"
-    assert result is None
-
-
-def test_skip_planning_agents_env_skips_domain_agents(tmp_path: Path) -> None:
-    """When SW_SKIP_PLANNING_AGENTS lists agents, those domain planning agents are skipped."""
     (tmp_path / "initial_spec.md").write_text("# Test\n\nSpec.", encoding="utf-8")
-    job_id = "test-skip-planning"
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    (frontend_dir / ".git").mkdir()
+    (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
+    backend_dir = tmp_path / "backend"
+    backend_dir.mkdir()
 
-    mock_api_contract = MagicMock()
+    job_id = "test-json-parse-fail"
+    create_job(job_id, str(tmp_path))
+    update_job(job_id, status="running")
 
+    frontend_task_id = "frontend-task-1"
+    task = Task(
+        id=frontend_task_id,
+        type=TaskType.FRONTEND,
+        title="Frontend task",
+        description="Implement UI",
+        assignee="frontend",
+    )
+    all_tasks = {frontend_task_id: task}
+    frontend_queue = [frontend_task_id]
+    backend_queue = []
+    completed = set()
+    failed = {}
+    completed_code_task_ids = []
+
+    mock_frontend = MagicMock()
+    mock_frontend.run_workflow.side_effect = LLMJsonParseError(
+        "Could not parse structured JSON from LLM response.",
+        error_kind="json_parse",
+        response_preview="truncated...",
+    )
+    mock_init = MagicMock()
+    mock_init.success = True
+    mock_git_setup = MagicMock()
+    mock_git_setup.run.return_value = MagicMock(success=True)
+    mock_tech_lead = MagicMock()
+    mock_tech_lead.review_progress.return_value = []
     mock_agents = {
-        "project_planning": MagicMock(),
-        "architecture": MagicMock(),
-        "tech_lead": MagicMock(),
-        "devops": MagicMock(),
+        "frontend": mock_frontend,
         "backend": MagicMock(),
-        "frontend": MagicMock(),
-        "git_setup": MagicMock(),
-        "integration": MagicMock(),
-        "acceptance_verifier": MagicMock(),
+        "git_setup": mock_git_setup,
+        "tech_lead": mock_tech_lead,
         "qa": MagicMock(),
         "security": MagicMock(),
         "accessibility": MagicMock(),
         "code_review": MagicMock(),
         "dbc_comments": MagicMock(),
+        "acceptance_verifier": MagicMock(),
         "documentation": MagicMock(),
-        "api_contract": mock_api_contract,
+        "linting_tool_agent": None,
+        "build_fix_specialist": None,
     }
 
-    with patch("orchestrator.update_job"):
-        with patch("orchestrator._get_agents", return_value=mock_agents):
-            with patch(
-                "spec_parser.parse_spec_with_llm",
-                return_value=ProductRequirements(
-                    title="Test",
-                    description="Desc",
-                    acceptance_criteria=[],
-                    constraints=[],
-                ),
-            ):
-                from planning_team.project_planning_agent.models import (
-                    ProjectOverview,
-                    ProjectPlanningOutput,
-                )
-                mock_pp_output = ProjectPlanningOutput(
-                    overview=ProjectOverview(
-                        primary_goal="",
-                        delivery_strategy="",
-                        features_and_functionality_doc="",
-                    ),
-                    summary="",
-                    features_and_functionality_doc="",
-                )
-                mock_agents["project_planning"].run.return_value = mock_pp_output
-                try:
-                    os.environ["SW_SKIP_PLANNING_AGENTS"] = "api_contract,data_architecture"
-                    orchestrator.run_orchestrator(job_id, str(tmp_path))
-                finally:
-                    os.environ.pop("SW_SKIP_PLANNING_AGENTS", None)
+    review_calls = []
 
-    assert mock_api_contract.run.call_count == 0
+    def capture_review(*args, **kwargs):
+        review_calls.append(kwargs)
+        if kwargs.get("task_update"):
+            for nt in mock_tech_lead.review_progress.return_value:
+                if kwargs.get("append_task_id_fn") and nt.id not in all_tasks:
+                    all_tasks[nt.id] = nt
+                    kwargs["append_task_id_fn"](nt.id)
+
+    with patch(
+        "shared.command_runner.ensure_frontend_project_initialized",
+        return_value=mock_init,
+    ):
+        with patch("orchestrator._run_tech_lead_review", side_effect=capture_review):
+            orchestrator._run_backend_frontend_workers(
+                job_id=job_id,
+                path=tmp_path,
+                backend_dir=backend_dir,
+                frontend_dir=frontend_dir,
+                backend_queue=backend_queue,
+                frontend_queue=frontend_queue,
+                all_tasks=all_tasks,
+                completed=completed,
+                failed=failed,
+                completed_code_task_ids=completed_code_task_ids,
+                spec_content="# Test\n\nSpec.",
+                architecture=MagicMock(overview="Mock arch"),
+                agents=mock_agents,
+                tech_lead=mock_tech_lead,
+                total_tasks=1,
+                is_retry=False,
+            )
+
+    assert frontend_task_id in failed
+    assert len(review_calls) == 1
+    task_update = review_calls[0]["task_update"]
+    assert isinstance(task_update, TaskUpdate)
+    assert task_update.task_id == frontend_task_id
+    assert task_update.agent_type == "frontend"
+    assert task_update.status == "failed"
+    assert task_update.failure_class == "json_parse"
+    assert "parse" in (task_update.failure_reason or "").lower() or "json" in (task_update.failure_reason or "").lower()

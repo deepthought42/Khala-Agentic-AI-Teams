@@ -1,0 +1,203 @@
+<mat-card class="pending-questions-card">
+  <mat-card-header>
+    <mat-icon mat-card-avatar class="header-icon">help_outline</mat-icon>
+    <mat-card-title>Open Questions</mat-card-title>
+    <mat-card-subtitle>
+      @if (questions.length > 0) {
+        Please answer the following questions to continue ({{ answeredCount }}/{{ questions.length }} answered)
+      } @else {
+        Questions will appear here when the workflow needs your input
+      }
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    @if (questions.length > 0) {
+      @if (error) {
+        <div class="error-message">
+          <mat-icon>error</mat-icon>
+          <span>{{ error }}</span>
+        </div>
+      }
+
+      <div class="questions-list">
+        @for (question of questions; track question.id) {
+          <div class="question-item" [class.answered]="isQuestionAnswered(question)">
+            <div class="question-header">
+              <span class="question-number">Q{{ $index + 1 }}</span>
+              <span class="question-text">{{ question.question_text }}</span>
+              @if (question.required) {
+                <span class="required-badge">Required</span>
+              }
+              <button
+                mat-icon-button
+                class="auto-answer-btn"
+                [disabled]="isAutoAnswering(question.id)"
+                (click)="autoAnswerQuestion(question)"
+                matTooltip="Auto-answer using AI based on industry best practices"
+              >
+                @if (isAutoAnswering(question.id)) {
+                  <mat-spinner diameter="20"></mat-spinner>
+                } @else {
+                  <mat-icon>auto_awesome</mat-icon>
+                }
+              </button>
+            </div>
+
+            @if (question.context) {
+              <p class="question-context">{{ question.context }}</p>
+            }
+
+            <!-- Auto-answer result panel -->
+            @if (hasAutoAnswerResult(question.id)) {
+              <div class="auto-answer-result">
+                <div class="auto-answer-header">
+                  <mat-icon>lightbulb</mat-icon>
+                  <span class="auto-answer-title">AI Recommendation</span>
+                  <span 
+                    class="confidence-badge"
+                    [class.high]="getAutoAnswerResult(question.id)!.confidence >= 0.8"
+                    [class.medium]="getAutoAnswerResult(question.id)!.confidence >= 0.6 && getAutoAnswerResult(question.id)!.confidence < 0.8"
+                    [class.low]="getAutoAnswerResult(question.id)!.confidence < 0.6"
+                  >
+                    {{ getConfidenceLabel(getAutoAnswerResult(question.id)!.confidence) }} confidence
+                    ({{ (getAutoAnswerResult(question.id)!.confidence * 100).toFixed(0) }}%)
+                  </span>
+                </div>
+                <div class="auto-answer-content">
+                  <p class="selected-answer">
+                    <strong>Recommended:</strong> {{ getAutoAnswerResult(question.id)!.selected_answer }}
+                  </p>
+                  <p class="rationale">{{ getAutoAnswerResult(question.id)!.rationale }}</p>
+                  @if (getAutoAnswerResult(question.id)!.risks.length > 0) {
+                    <div class="risks-section">
+                      <span class="risks-label">Potential risks:</span>
+                      <ul class="risks-list">
+                        @for (risk of getAutoAnswerResult(question.id)!.risks; track risk) {
+                          <li>{{ risk }}</li>
+                        }
+                      </ul>
+                    </div>
+                  }
+                </div>
+                <div class="auto-answer-actions">
+                  <button 
+                    mat-stroked-button 
+                    color="primary" 
+                    (click)="applyAutoAnswer(question.id)"
+                    [disabled]="isAutoAnswering(question.id)"
+                  >
+                    @if (isAutoAnswering(question.id)) {
+                      <mat-spinner diameter="16"></mat-spinner>
+                      Submitting...
+                    } @else {
+                      <ng-container>
+                        <mat-icon>check</mat-icon>
+                        Accept
+                      </ng-container>
+                    }
+                  </button>
+                  <button 
+                    mat-stroked-button 
+                    (click)="dismissAutoAnswer(question.id)"
+                    [disabled]="isAutoAnswering(question.id)"
+                  >
+                    <mat-icon>close</mat-icon>
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            }
+
+            <!-- Show if this was auto-answered and applied -->
+            @if (getAnswer(question.id)?.wasAutoAnswered) {
+              <div class="auto-answered-badge">
+                <mat-icon>auto_awesome</mat-icon>
+                <span>Auto-answered with {{ (getAnswer(question.id)!.autoAnswerConfidence * 100).toFixed(0) }}% confidence</span>
+              </div>
+            }
+
+            <div class="options-list">
+              <!-- All questions use checkboxes for multi-select -->
+              <div class="multi-select-hint">
+                <mat-icon>info_outline</mat-icon>
+                <span>Select all that apply</span>
+              </div>
+              @for (option of question.options; track option.id) {
+                <div class="option-wrapper">
+                  <mat-checkbox
+                    [checked]="isOptionSelected(question.id, option.id)"
+                    (change)="onMultiOptionToggle(question.id, option.id, $event.checked)"
+                    class="option-checkbox"
+                  >
+                    {{ option.label }}
+                    @if (option.is_default) {
+                      <span class="default-badge">Recommended</span>
+                    }
+                  </mat-checkbox>
+                  @if (option.rationale) {
+                    <p class="option-rationale">{{ option.rationale }}</p>
+                  }
+                </div>
+              }
+              <div class="option-wrapper">
+                <mat-checkbox
+                  [checked]="isOtherSelected(question.id)"
+                  (change)="onMultiOptionToggle(question.id, 'other', $event.checked)"
+                  class="option-checkbox other-option"
+                >
+                  Other (specify below)
+                </mat-checkbox>
+              </div>
+
+              @if (isOtherSelected(question.id)) {
+                <mat-form-field appearance="outline" class="other-input">
+                  <mat-label>Your answer</mat-label>
+                  <textarea
+                    matInput
+                    rows="2"
+                    [value]="getAnswer(question.id)?.otherText ?? ''"
+                    (input)="onOtherTextChange(question.id, $any($event.target).value)"
+                    placeholder="Please provide your specific answer..."
+                  ></textarea>
+                </mat-form-field>
+              }
+            </div>
+
+            <div class="question-source">
+              Source: {{ question.source }}
+            </div>
+          </div>
+        }
+      </div>
+    } @else {
+      <div class="empty-state">
+        <mat-icon class="empty-state-icon">check_circle</mat-icon>
+        <p class="empty-state-text">No open questions</p>
+      </div>
+    }
+  </mat-card-content>
+
+  @if (questions.length > 0) {
+    <mat-card-actions align="end">
+      <button
+        mat-raised-button
+        color="primary"
+        [disabled]="!allRequiredAnswered || submitting"
+        (click)="submitAnswers()"
+      >
+        @if (submitting) {
+          <ng-container>
+            <mat-spinner diameter="20" class="button-spinner"></mat-spinner>
+            Submitting...
+          </ng-container>
+        } @else {
+          <ng-container>
+            <mat-icon>send</mat-icon>
+            Submit All Answers
+          </ng-container>
+        }
+      </button>
+    </mat-card-actions>
+  }
+</mat-card>

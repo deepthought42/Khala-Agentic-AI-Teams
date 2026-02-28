@@ -1,0 +1,86 @@
+# Full Tool Manifest for Agent Provisioning
+# This manifest provisions a complete development environment with all tools.
+
+version: "1.0"
+base_image: "python:3.11"
+
+environment:
+  PYTHONUNBUFFERED: "1"
+  LANG: "C.UTF-8"
+  TZ: "UTC"
+
+tools:
+  # PostgreSQL Database
+  - name: postgresql
+    provisioner: postgres_provisioner
+    access_level: elevated
+    config:
+      database_prefix: "agent_"
+      max_connections: 20
+      extensions:
+        - pg_trgm
+        - uuid-ossp
+    onboarding:
+      description: "PostgreSQL database with extended permissions"
+      env_var: "POSTGRES_URL"
+      getting_started: |
+        Connect to your database using:
+          psql $POSTGRES_URL
+        
+        You have elevated permissions including CREATE and DROP.
+        Use responsibly - you can create tables, indexes, and views.
+
+  # Redis Cache with Pub/Sub
+  - name: redis
+    provisioner: redis_provisioner
+    access_level: elevated
+    config:
+      key_prefix: "agent:{agent_id}:"
+      enable_pubsub: true
+    onboarding:
+      description: "Redis with pub/sub capabilities"
+      env_var: "REDIS_URL"
+      getting_started: |
+        Connect to Redis:
+          redis-cli -u $REDIS_URL
+        
+        You have PUBLISH and SUBSCRIBE permissions for real-time messaging.
+        Keys are prefixed with '{key_prefix}'.
+
+  # Git Version Control
+  - name: git
+    provisioner: git_provisioner
+    access_level: contributor
+    config:
+      init_repos:
+        - workspace
+        - scratch
+      generate_ssh_key: true
+    onboarding:
+      description: "Git with SSH keys for remote access"
+      getting_started: |
+        Two repositories are initialized:
+          - /workspace (main work area)
+          - /scratch (temporary experiments)
+        
+        SSH key generated at ~/.ssh/id_ed25519
+        Public key available at ~/.ssh/id_ed25519.pub
+
+  # Generic API Access Token
+  - name: api_token
+    provisioner: generic_provisioner
+    access_level: standard
+    config:
+      token_type: bearer
+      permissions:
+        - read
+        - write
+    onboarding:
+      description: "Generic API access token for external services"
+      env_var: "API_TOKEN"
+      getting_started: |
+        An API token has been generated for you.
+        Use it in Authorization headers:
+          Authorization: Bearer $API_TOKEN
+        
+        This token can be used with external APIs that accept bearer tokens.

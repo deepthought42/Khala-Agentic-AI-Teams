@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -19,12 +20,12 @@ class RunBrandingTeamRequest(BaseModel):
     company_name: str = Field(..., min_length=2)
     company_description: str = Field(..., min_length=10)
     target_audience: str = Field(..., min_length=3)
-    values: list[str] = Field(default_factory=list)
-    differentiators: list[str] = Field(default_factory=list)
+    values: List[str] = Field(default_factory=list)
+    differentiators: List[str] = Field(default_factory=list)
     desired_voice: str = Field(default="clear, confident, human")
-    existing_brand_material: list[str] = Field(default_factory=list)
-    wiki_path: str | None = None
-    brand_checks: list[BrandCheckRequest] = Field(default_factory=list)
+    existing_brand_material: List[str] = Field(default_factory=list)
+    wiki_path: Optional[str] = None
+    brand_checks: List[BrandCheckRequest] = Field(default_factory=list)
     human_approved: bool = False
     human_feedback: str = ""
 
@@ -35,7 +36,7 @@ class BrandingQuestion(BaseModel):
     context: str
     target_field: str
     status: str = "open"
-    answer: str | None = None
+    answer: Optional[str] = None
 
 
 class BrandingSessionResponse(BaseModel):
@@ -43,8 +44,8 @@ class BrandingSessionResponse(BaseModel):
     status: str
     mission: BrandingMission
     latest_output: TeamOutput
-    open_questions: list[BrandingQuestion] = Field(default_factory=list)
-    answered_questions: list[BrandingQuestion] = Field(default_factory=list)
+    open_questions: List[BrandingQuestion] = Field(default_factory=list)
+    answered_questions: List[BrandingQuestion] = Field(default_factory=list)
 
 
 class AnswerBrandingQuestionRequest(BaseModel):
@@ -54,16 +55,16 @@ class AnswerBrandingQuestionRequest(BaseModel):
 @dataclass
 class BrandingSession:
     mission: BrandingMission
-    questions: list[BrandingQuestion]
+    questions: List[BrandingQuestion]
     latest_output: TeamOutput
 
 
 class BrandingSessionStore:
     def __init__(self) -> None:
-        self._sessions: dict[str, BrandingSession] = {}
+        self._sessions: Dict[str, BrandingSession] = {}
         self._lock = Lock()
 
-    def create(self, mission: BrandingMission, latest_output: TeamOutput) -> tuple[str, BrandingSession]:
+    def create(self, mission: BrandingMission, latest_output: TeamOutput) -> Tuple[str, BrandingSession]:
         questions = _build_open_questions(mission)
         session_id = str(uuid4())
         session = BrandingSession(mission=mission, questions=questions, latest_output=latest_output)
@@ -71,7 +72,7 @@ class BrandingSessionStore:
             self._sessions[session_id] = session
         return session_id, session
 
-    def get(self, session_id: str) -> BrandingSession | None:
+    def get(self, session_id: str) -> Optional[BrandingSession]:
         with self._lock:
             return self._sessions.get(session_id)
 
@@ -80,8 +81,8 @@ orchestrator = BrandingTeamOrchestrator()
 session_store = BrandingSessionStore()
 
 
-def _build_open_questions(mission: BrandingMission) -> list[BrandingQuestion]:
-    questions: list[BrandingQuestion] = []
+def _build_open_questions(mission: BrandingMission) -> List[BrandingQuestion]:
+    questions: List[BrandingQuestion] = []
     if not mission.values:
         questions.append(
             BrandingQuestion(
@@ -182,8 +183,8 @@ def get_branding_session(session_id: str) -> BrandingSessionResponse:
     return _session_response(session_id, session)
 
 
-@app.get("/branding/sessions/{session_id}/questions", response_model=list[BrandingQuestion])
-def get_branding_questions(session_id: str) -> list[BrandingQuestion]:
+@app.get("/branding/sessions/{session_id}/questions", response_model=List[BrandingQuestion])
+def get_branding_questions(session_id: str) -> List[BrandingQuestion]:
     session = session_store.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -218,5 +219,5 @@ def answer_branding_question(
 
 
 @app.get("/health")
-def health() -> dict:
+def health() -> Dict[str, str]:
     return {"status": "ok"}

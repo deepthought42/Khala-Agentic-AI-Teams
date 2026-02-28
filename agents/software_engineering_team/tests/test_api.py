@@ -111,6 +111,15 @@ def test_get_job_status_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_get_running_jobs(client: TestClient) -> None:
+    """GET /run-team/jobs returns list of running/pending jobs."""
+    r = client.get("/run-team/jobs")
+    assert r.status_code == 200
+    data = r.json()
+    assert "jobs" in data
+    assert isinstance(data["jobs"], list)
+
+
 def test_run_team_returns_job_id(client: TestClient, temp_work_path: Path) -> None:
     """POST /run-team returns job_id and status immediately (work path need not be a git repo)."""
     r = client.post("/run-team", json={"repo_path": str(temp_work_path)})

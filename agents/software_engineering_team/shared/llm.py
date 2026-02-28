@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 import json
 import re
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 import httpx
 
@@ -27,13 +27,13 @@ ENV_LLM_BACKOFF_MAX = "SW_LLM_BACKOFF_MAX_SECONDS"  # max backoff seconds (defau
 ENV_LLM_MAX_CONCURRENCY = "SW_LLM_MAX_CONCURRENCY"  # max concurrent complete_json calls (default 2)
 ENV_LLM_MAX_TOKENS = "SW_LLM_MAX_TOKENS"  # max tokens to generate; if unset, min(context_size, 32768)
 ENV_LLM_CONTEXT_SIZE = "SW_LLM_CONTEXT_SIZE"  # context window in tokens; if unset, uses known model or Ollama /api/show
+ENV_LLM_ENABLE_THINKING = "SW_LLM_ENABLE_THINKING"  # "true"/"false"; enables thinking mode for qwen3.5 models (default: true)
 
 # Default cap for max_tokens (max output length) in API requests. Many APIs limit output to 32K even when context is 256K.
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 # Model max context (tokens). Effective context = max - largest agent reservation.
-# 198K = 198000 (minimax, glm-5). 256K = 262144 (qwen models).
-# Largest reservations: tech_lead 118K (glm-5), coding/review 20K (qwen3-coder, qwen3.5).
+# 256K = 262144 (qwen models). Largest reservations: coding/review 20K (qwen3-coder, qwen3.5).
 KNOWN_MODEL_CONTEXT: dict[str, int] = {
     "qwen3.5:397b": 262144,
     "qwen3.5:397b-cloud": 242144,  # 256K - 20K
@@ -42,8 +42,6 @@ KNOWN_MODEL_CONTEXT: dict[str, int] = {
     "qwen3-coder-next:cloud": 242144,  # 256K - 20K
     "qwen3-coder:480b-cloud": 242144,
     "qwen3-coder:480b": 242144,
-    "glm-5:cloud": 80_000,  # 198K - 118K (tech_lead)
-    "minimax-m2.5:cloud": 178_000,  # 198K - 20K
 }
 
 # Recommended default model per agent (all :cloud versions). Used when SW_LLM_MODEL_<agent_key> and SW_LLM_MODEL are unset.
@@ -54,12 +52,13 @@ AGENT_DEFAULT_MODELS: dict[str, str] = {
     "repair": "qwen3-coder-next:cloud",
     "devops": "qwen3-coder-next:cloud",
     "dbc_comments": "qwen3-coder-next:cloud",
-    "tech_lead": "glm-5:cloud",
-    "architecture": "glm-5:cloud",
-    "spec_intake": "glm-5:cloud",
-    "spec_clarification": "glm-5:cloud",
-    "project_planning": "glm-5:cloud",
-    "integration": "glm-5:cloud",
+    "tech_lead": "qwen3.5:397b-cloud",
+    "architecture": "qwen3.5:397b-cloud",
+    "spec_intake": "qwen3.5:397b-cloud",
+    "spec_clarification": "qwen3.5:397b-cloud",
+    "product_analysis": "qwen3.5:397b-cloud",
+    "project_planning": "qwen3.5:397b-cloud",
+    "integration": "qwen3.5:397b-cloud",
     "api_contract": "qwen3.5:397b-cloud",
     "data_architecture": "qwen3.5:397b-cloud",
     "ui_ux": "qwen3.5:397b-cloud",
@@ -71,9 +70,9 @@ AGENT_DEFAULT_MODELS: dict[str, str] = {
     "observability": "qwen3.5:397b-cloud",
     "acceptance_verifier": "qwen3.5:397b-cloud",
     "documentation": "qwen3.5:397b-cloud",
-    "qa": "minimax-m2.5:cloud",
-    "security": "minimax-m2.5:cloud",
-    "accessibility": "minimax-m2.5:cloud",
+    "qa": "qwen3.5:397b-cloud",
+    "security": "qwen3.5:397b-cloud",
+    "accessibility": "qwen3.5:397b-cloud",
 }
 
 # Cache for OllamaLLMClient instances keyed by (model, base_url, timeout)
@@ -109,6 +108,10 @@ class LLMTemporaryError(LLMError):
     """Raised when the LLM returns 5xx or network errors and retries are exhausted."""
 
 
+class LLMUnreachableAfterRetriesError(LLMError):
+    """Raised when the frontend (or other agent) exhausted retries and could not reach the LLM. Orchestrator should pause job."""
+
+
 class LLMPermanentError(LLMError):
     """Raised for 4xx errors (except 429) or malformed responses. Do not retry."""
 
@@ -130,6 +133,29 @@ class LLMJsonParseError(LLMPermanentError):
         super().__init__(message)
         self.error_kind = error_kind
         self.response_preview = response_preview
+
+
+class LLMTruncatedError(LLMError):
+    """Raised when LLM response was truncated due to token limit (finish_reason=length).
+
+    This exception signals that the response is incomplete and the caller should
+    decompose the task into smaller pieces rather than attempting partial recovery.
+
+    Attributes:
+        partial_content: The truncated content returned by the LLM.
+        finish_reason: The finish_reason from the API response.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_content: str = "",
+        finish_reason: str = "length",
+    ):
+        super().__init__(message)
+        self.partial_content = partial_content
+        self.finish_reason = finish_reason
 
 
 def get_llm_config_summary() -> str:
@@ -644,6 +670,77 @@ def _parse_retry_config() -> tuple[int, float, float]:
     return max_retries, backoff_base, backoff_max
 
 
+def call_llm_with_retries(
+    fn: Callable[[], Any],
+    *,
+    max_attempts: int = 3,
+    backoff_base: float = 2.0,
+    backoff_max: float = 60.0,
+) -> Any:
+    """
+    Call fn() up to max_attempts times with exponential backoff on connection/temporary errors.
+    Used by the frontend team so that no fallback runs when LLM is unreachable.
+    On permanent/rate-limit errors, re-raises immediately. After exhausting retries, raises
+    LLMUnreachableAfterRetriesError so the caller can return a structured result (e.g. llm_unreachable=True).
+    """
+    last_error: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except (LLMPermanentError, LLMRateLimitError, LLMUnreachableAfterRetriesError):
+            raise
+        except (LLMTemporaryError, httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout, LLMError) as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                    wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "LLM call exhausted. Recovery summary: attempted %d calls with exponential backoff, "
+                    "all failed. Final error: %s",
+                    max_attempts, e,
+                )
+                raise LLMUnreachableAfterRetriesError(
+                    f"LLM unreachable after {max_attempts} attempts: {e}",
+                    cause=e,
+                ) from e
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                    wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "LLM call exhausted. Recovery summary: attempted %d calls with exponential backoff, "
+                    "all failed. Final error: %s",
+                    max_attempts, e,
+                )
+                raise LLMUnreachableAfterRetriesError(
+                    f"LLM unreachable after {max_attempts} attempts: {e}",
+                    cause=e,
+                ) from e
+    if last_error:
+        raise LLMUnreachableAfterRetriesError(
+            f"LLM unreachable after {max_attempts} attempts: {last_error}",
+            cause=last_error,
+        ) from last_error
+    raise LLMUnreachableAfterRetriesError(f"LLM unreachable after {max_attempts} attempts")
+
+
 def _get_llm_concurrency_limit() -> int:
     """Return max concurrent complete_json calls from env (default 4)."""
     try:
@@ -746,16 +843,43 @@ class OllamaLLMClient(LLMClient):
         return s
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
+        # #region agent log
+        _log_path = "/home/deepthought/Dev/strands-agents/.cursor/debug-c656da.log"
+        try:
+            _log = {"sessionId": "c656da", "timestamp": int(time.time() * 1000), "location": "llm.py:_extract_json", "message": "extract_json_input", "data": {"text_len": len(text), "text_tail_100": (text[-100:] if len(text) > 100 else text)}, "hypothesisId": "D"}
+            os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+            with open(_log_path, "a") as _f:
+                _f.write(json.dumps(_log) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if "---DRAFT---" in text:
             parts = text.split("---DRAFT---", 1)
             if len(parts) == 2 and parts[1].strip():
                 return {"content": parts[1].strip()}
-        fenced_match = re.search(r"```(?:json)?(.*)```", text, flags=re.DOTALL | re.IGNORECASE)
-        if fenced_match:
-            text = fenced_match.group(1).strip()
+        # Prefer a ```json block so we don't use a non-JSON block (e.g. ```bash) as the content
+        json_block_match = re.search(r"```json\s*([\s\S]*?)```", text, re.IGNORECASE)
+        if json_block_match:
+            text = json_block_match.group(1).strip()
+        else:
+            fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+            if fenced_match:
+                block_content = fenced_match.group(1).strip()
+                # Only use first block if it looks like JSON (starts with { or [)
+                if block_content.lstrip().startswith(("{", "[")):
+                    text = block_content
+                # else: keep full response so object extraction / try-every-block can find JSON
         try:
             return json.loads(text)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as e:
+            # #region agent log
+            try:
+                _err = {"sessionId": "c656da", "timestamp": int(time.time() * 1000), "location": "llm.py:_extract_json_parse_err", "message": "primary_loads_failed", "data": {"error_type": type(e).__name__, "error_msg": str(e)[:300]}, "hypothesisId": "D"}
+                with open(_log_path, "a") as _f2:
+                    _f2.write(json.dumps(_err) + "\n")
+            except Exception:
+                pass
+            # #endregion
             logger.debug("Primary JSON parse failed; attempting repair")
         repaired = self._repair_json(text)
         try:
@@ -795,6 +919,7 @@ class OllamaLLMClient(LLMClient):
             "files", "summary", "code", "overview", "issues", "approved", "components",
             "architecture_document", "diagrams", "decisions",
             "tasks", "execution_order",  # Task Generator / Tech Lead output
+            "bugs_found", "integration_tests", "unit_tests", "readme_content",  # QA agent output
         })
         for block_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
             block = block_match.group(1).strip()
@@ -823,6 +948,20 @@ class OllamaLLMClient(LLMClient):
             error_kind="json_parse",
             response_preview=text[:500],
         )
+
+    def _should_enable_thinking(self) -> bool:
+        """Check if thinking mode should be enabled for this model.
+        
+        Thinking mode is enabled for qwen3.5 models by default, but can be
+        controlled via the SW_LLM_ENABLE_THINKING environment variable.
+        """
+        env_val = os.environ.get(ENV_LLM_ENABLE_THINKING, "").lower()
+        if env_val == "false":
+            return False
+        if env_val == "true":
+            return "qwen3.5" in self.model.lower()
+        # Default: enable for qwen3.5 models
+        return "qwen3.5" in self.model.lower()
 
     def complete_json(self, prompt: str, *, temperature: float = 0.0) -> Dict[str, Any]:
         max_retries, backoff_base, backoff_max = _parse_retry_config()
@@ -853,6 +992,10 @@ class OllamaLLMClient(LLMClient):
                 {"role": "user", "content": prompt},
             ],
         }
+        # Enable thinking mode for qwen3.5 models (improves reasoning quality)
+        if self._should_enable_thinking():
+            payload["think"] = True
+            logger.debug("Thinking mode enabled for model %s", self.model)
         content = self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
         return self._extract_json(content)
 
@@ -874,7 +1017,156 @@ class OllamaLLMClient(LLMClient):
                 {"role": "user", "content": prompt},
             ],
         }
+        # Enable thinking mode for qwen3.5 models (improves reasoning quality)
+        if self._should_enable_thinking():
+            payload["think"] = True
+            logger.debug("Thinking mode enabled for model %s", self.model)
         return self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
+
+    def complete_json_with_continuation(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        max_continuation_cycles: int = 5,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Complete JSON request with automatic continuation on truncation.
+
+        This method attempts to get a complete JSON response. If the response
+        is truncated (finish_reason=length), it uses multi-turn conversation
+        to continue the response up to max_continuation_cycles times.
+
+        Args:
+            prompt: The prompt to send.
+            temperature: Sampling temperature.
+            max_continuation_cycles: Max continuation attempts before raising.
+            task_id: Optional task identifier for logging continuation responses.
+
+        Returns:
+            Parsed JSON dict.
+
+        Raises:
+            LLMTruncatedError: If truncated and continuation fails.
+            LLMJsonParseError: If JSON parsing fails.
+        """
+        from shared.continuation import ResponseContinuator, ContinuationResult
+
+        try:
+            return self.complete_json(prompt, temperature=temperature)
+        except LLMTruncatedError as e:
+            logger.info(
+                "Response truncated (%d chars). Attempting continuation (max %d cycles)",
+                len(e.partial_content),
+                max_continuation_cycles,
+            )
+
+            system_message = (
+                "You are a strict JSON generator. Respond with a single valid JSON object only, "
+                "no explanatory text, no Markdown, no code fences. "
+                "If you use a code block, put only the JSON object inside it with no surrounding text."
+            )
+
+            continuator = ResponseContinuator(
+                base_url=self.base_url,
+                model=self.model,
+                timeout=self.timeout,
+                max_cycles=max_continuation_cycles,
+            )
+
+            result: ContinuationResult = continuator.attempt_continuation(
+                original_prompt=prompt,
+                partial_content=e.partial_content,
+                system_prompt=system_message,
+                json_mode=True,
+                task_id=task_id or "sw_eng_json",
+            )
+
+            if result.success:
+                logger.info(
+                    "Continuation succeeded after %d cycles (%d chars total)",
+                    result.cycles_used,
+                    len(result.content),
+                )
+                return self._extract_json(result.content)
+
+            logger.warning(
+                "Continuation exhausted after %d cycles (%d chars). Re-raising truncation error.",
+                result.cycles_used,
+                len(result.content),
+            )
+            raise LLMTruncatedError(
+                f"Response still truncated after {result.cycles_used} continuation cycles",
+                partial_content=result.content,
+                finish_reason="length",
+            )
+
+    def complete_text_with_continuation(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        max_continuation_cycles: int = 5,
+        task_id: Optional[str] = None,
+    ) -> str:
+        """Complete text request with automatic continuation on truncation.
+
+        Args:
+            prompt: The prompt to send.
+            temperature: Sampling temperature.
+            max_continuation_cycles: Max continuation attempts before raising.
+            task_id: Optional task identifier for logging continuation responses.
+
+        Returns:
+            Complete text response.
+
+        Raises:
+            LLMTruncatedError: If truncated and continuation fails.
+        """
+        from shared.continuation import ResponseContinuator, ContinuationResult
+
+        try:
+            return self.complete_text(prompt, temperature=temperature)
+        except LLMTruncatedError as e:
+            logger.info(
+                "Text response truncated (%d chars). Attempting continuation (max %d cycles)",
+                len(e.partial_content),
+                max_continuation_cycles,
+            )
+
+            continuator = ResponseContinuator(
+                base_url=self.base_url,
+                model=self.model,
+                timeout=self.timeout,
+                max_cycles=max_continuation_cycles,
+            )
+
+            result: ContinuationResult = continuator.attempt_continuation(
+                original_prompt=prompt,
+                partial_content=e.partial_content,
+                system_prompt=None,
+                json_mode=False,
+                task_id=task_id or "sw_eng_text",
+            )
+
+            if result.success:
+                logger.info(
+                    "Text continuation succeeded after %d cycles (%d chars total)",
+                    result.cycles_used,
+                    len(result.content),
+                )
+                return result.content
+
+            logger.warning(
+                "Text continuation exhausted after %d cycles (%d chars). Re-raising.",
+                result.cycles_used,
+                len(result.content),
+            )
+            raise LLMTruncatedError(
+                f"Response still truncated after {result.cycles_used} continuation cycles",
+                partial_content=result.content,
+                finish_reason="length",
+            )
 
     def _ollama_post(
         self,
@@ -886,6 +1178,18 @@ class OllamaLLMClient(LLMClient):
     ) -> str:
         """POST to chat completions; return raw content string. Raises on non-200 or malformed response."""
         url = f"{self.base_url}/v1/chat/completions"
+        # #region agent log
+        _log_path = "/home/deepthought/Dev/strands-agents/.cursor/debug-c656da.log"
+        try:
+            _msgs = payload.get("messages") or []
+            _total = sum(len(m.get("content") or "") for m in _msgs if isinstance(m, dict))
+            _log = {"sessionId": "c656da", "timestamp": int(time.time() * 1000), "location": "llm.py:_ollama_post", "message": "ollama_request", "data": {"url": url, "model": payload.get("model"), "messages_count": len(_msgs), "content_chars": _total}, "hypothesisId": "A"}
+            os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+            with open(_log_path, "a") as _f:
+                _f.write(json.dumps(_log) + "\n")
+        except Exception:
+            pass
+        # #endregion
         last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -893,6 +1197,17 @@ class OllamaLLMClient(LLMClient):
                     with httpx.Client(timeout=self.timeout) as client:
                         response = client.post(url, json=payload)
                         status = response.status_code
+                        # #region agent log
+                        if status >= 500:
+                            try:
+                                _body = (response.text or "")[:500]
+                                _log2 = {"sessionId": "c656da", "timestamp": int(time.time() * 1000), "location": "llm.py:_ollama_post_5xx", "message": "ollama_5xx_response", "data": {"status": status, "response_body": _body}, "hypothesisId": "C"}
+                                os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+                                with open(_log_path, "a") as _f2:
+                                    _f2.write(json.dumps(_log2) + "\n")
+                            except Exception:
+                                pass
+                        # #endregion
                         if status == 200:
                             try:
                                 data = response.json()
@@ -906,7 +1221,10 @@ class OllamaLLMClient(LLMClient):
                             )
                             wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
                             if attempt < max_retries:
-                                logger.warning("LLM 429, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                                logger.warning(
+                                    "LLM 429 rate limited (attempt %d/%d). Next step -> Retrying in %.1fs",
+                                    attempt + 1, max_retries + 1, wait,
+                                )
                                 time.sleep(wait)
                                 continue
                             raise last_error
@@ -917,7 +1235,10 @@ class OllamaLLMClient(LLMClient):
                             )
                             if attempt < max_retries:
                                 wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                                logger.warning("LLM 5xx, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                                logger.warning(
+                                    "LLM %d server error (attempt %d/%d). Next step -> Retrying in %.1fs",
+                                    status, attempt + 1, max_retries + 1, wait,
+                                )
                                 time.sleep(wait)
                                 continue
                             raise last_error
@@ -959,16 +1280,29 @@ class OllamaLLMClient(LLMClient):
                 last_error = LLMTemporaryError(f"LLM connection/timeout error: {e}", cause=e)
                 if attempt < max_retries:
                     wait = min(backoff_base ** attempt + random.uniform(0, 1), backoff_max)
-                    logger.warning("LLM connection error, retrying in %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries + 1)
+                    logger.warning(
+                        "LLM connection error (attempt %d/%d): %s. Next step -> Retrying in %.1fs",
+                        attempt + 1, max_retries + 1, type(e).__name__, wait,
+                    )
                     time.sleep(wait)
                     continue
                 raise last_error
         if last_error:
+            logger.error(
+                "LLM request failed. Recovery summary: 1) Attempted %d requests with exponential backoff, "
+                "2) All attempts exhausted. Final error: %s",
+                max_retries + 1, last_error,
+            )
             raise last_error
         raise LLMTemporaryError("LLM request failed after all retries")
 
     def _parse_response_content(self, data: dict) -> str:
-        """Extract content from Ollama/OpenAI-compatible response. Raises LLMPermanentError if malformed."""
+        """Extract content from Ollama/OpenAI-compatible response.
+
+        Raises:
+            LLMTruncatedError: If finish_reason indicates token limit truncation.
+            LLMPermanentError: If response format is malformed.
+        """
         try:
             choices = data.get("choices")
             if not choices or not isinstance(choices, list):
@@ -976,6 +1310,21 @@ class OllamaLLMClient(LLMClient):
             first = choices[0]
             if not isinstance(first, dict):
                 raise LLMPermanentError("Unexpected response format from LLM: invalid choice object")
+
+            finish_reason = first.get("finish_reason", "")
+            if finish_reason == "length":
+                msg = first.get("message", {})
+                partial_content = msg.get("content", "") if isinstance(msg, dict) else ""
+                logger.warning(
+                    "LLM response truncated (finish_reason=length). Partial content: %d chars",
+                    len(partial_content),
+                )
+                raise LLMTruncatedError(
+                    "Response truncated due to token limit (finish_reason=length)",
+                    partial_content=str(partial_content) if partial_content else "",
+                    finish_reason=finish_reason,
+                )
+
             msg = first.get("message")
             if not msg or not isinstance(msg, dict):
                 raise LLMPermanentError("Unexpected response format from LLM: missing or invalid 'message'")
@@ -983,7 +1332,7 @@ class OllamaLLMClient(LLMClient):
             if content is None:
                 raise LLMPermanentError("Unexpected response format from LLM: missing 'content'")
             return str(content)
-        except LLMPermanentError:
+        except (LLMPermanentError, LLMTruncatedError):
             raise
         except (KeyError, IndexError, TypeError) as e:
             raise LLMPermanentError(f"Unexpected response format from LLM: {e}") from e

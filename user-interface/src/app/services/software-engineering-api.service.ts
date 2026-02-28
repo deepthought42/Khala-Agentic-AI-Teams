@@ -6,8 +6,10 @@ import type {
   RunTeamRequest,
   RunTeamResponse,
   JobStatusResponse,
+  RunningJobsResponse,
   RetryResponse,
   RePlanWithClarificationsRequest,
+  SubmitAnswersRequest,
   ClarificationCreateRequest,
   ClarificationResponse,
   ClarificationMessageRequest,
@@ -18,6 +20,18 @@ import type {
   BackendCodeV2RunRequest,
   BackendCodeV2RunResponse,
   BackendCodeV2StatusResponse,
+  FrontendCodeV2RunRequest,
+  FrontendCodeV2RunResponse,
+  FrontendCodeV2StatusResponse,
+  PlanningV2RunRequest,
+  PlanningV2RunResponse,
+  PlanningV2StatusResponse,
+  PlanningV2ResultResponse,
+  AutoAnswerRequest,
+  AutoAnswerResponse,
+  ProductAnalysisRunRequest,
+  ProductAnalysisRunResponse,
+  ProductAnalysisStatusResponse,
 } from '../models';
 
 /**
@@ -49,11 +63,31 @@ export class SoftwareEngineeringApiService {
   }
 
   /**
+   * GET /run-team/jobs - list running and pending jobs.
+   */
+  getRunningJobs(): Observable<RunningJobsResponse> {
+    return this.http.get<RunningJobsResponse>(
+      `${this.baseUrl}/run-team/jobs`
+    );
+  }
+
+  /**
    * POST /run-team/{job_id}/retry-failed
    */
   retryFailed(jobId: string): Observable<RetryResponse> {
     return this.http.post<RetryResponse>(
       `${this.baseUrl}/run-team/${jobId}/retry-failed`,
+      {}
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/cancel
+   * Request cancellation for a running or pending job.
+   */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/run-team/${jobId}/cancel`,
       {}
     );
   }
@@ -68,6 +102,35 @@ export class SoftwareEngineeringApiService {
     return this.http.post<RunTeamResponse>(
       `${this.baseUrl}/run-team/${jobId}/re-plan-with-clarifications`,
       request
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/answers
+   * Submit answers to pending questions to resume job execution.
+   */
+  submitAnswers(
+    jobId: string,
+    request: SubmitAnswersRequest
+  ): Observable<JobStatusResponse> {
+    return this.http.post<JobStatusResponse>(
+      `${this.baseUrl}/run-team/${jobId}/answers`,
+      request
+    );
+  }
+
+  /**
+   * POST /run-team/{job_id}/auto-answer/{question_id}
+   * Auto-answer a pending question using LLM analysis.
+   */
+  autoAnswerRunTeam(
+    jobId: string,
+    questionId: string,
+    request?: AutoAnswerRequest
+  ): Observable<AutoAnswerResponse> {
+    return this.http.post<AutoAnswerResponse>(
+      `${this.baseUrl}/run-team/${jobId}/auto-answer/${questionId}`,
+      request ?? {}
     );
   }
 
@@ -181,6 +244,172 @@ export class SoftwareEngineeringApiService {
   ): Observable<BackendCodeV2StatusResponse> {
     return this.http.get<BackendCodeV2StatusResponse>(
       `${this.baseUrl}/backend-code-v2/status/${jobId}`
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Frontend-Code-V2
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /frontend-code-v2/run
+   */
+  runFrontendCodeV2(
+    request: FrontendCodeV2RunRequest
+  ): Observable<FrontendCodeV2RunResponse> {
+    return this.http.post<FrontendCodeV2RunResponse>(
+      `${this.baseUrl}/frontend-code-v2/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /frontend-code-v2/status/{job_id}
+   */
+  getFrontendCodeV2Status(
+    jobId: string
+  ): Observable<FrontendCodeV2StatusResponse> {
+    return this.http.get<FrontendCodeV2StatusResponse>(
+      `${this.baseUrl}/frontend-code-v2/status/${jobId}`
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Planning-V2
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /planning-v2/run
+   */
+  runPlanningV2(
+    request: PlanningV2RunRequest
+  ): Observable<PlanningV2RunResponse> {
+    return this.http.post<PlanningV2RunResponse>(
+      `${this.baseUrl}/planning-v2/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /planning-v2/status/{job_id}
+   */
+  getPlanningV2Status(
+    jobId: string
+  ): Observable<PlanningV2StatusResponse> {
+    return this.http.get<PlanningV2StatusResponse>(
+      `${this.baseUrl}/planning-v2/status/${jobId}`
+    );
+  }
+
+  /**
+   * GET /planning-v2/jobs - list running and pending planning-v2 jobs.
+   */
+  getPlanningV2Jobs(): Observable<RunningJobsResponse> {
+    return this.http.get<RunningJobsResponse>(
+      `${this.baseUrl}/planning-v2/jobs`
+    );
+  }
+
+  /**
+   * GET /planning-v2/result/{job_id}
+   */
+  getPlanningV2Result(jobId: string): Observable<PlanningV2ResultResponse> {
+    return this.http.get<PlanningV2ResultResponse>(
+      `${this.baseUrl}/planning-v2/result/${jobId}`
+    );
+  }
+
+  /**
+   * POST /planning-v2/{job_id}/answers
+   * Submit answers to open questions to resume planning-v2 workflow.
+   */
+  submitPlanningV2Answers(
+    jobId: string,
+    request: SubmitAnswersRequest
+  ): Observable<PlanningV2StatusResponse> {
+    return this.http.post<PlanningV2StatusResponse>(
+      `${this.baseUrl}/planning-v2/${jobId}/answers`,
+      request
+    );
+  }
+
+  /**
+   * POST /planning-v2/{job_id}/auto-answer/{question_id}
+   * Auto-answer a pending question using LLM analysis.
+   */
+  autoAnswerPlanningV2(
+    jobId: string,
+    questionId: string,
+    request?: AutoAnswerRequest
+  ): Observable<AutoAnswerResponse> {
+    return this.http.post<AutoAnswerResponse>(
+      `${this.baseUrl}/planning-v2/${jobId}/auto-answer/${questionId}`,
+      request ?? {}
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Product Analysis
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /product-analysis/run
+   */
+  runProductAnalysis(
+    request: ProductAnalysisRunRequest
+  ): Observable<ProductAnalysisRunResponse> {
+    return this.http.post<ProductAnalysisRunResponse>(
+      `${this.baseUrl}/product-analysis/run`,
+      request
+    );
+  }
+
+  /**
+   * GET /product-analysis/status/{job_id}
+   */
+  getProductAnalysisStatus(
+    jobId: string
+  ): Observable<ProductAnalysisStatusResponse> {
+    return this.http.get<ProductAnalysisStatusResponse>(
+      `${this.baseUrl}/product-analysis/status/${jobId}`
+    );
+  }
+
+  /**
+   * GET /product-analysis/jobs - list running and pending product analysis jobs.
+   */
+  getProductAnalysisJobs(): Observable<RunningJobsResponse> {
+    return this.http.get<RunningJobsResponse>(
+      `${this.baseUrl}/product-analysis/jobs`
+    );
+  }
+
+  /**
+   * POST /product-analysis/{job_id}/answers
+   * Submit answers to open questions to resume product analysis workflow.
+   */
+  submitProductAnalysisAnswers(
+    jobId: string,
+    request: SubmitAnswersRequest
+  ): Observable<ProductAnalysisStatusResponse> {
+    return this.http.post<ProductAnalysisStatusResponse>(
+      `${this.baseUrl}/product-analysis/${jobId}/answers`,
+      request
+    );
+  }
+
+  /**
+   * POST /product-analysis/{job_id}/auto-answer/{question_id}
+   * Auto-answer a pending question using LLM analysis.
+   */
+  autoAnswerProductAnalysis(
+    jobId: string,
+    questionId: string,
+    request?: AutoAnswerRequest
+  ): Observable<AutoAnswerResponse> {
+    return this.http.post<AutoAnswerResponse>(
+      `${this.baseUrl}/product-analysis/${jobId}/auto-answer/${questionId}`,
+      request ?? {}
     );
   }
 

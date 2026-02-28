@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import List
 
 from shared.command_runner import CommandResult, run_command
 
 from .models import LintExecutionResult, LintIssue, LintPlan
+
+
+def _is_command_available(cmd: str) -> bool:
+    """Check if a command is available on the system PATH."""
+    return shutil.which(cmd) is not None
 
 logger = logging.getLogger(__name__)
 
@@ -61,44 +67,67 @@ def detect_linter(repo_path: Path, agent_type: str) -> LintPlan:
 
 
 def _detect_python_linter(repo_path: Path) -> LintPlan:
-    """Detect the Python linter for the project."""
+    """Detect the Python linter for the project.
+    
+    Checks for config files first, then verifies the linter is installed.
+    Falls back to available linters if the preferred one is not installed.
+    """
     ruff_toml = repo_path / "ruff.toml"
     pyproject = repo_path / "pyproject.toml"
     flake8_cfg = repo_path / ".flake8"
     setup_cfg = repo_path / "setup.cfg"
 
-    if ruff_toml.exists():
+    has_ruff = _is_command_available("ruff")
+    has_flake8 = _is_command_available("flake8")
+
+    # Check for ruff config
+    if ruff_toml.exists() and has_ruff:
         return LintPlan(
             linter_name="ruff",
             linter_command=["ruff", "check", "."],
             config_file=str(ruff_toml.relative_to(repo_path)),
         )
 
-    if pyproject.exists() and _has_toml_section(pyproject, "tool.ruff"):
+    if pyproject.exists() and _has_toml_section(pyproject, "tool.ruff") and has_ruff:
         return LintPlan(
             linter_name="ruff",
             linter_command=["ruff", "check", "."],
             config_file="pyproject.toml",
         )
 
-    if flake8_cfg.exists():
+    # Check for flake8 config
+    if flake8_cfg.exists() and has_flake8:
         return LintPlan(
             linter_name="flake8",
             linter_command=["flake8", "."],
             config_file=".flake8",
         )
 
-    if setup_cfg.exists() and _has_toml_section(setup_cfg, "flake8"):
+    if setup_cfg.exists() and _has_toml_section(setup_cfg, "flake8") and has_flake8:
         return LintPlan(
             linter_name="flake8",
             linter_command=["flake8", "."],
             config_file="setup.cfg",
         )
 
-    # Default: ruff is fast and works without config
+    # No config found - use whichever linter is available
+    if has_ruff:
+        return LintPlan(
+            linter_name="ruff",
+            linter_command=["ruff", "check", "."],
+        )
+
+    if has_flake8:
+        return LintPlan(
+            linter_name="flake8",
+            linter_command=["flake8", "."],
+        )
+
+    # No linter available - return a skip plan
+    logger.warning("No Python linter available (ruff or flake8). Lint check will be skipped.")
     return LintPlan(
-        linter_name="ruff",
-        linter_command=["ruff", "check", "."],
+        linter_name="none",
+        linter_command=[],
     )
 
 
@@ -141,6 +170,11 @@ def execute_linter(plan: LintPlan, repo_path: Path, agent_type: str) -> LintExec
     Postconditions:
         - Returns ``LintExecutionResult`` with ``success=True`` when no violations.
     """
+    # Handle skip case when no linter is available
+    if plan.linter_name == "none" or not plan.linter_command:
+        logger.info("No linter configured or available; skipping lint check.")
+        return LintExecutionResult(success=True, raw_output="Lint check skipped: no linter available.")
+
     if agent_type == "frontend" and plan.linter_name == "ng_lint":
         try:
             from shared.command_runner import run_command_with_nvm

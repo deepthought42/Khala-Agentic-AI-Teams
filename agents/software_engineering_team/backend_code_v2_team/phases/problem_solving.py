@@ -1,21 +1,70 @@
 """
 Problem-solving phase: root-cause analysis and fix loop.
 
-No code from ``backend_agent`` is used.
+Processes one issue at a time to keep LLM prompts and responses small.
+Each issue gets up to MAX_ITERATIONS_PER_ISSUE attempts; unresolved issues
+are returned for the backend v2 agent to turn into fix microtasks.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from shared.llm import LLMClient
 from shared.models import Task
 
-from ..models import ProblemSolvingResult, ReviewIssue, ReviewResult
-from ..prompts import PROBLEM_SOLVING_PROMPT, PYTHON_CONVENTIONS, JAVA_CONVENTIONS
+from ..models import (
+    Microtask,
+    Phase,
+    PhaseReviewResult,
+    ProblemSolvingResult,
+    ReviewIssue,
+    ReviewResult,
+    ToolAgentKind,
+    ToolAgentPhaseInput,
+)
+from ..output_templates import (
+    parse_problem_solving_template,
+    parse_problem_solving_single_issue_template,
+)
+from ..prompts import (
+    PROBLEM_SOLVING_PROMPT,
+    PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT,
+    PYTHON_CONVENTIONS,
+    JAVA_CONVENTIONS,
+)
 
 logger = logging.getLogger(__name__)
+
+MAX_ITERATIONS_PER_ISSUE = 10
+MAX_RELEVANT_CODE_CHARS = 8000
+
+
+def _relevant_code_for_issue(
+    issue: ReviewIssue,
+    current_files: Dict[str, str],
+) -> str:
+    """Return code context for a single issue: prefer issue's file, else first files."""
+    if issue.file_path and issue.file_path in current_files:
+        content = current_files[issue.file_path]
+        if len(content) <= MAX_RELEVANT_CODE_CHARS:
+            return f"--- {issue.file_path} ---\n{content}"
+        return f"--- {issue.file_path} ---\n{content[:MAX_RELEVANT_CODE_CHARS]}\n... [truncated]"
+    # Fallback: include first few files to stay under limit
+    parts: List[str] = []
+    total = 0
+    for path, content in list(current_files.items())[:10]:
+        chunk = f"--- {path} ---\n{content}\n"
+        if total + len(chunk) > MAX_RELEVANT_CODE_CHARS:
+            remaining = MAX_RELEVANT_CODE_CHARS - total
+            if remaining > 200:
+                chunk = f"--- {path} ---\n{content[:remaining]}\n... [truncated]"
+            else:
+                break
+        parts.append(chunk)
+        total += len(chunk)
+    return "\n".join(parts) if parts else "(no code)"
 
 
 def run_problem_solving(
@@ -25,11 +74,15 @@ def run_problem_solving(
     review_result: ReviewResult,
     current_files: Dict[str, str],
     language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
 ) -> ProblemSolvingResult:
     """
-    Analyse review issues and produce fixes.
+    Analyse review issues and produce fixes, one issue at a time.
 
-    Returns updated files and a summary of what was changed.
+    For each actionable issue: identify root cause, implement fix (up to
+    MAX_ITERATIONS_PER_ISSUE attempts). Unresolved issues are returned for
+    the backend v2 agent to turn into fix microtasks.
     """
     task_id = task.id
     actionable = [i for i in review_result.issues if i.severity in ("critical", "high", "medium")]
@@ -37,35 +90,545 @@ def run_problem_solving(
         logger.info("[%s] Problem-solving: no actionable issues.", task_id)
         return ProblemSolvingResult(resolved=True, files=current_files, summary="No actionable issues.")
 
-    issues_text = "\n".join(
-        f"- [{i.severity}] {i.description} (file: {i.file_path or 'N/A'}) → {i.recommendation}"
-        for i in actionable
+    lang_conv = JAVA_CONVENTIONS if language == "java" else PYTHON_CONVENTIONS
+    merged = dict(current_files)
+    fixes_applied: List[Dict[str, Any]] = []
+    summary_parts: List[str] = []
+    unresolved_issues: List[ReviewIssue] = []
+
+    for issue_idx, issue in enumerate(actionable):
+        desc_short = (issue.description or "")[:80]
+        logger.info(
+            "[%s] Problem-solving: issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
+        working = dict(merged)
+        resolved_this = False
+        for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
+            relevant_code = _relevant_code_for_issue(issue, working)
+            prompt = PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT.format(
+                language_conventions=lang_conv,
+                source=issue.source or "review",
+                severity=issue.severity or "medium",
+                description=issue.description or "",
+                file_path=issue.file_path or "N/A",
+                recommendation=issue.recommendation or "Fix the issue.",
+                current_code=relevant_code,
+            )
+            try:
+                raw = llm.complete_text(prompt)
+            except Exception as exc:
+                logger.warning("[%s] Problem-solving LLM call failed (issue %d, attempt %d): %s", task_id, issue_idx + 1, attempt, exc)
+                break
+            parsed = parse_problem_solving_single_issue_template(raw)
+            fixed_files = parsed.get("files") or {}
+            if not fixed_files:
+                if parsed.get("resolved"):
+                    resolved_this = True
+                break
+
+            working.update(fixed_files)
+            merged.update(fixed_files)
+            fixes_applied.append({
+                "issue": desc_short,
+                "fix": parsed.get("summary", "updated file(s)"),
+                "root_cause": parsed.get("root_cause", ""),
+            })
+            if parsed.get("resolved"):
+                resolved_this = True
+                break
+        if not resolved_this:
+            unresolved_issues.append(issue)
+            logger.warning(
+                "[%s] Issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
+
+    if tool_agents:
+        phase_inp = ToolAgentPhaseInput(
+            phase=Phase.PROBLEM_SOLVING,
+            repo_path=repo_path,
+            spec_context=task.description or "",
+            language=language,
+            current_files=merged,
+            review_issues=review_result.issues,
+            task_title=task.title or "",
+            task_description=task.description or "",
+        )
+        for kind, agent in tool_agents.items():
+            if not hasattr(agent, "problem_solve"):
+                continue
+            try:
+                out = agent.problem_solve(phase_inp)
+                if out.files:
+                    merged.update(out.files)
+                if out.recommendations:
+                    fixes_applied.extend([{"source": kind.value, "recommendation": r} for r in out.recommendations])
+                    summary_parts.append(f"Tool {kind.value}: {out.summary or 'suggestions applied.'}")
+            except Exception as exc:
+                logger.warning("[%s] Tool agent %s problem_solve() failed: %s", task_id, kind.value, exc)
+
+    resolved = len(unresolved_issues) == 0
+    summary = " ".join(summary_parts) if summary_parts else f"Applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    logger.info(
+        "[%s] Problem-solving: %s — %s (%d unresolved)",
+        task_id,
+        "resolved" if resolved else "partial",
+        summary[:120],
+        len(unresolved_issues),
     )
-    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(current_files.items())[:20])
+    return ProblemSolvingResult(
+        fixes_applied=fixes_applied,
+        files=merged,
+        summary=summary,
+        resolved=resolved,
+        unresolved_issues=unresolved_issues,
+    )
+
+
+def run_problem_solving_for_microtask(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    review_result: ReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix issues for a single microtask, one issue at a time.
+
+    This function is similar to run_problem_solving() but is scoped to a single
+    microtask's files, enabling per-microtask problem-solving within the review loop.
+
+    Args:
+        detail_callback: Optional callback to report detailed status messages
+            (e.g., "Fixing issue 2/5: Missing null check...").
+    """
+    microtask_id = microtask.id
+    actionable = [i for i in review_result.issues if i.severity in ("critical", "high", "medium")]
+    if not actionable:
+        return ProblemSolvingResult(resolved=True, files=current_files, summary="No actionable issues.")
 
     lang_conv = JAVA_CONVENTIONS if language == "java" else PYTHON_CONVENTIONS
-    prompt = PROBLEM_SOLVING_PROMPT.format(
-        language_conventions=lang_conv,
-        issues=issues_text,
-        current_code=code_text[:12000],
-    )
-
-    logger.info("[%s] Problem-solving: sending %d issues to LLM for fixes", task_id, len(actionable))
-    raw = llm.complete_json(prompt)
-
-    fixed_files = raw.get("files") or {}
     merged = dict(current_files)
-    merged.update(fixed_files)
+    fixes_applied: List[Dict[str, Any]] = []
+    summary_parts: List[str] = []
+    unresolved_issues: List[ReviewIssue] = []
 
-    fixes_applied = raw.get("fixes_applied") or []
-    resolved = raw.get("resolved", bool(fixed_files))
-    summary = raw.get("summary", f"Applied {len(fixes_applied)} fixes.")
+    logger.info("[%s] Problem-solving for microtask %s: %d actionable issues", task_id, microtask_id, len(actionable))
 
-    logger.info("[%s] Problem-solving: %s — %s", task_id, "resolved" if resolved else "partial", summary[:120])
+    for issue_idx, issue in enumerate(actionable):
+        desc_short = (issue.description or "")[:80]
+        if detail_callback:
+            detail_callback(f"Fixing issue {issue_idx + 1}/{len(actionable)}: {desc_short[:50]}...")
+        logger.info(
+            "[%s] Microtask %s: fixing issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, microtask_id, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
+        working = dict(merged)
+        resolved_this = False
+
+        for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
+            relevant_code = _relevant_code_for_issue(issue, working)
+            prompt = PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT.format(
+                language_conventions=lang_conv,
+                source=issue.source or "review",
+                severity=issue.severity or "medium",
+                description=issue.description or "",
+                file_path=issue.file_path or "N/A",
+                recommendation=issue.recommendation or "Fix the issue.",
+                current_code=relevant_code,
+            )
+            try:
+                raw = llm.complete_text(prompt)
+            except Exception as exc:
+                logger.warning("[%s] Microtask %s: problem-solving LLM call failed (issue %d, attempt %d): %s",
+                               task_id, microtask_id, issue_idx + 1, attempt, exc)
+                break
+
+            parsed = parse_problem_solving_single_issue_template(raw)
+            fixed_files = parsed.get("files") or {}
+            if not fixed_files:
+                if parsed.get("resolved"):
+                    resolved_this = True
+                break
+
+            working.update(fixed_files)
+            merged.update(fixed_files)
+            fixes_applied.append({
+                "microtask": microtask_id,
+                "issue": desc_short,
+                "fix": parsed.get("summary", "updated file(s)"),
+                "root_cause": parsed.get("root_cause", ""),
+            })
+            if parsed.get("resolved"):
+                resolved_this = True
+                break
+
+        if not resolved_this:
+            unresolved_issues.append(issue)
+            logger.warning(
+                "[%s] Microtask %s: issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, microtask_id, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
+
+    if tool_agents:
+        phase_inp = ToolAgentPhaseInput(
+            phase=Phase.PROBLEM_SOLVING,
+            microtask=microtask,
+            repo_path=repo_path,
+            spec_context=microtask.description or "",
+            language=language,
+            current_files=merged,
+            review_issues=review_result.issues,
+            task_title=microtask.title or "",
+            task_description=microtask.description or "",
+            task_id=task_id,
+        )
+        for kind, agent in tool_agents.items():
+            if not hasattr(agent, "problem_solve"):
+                continue
+            try:
+                out = agent.problem_solve(phase_inp)
+                if out.files:
+                    merged.update(out.files)
+                if out.recommendations:
+                    fixes_applied.extend([{"source": kind.value, "microtask": microtask_id, "recommendation": r} for r in out.recommendations])
+                    summary_parts.append(f"Tool {kind.value}: {out.summary or 'suggestions applied.'}")
+            except Exception as exc:
+                logger.warning("[%s] Microtask %s: tool agent %s problem_solve() failed: %s", task_id, microtask_id, kind.value, exc)
+
+    resolved = len(unresolved_issues) == 0
+    summary = " ".join(summary_parts) if summary_parts else f"Microtask {microtask_id}: applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    logger.info("[%s] %s", task_id, summary)
 
     return ProblemSolvingResult(
         fixes_applied=fixes_applied,
         files=merged,
         summary=summary,
         resolved=resolved,
+        unresolved_issues=unresolved_issues,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase-specific fix functions
+# ---------------------------------------------------------------------------
+
+
+def _run_phase_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    phase_result: PhaseReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    phase_name: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Common implementation for phase-specific fixes.
+    
+    Processes issues from a specific phase review and applies fixes.
+    """
+    microtask_id = microtask.id
+    actionable = [i for i in phase_result.issues if i.severity in ("critical", "high", "medium")]
+    if not actionable:
+        return ProblemSolvingResult(resolved=True, files=current_files, summary=f"No actionable {phase_name} issues.")
+
+    lang_conv = JAVA_CONVENTIONS if language == "java" else PYTHON_CONVENTIONS
+    merged = dict(current_files)
+    fixes_applied: List[Dict[str, Any]] = []
+    unresolved_issues: List[ReviewIssue] = []
+
+    logger.info("[%s] %s fixes for microtask %s: %d actionable issues", task_id, phase_name.title(), microtask_id, len(actionable))
+
+    for issue_idx, issue in enumerate(actionable):
+        desc_short = (issue.description or "")[:80]
+        if detail_callback:
+            detail_callback(f"Fixing {phase_name} issue {issue_idx + 1}/{len(actionable)}: {desc_short[:50]}...")
+        logger.info(
+            "[%s] Microtask %s: fixing %s issue %d/%d — %s. Next step -> Attempting fix (up to %d iterations)",
+            task_id, microtask_id, phase_name, issue_idx + 1, len(actionable), desc_short, MAX_ITERATIONS_PER_ISSUE,
+        )
+        working = dict(merged)
+        resolved_this = False
+
+        for attempt in range(1, MAX_ITERATIONS_PER_ISSUE + 1):
+            relevant_code = _relevant_code_for_issue(issue, working)
+            prompt = PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT.format(
+                language_conventions=lang_conv,
+                source=issue.source or phase_name,
+                severity=issue.severity or "medium",
+                description=issue.description or "",
+                file_path=issue.file_path or "N/A",
+                recommendation=issue.recommendation or f"Fix the {phase_name} issue.",
+                current_code=relevant_code,
+            )
+            try:
+                raw = llm.complete_text(prompt)
+            except Exception as exc:
+                logger.warning("[%s] Microtask %s: %s fix LLM call failed (issue %d, attempt %d): %s",
+                               task_id, microtask_id, phase_name, issue_idx + 1, attempt, exc)
+                break
+
+            parsed = parse_problem_solving_single_issue_template(raw)
+            fixed_files = parsed.get("files") or {}
+            if not fixed_files:
+                if parsed.get("resolved"):
+                    resolved_this = True
+                break
+
+            working.update(fixed_files)
+            merged.update(fixed_files)
+            fixes_applied.append({
+                "microtask": microtask_id,
+                "phase": phase_name,
+                "issue": desc_short,
+                "fix": parsed.get("summary", "updated file(s)"),
+                "root_cause": parsed.get("root_cause", ""),
+            })
+            if parsed.get("resolved"):
+                resolved_this = True
+                break
+
+        if not resolved_this:
+            unresolved_issues.append(issue)
+            logger.warning(
+                "[%s] Microtask %s: %s issue unresolved. Recovery summary: "
+                "1) Attempted %d fix iterations, 2) No successful resolution. Issue: %s",
+                task_id, microtask_id, phase_name, MAX_ITERATIONS_PER_ISSUE, desc_short,
+            )
+
+    resolved = len(unresolved_issues) == 0
+    summary = f"Microtask {microtask_id} {phase_name}: applied {len(fixes_applied)} fix(s); {len(unresolved_issues)} unresolved."
+    logger.info("[%s] %s", task_id, summary)
+
+    return ProblemSolvingResult(
+        fixes_applied=fixes_applied,
+        files=merged,
+        summary=summary,
+        resolved=resolved,
+        unresolved_issues=unresolved_issues,
+    )
+
+
+def run_code_review_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    phase_result: PhaseReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix issues from code review phase (build errors, lint issues, code quality).
+    """
+    result = _run_phase_fixes(
+        llm=llm,
+        microtask=microtask,
+        phase_result=phase_result,
+        current_files=current_files,
+        language=language,
+        repo_path=repo_path,
+        tool_agents=tool_agents,
+        task_id=task_id,
+        phase_name="code_review",
+        detail_callback=detail_callback,
+    )
+    
+    if tool_agents and ToolAgentKind.BUILD_SPECIALIST in tool_agents:
+        build_agent = tool_agents[ToolAgentKind.BUILD_SPECIALIST]
+        if hasattr(build_agent, "problem_solve"):
+            try:
+                phase_inp = ToolAgentPhaseInput(
+                    phase=Phase.PROBLEM_SOLVING,
+                    microtask=microtask,
+                    repo_path=repo_path,
+                    spec_context=microtask.description or "",
+                    language=language,
+                    current_files=result.files,
+                    review_issues=phase_result.issues,
+                    task_title=microtask.title or "",
+                    task_description=microtask.description or "",
+                    task_id=task_id,
+                )
+                out = build_agent.problem_solve(phase_inp)
+                if out.files:
+                    result.files.update(out.files)
+            except Exception as exc:
+                logger.warning("[%s] Build specialist problem_solve failed: %s", task_id, exc)
+    
+    return result
+
+
+def run_qa_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    phase_result: PhaseReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix issues from QA testing phase (bugs, missing tests, quality issues).
+    """
+    result = _run_phase_fixes(
+        llm=llm,
+        microtask=microtask,
+        phase_result=phase_result,
+        current_files=current_files,
+        language=language,
+        repo_path=repo_path,
+        tool_agents=tool_agents,
+        task_id=task_id,
+        phase_name="qa",
+        detail_callback=detail_callback,
+    )
+    
+    if tool_agents and ToolAgentKind.TESTING_QA in tool_agents:
+        qa_agent = tool_agents[ToolAgentKind.TESTING_QA]
+        if hasattr(qa_agent, "problem_solve"):
+            try:
+                phase_inp = ToolAgentPhaseInput(
+                    phase=Phase.PROBLEM_SOLVING,
+                    microtask=microtask,
+                    repo_path=repo_path,
+                    spec_context=microtask.description or "",
+                    language=language,
+                    current_files=result.files,
+                    review_issues=phase_result.issues,
+                    task_title=microtask.title or "",
+                    task_description=microtask.description or "",
+                    task_id=task_id,
+                )
+                out = qa_agent.problem_solve(phase_inp)
+                if out.files:
+                    result.files.update(out.files)
+            except Exception as exc:
+                logger.warning("[%s] QA tool agent problem_solve failed: %s", task_id, exc)
+    
+    return result
+
+
+def run_security_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    phase_result: PhaseReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix issues from security testing phase (vulnerabilities, security best practices).
+    """
+    result = _run_phase_fixes(
+        llm=llm,
+        microtask=microtask,
+        phase_result=phase_result,
+        current_files=current_files,
+        language=language,
+        repo_path=repo_path,
+        tool_agents=tool_agents,
+        task_id=task_id,
+        phase_name="security",
+        detail_callback=detail_callback,
+    )
+    
+    if tool_agents and ToolAgentKind.SECURITY in tool_agents:
+        sec_agent = tool_agents[ToolAgentKind.SECURITY]
+        if hasattr(sec_agent, "problem_solve"):
+            try:
+                phase_inp = ToolAgentPhaseInput(
+                    phase=Phase.PROBLEM_SOLVING,
+                    microtask=microtask,
+                    repo_path=repo_path,
+                    spec_context=microtask.description or "",
+                    language=language,
+                    current_files=result.files,
+                    review_issues=phase_result.issues,
+                    task_title=microtask.title or "",
+                    task_description=microtask.description or "",
+                    task_id=task_id,
+                )
+                out = sec_agent.problem_solve(phase_inp)
+                if out.files:
+                    result.files.update(out.files)
+            except Exception as exc:
+                logger.warning("[%s] Security tool agent problem_solve failed: %s", task_id, exc)
+    
+    return result
+
+
+def run_documentation_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    phase_result: PhaseReviewResult,
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    task_id: str = "",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix issues from documentation review phase (missing docs, incomplete comments).
+    """
+    result = _run_phase_fixes(
+        llm=llm,
+        microtask=microtask,
+        phase_result=phase_result,
+        current_files=current_files,
+        language=language,
+        repo_path=repo_path,
+        tool_agents=tool_agents,
+        task_id=task_id,
+        phase_name="documentation",
+        detail_callback=detail_callback,
+    )
+    
+    if tool_agents and ToolAgentKind.DOCUMENTATION in tool_agents:
+        doc_agent = tool_agents[ToolAgentKind.DOCUMENTATION]
+        if hasattr(doc_agent, "problem_solve"):
+            try:
+                phase_inp = ToolAgentPhaseInput(
+                    phase=Phase.PROBLEM_SOLVING,
+                    microtask=microtask,
+                    repo_path=repo_path,
+                    spec_context=microtask.description or "",
+                    language=language,
+                    current_files=result.files,
+                    review_issues=phase_result.issues,
+                    task_title=microtask.title or "",
+                    task_description=microtask.description or "",
+                    task_id=task_id,
+                )
+                out = doc_agent.problem_solve(phase_inp)
+                if out.files:
+                    result.files.update(out.files)
+            except Exception as exc:
+                logger.warning("[%s] Documentation tool agent problem_solve failed: %s", task_id, exc)
+    
+    return result

@@ -7,7 +7,7 @@ All types are defined from scratch — no reuse of ``backend_agent`` models.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,18 +19,26 @@ from pydantic import BaseModel, Field
 class Phase(str, Enum):
     """Lifecycle phases of the backend-code-v2 workflow."""
 
+    SETUP = "setup"
     PLANNING = "planning"
     EXECUTION = "execution"
     REVIEW = "review"
     PROBLEM_SOLVING = "problem_solving"
+    DOCUMENTATION = "documentation"
     DELIVER = "deliver"
 
 
 class MicrotaskStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    IN_CODE_REVIEW = "in_code_review"
+    IN_QA_TESTING = "in_qa_testing"
+    IN_SECURITY_TESTING = "in_security_testing"
+    IN_REVIEW = "in_review"
+    IN_DOCUMENTATION = "in_documentation"
     COMPLETED = "completed"
     FAILED = "failed"
+    REVIEW_FAILED = "review_failed"
     SKIPPED = "skipped"
 
 
@@ -45,6 +53,8 @@ class ToolAgentKind(str, Enum):
     DOCUMENTATION = "documentation"
     TESTING_QA = "testing_qa"
     SECURITY = "security"
+    GIT_BRANCH_MANAGEMENT = "git_branch_management"
+    BUILD_SPECIALIST = "build_specialist"
     GENERAL = "general"
 
 
@@ -74,6 +84,16 @@ class Microtask(BaseModel):
 # ---------------------------------------------------------------------------
 # Phase results
 # ---------------------------------------------------------------------------
+
+class SetupResult(BaseModel):
+    """Output of the Setup phase (Backend Tech Lead)."""
+
+    repo_initialized: bool = Field(default=False)
+    readme_created: bool = Field(default=False)
+    branch_created: bool = Field(default=False)
+    master_renamed_to_main: bool = Field(default=False)
+    summary: str = Field(default="")
+
 
 class PlanningResult(BaseModel):
     """Output of the Planning phase."""
@@ -111,6 +131,15 @@ class ReviewResult(BaseModel):
     summary: str = Field(default="")
 
 
+class PhaseReviewResult(BaseModel):
+    """Output of a single phase-specific review (code review, QA, security, or documentation)."""
+
+    passed: bool = Field(default=False)
+    issues: List[ReviewIssue] = Field(default_factory=list)
+    summary: str = Field(default="")
+    phase_name: str = Field(default="", description="Name of the phase: code_review, qa, security, documentation")
+
+
 class ProblemSolvingResult(BaseModel):
     """Output of the Problem-solving phase."""
 
@@ -118,6 +147,19 @@ class ProblemSolvingResult(BaseModel):
     files: Dict[str, str] = Field(default_factory=dict, description="Updated files after fixes")
     summary: str = Field(default="")
     resolved: bool = Field(default=False)
+    unresolved_issues: List[ReviewIssue] = Field(
+        default_factory=list,
+        description="Issues still unresolved after per-issue fix attempts (escalate to planning for fix microtasks)",
+    )
+
+
+class DocumentationPhaseResult(BaseModel):
+    """Output of the Documentation phase."""
+
+    files: Dict[str, str] = Field(default_factory=dict, description="All files with documentation updates")
+    iterations: int = Field(default=0, description="Number of review/fix iterations")
+    issues_fixed: int = Field(default=0, description="Total documentation issues fixed")
+    summary: str = Field(default="")
 
 
 class DeliverResult(BaseModel):
@@ -143,12 +185,14 @@ class BackendCodeV2WorkflowResult(BaseModel):
 
     task_id: str = Field(default="", description="ID of the task that was executed")
     success: bool = Field(default=False)
-    current_phase: Phase = Field(default=Phase.PLANNING)
+    current_phase: Phase = Field(default=Phase.SETUP)
     iterations_used: int = Field(default=0, description="Number of review/fix iterations")
+    setup_result: Optional[SetupResult] = None
     planning_result: Optional[PlanningResult] = None
     execution_result: Optional[ExecutionResult] = None
     review_result: Optional[ReviewResult] = None
     problem_solving_result: Optional[ProblemSolvingResult] = None
+    documentation_result: Optional[DocumentationPhaseResult] = None
     deliver_result: Optional[DeliverResult] = None
     final_files: Dict[str, str] = Field(default_factory=dict)
     summary: str = Field(default="")
@@ -161,19 +205,87 @@ class BackendCodeV2WorkflowResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ToolAgentInput(BaseModel):
-    """Base input for all team-owned tool agents."""
+    """Base input for all team-owned tool agents (Execution phase)."""
 
     microtask: Microtask
     repo_path: str = Field(default="")
     existing_code: str = Field(default="")
-    spec_context: str = Field(default="")
     language: str = Field(default="python")
 
 
+class ToolAgentPhaseInput(BaseModel):
+    """Input for tool agent phase methods (plan, review, problem_solve, deliver)."""
+
+    phase: Phase = Field(default=Phase.PLANNING)
+    microtask: Optional[Microtask] = None
+    repo_path: str = Field(default="")
+    existing_code: str = Field(default="")
+    language: str = Field(default="python")
+    current_files: Dict[str, str] = Field(default_factory=dict)
+    review_issues: List[ReviewIssue] = Field(default_factory=list)
+    task_title: str = Field(default="")
+    task_description: str = Field(default="")
+    task_id: str = Field(default="")
+    feature_branch_name: Optional[str] = Field(default=None)
+    spec_context: str = Field(default="", description="Optional spec/context for LLM prompts")
+
+
+class ToolAgentPhaseOutput(BaseModel):
+    """Output from tool agent phase methods (plan, review, problem_solve, deliver)."""
+
+    recommendations: List[str] = Field(default_factory=list)
+    issues: List[ReviewIssue] = Field(default_factory=list)
+    files: Dict[str, str] = Field(default_factory=dict)
+    summary: str = Field(default="")
+    success: bool = Field(default=True)
+
+
 class ToolAgentOutput(BaseModel):
-    """Base output for all team-owned tool agents."""
+    """Base output for all team-owned tool agents (Execution phase)."""
 
     files: Dict[str, str] = Field(default_factory=dict)
     recommendations: List[str] = Field(default_factory=list)
     summary: str = Field(default="")
     success: bool = Field(default=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-microtask review configuration
+# ---------------------------------------------------------------------------
+
+class MicrotaskReviewConfig(BaseModel):
+    """Configuration for per-microtask review gates with per-phase retry limits."""
+
+    max_retries: int = Field(
+        default=20,
+        description="Max problem-solving attempts per microtask before marking as failed (legacy, used if per-phase not set)",
+    )
+    code_review_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for code review phase (build + lint + code review)",
+    )
+    qa_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for QA testing phase",
+    )
+    security_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for security testing phase",
+    )
+    documentation_max_retries: int = Field(
+        default=20,
+        description="Max fix attempts for documentation phase",
+    )
+    on_failure: Literal["stop", "skip_continue"] = Field(
+        default="skip_continue",
+        description="Behavior when max retries exceeded: 'stop' aborts workflow, 'skip_continue' proceeds to next microtask",
+    )
+
+
+class MicrotaskReviewFailedError(Exception):
+    """Raised when a microtask fails review and on_failure='stop'."""
+
+    def __init__(self, microtask: "Microtask", review_result: "ReviewResult") -> None:
+        self.microtask = microtask
+        self.review_result = review_result
+        super().__init__(f"Microtask {microtask.id} failed review after max retries")

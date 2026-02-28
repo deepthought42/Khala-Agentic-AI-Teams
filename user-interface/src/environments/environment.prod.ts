@@ -10,4 +10,5 @@ export const environment = {
   soc2ComplianceApiUrl: '/api/soc2-compliance',
   socialMarketingApiUrl: '/api/social-marketing',
   brandingApiUrl: '/api/branding',
+  personalAssistantApiUrl: '/api/personal-assistant',
 };
