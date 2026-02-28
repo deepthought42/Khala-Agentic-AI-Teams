@@ -11,4 +11,7 @@ export const environment = {
   socialMarketingApiUrl: '/api/social-marketing',
   brandingApiUrl: '/api/branding',
   personalAssistantApiUrl: '/api/personal-assistant',
+  accessibilityApiUrl: '/api/accessibility-audit',
+  agentProvisioningApiUrl: '/api/agent-provisioning',
+  aiSystemsApiUrl: '/api/ai-systems',
 };

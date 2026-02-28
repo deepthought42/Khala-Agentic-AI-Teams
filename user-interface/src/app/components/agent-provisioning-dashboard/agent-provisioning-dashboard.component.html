@@ -1,0 +1,295 @@
+<div class="dashboard-container">
+  <header class="dashboard-header">
+    <div class="title-section">
+      <mat-icon class="team-icon">cloud_queue</mat-icon>
+      <div>
+        <h1>Agent Provisioning</h1>
+        <p class="subtitle">Provision sandboxed environments for AI agents</p>
+      </div>
+    </div>
+    <app-health-indicator [healthCheck]="healthCheck" label="Agent Provisioning API" />
+  </header>
+
+  <mat-tab-group
+    [selectedIndex]="selectedTabIndex"
+    (selectedIndexChange)="onTabChange($event)"
+    class="dashboard-tabs"
+  >
+    <mat-tab label="Provision Agent">
+      <div class="tab-content">
+        @if (!currentJobId) {
+          <mat-card class="provision-form-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>add_circle</mat-icon>
+              <mat-card-title>New Agent Environment</mat-card-title>
+              <mat-card-subtitle>Configure and provision a new agent</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <form [formGroup]="provisionForm" (ngSubmit)="onSubmitProvision()" class="provision-form">
+                <mat-form-field appearance="outline">
+                  <mat-label>Agent ID</mat-label>
+                  <input matInput formControlName="agent_id" placeholder="my-agent-001">
+                  <mat-hint>Unique identifier for the agent</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Manifest Path</mat-label>
+                  <input matInput formControlName="manifest_path" placeholder="default.yaml">
+                  <mat-hint>Tool manifest file (relative to manifests/)</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Access Tier</mat-label>
+                  <mat-select formControlName="access_tier">
+                    @for (tier of accessTiers; track tier) {
+                      <mat-option [value]="tier">{{ tier | titlecase }}</mat-option>
+                    }
+                  </mat-select>
+                  <mat-hint>Permission level for provisioned tools</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Workspace Path (optional)</mat-label>
+                  <input matInput formControlName="workspace_path" placeholder="/workspace">
+                  <mat-hint>Custom workspace path inside the container</mat-hint>
+                </mat-form-field>
+
+                @if (submitError) {
+                  <div class="error-message">{{ submitError }}</div>
+                }
+
+                <div class="form-actions">
+                  <button
+                    mat-raised-button
+                    color="primary"
+                    type="submit"
+                    [disabled]="provisionForm.invalid || submitting"
+                  >
+                    @if (submitting) {
+                      <mat-icon>hourglass_empty</mat-icon>
+                      Provisioning...
+                    } @else {
+                      <mat-icon>play_arrow</mat-icon>
+                      Start Provisioning
+                    }
+                  </button>
+                </div>
+              </form>
+            </mat-card-content>
+          </mat-card>
+        } @else {
+          <mat-card class="job-status-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.spinning]="isJobActive">
+                @if (isJobComplete) { check_circle }
+                @else if (isJobFailed) { error }
+                @else { sync }
+              </mat-icon>
+              <mat-card-title>Provisioning Job</mat-card-title>
+              <mat-card-subtitle>{{ currentJobId }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <div class="job-info">
+                <div class="info-row">
+                  <span class="label">Agent ID:</span>
+                  <span class="value">{{ currentJobStatus?.agent_id ?? '-' }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="label">Status:</span>
+                  <mat-chip [class]="'status-' + (currentJobStatus?.status ?? 'pending')">
+                    {{ currentJobStatus?.status ?? 'pending' | titlecase }}
+                  </mat-chip>
+                </div>
+                <div class="info-row">
+                  <span class="label">Progress:</span>
+                  <mat-progress-bar
+                    mode="determinate"
+                    [value]="currentJobStatus?.progress ?? 0"
+                  ></mat-progress-bar>
+                  <span class="progress-text">{{ currentJobStatus?.progress ?? 0 }}%</span>
+                </div>
+              </div>
+
+              <div class="phase-stepper">
+                @for (phase of phases; track phase.id) {
+                  <div class="phase-step"
+                       [class.completed]="isPhaseCompleted(phase.id)"
+                       [class.current]="isPhaseCurrent(phase.id)">
+                    <div class="phase-icon">
+                      <mat-icon>{{ phase.icon }}</mat-icon>
+                    </div>
+                    <span class="phase-label">{{ phase.label }}</span>
+                  </div>
+                }
+              </div>
+
+              @if (currentJobStatus?.current_tool) {
+                <div class="current-tool">
+                  <mat-icon>build</mat-icon>
+                  <span>Provisioning: {{ currentJobStatus.current_tool }}</span>
+                  <span class="tool-progress">
+                    ({{ currentJobStatus.tools_completed ?? 0 }}/{{ currentJobStatus.tools_total ?? 0 }})
+                  </span>
+                </div>
+              }
+
+              @if (currentJobStatus?.error) {
+                <div class="error-message">
+                  <mat-icon>error</mat-icon>
+                  {{ currentJobStatus.error }}
+                </div>
+              }
+
+              @if (isJobComplete && currentJobStatus?.result?.onboarding) {
+                <div class="onboarding-summary">
+                  <h3>Onboarding Summary</h3>
+                  <p>{{ currentJobStatus.result.onboarding.summary }}</p>
+                  <div class="tools-provisioned">
+                    <h4>Tools Provisioned:</h4>
+                    @for (tool of currentJobStatus.result.onboarding.tools; track tool.name) {
+                      <mat-chip>{{ tool.name }}</mat-chip>
+                    }
+                  </div>
+                </div>
+              }
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button (click)="clearCurrentJob()">
+                <mat-icon>add</mat-icon>
+                New Provision
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        }
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Jobs">
+      <div class="tab-content">
+        <mat-card>
+          <mat-card-header>
+            <mat-icon mat-card-avatar>history</mat-icon>
+            <mat-card-title>Provisioning Jobs</mat-card-title>
+            <mat-card-subtitle>View all provisioning job history</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            @if (jobsLoading) {
+              <div class="loading">Loading jobs...</div>
+            } @else if (jobs.length === 0) {
+              <div class="empty-state">No provisioning jobs found</div>
+            } @else {
+              <table mat-table [dataSource]="jobs" class="jobs-table">
+                <ng-container matColumnDef="job_id">
+                  <th mat-header-cell *matHeaderCellDef>Job ID</th>
+                  <td mat-cell *matCellDef="let job">
+                    <button mat-button color="primary" (click)="viewJobStatus(job.job_id)">
+                      {{ job.job_id | slice:0:8 }}...
+                    </button>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="agent_id">
+                  <th mat-header-cell *matHeaderCellDef>Agent ID</th>
+                  <td mat-cell *matCellDef="let job">{{ job.agent_id }}</td>
+                </ng-container>
+
+                <ng-container matColumnDef="status">
+                  <th mat-header-cell *matHeaderCellDef>Status</th>
+                  <td mat-cell *matCellDef="let job">
+                    <mat-chip [class]="'status-' + job.status">{{ job.status | titlecase }}</mat-chip>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="current_phase">
+                  <th mat-header-cell *matHeaderCellDef>Phase</th>
+                  <td mat-cell *matCellDef="let job">{{ getPhaseLabel(job.current_phase ?? '') }}</td>
+                </ng-container>
+
+                <ng-container matColumnDef="progress">
+                  <th mat-header-cell *matHeaderCellDef>Progress</th>
+                  <td mat-cell *matCellDef="let job">{{ job.progress }}%</td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="jobColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: jobColumns;"></tr>
+              </table>
+            }
+          </mat-card-content>
+
+          <mat-card-actions>
+            <button mat-button (click)="loadJobs()">
+              <mat-icon>refresh</mat-icon>
+              Refresh
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Environments">
+      <div class="tab-content">
+        <mat-card>
+          <mat-card-header>
+            <mat-icon mat-card-avatar>dns</mat-icon>
+            <mat-card-title>Agent Environments</mat-card-title>
+            <mat-card-subtitle>View and manage provisioned agent environments</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            @if (agentsLoading) {
+              <div class="loading">Loading environments...</div>
+            } @else if (agents.length === 0) {
+              <div class="empty-state">No provisioned environments found</div>
+            } @else {
+              <table mat-table [dataSource]="agents" class="agents-table">
+                <ng-container matColumnDef="agent_id">
+                  <th mat-header-cell *matHeaderCellDef>Agent ID</th>
+                  <td mat-cell *matCellDef="let agent">{{ agent.agent_id }}</td>
+                </ng-container>
+
+                <ng-container matColumnDef="status">
+                  <th mat-header-cell *matHeaderCellDef>Status</th>
+                  <td mat-cell *matCellDef="let agent">
+                    <mat-chip [class]="'status-' + agent.status">{{ agent.status | titlecase }}</mat-chip>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="tools">
+                  <th mat-header-cell *matHeaderCellDef>Tools</th>
+                  <td mat-cell *matCellDef="let agent">
+                    @for (tool of agent.tools_provisioned; track tool) {
+                      <mat-chip class="tool-chip">{{ tool }}</mat-chip>
+                    }
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let agent">
+                    <button mat-icon-button color="warn" (click)="deprovisionAgent(agent.agent_id)">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="agentColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: agentColumns;"></tr>
+              </table>
+            }
+          </mat-card-content>
+
+          <mat-card-actions>
+            <button mat-button (click)="loadAgents()">
+              <mat-icon>refresh</mat-icon>
+              Refresh
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

@@ -1,0 +1,149 @@
+.profile-form-container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.form-card {
+  mat-card-header {
+    mat-icon[mat-card-avatar] {
+      font-size: 40px;
+      width: 40px;
+      height: 40px;
+      color: var(--mat-primary);
+    }
+  }
+}
+
+.form-section {
+  padding: 20px 0;
+
+  h3 {
+    margin: 0 0 16px 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--mat-primary);
+  }
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+
+  h3 {
+    margin: 0;
+  }
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  &.two-col {
+    > * {
+      flex: 1;
+    }
+  }
+
+  &.three-col {
+    > * {
+      flex: 1;
+    }
+  }
+
+  &.four-col {
+    > * {
+      flex: 1;
+    }
+  }
+
+  .full-width {
+    width: 100%;
+  }
+}
+
+.toggle-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+
+.goal-item {
+  position: relative;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 8px;
+  padding: 16px;
+  padding-right: 48px;
+  margin-bottom: 12px;
+
+  .remove-goal-btn {
+    position: absolute;
+    top: 12px;
+    right: 8px;
+    color: #f44336;
+  }
+}
+
+.no-items-text {
+  color: rgba(0, 0, 0, 0.54);
+  font-style: italic;
+  text-align: center;
+  padding: 16px;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+  margin-bottom: 16px;
+
+  mat-icon {
+    color: #c62828;
+  }
+}
+
+.mode-hint {
+  font-size: 0.85em;
+  color: rgba(0, 0, 0, 0.54);
+}
+
+mat-divider {
+  margin: 8px 0;
+}
+
+mat-card-actions {
+  padding: 16px;
+  gap: 8px;
+}
+
+@media (max-width: 768px) {
+  .profile-form-container {
+    padding: 12px;
+  }
+
+  .form-row {
+    flex-direction: column;
+
+    &.two-col,
+    &.three-col,
+    &.four-col {
+      > * {
+        flex: none;
+        width: 100%;
+      }
+    }
+  }
+
+  .toggle-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+}

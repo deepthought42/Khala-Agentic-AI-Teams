@@ -1,0 +1,287 @@
+.status-card {
+  margin-bottom: 16px;
+}
+
+.header-icon {
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #1976d2;
+}
+
+.audit-id {
+  color: rgba(0, 0, 0, 0.54);
+  margin-left: 4px;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-weight: 500;
+  font-size: 14px;
+
+  &.running {
+    background: #e3f2fd;
+    color: #1976d2;
+  }
+
+  &.complete {
+    background: #e8f5e9;
+    color: #388e3c;
+  }
+
+  &.failed {
+    background: #ffebee;
+    color: #d32f2f;
+  }
+
+  &.cancelled {
+    background: #fff3e0;
+    color: #f57c00;
+  }
+}
+
+.findings-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.progress-section {
+  margin-bottom: 24px;
+
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 14px;
+    color: rgba(0, 0, 0, 0.6);
+  }
+}
+
+.phases-section {
+  margin-bottom: 24px;
+
+  h4 {
+    margin: 0 0 16px 0;
+    color: rgba(0, 0, 0, 0.87);
+    font-size: 14px;
+    font-weight: 500;
+  }
+}
+
+.phases-stepper {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+}
+
+.phase-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  position: relative;
+
+  .step-indicator {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    position: relative;
+  }
+
+  .step-circle {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 1;
+    flex-shrink: 0;
+
+    mat-icon {
+      font-size: 20px;
+      width: 20px;
+      height: 20px;
+    }
+  }
+
+  .step-connector {
+    flex: 1;
+    height: 2px;
+    background: #e0e0e0;
+    margin: 0 4px;
+
+    &.completed {
+      background: #4caf50;
+    }
+  }
+
+  .step-content {
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  .step-label {
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.6);
+  }
+
+  &.completed {
+    .step-circle {
+      background: #4caf50;
+      color: white;
+    }
+
+    .step-label {
+      color: #4caf50;
+      font-weight: 500;
+    }
+  }
+
+  &.current {
+    .step-circle {
+      background: #1976d2;
+      color: white;
+      animation: pulse 2s infinite;
+    }
+
+    .step-label {
+      color: #1976d2;
+      font-weight: 500;
+    }
+  }
+
+  &.pending {
+    .step-circle {
+      background: #e0e0e0;
+      color: rgba(0, 0, 0, 0.38);
+    }
+  }
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(25, 118, 210, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(25, 118, 210, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(25, 118, 210, 0);
+  }
+}
+
+.results-summary {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+
+  h4 {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    font-weight: 500;
+  }
+}
+
+.severity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.severity-chip {
+  font-weight: 500;
+
+  &.critical {
+    background-color: #ffcdd2 !important;
+    color: #c62828 !important;
+  }
+
+  &.high {
+    background-color: #ffe0b2 !important;
+    color: #e65100 !important;
+  }
+
+  &.medium {
+    background-color: #fff9c4 !important;
+    color: #f57f17 !important;
+  }
+
+  &.low {
+    background-color: #e3f2fd !important;
+    color: #1565c0 !important;
+  }
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.error-section {
+  margin-top: 16px;
+  padding: 12px;
+  background: #ffebee;
+  border-radius: 8px;
+
+  h4 {
+    margin: 0 0 8px 0;
+    color: #c62828;
+    font-size: 14px;
+  }
+
+  .error-text {
+    margin: 0;
+    color: #c62828;
+    font-size: 13px;
+  }
+}
+
+.actions-section {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+
+  button mat-icon {
+    margin-right: 4px;
+  }
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: rgba(0, 0, 0, 0.54);
+}

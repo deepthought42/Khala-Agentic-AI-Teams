@@ -1,0 +1,191 @@
+<mat-card class="report-card">
+  <mat-card-header>
+    <mat-icon mat-card-avatar class="header-icon">summarize</mat-icon>
+    <mat-card-title>Accessibility Audit Report</mat-card-title>
+    <mat-card-subtitle>Audit: {{ auditId }}</mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <!-- Loading State -->
+    @if (loading) {
+      <div class="loading-state">
+        <mat-spinner diameter="40"></mat-spinner>
+        <span>Loading report...</span>
+      </div>
+    }
+
+    <!-- Error State -->
+    @if (error) {
+      <div class="error-message">
+        <mat-icon>error</mat-icon>
+        <span>{{ error }}</span>
+        <button mat-button color="primary" (click)="loadReport()">Retry</button>
+      </div>
+    }
+
+    <!-- Report Content -->
+    @if (!loading && !error && report) {
+      <!-- Compliance Score -->
+      <div class="compliance-section">
+        <div class="score-circle" [style.border-color]="complianceColor">
+          <span class="score-value" [style.color]="complianceColor">{{ complianceScore }}</span>
+          <span class="score-label">Score</span>
+        </div>
+        <div class="compliance-info">
+          <h3 [style.color]="complianceColor">{{ complianceLevel }}</h3>
+          <p>{{ report.total_findings }} accessibility issues found</p>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Severity Breakdown -->
+      <div class="severity-section">
+        <h4>Findings by Severity</h4>
+        <div class="severity-bars">
+          <div class="severity-bar">
+            <div class="bar-label">
+              <mat-icon class="critical">error</mat-icon>
+              <span>Critical</span>
+            </div>
+            <div class="bar-track">
+              <div
+                class="bar-fill critical"
+                [style.width.%]="(getSeverityCount('Critical') / report.total_findings) * 100"
+              ></div>
+            </div>
+            <span class="bar-count">{{ getSeverityCount('Critical') }}</span>
+          </div>
+
+          <div class="severity-bar">
+            <div class="bar-label">
+              <mat-icon class="high">warning</mat-icon>
+              <span>High</span>
+            </div>
+            <div class="bar-track">
+              <div
+                class="bar-fill high"
+                [style.width.%]="(getSeverityCount('High') / report.total_findings) * 100"
+              ></div>
+            </div>
+            <span class="bar-count">{{ getSeverityCount('High') }}</span>
+          </div>
+
+          <div class="severity-bar">
+            <div class="bar-label">
+              <mat-icon class="medium">info</mat-icon>
+              <span>Medium</span>
+            </div>
+            <div class="bar-track">
+              <div
+                class="bar-fill medium"
+                [style.width.%]="(getSeverityCount('Medium') / report.total_findings) * 100"
+              ></div>
+            </div>
+            <span class="bar-count">{{ getSeverityCount('Medium') }}</span>
+          </div>
+
+          <div class="severity-bar">
+            <div class="bar-label">
+              <mat-icon class="low">help_outline</mat-icon>
+              <span>Low</span>
+            </div>
+            <div class="bar-track">
+              <div
+                class="bar-fill low"
+                [style.width.%]="(getSeverityCount('Low') / report.total_findings) * 100"
+              ></div>
+            </div>
+            <span class="bar-count">{{ getSeverityCount('Low') }}</span>
+          </div>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Executive Summary -->
+      <div class="summary-section">
+        <h4>Executive Summary</h4>
+        <p class="executive-summary">{{ report.executive_summary }}</p>
+      </div>
+
+      <!-- Roadmap -->
+      @if (report.roadmap && report.roadmap.length > 0) {
+        <mat-divider></mat-divider>
+        <div class="roadmap-section">
+          <h4>Remediation Roadmap</h4>
+          <mat-list>
+            @for (item of report.roadmap; track item; let i = $index) {
+              <mat-list-item>
+                <mat-icon matListItemIcon>{{ i < 3 ? 'priority_high' : 'chevron_right' }}</mat-icon>
+                <span matListItemTitle>{{ item }}</span>
+              </mat-list-item>
+            }
+          </mat-list>
+        </div>
+      }
+
+      <!-- Patterns -->
+      @if (report.patterns && report.patterns.length > 0) {
+        <mat-divider></mat-divider>
+        <div class="patterns-section">
+          <h4>Issue Patterns</h4>
+          <p class="patterns-description">
+            These patterns represent systemic issues that should be addressed at the component or design system level.
+          </p>
+          <div class="patterns-list">
+            @for (pattern of report.patterns; track pattern.pattern_id) {
+              <div class="pattern-card">
+                <div class="pattern-header">
+                  <mat-chip class="severity-chip" [class]="getSeverityClass(pattern.severity)">
+                    {{ pattern.severity }}
+                  </mat-chip>
+                  <mat-chip [class]="getPatternPriorityClass(pattern.fix_priority)">
+                    {{ getPatternPriorityLabel(pattern.fix_priority) }}
+                  </mat-chip>
+                </div>
+                <h5 class="pattern-name">{{ pattern.name }}</h5>
+                <p class="pattern-description">{{ pattern.description }}</p>
+                <div class="pattern-meta">
+                  <span class="findings-count">
+                    <mat-icon>bug_report</mat-icon>
+                    {{ pattern.linked_finding_ids.length }} findings
+                  </span>
+                  <div class="wcag-tags">
+                    @for (sc of pattern.wcag_scs; track sc) {
+                      <mat-chip class="wcag-tag">{{ sc }}</mat-chip>
+                    }
+                  </div>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+      }
+
+      <!-- Coverage Summary -->
+      @if (report.coverage_summary) {
+        <mat-divider></mat-divider>
+        <div class="coverage-section">
+          <h4>Coverage Summary</h4>
+          <p>{{ report.coverage_summary }}</p>
+        </div>
+      }
+    }
+  </mat-card-content>
+
+  <mat-card-actions align="end">
+    <button mat-button (click)="onViewFindings()">
+      <mat-icon>list</mat-icon>
+      View All Findings
+    </button>
+    <button mat-stroked-button (click)="onExport('json')">
+      <mat-icon>code</mat-icon>
+      Export JSON
+    </button>
+    <button mat-stroked-button (click)="onExport('csv')">
+      <mat-icon>table_chart</mat-icon>
+      Export CSV
+    </button>
+  </mat-card-actions>
+</mat-card>

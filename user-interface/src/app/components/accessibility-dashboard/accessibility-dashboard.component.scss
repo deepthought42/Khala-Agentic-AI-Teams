@@ -1,0 +1,208 @@
+.dashboard-container {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.header-content {
+  h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.87);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+
+    mat-icon {
+      font-size: 32px;
+      width: 32px;
+      height: 32px;
+      color: #1976d2;
+    }
+  }
+
+  .subtitle {
+    margin: 8px 0 0 0;
+    font-size: 14px;
+    color: rgba(0, 0, 0, 0.54);
+    padding-left: 44px;
+  }
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.health-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  background: #e0e0e0;
+  color: rgba(0, 0, 0, 0.6);
+
+  &.healthy {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+
+  &.error {
+    background: #ffebee;
+    color: #c62828;
+  }
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.active-job-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  margin-bottom: 24px;
+}
+
+.job-chip,
+.audit-chip {
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    margin-right: 4px;
+  }
+}
+
+.status-chip {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+
+  &.running {
+    background-color: #e3f2fd !important;
+    color: #1976d2 !important;
+  }
+
+  &.complete {
+    background-color: #e8f5e9 !important;
+    color: #388e3c !important;
+  }
+
+  &.failed {
+    background-color: #ffebee !important;
+    color: #d32f2f !important;
+  }
+
+  &.cancelled {
+    background-color: #fff3e0 !important;
+    color: #f57c00 !important;
+  }
+}
+
+.dashboard-tabs {
+  ::ng-deep {
+    .mat-mdc-tab-labels {
+      background: #fafafa;
+      border-radius: 8px 8px 0 0;
+      padding: 0 8px;
+    }
+
+    .mat-mdc-tab {
+      min-width: 120px;
+      padding: 0 24px;
+
+      .mdc-tab__content {
+        gap: 8px;
+      }
+    }
+
+    .mat-mdc-tab-body-wrapper {
+      padding-top: 24px;
+    }
+  }
+}
+
+.tab-content {
+  min-height: 400px;
+}
+
+.tab-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 8px;
+
+  &.running {
+    background: #4caf50;
+    animation: pulse-badge 1.5s infinite;
+  }
+}
+
+@keyframes pulse-badge {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.findings-count-chip {
+  margin-left: 8px;
+  min-height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: #ff9800 !important;
+  color: white !important;
+}
+
+.empty-tab-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 24px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.54);
+
+  mat-icon {
+    font-size: 64px;
+    width: 64px;
+    height: 64px;
+    margin-bottom: 16px;
+    opacity: 0.4;
+  }
+
+  p {
+    margin: 0 0 24px 0;
+    font-size: 16px;
+    max-width: 400px;
+  }
+}

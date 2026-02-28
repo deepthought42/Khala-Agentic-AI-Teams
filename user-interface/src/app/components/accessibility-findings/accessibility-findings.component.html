@@ -1,0 +1,239 @@
+<mat-card class="findings-card">
+  <mat-card-header>
+    <mat-icon mat-card-avatar class="header-icon">bug_report</mat-icon>
+    <mat-card-title>Accessibility Findings</mat-card-title>
+    <mat-card-subtitle>
+      Audit: {{ auditId }} | Total: {{ total }} findings
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <!-- Summary Stats -->
+    <div class="summary-stats">
+      <div class="stat-card critical" (click)="severityFilter = ['Critical']; applyFilters()">
+        <span class="stat-value">{{ bySeverity['Critical'] || 0 }}</span>
+        <span class="stat-label">Critical</span>
+      </div>
+      <div class="stat-card high" (click)="severityFilter = ['High']; applyFilters()">
+        <span class="stat-value">{{ bySeverity['High'] || 0 }}</span>
+        <span class="stat-label">High</span>
+      </div>
+      <div class="stat-card medium" (click)="severityFilter = ['Medium']; applyFilters()">
+        <span class="stat-value">{{ bySeverity['Medium'] || 0 }}</span>
+        <span class="stat-label">Medium</span>
+      </div>
+      <div class="stat-card low" (click)="severityFilter = ['Low']; applyFilters()">
+        <span class="stat-value">{{ bySeverity['Low'] || 0 }}</span>
+        <span class="stat-label">Low</span>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters-section">
+      <mat-form-field appearance="outline" class="filter-field">
+        <mat-label>Severity</mat-label>
+        <mat-select [(ngModel)]="severityFilter" multiple (selectionChange)="applyFilters()">
+          @for (severity of severityOptions; track severity) {
+            <mat-option [value]="severity">{{ severity }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="filter-field">
+        <mat-label>Issue Type</mat-label>
+        <mat-select [(ngModel)]="issueTypeFilter" multiple (selectionChange)="applyFilters()">
+          @for (type of issueTypeOptions; track type) {
+            <mat-option [value]="type">{{ getIssueTypeLabel(type) }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      @if (hasActiveFilters) {
+        <button mat-stroked-button (click)="clearFilters()">
+          <mat-icon>clear</mat-icon>
+          Clear Filters
+        </button>
+      }
+
+      <div class="filter-spacer"></div>
+
+      <!-- Actions -->
+      <button mat-stroked-button [matMenuTriggerFor]="exportMenu">
+        <mat-icon>download</mat-icon>
+        Export
+      </button>
+      <mat-menu #exportMenu="matMenu">
+        <button mat-menu-item (click)="onExport('json')">
+          <mat-icon>code</mat-icon>
+          Export as JSON
+        </button>
+        <button mat-menu-item (click)="onExport('csv')">
+          <mat-icon>table_chart</mat-icon>
+          Export as CSV
+        </button>
+      </mat-menu>
+
+      @if (selectedCount > 0) {
+        <button mat-raised-button color="accent" (click)="onRetest()">
+          <mat-icon>replay</mat-icon>
+          Retest Selected ({{ selectedCount }})
+        </button>
+      }
+    </div>
+
+    <!-- Loading State -->
+    @if (loading) {
+      <div class="loading-state">
+        <mat-spinner diameter="40"></mat-spinner>
+        <span>Loading findings...</span>
+      </div>
+    }
+
+    <!-- Error State -->
+    @if (error) {
+      <div class="error-message">
+        <mat-icon>error</mat-icon>
+        <span>{{ error }}</span>
+        <button mat-button color="primary" (click)="loadFindings()">Retry</button>
+      </div>
+    }
+
+    <!-- Findings List -->
+    @if (!loading && !error && filteredFindings.length > 0) {
+      <div class="selection-actions">
+        <mat-checkbox
+          [checked]="selectedCount === filteredFindings.length && filteredFindings.length > 0"
+          [indeterminate]="selectedCount > 0 && selectedCount < filteredFindings.length"
+          (change)="$event.checked ? selectAll() : clearSelection()"
+        >
+          Select All
+        </mat-checkbox>
+        @if (selectedCount > 0) {
+          <span class="selection-count">{{ selectedCount }} selected</span>
+        }
+      </div>
+
+      <mat-accordion class="findings-list" multi>
+        @for (finding of filteredFindings; track finding.id) {
+          <mat-expansion-panel class="finding-panel">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-checkbox
+                  [checked]="isSelected(finding.id)"
+                  (click)="$event.stopPropagation()"
+                  (change)="toggleSelection(finding.id)"
+                ></mat-checkbox>
+                <mat-chip class="severity-chip" [class]="getSeverityClass(finding.severity)">
+                  <mat-icon>{{ getSeverityIcon(finding.severity) }}</mat-icon>
+                  {{ finding.severity }}
+                </mat-chip>
+                <span class="finding-title">{{ finding.title }}</span>
+              </mat-panel-title>
+              <mat-panel-description>
+                <span class="wcag-criteria">WCAG {{ getWcagCriteria(finding) }}</span>
+                <mat-chip class="issue-type-chip">{{ getIssueTypeLabel(finding.issue_type) }}</mat-chip>
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="finding-details">
+              <div class="detail-section">
+                <h4>Summary</h4>
+                <p>{{ finding.summary }}</p>
+              </div>
+
+              <div class="detail-row">
+                <div class="detail-section">
+                  <h4>Target</h4>
+                  <code class="target-code">{{ finding.target }}</code>
+                </div>
+                <div class="detail-section">
+                  <h4>Surface</h4>
+                  <span>{{ finding.surface | uppercase }}</span>
+                </div>
+                <div class="detail-section">
+                  <h4>Scope</h4>
+                  <span>{{ finding.scope }}</span>
+                </div>
+              </div>
+
+              @if (finding.repro_steps.length > 0) {
+                <div class="detail-section">
+                  <h4>Steps to Reproduce</h4>
+                  <ol class="repro-steps">
+                    @for (step of finding.repro_steps; track step) {
+                      <li>{{ step }}</li>
+                    }
+                  </ol>
+                </div>
+              }
+
+              <div class="detail-row">
+                <div class="detail-section">
+                  <h4>Expected</h4>
+                  <p>{{ finding.expected }}</p>
+                </div>
+                <div class="detail-section">
+                  <h4>Actual</h4>
+                  <p>{{ finding.actual }}</p>
+                </div>
+              </div>
+
+              <div class="detail-section">
+                <h4>User Impact</h4>
+                <p class="user-impact">{{ finding.user_impact }}</p>
+              </div>
+
+              @if (finding.recommended_fix.length > 0) {
+                <div class="detail-section">
+                  <h4>Recommended Fix</h4>
+                  <ul class="fix-list">
+                    @for (fix of finding.recommended_fix; track fix) {
+                      <li>{{ fix }}</li>
+                    }
+                  </ul>
+                </div>
+              }
+
+              @if (finding.acceptance_criteria.length > 0) {
+                <div class="detail-section">
+                  <h4>Acceptance Criteria</h4>
+                  <ul class="acceptance-list">
+                    @for (criteria of finding.acceptance_criteria; track criteria) {
+                      <li>{{ criteria }}</li>
+                    }
+                  </ul>
+                </div>
+              }
+
+              <div class="wcag-mappings">
+                <h4>WCAG Mappings</h4>
+                <div class="wcag-chips">
+                  @for (mapping of finding.wcag_mappings; track mapping.sc) {
+                    <mat-chip class="wcag-chip" [matTooltip]="mapping.rationale || ''">
+                      {{ mapping.sc }} - {{ mapping.name }}
+                      <span class="confidence">({{ (mapping.confidence * 100) | number:'1.0-0' }}%)</span>
+                    </mat-chip>
+                  }
+                </div>
+              </div>
+            </div>
+          </mat-expansion-panel>
+        }
+      </mat-accordion>
+    }
+
+    <!-- Empty State -->
+    @if (!loading && !error && filteredFindings.length === 0) {
+      <div class="empty-state">
+        <mat-icon>check_circle</mat-icon>
+        <span>
+          @if (hasActiveFilters) {
+            No findings match the current filters
+          } @else {
+            No accessibility issues found!
+          }
+        </span>
+      </div>
+    }
+  </mat-card-content>
+</mat-card>

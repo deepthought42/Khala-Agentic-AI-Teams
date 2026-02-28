@@ -1,0 +1,221 @@
+<div class="proposal-container">
+  @if (!ips) {
+    <mat-card class="warning-card">
+      <mat-card-content>
+        <mat-icon>warning</mat-icon>
+        <span>Please create an investment profile first before creating proposals.</span>
+      </mat-card-content>
+    </mat-card>
+  } @else {
+    <mat-card class="proposal-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>pie_chart</mat-icon>
+        <mat-card-title>Portfolio Proposal</mat-card-title>
+        <mat-card-subtitle>Design and validate portfolio allocation for {{ ips.profile.user_id }}</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        @if (loading || validating) {
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+        }
+
+        @if (error) {
+          <div class="error-banner">
+            <mat-icon>error</mat-icon>
+            <span>{{ error }}</span>
+          </div>
+        }
+
+        <form [formGroup]="form">
+          <!-- Objective Section -->
+          <section class="form-section">
+            <h3>Proposal Details</h3>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Investment Objective</mat-label>
+              <textarea matInput formControlName="objective" rows="2" placeholder="e.g., Balanced growth portfolio for retirement"></textarea>
+            </mat-form-field>
+
+            <div class="metrics-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Expected Return (%)</mat-label>
+                <input matInput type="number" formControlName="expected_return_pct" step="0.1">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Expected Volatility (%)</mat-label>
+                <input matInput type="number" formControlName="expected_volatility_pct" step="0.1">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Expected Max Drawdown (%)</mat-label>
+                <input matInput type="number" formControlName="expected_max_drawdown_pct" step="0.1">
+              </mat-form-field>
+            </div>
+          </section>
+
+          <mat-divider></mat-divider>
+
+          <!-- Positions Section -->
+          <section class="form-section">
+            <div class="section-header">
+              <h3>Portfolio Positions</h3>
+              <div class="weight-indicator" [class.over]="totalWeight > 100" [class.under]="totalWeight < 100">
+                Total Weight: {{ totalWeight.toFixed(1) }}%
+                @if (totalWeight !== 100) {
+                  <mat-icon [matTooltip]="totalWeight > 100 ? 'Over-allocated' : 'Under-allocated'">
+                    {{ totalWeight > 100 ? 'trending_up' : 'trending_down' }}
+                  </mat-icon>
+                } @else {
+                  <mat-icon matTooltip="Perfectly allocated">check_circle</mat-icon>
+                }
+              </div>
+            </div>
+
+            <button mat-stroked-button type="button" (click)="addPosition()" class="add-position-btn">
+              <mat-icon>add</mat-icon> Add Position
+            </button>
+
+            @if (positionsArray.length > 0) {
+              <table mat-table [dataSource]="positionsData" class="positions-table">
+                <ng-container matColumnDef="symbol">
+                  <th mat-header-cell *matHeaderCellDef>Symbol</th>
+                  <td mat-cell *matCellDef="let pos; let i = index">
+                    <mat-form-field appearance="outline" class="table-field">
+                      <input matInput [formControl]="$any(positionsArray.at(i).get('symbol'))" placeholder="SPY">
+                    </mat-form-field>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="asset_class">
+                  <th mat-header-cell *matHeaderCellDef>Asset Class</th>
+                  <td mat-cell *matCellDef="let pos; let i = index">
+                    <mat-form-field appearance="outline" class="table-field">
+                      <mat-select [formControl]="$any(positionsArray.at(i).get('asset_class'))">
+                        @for (ac of assetClasses; track ac) {
+                          <mat-option [value]="ac">{{ ac | titlecase }}</mat-option>
+                        }
+                      </mat-select>
+                    </mat-form-field>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="weight_pct">
+                  <th mat-header-cell *matHeaderCellDef>Weight (%)</th>
+                  <td mat-cell *matCellDef="let pos; let i = index">
+                    <mat-form-field appearance="outline" class="table-field weight-field">
+                      <input matInput type="number" [formControl]="$any(positionsArray.at(i).get('weight_pct'))" min="0" max="100" step="0.5">
+                    </mat-form-field>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="rationale">
+                  <th mat-header-cell *matHeaderCellDef>Rationale</th>
+                  <td mat-cell *matCellDef="let pos; let i = index">
+                    <mat-form-field appearance="outline" class="table-field rationale-field">
+                      <input matInput [formControl]="$any(positionsArray.at(i).get('rationale'))" placeholder="Investment rationale">
+                    </mat-form-field>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef></th>
+                  <td mat-cell *matCellDef="let pos; let i = index">
+                    <button mat-icon-button color="warn" (click)="removePosition(i)" matTooltip="Remove position">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+              </table>
+            } @else {
+              <p class="no-items-text">No positions added. Click "Add Position" to build your portfolio.</p>
+            }
+          </section>
+
+          <!-- Allocation Chart -->
+          @if (allocationByClass.length > 0) {
+            <section class="form-section">
+              <h3>Allocation by Asset Class</h3>
+              <div class="allocation-bars">
+                @for (alloc of allocationByClass; track alloc.assetClass) {
+                  <div class="allocation-item">
+                    <div class="allocation-label">
+                      <span>{{ alloc.assetClass | titlecase }}</span>
+                      <span class="allocation-value">{{ alloc.weight.toFixed(1) }}%</span>
+                    </div>
+                    <div class="allocation-bar-container">
+                      <div class="allocation-bar" [style.width.%]="alloc.weight"></div>
+                    </div>
+                  </div>
+                }
+              </div>
+            </section>
+          }
+
+          <mat-divider></mat-divider>
+
+          <!-- Assumptions -->
+          <section class="form-section">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Assumptions</mat-label>
+              <textarea matInput formControlName="assumptions" rows="2" placeholder="One assumption per line"></textarea>
+              <mat-hint>Enter key assumptions for this portfolio</mat-hint>
+            </mat-form-field>
+          </section>
+        </form>
+
+        <!-- Validation Results -->
+        @if (validationResult) {
+          <mat-expansion-panel class="validation-panel" [expanded]="true">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                @if (validationResult.valid) {
+                  <mat-icon class="valid-icon">check_circle</mat-icon>
+                  <span>Validation Passed</span>
+                } @else {
+                  <mat-icon class="invalid-icon">error</mat-icon>
+                  <span>Validation Failed ({{ validationResult.violations.length }} violations)</span>
+                }
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            @if (validationResult.violations.length > 0) {
+              <div class="violations-list">
+                @for (violation of validationResult.violations; track violation) {
+                  <div class="violation-item">
+                    <mat-icon>warning</mat-icon>
+                    <span>{{ violation }}</span>
+                  </div>
+                }
+              </div>
+            } @else {
+              <p>Portfolio meets all IPS constraints.</p>
+            }
+          </mat-expansion-panel>
+        }
+      </mat-card-content>
+
+      <mat-card-actions align="end">
+        @if (!currentProposal) {
+          <button mat-raised-button color="primary" (click)="createProposal()" [disabled]="loading || form.invalid || positionsArray.length === 0">
+            @if (loading) {
+              Creating...
+            } @else {
+              Create Proposal
+            }
+          </button>
+        } @else {
+          <button mat-stroked-button (click)="validateProposal()" [disabled]="validating">
+            @if (validating) {
+              Validating...
+            } @else {
+              Validate Against IPS
+            }
+          </button>
+        }
+      </mat-card-actions>
+    </mat-card>
+  }
+</div>

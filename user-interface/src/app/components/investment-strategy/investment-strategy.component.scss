@@ -1,0 +1,181 @@
+.strategy-container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.strategy-card {
+  mat-card-header {
+    mat-icon[mat-card-avatar] {
+      font-size: 40px;
+      width: 40px;
+      height: 40px;
+      color: var(--mat-primary);
+    }
+  }
+}
+
+.form-section {
+  padding: 20px 0;
+
+  h3 {
+    margin: 0 0 16px 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--mat-primary);
+  }
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  &.two-col {
+    > * {
+      flex: 1;
+    }
+  }
+}
+
+.full-width {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.toggle-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+
+  .toggle-hint {
+    font-size: 0.8rem;
+    color: rgba(0, 0, 0, 0.54);
+  }
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+  margin-bottom: 16px;
+
+  mat-icon {
+    color: #c62828;
+  }
+}
+
+.strategy-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 8px;
+
+  .summary-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    .label {
+      font-weight: 500;
+      color: rgba(0, 0, 0, 0.6);
+    }
+
+    .value {
+      font-family: monospace;
+    }
+  }
+}
+
+.validation-panel {
+  margin-top: 16px;
+
+  .check-pass {
+    color: #4caf50;
+  }
+
+  .check-warn {
+    color: #ff9800;
+  }
+
+  .check-fail {
+    color: #f44336;
+  }
+}
+
+.validation-details {
+  h4 {
+    margin: 16px 0 8px 0;
+    font-size: 1rem;
+    font-weight: 500;
+  }
+}
+
+.failures-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.failure-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #ffebee;
+  border-radius: 4px;
+  color: #c62828;
+
+  mat-icon {
+    color: #f44336;
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+  }
+}
+
+.validation-meta {
+  display: flex;
+  gap: 24px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  font-size: 0.9rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+mat-divider {
+  margin: 8px 0;
+}
+
+mat-card-actions {
+  padding: 16px;
+}
+
+@media (max-width: 768px) {
+  .strategy-container {
+    padding: 12px;
+  }
+
+  .form-row.two-col {
+    flex-direction: column;
+  }
+
+  .strategy-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .validation-meta {
+    flex-direction: column;
+    gap: 8px;
+  }
+}

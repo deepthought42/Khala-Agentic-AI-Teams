@@ -1,0 +1,239 @@
+.design-system-card {
+  margin-bottom: 16px;
+}
+
+.header-icon {
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #00897b;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.inventory-form {
+  max-width: 600px;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.source-field {
+  flex: 1;
+}
+
+.platform-field {
+  width: 150px;
+}
+
+.inventory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 16px 0;
+
+  h3 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
+}
+
+.inventory-info {
+  flex: 1;
+}
+
+.inventory-meta {
+  display: flex;
+  gap: 8px;
+
+  mat-chip {
+    mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      margin-right: 4px;
+    }
+  }
+}
+
+mat-divider {
+  margin: 16px 0;
+}
+
+.components-section {
+  h4 {
+    margin: 0 0 8px 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+}
+
+.section-description {
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 14px;
+  margin: 0 0 16px 0;
+}
+
+.components-list {
+  margin-top: 16px;
+}
+
+.component-panel {
+  margin-bottom: 8px;
+
+  mat-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  mat-panel-description {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+}
+
+.component-icon {
+  color: rgba(0, 0, 0, 0.54);
+
+  .component-panel:has(.contract-badge) & {
+    color: #4caf50;
+  }
+}
+
+.component-name {
+  font-weight: 500;
+}
+
+.contract-badge {
+  background-color: #e8f5e9 !important;
+  color: #2e7d32 !important;
+  font-size: 11px;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    margin-right: 4px;
+  }
+}
+
+.contract-details {
+  padding: 16px 0;
+}
+
+.contract-header {
+  margin-bottom: 16px;
+}
+
+.contract-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.54);
+
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.requirements-section,
+.patterns-section,
+.test-harness-section {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+
+  h5 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.6);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+}
+
+.requirements-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.87);
+
+  mat-icon {
+    color: #00897b;
+  }
+}
+
+.pattern-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pattern-chip {
+  font-size: 12px;
+  background-color: #e8eaf6 !important;
+  color: #3949ab !important;
+}
+
+.test-harness-info {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.87);
+}
+
+.no-contract-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  color: rgba(0, 0, 0, 0.54);
+
+  mat-icon {
+    color: #1976d2;
+  }
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 8px;
+  margin-top: 16px;
+}
+
+mat-card-actions button {
+  mat-icon {
+    margin-right: 4px;
+  }
+
+  mat-spinner {
+    margin-right: 8px;
+  }
+}

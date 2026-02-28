@@ -78,6 +78,18 @@ TEAM_CONFIGS: Dict[str, TeamConfig] = {
         description="Accessibility auditing (WCAG 2.2, Section 508) for web and mobile",
         tags=["accessibility", "audit", "wcag", "508"],
     ),
+    "ai_systems": TeamConfig(
+        name="AI Systems",
+        prefix="/api/ai-systems",
+        description="Spec-driven AI agent system factory",
+        tags=["ai", "agents", "systems"],
+    ),
+    "investment": TeamConfig(
+        name="Investment",
+        prefix="/api/investment",
+        description="Investment analysis and portfolio management",
+        tags=["investment", "finance"],
+    ),
 }
 
 

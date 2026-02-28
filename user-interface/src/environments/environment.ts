@@ -18,4 +18,10 @@ export const environment = {
   brandingApiUrl: 'http://localhost:8080/api/branding',
   /** Personal Assistant Team API */
   personalAssistantApiUrl: 'http://localhost:8080/api/personal-assistant',
+  /** Accessibility Audit Team API */
+  accessibilityApiUrl: 'http://localhost:8080/api/accessibility-audit',
+  /** Agent Provisioning Team API */
+  agentProvisioningApiUrl: 'http://localhost:8080/api/agent-provisioning',
+  /** AI Systems Team API */
+  aiSystemsApiUrl: 'http://localhost:8080/api/ai-systems',
 };

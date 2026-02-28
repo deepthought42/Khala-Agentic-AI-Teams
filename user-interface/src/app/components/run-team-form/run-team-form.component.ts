@@ -4,6 +4,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatCardModule } from '@angular/material/card';
+import { MatIconModule } from '@angular/material/icon';
 import type { RunTeamRequest } from '../../models';
 
 @Component({
@@ -15,6 +16,7 @@ import type { RunTeamRequest } from '../../models';
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
+    MatIconModule,
   ],
   templateUrl: './run-team-form.component.html',
   styleUrl: './run-team-form.component.scss',

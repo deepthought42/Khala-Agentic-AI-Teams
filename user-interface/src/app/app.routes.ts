@@ -9,6 +9,9 @@ import { BrandingDashboardComponent } from './components/branding-dashboard/bran
 import { SoftwareEngineeringDashboardComponent } from './components/software-engineering-dashboard/software-engineering-dashboard.component';
 import { PlanningV2PageComponent } from './components/planning-v2-page/planning-v2-page.component';
 import { PersonalAssistantDashboardComponent } from './components/personal-assistant-dashboard/personal-assistant-dashboard.component';
+import { AccessibilityDashboardComponent } from './components/accessibility-dashboard/accessibility-dashboard.component';
+import { AgentProvisioningDashboardComponent } from './components/agent-provisioning-dashboard/agent-provisioning-dashboard.component';
+import { AISystemsDashboardComponent } from './components/ai-systems-dashboard/ai-systems-dashboard.component';
 
 export const routes: Routes = [
   {
@@ -25,6 +28,9 @@ export const routes: Routes = [
       { path: 'social-marketing', component: SocialMarketingDashboardComponent },
       { path: 'branding', component: BrandingDashboardComponent },
       { path: 'personal-assistant', component: PersonalAssistantDashboardComponent },
+      { path: 'accessibility', component: AccessibilityDashboardComponent },
+      { path: 'agent-provisioning', component: AgentProvisioningDashboardComponent },
+      { path: 'ai-systems', component: AISystemsDashboardComponent },
     ],
   },
   { path: '**', redirectTo: '/dashboard' },

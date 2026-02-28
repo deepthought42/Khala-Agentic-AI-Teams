@@ -1,19 +1,42 @@
-<mat-card>
-  <mat-card-header>
-    <mat-card-title>Run Team</mat-card-title>
-    <mat-card-subtitle>POST /run-team</mat-card-subtitle>
-  </mat-card-header>
-  <mat-card-content>
-    <form [formGroup]="form" (ngSubmit)="onSubmit()">
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Repo path</mat-label>
-        <input matInput formControlName="repo_path" [attr.aria-label]="'Work folder path'">
-        <mat-hint>Path with initial_spec.md at root</mat-hint>
+<div class="run-team-hero">
+  <div class="hero-content">
+    <div class="hero-icon-wrapper">
+      <mat-icon class="hero-icon">rocket_launch</mat-icon>
+    </div>
+    <h2 class="hero-title">Start a Software Development Build</h2>
+    <p class="hero-description">
+      Provide the path to a repository containing your project specifications.
+      The team will analyze your requirements, create a development plan, and begin building.
+    </p>
+
+    <form [formGroup]="form" (ngSubmit)="onSubmit()" class="hero-form">
+      <mat-form-field appearance="outline" class="repo-input">
+        <mat-label>Repository Path</mat-label>
+        <mat-icon matPrefix>folder</mat-icon>
+        <input
+          matInput
+          formControlName="repo_path"
+          placeholder="/path/to/your/project"
+          [attr.aria-label]="'Repository folder path'"
+        >
+        <mat-hint>Path to folder containing initial_spec.md or project specifications</mat-hint>
       </mat-form-field>
 
-      <button mat-raised-button color="primary" type="submit" [disabled]="form.invalid">
+      <button
+        mat-raised-button
+        color="primary"
+        type="submit"
+        class="start-button"
+        [disabled]="form.invalid"
+      >
+        <mat-icon>play_arrow</mat-icon>
         Start Team
       </button>
     </form>
-  </mat-card-content>
-</mat-card>
+
+    <div class="hero-footer">
+      <mat-icon class="footer-icon">info</mat-icon>
+      <span>Once started, you'll see real-time progress, answer clarifying questions, and monitor each development phase.</span>
+    </div>
+  </div>
+</div>

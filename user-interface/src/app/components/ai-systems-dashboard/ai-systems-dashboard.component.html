@@ -1,0 +1,314 @@
+<div class="dashboard-container">
+  <header class="dashboard-header">
+    <div class="title-section">
+      <mat-icon class="team-icon">psychology</mat-icon>
+      <div>
+        <h1>AI Systems</h1>
+        <p class="subtitle">Spec-driven AI agent system factory</p>
+      </div>
+    </div>
+    <app-health-indicator [healthCheck]="healthCheck" label="AI Systems API" />
+  </header>
+
+  <mat-tab-group
+    [selectedIndex]="selectedTabIndex"
+    (selectedIndexChange)="onTabChange($event)"
+    class="dashboard-tabs"
+  >
+    <mat-tab label="Build System">
+      <div class="tab-content">
+        @if (!currentJobId) {
+          <mat-card class="build-form-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>rocket_launch</mat-icon>
+              <mat-card-title>Build AI Agent System</mat-card-title>
+              <mat-card-subtitle>Generate a complete agent system from a specification</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <form [formGroup]="buildForm" (ngSubmit)="onSubmitBuild()" class="build-form">
+                <mat-form-field appearance="outline">
+                  <mat-label>Project Name</mat-label>
+                  <input matInput formControlName="project_name" placeholder="my-agent-system">
+                  <mat-hint>Name for the AI system project</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Specification Path</mat-label>
+                  <input matInput formControlName="spec_path" placeholder="/path/to/spec.md">
+                  <mat-hint>Path to the specification file</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Output Directory (optional)</mat-label>
+                  <input matInput formControlName="output_dir" placeholder="/path/to/output">
+                  <mat-hint>Directory to output generated artifacts</mat-hint>
+                </mat-form-field>
+
+                @if (submitError) {
+                  <div class="error-message">{{ submitError }}</div>
+                }
+
+                <div class="form-actions">
+                  <button
+                    mat-raised-button
+                    color="primary"
+                    type="submit"
+                    [disabled]="buildForm.invalid || submitting"
+                  >
+                    @if (submitting) {
+                      <mat-icon>hourglass_empty</mat-icon>
+                      Building...
+                    } @else {
+                      <mat-icon>play_arrow</mat-icon>
+                      Start Build
+                    }
+                  </button>
+                </div>
+              </form>
+            </mat-card-content>
+          </mat-card>
+        } @else {
+          <mat-card class="job-status-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.spinning]="isJobActive">
+                @if (isJobComplete) { check_circle }
+                @else if (isJobFailed) { error }
+                @else { sync }
+              </mat-icon>
+              <mat-card-title>Build Job</mat-card-title>
+              <mat-card-subtitle>{{ currentJobId }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <div class="job-info">
+                <div class="info-row">
+                  <span class="label">Project:</span>
+                  <span class="value">{{ currentJobStatus?.project_name ?? '-' }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="label">Status:</span>
+                  <mat-chip [class]="'status-' + (currentJobStatus?.status ?? 'pending')">
+                    {{ currentJobStatus?.status ?? 'pending' | titlecase }}
+                  </mat-chip>
+                </div>
+                <div class="info-row">
+                  <span class="label">Progress:</span>
+                  <mat-progress-bar
+                    mode="determinate"
+                    [value]="currentJobStatus?.progress ?? 0"
+                  ></mat-progress-bar>
+                  <span class="progress-text">{{ currentJobStatus?.progress ?? 0 }}%</span>
+                </div>
+              </div>
+
+              <div class="phase-stepper">
+                @for (phase of phases; track phase.id) {
+                  <div class="phase-step"
+                       [class.completed]="isPhaseCompleted(phase.id)"
+                       [class.current]="isPhaseCurrent(phase.id)">
+                    <div class="phase-icon">
+                      <mat-icon>{{ phase.icon }}</mat-icon>
+                    </div>
+                    <span class="phase-label">{{ phase.label }}</span>
+                  </div>
+                }
+              </div>
+
+              @if (currentJobStatus?.error) {
+                <div class="error-message">
+                  <mat-icon>error</mat-icon>
+                  {{ currentJobStatus.error }}
+                </div>
+              }
+
+              @if (isJobComplete && currentJobStatus && currentJobStatus.blueprint) {
+                <div class="blueprint-summary">
+                  <h3>Blueprint Generated</h3>
+                  
+                  @if (currentJobStatus.blueprint.architecture && currentJobStatus.blueprint.architecture.orchestration) {
+                    <div class="summary-section">
+                      <h4>Architecture</h4>
+                      <p>Pattern: {{ currentJobStatus.blueprint.architecture.orchestration.pattern | titlecase }}</p>
+                      <div class="agents-list">
+                        <span>Agents:</span>
+                        @for (agent of currentJobStatus.blueprint.architecture.orchestration.agents; track agent.name) {
+                          <mat-chip>{{ agent.name }}</mat-chip>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  @if (currentJobStatus.blueprint.spec_intake && currentJobStatus.blueprint.spec_intake.goals) {
+                    <div class="summary-section">
+                      <h4>Goals</h4>
+                      <ul>
+                        @for (goal of currentJobStatus.blueprint.spec_intake.goals; track goal) {
+                          <li>{{ goal }}</li>
+                        }
+                      </ul>
+                    </div>
+                  }
+
+                  @if (currentJobStatus.blueprint.safety && currentJobStatus.blueprint.safety.checkpoints) {
+                    <div class="summary-section">
+                      <h4>Safety Checkpoints</h4>
+                      <span class="checkpoint-count">
+                        {{ currentJobStatus.blueprint.safety.checkpoints.length }} checkpoints defined
+                      </span>
+                    </div>
+                  }
+                </div>
+              }
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button (click)="clearCurrentJob()">
+                <mat-icon>add</mat-icon>
+                New Build
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        }
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Jobs">
+      <div class="tab-content">
+        <mat-card>
+          <mat-card-header>
+            <mat-icon mat-card-avatar>history</mat-icon>
+            <mat-card-title>Build Jobs</mat-card-title>
+            <mat-card-subtitle>View all AI system build job history</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            @if (jobsLoading) {
+              <div class="loading">Loading jobs...</div>
+            } @else if (jobs.length === 0) {
+              <div class="empty-state">No build jobs found</div>
+            } @else {
+              <table mat-table [dataSource]="jobs" class="jobs-table">
+                <ng-container matColumnDef="job_id">
+                  <th mat-header-cell *matHeaderCellDef>Job ID</th>
+                  <td mat-cell *matCellDef="let job">
+                    <button mat-button color="primary" (click)="viewJobStatus(job.job_id)">
+                      {{ job.job_id | slice:0:8 }}...
+                    </button>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="project_name">
+                  <th mat-header-cell *matHeaderCellDef>Project</th>
+                  <td mat-cell *matCellDef="let job">{{ job.project_name }}</td>
+                </ng-container>
+
+                <ng-container matColumnDef="status">
+                  <th mat-header-cell *matHeaderCellDef>Status</th>
+                  <td mat-cell *matCellDef="let job">
+                    <mat-chip [class]="'status-' + job.status">{{ job.status | titlecase }}</mat-chip>
+                  </td>
+                </ng-container>
+
+                <ng-container matColumnDef="current_phase">
+                  <th mat-header-cell *matHeaderCellDef>Phase</th>
+                  <td mat-cell *matCellDef="let job">{{ getPhaseLabel(job.current_phase ?? '') }}</td>
+                </ng-container>
+
+                <ng-container matColumnDef="progress">
+                  <th mat-header-cell *matHeaderCellDef>Progress</th>
+                  <td mat-cell *matCellDef="let job">{{ job.progress }}%</td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="jobColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: jobColumns;"></tr>
+              </table>
+            }
+          </mat-card-content>
+
+          <mat-card-actions>
+            <button mat-button (click)="loadJobs()">
+              <mat-icon>refresh</mat-icon>
+              Refresh
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Blueprints">
+      <div class="tab-content">
+        <mat-card>
+          <mat-card-header>
+            <mat-icon mat-card-avatar>architecture</mat-icon>
+            <mat-card-title>Generated Blueprints</mat-card-title>
+            <mat-card-subtitle>View previously generated AI system blueprints</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            @if (blueprintsLoading) {
+              <div class="loading">Loading blueprints...</div>
+            } @else if (blueprintNames.length === 0) {
+              <div class="empty-state">No blueprints generated yet</div>
+            } @else {
+              <div class="blueprints-list">
+                @for (name of blueprintNames; track name) {
+                  <mat-expansion-panel (opened)="loadBlueprint(name)">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        <mat-icon>folder</mat-icon>
+                        {{ name }}
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+
+                    @if (blueprintLoading && !selectedBlueprint) {
+                      <div class="loading">Loading blueprint...</div>
+                    } @else if (selectedBlueprint && selectedBlueprint.project_name === name) {
+                      <div class="blueprint-details">
+                        <div class="detail-section">
+                          <h4>Overview</h4>
+                          <p>Version: {{ selectedBlueprint.version }}</p>
+                          <p>Success: {{ selectedBlueprint.success ? 'Yes' : 'No' }}</p>
+                        </div>
+
+                        @if (selectedBlueprint.architecture && selectedBlueprint.architecture.orchestration) {
+                          <div class="detail-section">
+                            <h4>Architecture</h4>
+                            <p>Pattern: {{ selectedBlueprint.architecture.orchestration.pattern }}</p>
+                            <p>Agents: {{ selectedBlueprint.architecture.orchestration.agents.length }}</p>
+                          </div>
+                        }
+
+                        @if (selectedBlueprint.capabilities && selectedBlueprint.capabilities.tool_contracts) {
+                          <div class="detail-section">
+                            <h4>Capabilities</h4>
+                            <p>Tools: {{ selectedBlueprint.capabilities.tool_contracts.length }}</p>
+                          </div>
+                        }
+
+                        @if (selectedBlueprint.safety && selectedBlueprint.safety.checkpoints) {
+                          <div class="detail-section">
+                            <h4>Safety</h4>
+                            <p>Checkpoints: {{ selectedBlueprint.safety.checkpoints.length }}</p>
+                            <p>Guardrails: {{ selectedBlueprint.safety.guardrails.length }}</p>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </mat-expansion-panel>
+                }
+              </div>
+            }
+          </mat-card-content>
+
+          <mat-card-actions>
+            <button mat-button (click)="loadBlueprintNames()">
+              <mat-icon>refresh</mat-icon>
+              Refresh
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

@@ -1,0 +1,219 @@
+<mat-card class="audit-form-card">
+  <mat-card-header>
+    <mat-card-title>Create Accessibility Audit</mat-card-title>
+    <mat-card-subtitle>
+      Configure and run a comprehensive accessibility audit for web pages, websites, SPAs, or mobile apps
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <!-- Audit Name -->
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Audit Name</mat-label>
+      <input
+        matInput
+        [(ngModel)]="auditName"
+        placeholder="e.g., Q1 2026 Homepage Audit"
+      />
+      <mat-hint>A descriptive name for this audit</mat-hint>
+    </mat-form-field>
+
+    <!-- Audit Type Selection -->
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Audit Type</mat-label>
+      <mat-select [(ngModel)]="auditType">
+        <mat-option value="webpage">Single Web Page</mat-option>
+        <mat-option value="website">Full Website</mat-option>
+        <mat-option value="spa">Single Page Application (SPA)</mat-option>
+        <mat-option value="mobile">Mobile Application</mat-option>
+      </mat-select>
+      <mat-hint>
+        @switch (auditType) {
+          @case ('webpage') { Audit a single URL }
+          @case ('website') { Audit multiple pages across a website }
+          @case ('spa') { Audit a SPA with journey-based testing }
+          @case ('mobile') { Audit iOS or Android mobile apps }
+        }
+      </mat-hint>
+    </mat-form-field>
+
+    <!-- Web URLs (for non-mobile) -->
+    @if (auditType !== 'mobile') {
+      <div class="url-input-section">
+        <mat-form-field appearance="outline" class="url-input">
+          <mat-label>{{ auditType === 'webpage' ? 'Web Page URL' : 'Add URL' }}</mat-label>
+          <input
+            matInput
+            [(ngModel)]="webUrl"
+            placeholder="https://example.com"
+            (keyup.enter)="addUrl()"
+          />
+          <button
+            mat-icon-button
+            matSuffix
+            (click)="addUrl()"
+            [disabled]="!webUrl.trim()"
+            aria-label="Add URL"
+          >
+            <mat-icon>add</mat-icon>
+          </button>
+        </mat-form-field>
+
+        @if (webUrls.length > 0) {
+          <mat-chip-set class="url-chips">
+            @for (url of webUrls; track url) {
+              <mat-chip (removed)="removeUrl(url)">
+                {{ url }}
+                <button matChipRemove aria-label="Remove URL">
+                  <mat-icon>cancel</mat-icon>
+                </button>
+              </mat-chip>
+            }
+          </mat-chip-set>
+        }
+      </div>
+    }
+
+    <!-- Mobile App Details (for mobile) -->
+    @if (auditType === 'mobile') {
+      <div class="mobile-app-section">
+        <div class="mobile-app-inputs">
+          <mat-form-field appearance="outline" class="platform-select">
+            <mat-label>Platform</mat-label>
+            <mat-select [(ngModel)]="mobileAppPlatform">
+              <mat-option value="ios">iOS</mat-option>
+              <mat-option value="android">Android</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="app-name-input">
+            <mat-label>App Name</mat-label>
+            <input matInput [(ngModel)]="mobileAppName" placeholder="MyApp" />
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="version-input">
+            <mat-label>Version</mat-label>
+            <input matInput [(ngModel)]="mobileAppVersion" placeholder="1.0.0" />
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="build-input">
+            <mat-label>Build (optional)</mat-label>
+            <input matInput [(ngModel)]="mobileAppBuild" placeholder="123" />
+          </mat-form-field>
+
+          <button
+            mat-stroked-button
+            color="primary"
+            (click)="addMobileApp()"
+            [disabled]="!mobileAppName.trim() || !mobileAppVersion.trim()"
+          >
+            <mat-icon>add</mat-icon>
+            Add App
+          </button>
+        </div>
+
+        @if (mobileApps.length > 0) {
+          <mat-chip-set class="app-chips">
+            @for (app of mobileApps; track app.name + app.version; let i = $index) {
+              <mat-chip (removed)="removeMobileApp(i)">
+                <mat-icon matChipAvatar>{{ app.platform === 'ios' ? 'phone_iphone' : 'phone_android' }}</mat-icon>
+                {{ app.name }} v{{ app.version }}{{ app.build ? ' (' + app.build + ')' : '' }}
+                <button matChipRemove aria-label="Remove app">
+                  <mat-icon>cancel</mat-icon>
+                </button>
+              </mat-chip>
+            }
+          </mat-chip-set>
+        }
+      </div>
+    }
+
+    <!-- Critical Journeys -->
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Critical User Journeys</mat-label>
+      <mat-chip-grid #journeyChipGrid>
+        @for (journey of criticalJourneys; track journey) {
+          <mat-chip-row (removed)="removeJourney(journey)">
+            {{ journey }}
+            <button matChipRemove aria-label="Remove journey">
+              <mat-icon>cancel</mat-icon>
+            </button>
+          </mat-chip-row>
+        }
+        <input
+          placeholder="Add journey (e.g., login, checkout)..."
+          [matChipInputFor]="journeyChipGrid"
+          [matChipInputSeparatorKeyCodes]="separatorKeyCodes"
+          (matChipInputTokenEnd)="addJourney($event)"
+        />
+      </mat-chip-grid>
+      <mat-hint>Press Enter or comma to add each journey</mat-hint>
+    </mat-form-field>
+
+    <!-- WCAG Levels -->
+    <div class="wcag-section">
+      <label class="section-label">WCAG Conformance Levels</label>
+      <div class="wcag-checkboxes">
+        <mat-checkbox [(ngModel)]="wcagLevelA" color="primary">
+          Level A (minimum)
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="wcagLevelAA" color="primary">
+          Level AA (recommended)
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="wcagLevelAAA" color="primary">
+          Level AAA (enhanced)
+        </mat-checkbox>
+      </div>
+    </div>
+
+    <!-- Advanced Options -->
+    <mat-expansion-panel class="advanced-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>settings</mat-icon>
+          Advanced Options
+        </mat-panel-title>
+      </mat-expansion-panel-header>
+
+      <div class="advanced-options">
+        <mat-slide-toggle [(ngModel)]="authRequired" color="primary">
+          Authentication Required
+        </mat-slide-toggle>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Sampling Strategy</mat-label>
+          <mat-select [(ngModel)]="samplingStrategy">
+            <mat-option value="journey_based">Journey-Based</mat-option>
+            <mat-option value="template_based">Template-Based</mat-option>
+            <mat-option value="risk_based">Risk-Based</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Pages to Test</mat-label>
+          <input matInput type="number" [(ngModel)]="maxPages" min="1" />
+          <mat-hint>Leave empty for no limit</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Timebox (hours)</mat-label>
+          <input matInput type="number" [(ngModel)]="timeboxHours" min="1" />
+          <mat-hint>Maximum audit duration</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+  </mat-card-content>
+
+  <mat-card-actions align="end">
+    <button mat-button (click)="resetForm()">Reset</button>
+    <button
+      mat-raised-button
+      color="primary"
+      (click)="onSubmit()"
+      [disabled]="!canSubmit"
+    >
+      <mat-icon>accessibility_new</mat-icon>
+      Start Audit
+    </button>
+  </mat-card-actions>
+</mat-card>

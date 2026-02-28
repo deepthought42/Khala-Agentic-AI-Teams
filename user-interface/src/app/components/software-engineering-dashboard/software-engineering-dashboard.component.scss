@@ -90,6 +90,76 @@
   gap: 1rem;
 }
 
+.active-job-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--mat-sys-surface-container, rgba(0, 0, 0, 0.02));
+  border-radius: 8px;
+  border: 1px solid var(--mat-sys-outline-variant, rgba(0, 0, 0, 0.12));
+
+  .job-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    mat-icon {
+      color: var(--mat-sys-primary, #1976d2);
+      font-size: 24px;
+      width: 24px;
+      height: 24px;
+    }
+
+    .job-label {
+      font-weight: 500;
+      color: var(--mat-sys-on-surface, rgba(0, 0, 0, 0.87));
+    }
+
+    .job-id {
+      font-family: monospace;
+      font-size: 0.875rem;
+      color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.6));
+    }
+
+    .job-status {
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+
+      &.status-running,
+      &.status-in_progress {
+        background: var(--mat-sys-primary-container, #e3f2fd);
+        color: var(--mat-sys-on-primary-container, #1565c0);
+      }
+
+      &.status-completed {
+        background: var(--mat-sys-tertiary-container, #e8f5e9);
+        color: var(--mat-sys-on-tertiary-container, #2e7d32);
+      }
+
+      &.status-failed {
+        background: var(--mat-sys-error-container, #ffebee);
+        color: var(--mat-sys-on-error-container, #c62828);
+      }
+
+      &.status-stopped,
+      &.status-cancelled {
+        background: var(--mat-sys-surface-variant, #f5f5f5);
+        color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.6));
+      }
+    }
+  }
+
+  button {
+    mat-icon {
+      margin-right: 0.25rem;
+    }
+  }
+}
+
 .spec-field {
   width: 100%;
 }

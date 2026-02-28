@@ -1,0 +1,169 @@
+<div class="dashboard-container">
+  <!-- Dashboard Header -->
+  <div class="dashboard-header">
+    <div class="header-content">
+      <h1>
+        <mat-icon>accessibility_new</mat-icon>
+        Accessibility Audit Dashboard
+      </h1>
+      <p class="subtitle">
+        Comprehensive accessibility testing for web pages, websites, SPAs, and mobile applications
+      </p>
+    </div>
+
+    <div class="header-actions">
+      <!-- Health Indicator -->
+      <div class="health-indicator" [class.healthy]="healthStatus?.status === 'ok'" [class.error]="healthError">
+        <mat-icon>{{ healthStatus?.status === 'ok' ? 'check_circle' : 'error' }}</mat-icon>
+        <span>
+          @if (healthLoading) {
+            Checking API...
+          } @else if (healthError) {
+            API Offline
+          } @else {
+            API Online
+          }
+        </span>
+      </div>
+
+      @if (hasActiveJob || hasCompletedAudit) {
+        <button mat-stroked-button (click)="startNewAudit()">
+          <mat-icon>add</mat-icon>
+          New Audit
+        </button>
+      }
+    </div>
+  </div>
+
+  <!-- Active Job Info -->
+  @if (jobId || auditId) {
+    <div class="active-job-bar">
+      @if (jobId) {
+        <mat-chip class="job-chip">
+          <mat-icon>work</mat-icon>
+          Job: {{ jobId }}
+        </mat-chip>
+      }
+      @if (auditId) {
+        <mat-chip class="audit-chip">
+          <mat-icon>assignment</mat-icon>
+          Audit: {{ auditId }}
+        </mat-chip>
+      }
+      @if (lastStatus) {
+        <mat-chip class="status-chip" [class]="lastStatus.status">
+          {{ lastStatus.status | uppercase }}
+        </mat-chip>
+      }
+    </div>
+  }
+
+  <!-- Tab Navigation -->
+  <mat-tab-group
+    [selectedIndex]="selectedTabIndex"
+    (selectedIndexChange)="onTabChange($event)"
+    class="dashboard-tabs"
+    animationDuration="200ms"
+  >
+    <!-- Create Audit Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>add_circle</mat-icon>
+        <span>Create Audit</span>
+      </ng-template>
+      <div class="tab-content">
+        <app-accessibility-audit-form
+          (submitRequest)="onAuditSubmit($event)"
+        ></app-accessibility-audit-form>
+      </div>
+    </mat-tab>
+
+    <!-- Active Jobs Tab -->
+    <mat-tab [disabled]="!jobId">
+      <ng-template mat-tab-label>
+        <mat-icon>pending_actions</mat-icon>
+        <span>Status</span>
+        @if (lastStatus?.status === 'running') {
+          <span class="tab-badge running"></span>
+        }
+      </ng-template>
+      <div class="tab-content">
+        @if (jobId) {
+          <app-accessibility-job-status
+            [jobId]="jobId"
+            (statusChange)="onStatusChange($event)"
+            (auditComplete)="onAuditComplete($event)"
+            (viewFindings)="onViewFindings($event)"
+            (viewReport)="onViewReport($event)"
+          ></app-accessibility-job-status>
+        } @else {
+          <div class="empty-tab-state">
+            <mat-icon>hourglass_empty</mat-icon>
+            <p>No active audit job. Create a new audit to see status here.</p>
+            <button mat-stroked-button color="primary" (click)="selectedTabIndex = 0">
+              Create Audit
+            </button>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- Findings Tab -->
+    <mat-tab [disabled]="!auditId">
+      <ng-template mat-tab-label>
+        <mat-icon>bug_report</mat-icon>
+        <span>Findings</span>
+        @if (lastStatus?.findings_count) {
+          <mat-chip class="findings-count-chip">{{ lastStatus!.findings_count }}</mat-chip>
+        }
+      </ng-template>
+      <div class="tab-content">
+        @if (auditId) {
+          <app-accessibility-findings
+            [auditId]="auditId"
+            (retestRequested)="onRetestRequested($event)"
+            (exportRequested)="onExportRequested($event)"
+          ></app-accessibility-findings>
+        } @else {
+          <div class="empty-tab-state">
+            <mat-icon>search_off</mat-icon>
+            <p>No audit selected. Complete an audit to view findings.</p>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- Report Tab -->
+    <mat-tab [disabled]="!auditId || !hasCompletedAudit">
+      <ng-template mat-tab-label>
+        <mat-icon>summarize</mat-icon>
+        <span>Report</span>
+      </ng-template>
+      <div class="tab-content">
+        @if (auditId && hasCompletedAudit) {
+          <app-accessibility-report
+            [auditId]="auditId"
+            (exportRequested)="onExportRequested($event)"
+            (viewFindings)="onViewFindings()"
+          ></app-accessibility-report>
+        } @else {
+          <div class="empty-tab-state">
+            <mat-icon>description</mat-icon>
+            <p>Complete an audit to view the full report.</p>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- Design System Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>widgets</mat-icon>
+        <span>Design System</span>
+      </ng-template>
+      <div class="tab-content">
+        <app-accessibility-design-system></app-accessibility-design-system>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

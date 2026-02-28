@@ -1,0 +1,168 @@
+<div class="promotion-container">
+  @if (!ips || !strategy) {
+    <mat-card class="warning-card">
+      <mat-card-content>
+        <mat-icon>warning</mat-icon>
+        <span>
+          @if (!ips) {
+            Please create an investment profile first.
+          } @else {
+            Please create and validate a strategy first.
+          }
+        </span>
+      </mat-card-content>
+    </mat-card>
+  } @else {
+    <mat-card class="promotion-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>gavel</mat-icon>
+        <mat-card-title>Promotion Gate</mat-card-title>
+        <mat-card-subtitle>Evaluate strategy for promotion to paper or live trading</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        @if (loading) {
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+        }
+
+        @if (error) {
+          <div class="error-banner">
+            <mat-icon>error</mat-icon>
+            <span>{{ error }}</span>
+          </div>
+        }
+
+        <!-- Strategy Summary -->
+        <section class="form-section">
+          <h3>Strategy Under Review</h3>
+          <div class="strategy-summary">
+            <div class="summary-item">
+              <span class="label">Strategy ID:</span>
+              <span class="value mono">{{ strategy.strategy_id }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">Asset Class:</span>
+              <mat-chip>{{ strategy.asset_class | titlecase }}</mat-chip>
+            </div>
+            <div class="summary-item">
+              <span class="label">Hypothesis:</span>
+              <span class="value">{{ strategy.hypothesis }}</span>
+            </div>
+            @if (strategy.speculative) {
+              <mat-chip color="warn">Speculative</mat-chip>
+            }
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Gate Checks Configuration -->
+        <section class="form-section">
+          <h3>Gate Configuration</h3>
+          <form [formGroup]="form">
+            <div class="form-row two-col">
+              <mat-form-field appearance="outline">
+                <mat-label>Proposer Agent ID</mat-label>
+                <input matInput formControlName="proposer_agent_id">
+                <mat-hint>Agent who proposed the strategy</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Approver Agent ID</mat-label>
+                <input matInput formControlName="approver_agent_id">
+                <mat-hint>Independent approver (must differ from proposer)</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <div class="toggle-section">
+              <div class="toggle-item">
+                <mat-slide-toggle formControlName="risk_veto">
+                  Risk Management Veto
+                </mat-slide-toggle>
+                <span class="toggle-description">Invoke risk team veto power</span>
+              </div>
+
+              <div class="toggle-item">
+                <mat-slide-toggle formControlName="human_live_approval">
+                  Human Live Approval
+                </mat-slide-toggle>
+                <span class="toggle-description">Required for live trading promotion</span>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <!-- Gate Checks Overview -->
+        <section class="form-section">
+          <h3>Promotion Gates</h3>
+          <div class="gates-overview">
+            @for (gate of ['separation_of_duties', 'risk_veto', 'validation', 'ips_permission', 'human_approval']; track gate) {
+              <div class="gate-item" [class.pending]="!decision">
+                <mat-icon class="gate-pending">radio_button_unchecked</mat-icon>
+                <span class="gate-label">{{ gateLabels[gate] }}</span>
+              </div>
+            }
+          </div>
+        </section>
+
+        <!-- Decision Results -->
+        @if (decision) {
+          <mat-divider></mat-divider>
+
+          <section class="form-section decision-section">
+            <h3>Promotion Decision</h3>
+
+            <div class="outcome-display" [style.--outcome-color]="getOutcomeConfig(decision.outcome).color">
+              <mat-icon [style.color]="getOutcomeConfig(decision.outcome).color">
+                {{ getOutcomeConfig(decision.outcome).icon }}
+              </mat-icon>
+              <div class="outcome-details">
+                <span class="outcome-label">{{ getOutcomeConfig(decision.outcome).label }}</span>
+                <span class="outcome-rationale">{{ decision.rationale }}</span>
+              </div>
+            </div>
+
+            <!-- Gate Results -->
+            <h4>Gate Results</h4>
+            <div class="gate-results">
+              @for (gateResult of decision.gate_results; track gateResult.gate) {
+                <div class="gate-result-item">
+                  <mat-icon [class]="getGateClass(gateResult.result)">
+                    {{ getGateIcon(gateResult.result) }}
+                  </mat-icon>
+                  <div class="gate-result-content">
+                    <span class="gate-name">{{ gateLabels[gateResult.gate] }}</span>
+                    <span class="gate-details">{{ gateResult.details }}</span>
+                  </div>
+                </div>
+              }
+            </div>
+
+            <!-- Required Actions -->
+            @if (decision.required_actions.length > 0) {
+              <h4>Required Actions</h4>
+              <mat-list class="actions-list">
+                @for (action of decision.required_actions; track action) {
+                  <mat-list-item>
+                    <mat-icon matListItemIcon>assignment</mat-icon>
+                    <span matListItemTitle>{{ action }}</span>
+                  </mat-list-item>
+                }
+              </mat-list>
+            }
+          </section>
+        }
+      </mat-card-content>
+
+      <mat-card-actions align="end">
+        <button mat-raised-button color="primary" (click)="runPromotion()" [disabled]="loading || form.invalid">
+          @if (loading) {
+            Evaluating...
+          } @else {
+            Run Promotion Decision
+          }
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  }
+</div>

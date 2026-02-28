@@ -1,0 +1,102 @@
+<div class="workflow-container">
+  <mat-card class="workflow-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>account_tree</mat-icon>
+      <mat-card-title>Workflow Monitor</mat-card-title>
+      <mat-card-subtitle>Real-time view of investment workflow queues and audit log</mat-card-subtitle>
+      <button mat-icon-button (click)="refresh()" [disabled]="loading" class="refresh-btn" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (loading && !workflowStatus) {
+        <div class="loading-container">
+          <mat-spinner diameter="48"></mat-spinner>
+          <span>Loading workflow status...</span>
+        </div>
+      } @else if (error) {
+        <div class="error-banner">
+          <mat-icon>error</mat-icon>
+          <span>{{ error }}</span>
+        </div>
+      } @else if (workflowStatus) {
+        <!-- Mode Indicator -->
+        <section class="mode-section">
+          <div class="mode-indicator" [style.--mode-color]="getModeConfig($any(workflowStatus.mode)).color">
+            <mat-icon [style.color]="getModeConfig($any(workflowStatus.mode)).color">
+              {{ getModeConfig($any(workflowStatus.mode)).icon }}
+            </mat-icon>
+            <div class="mode-info">
+              <span class="mode-label">Current Mode</span>
+              <span class="mode-value">{{ getModeConfig($any(workflowStatus.mode)).label }}</span>
+            </div>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Queue Status Cards -->
+        <section class="queues-section">
+          <h3>Workflow Queues</h3>
+          <div class="queue-grid">
+            @for (queueName of queueNames; track queueName) {
+              <div class="queue-card" [class.has-items]="getQueueCount(queueName) > 0" [class.escalation]="queueName === 'escalation'">
+                <div class="queue-header">
+                  <mat-icon>{{ queueConfig[queueName].icon }}</mat-icon>
+                  <span class="queue-name">{{ queueConfig[queueName].label }}</span>
+                  @if (getQueueCount(queueName) > 0) {
+                    <span class="queue-badge" [matBadge]="getQueueCount(queueName)" matBadgeColor="primary" matBadgeOverlap="false"></span>
+                  }
+                </div>
+                <p class="queue-description">{{ queueConfig[queueName].description }}</p>
+                <div class="queue-count">
+                  <span class="count-value">{{ getQueueCount(queueName) }}</span>
+                  <span class="count-label">items</span>
+                </div>
+
+                @if (getQueueItems(queueName).length > 0) {
+                  <div class="queue-items">
+                    @for (item of getQueueItems(queueName); track item.payload_id) {
+                      <div class="queue-item" [class]="getPriorityClass(item.priority)">
+                        <span class="item-id">{{ item.payload_id }}</span>
+                        <mat-chip [class]="getPriorityClass(item.priority)">{{ item.priority }}</mat-chip>
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Audit Log -->
+        <section class="audit-section">
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>history</mat-icon>
+                Audit Log ({{ workflowStatus.audit_log.length }} entries)
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            @if (workflowStatus.audit_log.length === 0) {
+              <p class="no-items-text">No audit log entries yet.</p>
+            } @else {
+              <mat-list class="audit-list">
+                @for (entry of workflowStatus.audit_log; track $index) {
+                  <mat-list-item>
+                    <mat-icon matListItemIcon>chevron_right</mat-icon>
+                    <span matListItemTitle class="audit-entry">{{ entry }}</span>
+                  </mat-list-item>
+                }
+              </mat-list>
+            }
+          </mat-expansion-panel>
+        </section>
+      }
+    </mat-card-content>
+  </mat-card>
+</div>

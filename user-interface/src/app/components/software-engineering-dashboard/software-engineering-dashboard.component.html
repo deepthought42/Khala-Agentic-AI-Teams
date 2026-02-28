@@ -18,8 +18,23 @@
 <mat-tab-group [(selectedIndex)]="selectedTabIndex">
   <mat-tab label="Run Team">
     <div class="tab-content">
-      <app-run-team-form (submitRequest)="onRunTeamSubmit($event)" />
-      @if (jobId) {
+      @if (!jobId) {
+        <app-run-team-form (submitRequest)="onRunTeamSubmit($event)" />
+      } @else {
+        <div class="active-job-header">
+          <div class="job-info">
+            <mat-icon>engineering</mat-icon>
+            <span class="job-label">Active Job:</span>
+            <span class="job-id">{{ jobId | slice:0:8 }}...</span>
+            @if (jobStatus?.status) {
+              <span class="job-status" [class]="'status-' + jobStatus?.status">{{ jobStatus?.status }}</span>
+            }
+          </div>
+          <button mat-stroked-button (click)="clearRunTeamJob()">
+            <mat-icon>add</mat-icon>
+            Start New Job
+          </button>
+        </div>
         <app-pending-questions
           [jobId]="jobId"
           [questions]="jobStatus?.pending_questions ?? []"

@@ -1,0 +1,303 @@
+<div class="profile-form-container">
+  <mat-card class="form-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>person_add</mat-icon>
+      <mat-card-title>Create Investment Profile</mat-card-title>
+      <mat-card-subtitle>Define your Investment Policy Statement (IPS)</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (loading) {
+        <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+      }
+
+      @if (error) {
+        <div class="error-banner">
+          <mat-icon>error</mat-icon>
+          <span>{{ error }}</span>
+        </div>
+      }
+
+      <form [formGroup]="form" (ngSubmit)="submit()">
+        <!-- Basic Info Section -->
+        <section class="form-section">
+          <h3>Basic Information</h3>
+          <div class="form-row">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>User ID</mat-label>
+              <input matInput formControlName="user_id" placeholder="unique-user-id">
+              @if (form.get('user_id')?.hasError('required')) {
+                <mat-error>User ID is required</mat-error>
+              }
+            </mat-form-field>
+          </div>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Risk Tolerance</mat-label>
+              <mat-select formControlName="risk_tolerance">
+                @for (opt of riskOptions; track opt.value) {
+                  <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Time Horizon (Years)</mat-label>
+              <input matInput type="number" formControlName="time_horizon_years" min="1" max="50">
+            </mat-form-field>
+          </div>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Max Drawdown Tolerance (%)</mat-label>
+              <input matInput type="number" formControlName="max_drawdown_tolerance_pct" min="0" max="100">
+              <mat-hint>Maximum portfolio decline you can tolerate</mat-hint>
+            </mat-form-field>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Income & Net Worth Section -->
+        <section class="form-section">
+          <h3>Income & Net Worth</h3>
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Annual Gross Income ($)</mat-label>
+              <input matInput type="number" formControlName="annual_gross_income" min="0">
+              <mat-icon matPrefix>attach_money</mat-icon>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Income Stability</mat-label>
+              <mat-select formControlName="income_stability">
+                <mat-option value="stable">Stable</mat-option>
+                <mat-option value="variable">Variable</mat-option>
+                <mat-option value="seasonal">Seasonal</mat-option>
+                <mat-option value="commission">Commission-based</mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Total Net Worth ($)</mat-label>
+              <input matInput type="number" formControlName="total_net_worth" min="0">
+              <mat-icon matPrefix>account_balance</mat-icon>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Investable Assets ($)</mat-label>
+              <input matInput type="number" formControlName="investable_assets" min="0">
+              <mat-icon matPrefix>savings</mat-icon>
+            </mat-form-field>
+          </div>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Monthly Savings ($)</mat-label>
+              <input matInput type="number" formControlName="monthly_savings" min="0">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Annual Savings ($)</mat-label>
+              <input matInput type="number" formControlName="annual_savings" min="0">
+            </mat-form-field>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Tax & Accounts Section -->
+        <section class="form-section">
+          <h3>Tax Profile</h3>
+          <div class="form-row three-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Country</mat-label>
+              <input matInput formControlName="tax_country">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>State/Province</mat-label>
+              <input matInput formControlName="tax_state">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Emergency Fund (Months)</mat-label>
+              <input matInput type="number" formControlName="emergency_fund_months" min="0" max="24">
+            </mat-form-field>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Preferences Section -->
+        <section class="form-section">
+          <h3>Investment Preferences</h3>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Excluded Asset Classes</mat-label>
+              <mat-select formControlName="excluded_asset_classes" multiple>
+                @for (ac of assetClassOptions; track ac) {
+                  <mat-option [value]="ac">{{ ac | titlecase }}</mat-option>
+                }
+              </mat-select>
+              <mat-hint>Select asset classes to exclude from portfolio</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>ESG Preference</mat-label>
+              <mat-select formControlName="esg_preference">
+                @for (opt of esgOptions; track opt) {
+                  <mat-option [value]="opt">{{ opt | titlecase }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Max Single Position (%)</mat-label>
+              <input matInput type="number" formControlName="max_single_position_pct" min="1" max="100">
+            </mat-form-field>
+          </div>
+
+          <div class="toggle-row">
+            <mat-slide-toggle formControlName="crypto_allowed">
+              Allow Crypto
+            </mat-slide-toggle>
+            <mat-slide-toggle formControlName="options_allowed">
+              Allow Options
+            </mat-slide-toggle>
+            <mat-slide-toggle formControlName="leverage_allowed">
+              Allow Leverage
+            </mat-slide-toggle>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Goals Section -->
+        <section class="form-section">
+          <div class="section-header">
+            <h3>Investment Goals</h3>
+            <button mat-stroked-button type="button" (click)="addGoal()">
+              <mat-icon>add</mat-icon> Add Goal
+            </button>
+          </div>
+
+          @if (goalsArray.length === 0) {
+            <p class="no-items-text">No goals added yet. Click "Add Goal" to define your investment objectives.</p>
+          }
+
+          @for (goal of goalsArray.controls; track $index) {
+            <div class="goal-item" [formGroup]="$any(goal)">
+              <div class="form-row four-col">
+                <mat-form-field appearance="outline">
+                  <mat-label>Goal Name</mat-label>
+                  <input matInput formControlName="name" placeholder="e.g., Retirement">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Target Amount ($)</mat-label>
+                  <input matInput type="number" formControlName="target_amount" min="0">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Target Date</mat-label>
+                  <input matInput formControlName="target_date" placeholder="YYYY-MM-DD">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Priority</mat-label>
+                  <mat-select formControlName="priority">
+                    <mat-option value="low">Low</mat-option>
+                    <mat-option value="medium">Medium</mat-option>
+                    <mat-option value="high">High</mat-option>
+                    <mat-option value="critical">Critical</mat-option>
+                  </mat-select>
+                </mat-form-field>
+              </div>
+              <button mat-icon-button type="button" (click)="removeGoal($index)" class="remove-goal-btn" matTooltip="Remove goal">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          }
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Workflow Settings Section -->
+        <section class="form-section">
+          <h3>Workflow Settings</h3>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Default Mode</mat-label>
+              <mat-select formControlName="default_mode">
+                @for (opt of workflowModeOptions; track opt.value) {
+                  <mat-option [value]="opt.value">
+                    {{ opt.label }}
+                    <span class="mode-hint"> - {{ opt.description }}</span>
+                  </mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Rebalance Frequency</mat-label>
+              <mat-select formControlName="rebalance_frequency">
+                @for (opt of rebalanceOptions; track opt) {
+                  <mat-option [value]="opt">{{ opt | titlecase }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Speculative Sleeve Cap (%)</mat-label>
+              <input matInput type="number" formControlName="speculative_sleeve_cap_pct" min="0" max="50">
+              <mat-hint>Max allocation to speculative assets (crypto, options)</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <div class="toggle-row">
+            <mat-slide-toggle formControlName="live_trading_enabled">
+              Enable Live Trading
+            </mat-slide-toggle>
+            <mat-slide-toggle formControlName="human_approval_required_for_live">
+              Require Human Approval for Live
+            </mat-slide-toggle>
+          </div>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Notes Section -->
+        <section class="form-section">
+          <h3>Additional Notes</h3>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Notes</mat-label>
+            <textarea matInput formControlName="notes" rows="3" placeholder="Any additional context or constraints..."></textarea>
+          </mat-form-field>
+        </section>
+      </form>
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-button type="button" (click)="cancel()" [disabled]="loading">
+        Cancel
+      </button>
+      <button mat-raised-button color="primary" (click)="submit()" [disabled]="loading || form.invalid">
+        @if (loading) {
+          Creating...
+        } @else {
+          Create Profile
+        }
+      </button>
+    </mat-card-actions>
+  </mat-card>
+</div>

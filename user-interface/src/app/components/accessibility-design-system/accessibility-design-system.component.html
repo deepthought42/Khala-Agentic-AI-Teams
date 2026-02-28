@@ -1,0 +1,186 @@
+<mat-card class="design-system-card">
+  <mat-card-header>
+    <mat-icon mat-card-avatar class="header-icon">widgets</mat-icon>
+    <mat-card-title>Design System Accessibility</mat-card-title>
+    <mat-card-subtitle>
+      Build component inventories and generate accessibility contracts for your design system
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    @if (!inventory) {
+      <!-- Inventory Builder Form -->
+      <div class="inventory-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Design System Name</mat-label>
+          <input
+            matInput
+            [(ngModel)]="systemName"
+            placeholder="e.g., Acme Component Library"
+          />
+          <mat-hint>Name of your design system or component library</mat-hint>
+        </mat-form-field>
+
+        <div class="form-row">
+          <mat-form-field appearance="outline" class="source-field">
+            <mat-label>Source</mat-label>
+            <mat-select [(ngModel)]="source">
+              <mat-option value="storybook">Storybook</mat-option>
+              <mat-option value="repo">Repository</mat-option>
+              <mat-option value="manual">Manual</mat-option>
+            </mat-select>
+            <mat-hint>Where to discover components</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="platform-field">
+            <mat-label>Platform</mat-label>
+            <mat-select [(ngModel)]="platform">
+              <mat-option value="web">Web</mat-option>
+              <mat-option value="ios">iOS</mat-option>
+              <mat-option value="android">Android</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        @if (inventoryError) {
+          <div class="error-message">
+            <mat-icon>error</mat-icon>
+            <span>{{ inventoryError }}</span>
+          </div>
+        }
+      </div>
+    } @else {
+      <!-- Inventory Display -->
+      <div class="inventory-header">
+        <div class="inventory-info">
+          <h3>{{ inventory.system_name }}</h3>
+          <div class="inventory-meta">
+            <mat-chip>
+              <mat-icon>source</mat-icon>
+              {{ inventory.source }}
+            </mat-chip>
+            <mat-chip>
+              <mat-icon>widgets</mat-icon>
+              {{ components.length }} components
+            </mat-chip>
+          </div>
+        </div>
+        <button mat-stroked-button (click)="resetInventory()">
+          <mat-icon>refresh</mat-icon>
+          New Inventory
+        </button>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Components List -->
+      <div class="components-section">
+        <h4>Components</h4>
+        <p class="section-description">
+          Generate accessibility contracts for each component to define a11y requirements and test harnesses.
+        </p>
+
+        <mat-accordion class="components-list" multi>
+          @for (component of components; track component.name) {
+            <mat-expansion-panel class="component-panel">
+              <mat-expansion-panel-header>
+                <mat-panel-title>
+                  <mat-icon class="component-icon">{{ component.hasContract ? 'verified' : 'extension' }}</mat-icon>
+                  <span class="component-name">{{ component.name }}</span>
+                </mat-panel-title>
+                <mat-panel-description>
+                  @if (component.hasContract) {
+                    <mat-chip class="contract-badge">
+                      <mat-icon>check_circle</mat-icon>
+                      Contract Generated
+                    </mat-chip>
+                  } @else if (component.loading) {
+                    <mat-spinner diameter="20"></mat-spinner>
+                  } @else {
+                    <button
+                      mat-stroked-button
+                      color="primary"
+                      (click)="$event.stopPropagation(); generateContract(component)"
+                    >
+                      Generate Contract
+                    </button>
+                  }
+                </mat-panel-description>
+              </mat-expansion-panel-header>
+
+              @if (component.hasContract && component.contract) {
+                <div class="contract-details">
+                  <div class="contract-header">
+                    <div class="contract-meta">
+                      <span class="meta-item">
+                        <mat-icon>fingerprint</mat-icon>
+                        {{ component.contract.contract_ref }}
+                      </span>
+                      <span class="meta-item">
+                        <mat-icon>devices</mat-icon>
+                        {{ component.contract.platform | uppercase }}
+                      </span>
+                      <span class="meta-item">
+                        <mat-icon>event</mat-icon>
+                        {{ component.contract.created_at | date:'short' }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="requirements-section">
+                    <h5>Accessibility Requirements</h5>
+                    <div class="requirements-count">
+                      <mat-icon>checklist</mat-icon>
+                      {{ getContractRequirementsCount(component.contract) }} requirements defined
+                    </div>
+                  </div>
+
+                  @if (component.contract.linked_patterns.length > 0) {
+                    <div class="patterns-section">
+                      <h5>Linked Patterns</h5>
+                      <div class="pattern-chips">
+                        @for (pattern of component.contract.linked_patterns; track pattern) {
+                          <mat-chip class="pattern-chip">{{ pattern }}</mat-chip>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  <div class="test-harness-section">
+                    <h5>Test Harness</h5>
+                    <p class="test-harness-info">
+                      A test harness plan has been generated to verify accessibility compliance for this component.
+                    </p>
+                  </div>
+                </div>
+              } @else {
+                <div class="no-contract-message">
+                  <mat-icon>info</mat-icon>
+                  <span>Generate a contract to define accessibility requirements for this component.</span>
+                </div>
+              }
+            </mat-expansion-panel>
+          }
+        </mat-accordion>
+      </div>
+    }
+  </mat-card-content>
+
+  <mat-card-actions align="end">
+    @if (!inventory) {
+      <button
+        mat-raised-button
+        color="primary"
+        (click)="buildInventory()"
+        [disabled]="!canBuildInventory || loadingInventory"
+      >
+        @if (loadingInventory) {
+          <mat-spinner diameter="20"></mat-spinner>
+        } @else {
+          <mat-icon>inventory_2</mat-icon>
+        }
+        Build Inventory
+      </button>
+    }
+  </mat-card-actions>
+</mat-card>

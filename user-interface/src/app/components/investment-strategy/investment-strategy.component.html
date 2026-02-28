@@ -1,0 +1,189 @@
+<div class="strategy-container">
+  <mat-card class="strategy-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>psychology</mat-icon>
+      <mat-card-title>Investment Strategy</mat-card-title>
+      <mat-card-subtitle>Define and validate trading strategies</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (loading || validating) {
+        <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+      }
+
+      @if (error) {
+        <div class="error-banner">
+          <mat-icon>error</mat-icon>
+          <span>{{ error }}</span>
+        </div>
+      }
+
+      <form [formGroup]="form">
+        <!-- Strategy Definition -->
+        <section class="form-section">
+          <h3>Strategy Definition</h3>
+
+          <div class="form-row two-col">
+            <mat-form-field appearance="outline">
+              <mat-label>Asset Class</mat-label>
+              <mat-select formControlName="asset_class">
+                @for (ac of assetClasses; track ac) {
+                  <mat-option [value]="ac">{{ ac | titlecase }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <div class="toggle-container">
+              <mat-slide-toggle formControlName="speculative">
+                Speculative Strategy
+              </mat-slide-toggle>
+              <span class="toggle-hint">Higher risk strategies subject to IPS sleeve caps</span>
+            </div>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Investment Hypothesis</mat-label>
+            <textarea matInput formControlName="hypothesis" rows="3" placeholder="Describe the market inefficiency or opportunity this strategy exploits..."></textarea>
+            @if (form.get('hypothesis')?.hasError('required')) {
+              <mat-error>Hypothesis is required</mat-error>
+            }
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Signal Definition</mat-label>
+            <textarea matInput formControlName="signal_definition" rows="2" placeholder="Define the primary signal or indicator used..."></textarea>
+            @if (form.get('signal_definition')?.hasError('required')) {
+              <mat-error>Signal definition is required</mat-error>
+            }
+          </mat-form-field>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <!-- Trading Rules -->
+        <section class="form-section">
+          <h3>Trading Rules</h3>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Entry Rules</mat-label>
+            <textarea matInput formControlName="entry_rules" rows="3" placeholder="One rule per line:
+- Buy when RSI < 30 and price above 200-day MA
+- Confirm with volume spike"></textarea>
+            <mat-hint>Define conditions for entering positions</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Exit Rules</mat-label>
+            <textarea matInput formControlName="exit_rules" rows="3" placeholder="One rule per line:
+- Sell when RSI > 70
+- Stop loss at 5% below entry"></textarea>
+            <mat-hint>Define conditions for exiting positions</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Position Sizing Rules</mat-label>
+            <textarea matInput formControlName="sizing_rules" rows="2" placeholder="One rule per line:
+- Max 2% risk per trade
+- Scale in 25% increments"></textarea>
+            <mat-hint>Define how position sizes are determined</mat-hint>
+          </mat-form-field>
+        </section>
+      </form>
+
+      <!-- Current Strategy Display -->
+      @if (currentStrategy) {
+        <mat-divider></mat-divider>
+
+        <section class="form-section">
+          <h3>Created Strategy</h3>
+          <div class="strategy-summary">
+            <div class="summary-item">
+              <span class="label">Strategy ID:</span>
+              <span class="value">{{ currentStrategy.strategy_id }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">Authored By:</span>
+              <span class="value">{{ currentStrategy.authored_by }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">Asset Class:</span>
+              <mat-chip>{{ currentStrategy.asset_class | titlecase }}</mat-chip>
+            </div>
+            @if (currentStrategy.speculative) {
+              <mat-chip color="warn">Speculative</mat-chip>
+            }
+          </div>
+        </section>
+      }
+
+      <!-- Validation Results -->
+      @if (validationResult) {
+        <mat-expansion-panel class="validation-panel" [expanded]="true">
+          <mat-expansion-panel-header>
+            <mat-panel-title>
+              @if (validationResult.passed) {
+                <mat-icon class="check-pass">check_circle</mat-icon>
+                <span>Validation Passed</span>
+              } @else {
+                <mat-icon class="check-fail">error</mat-icon>
+                <span>Validation Failed ({{ validationResult.failures.length }} issues)</span>
+              }
+            </mat-panel-title>
+          </mat-expansion-panel-header>
+
+          <div class="validation-details">
+            <h4>Validation Checks</h4>
+            <mat-list>
+              @for (check of validationResult.validation.checks; track check.name) {
+                <mat-list-item>
+                  <mat-icon matListItemIcon [class]="getCheckClass(check.status)">
+                    {{ getCheckIcon(check.status) }}
+                  </mat-icon>
+                  <span matListItemTitle>{{ check.name | titlecase }}</span>
+                  <span matListItemLine>{{ check.details }}</span>
+                </mat-list-item>
+              }
+            </mat-list>
+
+            @if (validationResult.failures.length > 0) {
+              <h4>Failures</h4>
+              <div class="failures-list">
+                @for (failure of validationResult.failures; track failure) {
+                  <div class="failure-item">
+                    <mat-icon>error_outline</mat-icon>
+                    <span>{{ failure }}</span>
+                  </div>
+                }
+              </div>
+            }
+
+            <div class="validation-meta">
+              <span>Backtest Period: {{ validationResult.validation.backtest_period }}</span>
+              <span>Scenarios: {{ validationResult.validation.scenario_set.join(', ') }}</span>
+            </div>
+          </div>
+        </mat-expansion-panel>
+      }
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      @if (!currentStrategy) {
+        <button mat-raised-button color="primary" (click)="createStrategy()" [disabled]="loading || form.invalid">
+          @if (loading) {
+            Creating...
+          } @else {
+            Create Strategy
+          }
+        </button>
+      } @else {
+        <button mat-stroked-button (click)="validateStrategy()" [disabled]="validating">
+          @if (validating) {
+            Validating...
+          } @else {
+            Run Validation
+          }
+        </button>
+      }
+    </mat-card-actions>
+  </mat-card>
+</div>

@@ -1,0 +1,134 @@
+<mat-card class="status-card">
+  <mat-card-header>
+    <mat-icon mat-card-avatar class="header-icon">accessibility_new</mat-icon>
+    <mat-card-title>Accessibility Audit Status</mat-card-title>
+    <mat-card-subtitle>
+      Job: {{ jobId }}
+      @if (status?.audit_id) {
+        <span class="audit-id">| Audit: {{ status!.audit_id }}</span>
+      }
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    @if (error) {
+      <div class="error-message">
+        <mat-icon>error</mat-icon>
+        <span>{{ error }}</span>
+      </div>
+    }
+
+    @if (status) {
+      <div class="status-header">
+        <div class="status-badge" [class]="status.status">
+          <mat-icon>{{ getStatusIcon(status.status) }}</mat-icon>
+          <span>{{ status.status | uppercase }}</span>
+        </div>
+        @if (status.findings_count > 0) {
+          <div class="findings-badge">
+            <mat-icon>bug_report</mat-icon>
+            <span>{{ status.findings_count }} findings</span>
+          </div>
+        }
+      </div>
+
+      <div class="progress-section">
+        <div class="progress-label">
+          <span>Progress</span>
+          <span>{{ status.progress }}%</span>
+        </div>
+        <mat-progress-bar
+          [mode]="status.status === 'running' ? 'buffer' : 'determinate'"
+          [value]="status.progress"
+          [bufferValue]="status.progress + 10"
+          [color]="getStatusColor(status.status)"
+        ></mat-progress-bar>
+      </div>
+
+      <div class="phases-section">
+        <h4>Audit Phases</h4>
+        <div class="phases-stepper">
+          @for (phase of phases; track phase.id; let i = $index; let last = $last) {
+            <div
+              class="phase-step"
+              [class.completed]="getPhaseStatus(phase.id) === 'completed'"
+              [class.current]="getPhaseStatus(phase.id) === 'current'"
+              [class.pending]="getPhaseStatus(phase.id) === 'pending'"
+            >
+              <div class="step-indicator">
+                <div class="step-circle">
+                  @if (getPhaseStatus(phase.id) === 'completed') {
+                    <mat-icon>check</mat-icon>
+                  } @else if (getPhaseStatus(phase.id) === 'current') {
+                    <mat-icon>{{ phase.icon }}</mat-icon>
+                  } @else {
+                    <span>{{ i + 1 }}</span>
+                  }
+                </div>
+                @if (!last) {
+                  <div class="step-connector" [class.completed]="getPhaseStatus(phase.id) === 'completed'"></div>
+                }
+              </div>
+              <div class="step-content">
+                <span class="step-label">{{ phase.label }}</span>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+
+      @if (status.result) {
+        <div class="results-summary">
+          <h4>Findings Summary</h4>
+          <div class="severity-chips">
+            @if (status.result.critical_count > 0) {
+              <mat-chip class="severity-chip critical">
+                Critical: {{ status.result.critical_count }}
+              </mat-chip>
+            }
+            @if (status.result.high_count > 0) {
+              <mat-chip class="severity-chip high">
+                High: {{ status.result.high_count }}
+              </mat-chip>
+            }
+            @if (status.result.medium_count > 0) {
+              <mat-chip class="severity-chip medium">
+                Medium: {{ status.result.medium_count }}
+              </mat-chip>
+            }
+            @if (status.result.low_count > 0) {
+              <mat-chip class="severity-chip low">
+                Low: {{ status.result.low_count }}
+              </mat-chip>
+            }
+          </div>
+        </div>
+      }
+
+      @if (status.error) {
+        <div class="error-section">
+          <h4>Error</h4>
+          <p class="error-text">{{ status.error }}</p>
+        </div>
+      }
+
+      @if (status.status === 'complete') {
+        <div class="actions-section">
+          <button mat-stroked-button color="primary" (click)="onViewFindings()">
+            <mat-icon>list</mat-icon>
+            View Findings
+          </button>
+          <button mat-stroked-button color="primary" (click)="onViewReport()">
+            <mat-icon>summarize</mat-icon>
+            View Report
+          </button>
+        </div>
+      }
+    } @else {
+      <div class="loading-state">
+        <mat-icon>hourglass_empty</mat-icon>
+        <span>Loading audit status...</span>
+      </div>
+    }
+  </mat-card-content>
+</mat-card>

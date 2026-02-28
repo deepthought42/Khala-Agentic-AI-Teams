@@ -347,12 +347,18 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
 
   /** Check if a product analysis subprocess phase has been completed. */
   isAnalysisSubprocessCompleted(phaseId: string): boolean {
+    if (this.isPhaseCompleted('product_analysis')) {
+      return true;
+    }
     const completedPhases = this.status?.analysis_completed_phases ?? [];
     return completedPhases.includes(phaseId);
   }
 
   /** Check if a product analysis subprocess phase is currently active. */
   isAnalysisSubprocessCurrent(phaseId: string): boolean {
+    if (this.isPhaseCompleted('product_analysis')) {
+      return false;
+    }
     return this.status?.analysis_subprocess === phaseId;
   }
 
@@ -493,10 +499,11 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
 
   private addProductAnalysisSubtree(nodes: FlatTreeNode[], parentIsLast: boolean): void {
     const phases = PRODUCT_ANALYSIS_PHASES;
+    const productAnalysisCompleted = this.isPhaseCompleted('product_analysis');
     phases.forEach((phase, idx) => {
       const isLast = idx === phases.length - 1;
       let status: 'completed' | 'current' | 'pending' = 'pending';
-      if (this.isAnalysisSubprocessCompleted(phase.id)) {
+      if (productAnalysisCompleted || this.isAnalysisSubprocessCompleted(phase.id)) {
         status = 'completed';
       } else if (this.isAnalysisSubprocessCurrent(phase.id)) {
         status = 'current';
@@ -697,9 +704,10 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private buildProductAnalysisDAGChildren(): DAGNode[] {
+    const productAnalysisCompleted = this.isPhaseCompleted('product_analysis');
     return PRODUCT_ANALYSIS_PHASES.map(phase => {
       let status: 'completed' | 'current' | 'pending' = 'pending';
-      if (this.isAnalysisSubprocessCompleted(phase.id)) {
+      if (productAnalysisCompleted || this.isAnalysisSubprocessCompleted(phase.id)) {
         status = 'completed';
       } else if (this.isAnalysisSubprocessCurrent(phase.id)) {
         status = 'current';

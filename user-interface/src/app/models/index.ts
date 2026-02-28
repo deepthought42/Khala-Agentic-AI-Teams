@@ -8,3 +8,7 @@ export * from './social-marketing.model';
 
 export * from './branding.model';
 export * from './personal-assistant.model';
+export * from './accessibility.model';
+export * from './agent-provisioning.model';
+export * from './ai-systems.model';
+export * from './investment.model';

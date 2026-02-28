@@ -1,0 +1,97 @@
+.audit-form-card {
+  margin-bottom: 16px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+mat-form-field {
+  margin-bottom: 8px;
+}
+
+.url-input-section {
+  margin-bottom: 16px;
+}
+
+.url-input {
+  width: 100%;
+}
+
+.url-chips,
+.app-chips {
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
+
+.mobile-app-section {
+  margin-bottom: 16px;
+}
+
+.mobile-app-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.platform-select {
+  width: 120px;
+}
+
+.app-name-input {
+  flex: 2;
+  min-width: 150px;
+}
+
+.version-input {
+  width: 100px;
+}
+
+.build-input {
+  width: 100px;
+}
+
+.wcag-section {
+  margin: 16px 0;
+}
+
+.section-label {
+  display: block;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+  margin-bottom: 8px;
+}
+
+.wcag-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.advanced-panel {
+  margin: 16px 0;
+
+  mat-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+.advanced-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  padding-top: 8px;
+}
+
+mat-card-actions {
+  button {
+    margin-left: 8px;
+
+    mat-icon {
+      margin-right: 4px;
+    }
+  }
+}
