@@ -1110,6 +1110,31 @@ Previously Answered Questions:
             message=f"Waiting for answers to {len(open_questions)} question(s)",
         )
 
+        try:
+            from shared.slack_notifier import SlackNotifier
+
+            notified = SlackNotifier().send_open_questions(
+                job_id=job_id,
+                repo_path=str(repo_path),
+                iteration=iteration,
+                question_count=len(open_questions),
+            )
+            if notified:
+                logger.info(
+                    "Sent product analysis open-questions notification to Slack for job %s",
+                    job_id,
+                )
+            else:
+                logger.info(
+                    "Slack open-questions notification not sent (disabled or delivery failed) for job %s",
+                    job_id,
+                )
+        except Exception:
+            logger.exception(
+                "Unexpected failure while sending Slack open-questions notification for job %s",
+                job_id,
+            )
+
         logger.info(
             "Communicate with user: Sent %d questions, waiting for response",
             len(open_questions),

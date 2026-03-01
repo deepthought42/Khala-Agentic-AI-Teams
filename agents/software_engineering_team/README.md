@@ -183,6 +183,15 @@ By default, the script uses `DummyLLMClient` for testing without an LLM. To use 
 | `SW_LLM_ENABLE_THINKING` | Enable thinking mode for qwen3.5 models; improves reasoning quality but increases latency and token usage. Set to `false` to disable. | `true` (for qwen3.5) |
 | `SW_ENABLE_PLANNING_CACHE` | Reuse cached TaskAssignment when spec and architecture unchanged; set to `0` or `false` to disable | `1` (enabled) |
 
+**Product analysis Slack notifications (optional):**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SOFTWARE_ENG_SLACK_WEBHOOK_URL` | Incoming webhook URL used to notify when Product Requirements Analysis has open questions | unset (disabled) |
+| `SOFTWARE_ENG_SLACK_CHANNEL` | Optional channel override for the Slack notification payload | unset |
+
+When configured, product analysis open questions are still shown in the UI and additionally sent to Slack as a heads-up.
+
 **Per-agent model configuration:** Each agent can use a different model. Set `SW_LLM_MODEL_<agent_key>` to override (e.g. `SW_LLM_MODEL_backend`, `SW_LLM_MODEL_tech_lead`). Model resolution order: per-agent env var → `SW_LLM_MODEL` (global fallback) → recommended default for that agent → `qwen3.5:397b-cloud`.
 
 Recommended defaults (all :cloud versions) when no overrides are set:
