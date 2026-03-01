@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections, complete_with_continuation
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
@@ -181,6 +181,34 @@ Respond with concise JSON:
     }}
   ],
   "summary": "Brief summary"
+}}
+"""
+
+USER_STORY_FIX_SINGLE_ISSUE_PROMPT = """You are a Product Planning expert. Fix this specific issue in the user story artifacts.
+
+ISSUE TO FIX:
+---
+{issue}
+---
+
+CURRENT USER STORY ARTIFACT:
+---
+{current_artifact}
+---
+
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
+
+Analyze and fix this issue. If the issue relates to task sizing, acceptance criteria, or missing stories/tasks, provide the complete updated file content.
+
+Respond with JSON:
+{{
+  "root_cause": "why this issue exists",
+  "fix_description": "what you are changing to fix it",
+  "resolved": true or false,
+  "updated_content": "the complete updated file content (or empty string if no change needed)"
 }}
 """
 
@@ -419,15 +447,92 @@ class UserStoryToolAgent:
         """Problem-solving phase: address user story issues."""
         if not self.llm:
             return ToolAgentPhaseOutput(summary="User Story problem_solve skipped (no LLM).")
-        
+
         story_issues = [i for i in inp.review_issues if "story" in i.lower() or "task" in i.lower() or "epic" in i.lower()]
         if not story_issues:
             return ToolAgentPhaseOutput(summary="No user story issues to resolve.")
-        
+
+        all_files: Dict[str, str] = {}
+        fixes_applied: List[str] = []
+
+        for issue in story_issues:
+            result = self.fix_single_issue(issue, inp)
+            if result.files:
+                all_files.update(result.files)
+                fixes_applied.append(result.summary)
+
         return ToolAgentPhaseOutput(
-            summary=f"User Story: {len(story_issues)} issue(s) identified for resolution.",
-            recommendations=[f"Address: {issue}" for issue in story_issues[:5]],
+            summary=f"User Story: fixed {len(fixes_applied)}/{len(story_issues)} issue(s).",
+            recommendations=fixes_applied,
+            files=all_files,
+            resolved=len(fixes_applied) == len(story_issues),
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single user story issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="User Story fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = inp.current_files.get("plan/user_stories.md", "")
+        if not current_artifact:
+            for path, content in inp.current_files.items():
+                if "user_stor" in path.lower() or "planning" in path.lower():
+                    current_artifact = content
+                    break
+
+        prompt = USER_STORY_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw = complete_with_continuation(
+                llm=self.llm,
+                prompt=prompt,
+                mode="json",
+                agent_name="UserStory_FixSingleIssue",
+            )
+
+            if not isinstance(raw, dict):
+                return ToolAgentPhaseOutput(
+                    summary="Fix failed: invalid response format",
+                    resolved=False,
+                )
+
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files["plan/user_stories.md"] = updated_content
+                logger.info("UserStory: fix applied — %s", fix_desc[:60])
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"User story issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("UserStory fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def deliver(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Deliver phase: finalize user story documentation."""

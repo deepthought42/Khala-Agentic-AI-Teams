@@ -30,7 +30,6 @@ if _arch_dir.exists() and str(_arch_dir) not in sys.path:
     sys.path.insert(0, str(_arch_dir))
 
 from spec_parser import validate_work_path
-from shared.clarification_store import clarification_store
 from shared.execution_tracker import execution_tracker
 from shared.job_store import (
     JOB_STATUS_CANCELLED,
@@ -75,11 +74,6 @@ class RunTeamRequest(BaseModel):
         ...,
         max_length=4096,
         description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
-    )
-    clarification_session_id: Optional[str] = Field(
-        None,
-        max_length=256,
-        description="Use refined_spec and resolved_questions from this clarification session",
     )
 
 
@@ -249,15 +243,6 @@ class RetryResponse(BaseModel):
     message: str = Field(default="")
 
 
-class RePlanWithClarificationsRequest(BaseModel):
-    """Request body for re-plan-with-clarifications endpoint."""
-
-    clarification_session_id: str = Field(
-        ...,
-        description="Clarification session with refined_spec and resolved_questions to use for re-planning",
-    )
-
-
 class AnswerSubmission(BaseModel):
     """A user's answer to a pending question."""
 
@@ -279,37 +264,6 @@ class SubmitAnswersRequest(BaseModel):
         ...,
         description="List of answers to submit.",
     )
-
-
-class ClarificationCreateRequest(BaseModel):
-    spec_text: str = Field(..., max_length=500_000, description="Initial product/engineering specification text.")
-
-
-class ClarificationMessageRequest(BaseModel):
-    message: str = Field(..., max_length=50_000, description="User clarification response message.")
-
-
-class ClarificationResponse(BaseModel):
-    session_id: str
-    assistant_message: str
-    open_questions: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
-    done_clarifying: bool = False
-    refined_spec: Optional[str] = None
-
-
-class ClarificationSessionResponse(BaseModel):
-    session_id: str
-    spec_text: str
-    status: str
-    created_at: str
-    clarification_round: int
-    max_rounds: int
-    confidence_score: float
-    open_questions: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
-    refined_spec: Optional[str] = None
-    turns: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class ArchitectDesignRequest(BaseModel):
@@ -394,25 +348,9 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
     job_id = str(uuid.uuid4())
     create_job(job_id, str(repo_path), job_type="run_team")
 
-    spec_override: Optional[str] = None
-    resolved_override: Optional[List[Dict[str, Any]]] = None
-    if request.clarification_session_id:
-        session = clarification_store.get_session(request.clarification_session_id)
-        if not session:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Clarification session {request.clarification_session_id} not found",
-            )
-        spec_override = session.refined_spec or session.spec_text
-        resolved_override = session.resolved_questions or []
-
     thread = threading.Thread(
         target=_run_orchestrator_background,
         args=(job_id, str(repo_path)),
-        kwargs={
-            "spec_content_override": spec_override,
-            "resolved_questions_override": resolved_override,
-        },
     )
     thread.daemon = True
     thread.start()
@@ -792,122 +730,6 @@ def submit_pending_answers(job_id: str, request: SubmitAnswersRequest) -> JobSta
         analysis_subprocess=updated_data.get("analysis_subprocess"),
         analysis_completed_phases=updated_data.get("analysis_completed_phases") or [],
         planning_hierarchy=updated_data.get("planning_hierarchy"),
-    )
-
-
-def _run_replan_background(
-    job_id: str,
-    repo_path: str,
-    spec_content_override: str,
-    resolved_questions_override: List[Dict[str, Any]],
-) -> None:
-    """Run orchestrator in planning-only mode with clarification overrides."""
-    try:
-        from orchestrator import run_orchestrator
-        run_orchestrator(
-            job_id,
-            repo_path,
-            spec_content_override=spec_content_override,
-            resolved_questions_override=resolved_questions_override,
-            planning_only=True,
-        )
-    except Exception as e:
-        logger.exception("Re-plan orchestrator failed")
-        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
-
-
-@app.post(
-    "/run-team/{job_id}/re-plan-with-clarifications",
-    response_model=RunTeamResponse,
-    summary="Re-plan with clarifications",
-    description="Re-run the planning phase (spec intake through conformance) using refined_spec and "
-    "resolved_questions from a clarification session. Does not re-run execution. "
-    "Use when user has provided clarification answers after a run completed.",
-)
-def re_plan_with_clarifications(job_id: str, request: RePlanWithClarificationsRequest) -> RunTeamResponse:
-    """Re-run planning phase with clarification session data."""
-    data = get_job(job_id)
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    if data.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Job is still running")
-
-    repo_path = data.get("repo_path")
-    if not repo_path:
-        raise HTTPException(status_code=400, detail="Job has no repo_path")
-
-    session = clarification_store.get_session(request.clarification_session_id)
-    if not session:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Clarification session {request.clarification_session_id} not found",
-        )
-
-    spec_override = session.refined_spec or session.spec_text
-    resolved_override = session.resolved_questions or []
-
-    thread = threading.Thread(
-        target=_run_replan_background,
-        args=(job_id, str(repo_path), spec_override, resolved_override),
-    )
-    thread.daemon = True
-    thread.start()
-
-    return RunTeamResponse(
-        job_id=job_id,
-        status="running",
-        message="Re-planning started. Poll GET /run-team/{job_id} for status.",
-    )
-
-
-@app.post("/clarification/sessions", response_model=ClarificationResponse)
-def create_clarification_session(request: ClarificationCreateRequest) -> ClarificationResponse:
-    """Create a clarification session from initial spec text."""
-    session = clarification_store.create_session(request.spec_text)
-    return ClarificationResponse(
-        session_id=session.session_id,
-        assistant_message=session.turns[-1].message,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        done_clarifying=False,
-    )
-
-
-@app.post("/clarification/sessions/{session_id}/messages", response_model=ClarificationResponse)
-def send_clarification_message(session_id: str, request: ClarificationMessageRequest) -> ClarificationResponse:
-    """Append a user message and return next question or completion."""
-    session = clarification_store.add_user_message(session_id, request.message)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return ClarificationResponse(
-        session_id=session.session_id,
-        assistant_message=session.turns[-1].message,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        done_clarifying=session.status == "completed",
-        refined_spec=session.refined_spec,
-    )
-
-
-@app.get("/clarification/sessions/{session_id}", response_model=ClarificationSessionResponse)
-def get_clarification_session(session_id: str) -> ClarificationSessionResponse:
-    """Get full clarification session transcript and state."""
-    session = clarification_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return ClarificationSessionResponse(
-        session_id=session.session_id,
-        spec_text=session.spec_text,
-        status=session.status,
-        created_at=session.created_at,
-        clarification_round=session.clarification_round,
-        max_rounds=session.max_rounds,
-        confidence_score=session.confidence_score,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        refined_spec=session.refined_spec,
-        turns=[{"role": t.role, "message": t.message, "timestamp": t.timestamp} for t in session.turns],
     )
 
 

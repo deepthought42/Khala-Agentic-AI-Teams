@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections, complete_with_continuation
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
@@ -120,6 +120,34 @@ Respond with concise JSON for THIS section only:
   "integration_strategy": "integration points",
   "recommendations": ["design recommendations"],
   "summary": "brief summary"
+}}
+"""
+
+SYSTEM_DESIGN_FIX_SINGLE_ISSUE_PROMPT = """You are a System Design expert. Fix this specific issue in the planning artifacts.
+
+ISSUE TO FIX:
+---
+{issue}
+---
+
+CURRENT SYSTEM DESIGN ARTIFACT:
+---
+{current_artifact}
+---
+
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
+
+Analyze and fix this issue. Provide the complete updated file content.
+
+Respond with JSON:
+{{
+  "root_cause": "why this issue exists",
+  "fix_description": "what you are changing to fix it",
+  "resolved": true or false,
+  "updated_content": "the complete updated file content (or empty string if no change needed)"
 }}
 """
 
@@ -251,15 +279,92 @@ class SystemDesignToolAgent:
         """Problem-solving phase: address design issues."""
         if not self.llm:
             return ToolAgentPhaseOutput(summary="System Design problem_solve skipped (no LLM).")
-        
+
         design_issues = [i for i in inp.review_issues if "design" in i.lower() or "system" in i.lower()]
         if not design_issues:
             return ToolAgentPhaseOutput(summary="No system design issues to resolve.")
-        
+
+        all_files: Dict[str, str] = {}
+        fixes_applied: List[str] = []
+
+        for issue in design_issues:
+            result = self.fix_single_issue(issue, inp)
+            if result.files:
+                all_files.update(result.files)
+                fixes_applied.append(result.summary)
+
         return ToolAgentPhaseOutput(
-            summary=f"System design: {len(design_issues)} issue(s) identified for resolution.",
-            recommendations=[f"Address: {issue}" for issue in design_issues[:5]],
+            summary=f"System design: fixed {len(fixes_applied)}/{len(design_issues)} issue(s).",
+            recommendations=fixes_applied,
+            files=all_files,
+            resolved=len(fixes_applied) == len(design_issues),
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single system design issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="System Design fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = inp.current_files.get("plan/system_design.md", "")
+        if not current_artifact:
+            for path, content in inp.current_files.items():
+                if "system" in path.lower() or "design" in path.lower():
+                    current_artifact = content
+                    break
+
+        prompt = SYSTEM_DESIGN_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw = complete_with_continuation(
+                llm=self.llm,
+                prompt=prompt,
+                mode="json",
+                agent_name="SystemDesign_FixSingleIssue",
+            )
+
+            if not isinstance(raw, dict):
+                return ToolAgentPhaseOutput(
+                    summary="Fix failed: invalid response format",
+                    resolved=False,
+                )
+
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files["plan/system_design.md"] = updated_content
+                logger.info("SystemDesign: fix applied — %s", fix_desc[:60])
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"System design issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("SystemDesign fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def deliver(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Deliver phase: finalize system design documentation."""

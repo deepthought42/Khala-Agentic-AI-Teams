@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ..json_utils import parse_json_with_recovery, default_decompose_by_sections, complete_with_continuation
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
@@ -124,6 +124,34 @@ Respond with concise JSON for THIS section only:
   "deployment_model": "deployment considerations",
   "recommendations": ["architecture recommendations"],
   "summary": "brief summary"
+}}
+"""
+
+ARCHITECTURE_FIX_SINGLE_ISSUE_PROMPT = """You are an Architecture expert. Fix this specific issue in the planning artifacts.
+
+ISSUE TO FIX:
+---
+{issue}
+---
+
+CURRENT ARCHITECTURE ARTIFACT:
+---
+{current_artifact}
+---
+
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
+
+Analyze and fix this issue. Provide the complete updated file content.
+
+Respond with JSON:
+{{
+  "root_cause": "why this issue exists",
+  "fix_description": "what you are changing to fix it",
+  "resolved": true or false,
+  "updated_content": "the complete updated file content (or empty string if no change needed)"
 }}
 """
 
@@ -261,15 +289,92 @@ class ArchitectureToolAgent:
         """Problem-solving phase: address architecture issues."""
         if not self.llm:
             return ToolAgentPhaseOutput(summary="Architecture problem_solve skipped (no LLM).")
-        
+
         arch_issues = [i for i in inp.review_issues if "architect" in i.lower() or "layer" in i.lower()]
         if not arch_issues:
             return ToolAgentPhaseOutput(summary="No architecture issues to resolve.")
-        
+
+        all_files: Dict[str, str] = {}
+        fixes_applied: List[str] = []
+
+        for issue in arch_issues:
+            result = self.fix_single_issue(issue, inp)
+            if result.files:
+                all_files.update(result.files)
+                fixes_applied.append(result.summary)
+
         return ToolAgentPhaseOutput(
-            summary=f"Architecture: {len(arch_issues)} issue(s) identified for resolution.",
-            recommendations=[f"Address: {issue}" for issue in arch_issues[:5]],
+            summary=f"Architecture: fixed {len(fixes_applied)}/{len(arch_issues)} issue(s).",
+            recommendations=fixes_applied,
+            files=all_files,
+            resolved=len(fixes_applied) == len(arch_issues),
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single architecture issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="Architecture fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = inp.current_files.get("plan/architecture.md", "")
+        if not current_artifact:
+            for path, content in inp.current_files.items():
+                if "architect" in path.lower():
+                    current_artifact = content
+                    break
+
+        prompt = ARCHITECTURE_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw = complete_with_continuation(
+                llm=self.llm,
+                prompt=prompt,
+                mode="json",
+                agent_name="Architecture_FixSingleIssue",
+            )
+
+            if not isinstance(raw, dict):
+                return ToolAgentPhaseOutput(
+                    summary="Fix failed: invalid response format",
+                    resolved=False,
+                )
+
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files["plan/architecture.md"] = updated_content
+                logger.info("Architecture: fix applied — %s", fix_desc[:60])
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"Architecture issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("Architecture fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def deliver(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Deliver phase: finalize architecture documentation."""

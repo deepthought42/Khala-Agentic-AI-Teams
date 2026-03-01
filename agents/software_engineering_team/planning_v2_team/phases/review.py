@@ -2,6 +2,8 @@
 Review phase: ensure plan assets are cohesive and aligned with spec.
 
 Tool agents: System Design, Architecture, User Story, Task Dependency.
+
+Uses universal truncation handling via complete_with_continuation.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from ..models import (
     ToolAgentPhaseInput,
 )
 from ..prompts import REVIEW_PROMPT
+from ..tool_agents.json_utils import complete_with_continuation
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +110,12 @@ def run_review(
         artifacts=artifacts_text,
     )
     try:
-        raw = llm.complete_json(prompt)
+        raw = complete_with_continuation(
+            llm=llm,
+            prompt=prompt,
+            mode="json",
+            agent_name="PlanningV2_Review",
+        )
         if not isinstance(raw, dict):
             passed = len(all_issues) == 0
             return ReviewPhaseResult(
@@ -115,16 +123,16 @@ def run_review(
                 issues=all_issues,
                 summary="Review complete (tool agents only).",
             )
-        
+
         llm_issues = raw.get("issues") or []
         if isinstance(llm_issues, list):
             all_issues.extend(llm_issues)
-        
+
         llm_passed = bool(raw.get("passed", True))
         final_passed = llm_passed and len(all_issues) == 0
-        
+
         logger.info("Review: total %d issues, passed=%s", len(all_issues), final_passed)
-        
+
         return ReviewPhaseResult(
             passed=final_passed,
             issues=list(set(all_issues)),

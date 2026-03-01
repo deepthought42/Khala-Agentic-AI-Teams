@@ -87,6 +87,10 @@ class ToolAgentPhaseOutput(BaseModel):
     files: Dict[str, str] = Field(default_factory=dict)
     hierarchy: Optional[PlanningHierarchy] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    resolved: bool = Field(
+        default=False,
+        description="Whether the issue was resolved (for fix_single_issue).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +212,18 @@ class ReviewPhaseResult(BaseModel):
 
 
 class ProblemSolvingPhaseResult(BaseModel):
-    """Output of Problem-solving phase (fixes applied)."""
+    """Output of Problem-solving phase (fixes applied).
+
+    Tracks both resolved fixes and any issues that could not be resolved,
+    enabling accurate progress reporting and retry decisions.
+    """
 
     fixes_applied: List[str] = Field(default_factory=list)
     resolved: bool = Field(default=False)
+    unresolved_issues: List[str] = Field(
+        default_factory=list,
+        description="Issues that could not be resolved during problem-solving.",
+    )
     summary: str = Field(default="")
 
 
