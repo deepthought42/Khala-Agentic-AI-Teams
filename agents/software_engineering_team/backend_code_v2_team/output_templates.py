@@ -374,3 +374,111 @@ def parse_problem_solving_single_issue_template(text: str) -> Dict[str, Any]:
         "resolved": resolved,
         "summary": summary,
     }
+
+
+# ---------------------------------------------------------------------------
+# Batch fix parsing: files + issues_addressed + summary
+# ---------------------------------------------------------------------------
+
+MARKER_ISSUES_ADDRESSED = "## ISSUES_ADDRESSED ##"
+MARKER_END_ISSUES_ADDRESSED = "## END ISSUES_ADDRESSED ##"
+
+
+def _parse_issue_addressed_block(block: str) -> Dict[str, Any] | None:
+    """Parse a single issue_addressed block (issue_index, description)."""
+    out: Dict[str, Any] = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line == BLOCK_SEP:
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower().replace(" ", "_")
+        out[key] = value.strip()
+    if out.get("issue_index") or out.get("description"):
+        return out
+    return None
+
+
+def parse_batch_fix_template(text: str) -> Dict[str, Any]:
+    """
+    Parse batch fix output: FILE blocks, ISSUES_ADDRESSED, and SUMMARY.
+
+    Returns dict with keys: "files", "issues_addressed" (list), "summary".
+    """
+    base = parse_files_and_summary_template(text)
+    files = base["files"]
+    summary = base["summary"]
+
+    issues_addressed: List[Dict[str, Any]] = []
+    issues_section = _section(text, MARKER_ISSUES_ADDRESSED, MARKER_END_ISSUES_ADDRESSED)
+    if not issues_section and MARKER_ISSUES_ADDRESSED in text:
+        idx = text.find(MARKER_ISSUES_ADDRESSED) + len(MARKER_ISSUES_ADDRESSED)
+        issues_section = text[idx:].strip()
+        if MARKER_SUMMARY in issues_section:
+            issues_section = issues_section.split(MARKER_SUMMARY)[0].strip()
+    for part in issues_section.split(BLOCK_SEP):
+        part = part.strip()
+        if not part:
+            continue
+        obj = _parse_issue_addressed_block(part)
+        if obj:
+            issues_addressed.append(obj)
+
+    summary_sec = _section(text, MARKER_PS_SUMMARY, MARKER_END_PS_SUMMARY)
+    if summary_sec:
+        summary = summary_sec.strip()[:2000]
+
+    return {
+        "files": files,
+        "issues_addressed": issues_addressed,
+        "summary": summary,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Documentation self-review parsing: quality_score, improvements, files, summary
+# ---------------------------------------------------------------------------
+
+MARKER_QUALITY_SCORE = "## QUALITY_SCORE ##"
+MARKER_END_QUALITY_SCORE = "## END QUALITY_SCORE ##"
+MARKER_IMPROVEMENTS = "## IMPROVEMENTS ##"
+MARKER_END_IMPROVEMENTS = "## END IMPROVEMENTS ##"
+
+
+def parse_documentation_self_review_template(text: str) -> Dict[str, Any]:
+    """
+    Parse documentation self-review output: QUALITY_SCORE, IMPROVEMENTS, FILE blocks, SUMMARY.
+
+    Returns dict with keys: "quality_score" (float), "improvements" (list), "files", "summary".
+    """
+    base = parse_files_and_summary_template(text)
+    files = base["files"]
+    summary = base["summary"]
+
+    quality_score = 0.5
+    score_section = _section(text, MARKER_QUALITY_SCORE, MARKER_END_QUALITY_SCORE)
+    if score_section:
+        try:
+            quality_score = float(score_section.strip().split("\n")[0].strip())
+            quality_score = max(0.0, min(1.0, quality_score))
+        except ValueError:
+            pass
+
+    improvements: List[str] = []
+    imp_section = _section(text, MARKER_IMPROVEMENTS, MARKER_END_IMPROVEMENTS)
+    if imp_section:
+        for line in imp_section.strip().splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                improvements.append(line[2:].strip())
+            elif line:
+                improvements.append(line)
+
+    return {
+        "quality_score": quality_score,
+        "improvements": improvements,
+        "files": files,
+        "summary": summary,
+    }

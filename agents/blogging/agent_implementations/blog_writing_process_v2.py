@@ -42,8 +42,8 @@ from validators.runner import run_validators_from_work_dir
 logger = logging.getLogger(__name__)
 
 STYLE_GUIDE_PATH = Path(__file__).resolve().parent.parent / "docs" / "brandon_kindred_brand_and_writing_style_guide.md"
-DRAFT_EDITOR_ITERATIONS = 3
-MAX_REWRITE_ITERATIONS = 3
+DRAFT_EDITOR_ITERATIONS = 100
+MAX_REWRITE_ITERATIONS = 100
 
 # Default model - use environment variable or this default
 DEFAULT_MODEL = "qwen3.5:397b-cloud"

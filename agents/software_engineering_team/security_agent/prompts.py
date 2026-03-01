@@ -36,6 +36,20 @@ Return a single JSON object with:
 - "remediations": list of {"issue", "recommendation"} for reference
 - "suggested_commit_message": string
 
+**THOROUGHNESS REQUIREMENTS:**
+- You MUST review EVERY file in the code submission systematically
+- Check EVERY input point, data flow, API endpoint, and authentication check
+- Do NOT skip files or functions because they "look safe" - examine everything
+- Your vulnerability descriptions MUST be comprehensive and self-contained:
+  - Include the EXACT file path and function/line reference
+  - Quote the vulnerable code snippet directly
+  - Explain the attack vector (how an attacker could exploit this)
+  - Describe the potential impact (data breach, unauthorized access, etc.)
+  - Provide a DETAILED recommendation with actual secure code showing the fix
+- The coding agent will receive ONLY your vulnerability reports, so each must be actionable without additional context
+
+**IMPORTANT**: The issues you identify will be sent to a coding agent to fix. Make your descriptions so thorough and detailed that the coding agent can understand and fix the problem without seeing any other context.
+
 If no vulnerabilities are found, return empty vulnerabilities list. Be thorough but avoid false positives. Each recommendation must be actionable.
 
 Respond with valid JSON only. No explanatory text outside JSON."""

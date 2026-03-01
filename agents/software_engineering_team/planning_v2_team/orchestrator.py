@@ -111,7 +111,7 @@ PHASE_TOOL_AGENTS: Dict[Phase, List[ToolAgentKind]] = {
     ],
 }
 
-MAX_REVIEW_ITERATIONS = 5
+MAX_REVIEW_ITERATIONS = 100
 
 
 def _active_roles_for_phase(phase: Phase) -> List[str]:

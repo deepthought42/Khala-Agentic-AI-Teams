@@ -16,6 +16,7 @@ from shared.llm import LLMClient
 from shared.models import Task
 
 from ..models import (
+    DocumentationSelfReviewResult,
     ExecutionResult,
     Microtask,
     Phase,
@@ -25,8 +26,8 @@ from ..models import (
     ToolAgentKind,
     ToolAgentPhaseInput,
 )
-from ..output_templates import parse_review_template
-from ..prompts import REVIEW_PROMPT
+from ..output_templates import parse_review_template, parse_documentation_self_review_template
+from ..prompts import REVIEW_PROMPT, DOCUMENTATION_SELF_REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -805,4 +806,136 @@ def run_documentation_review_phase(
         issues=issues,
         summary=summary,
         phase_name="documentation",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Documentation self-review (3-5 iterations)
+# ---------------------------------------------------------------------------
+
+MIN_DOC_SELF_REVIEW_ITERATIONS = 3
+MAX_DOC_SELF_REVIEW_ITERATIONS = 100
+DOC_QUALITY_THRESHOLD = 0.9
+
+
+def run_documentation_self_review(
+    *,
+    llm: LLMClient,
+    documentation: Dict[str, str],
+    code_files: Dict[str, str],
+    task_description: str = "",
+    min_iterations: int = MIN_DOC_SELF_REVIEW_ITERATIONS,
+    max_iterations: int = MAX_DOC_SELF_REVIEW_ITERATIONS,
+    quality_threshold: float = DOC_QUALITY_THRESHOLD,
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> DocumentationSelfReviewResult:
+    """
+    Self-review documentation 3-5 times for quality refinement.
+
+    This function iteratively reviews and improves documentation files.
+    It always runs at least min_iterations times, and continues up to
+    max_iterations unless the quality score exceeds the threshold.
+
+    Unlike other review phases, this never "fails" - it always produces
+    refined documentation after the specified number of iterations.
+
+    Args:
+        llm: LLM client for generating reviews
+        documentation: Current documentation files (path -> content)
+        code_files: Code files being documented (for context)
+        task_description: Description of the task for context
+        min_iterations: Minimum number of review iterations (default: 3)
+        max_iterations: Maximum number of review iterations (default: 5)
+        quality_threshold: Quality score at which to stop early (default: 0.9)
+        detail_callback: Optional callback for status updates
+
+    Returns:
+        DocumentationSelfReviewResult with refined documentation
+    """
+    current_docs = dict(documentation)
+    all_improvements: List[str] = []
+    final_score = 0.5
+    iterations_performed = 0
+
+    code_text = "\n\n".join(
+        f"--- {p} ---\n{c[:2000]}" for p, c in list(code_files.items())[:10]
+    )
+    code_text_truncated = code_text[:8000]
+
+    for iteration in range(1, max_iterations + 1):
+        iterations_performed = iteration
+
+        if detail_callback:
+            detail_callback(f"Documentation self-review iteration {iteration}/{max_iterations}...")
+
+        logger.info(
+            "Documentation self-review iteration %d/%d. Quality threshold: %.2f",
+            iteration, max_iterations, quality_threshold,
+        )
+
+        doc_text = "\n\n".join(
+            f"--- {p} ---\n{c}" for p, c in current_docs.items()
+        )
+        doc_text_truncated = doc_text[:12000]
+
+        prompt = DOCUMENTATION_SELF_REVIEW_PROMPT.format(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            task_description=task_description or "No specific task description",
+            documentation=doc_text_truncated if doc_text_truncated else "(No documentation files yet)",
+            code=code_text_truncated if code_text_truncated else "(No code context)",
+        )
+
+        try:
+            raw = llm.complete_text(prompt)
+        except Exception as exc:
+            logger.warning(
+                "Documentation self-review LLM call failed (iteration %d): %s",
+                iteration, exc,
+            )
+            continue
+
+        parsed = parse_documentation_self_review_template(raw)
+        quality_score = parsed.get("quality_score", 0.5)
+        improvements = parsed.get("improvements", [])
+        updated_files = parsed.get("files", {})
+
+        final_score = quality_score
+        all_improvements.extend(improvements)
+
+        if updated_files:
+            current_docs.update(updated_files)
+            logger.info(
+                "Documentation self-review iteration %d: score=%.2f, updated %d file(s), %d improvements",
+                iteration, quality_score, len(updated_files), len(improvements),
+            )
+        else:
+            logger.info(
+                "Documentation self-review iteration %d: score=%.2f, no file changes, %d improvements noted",
+                iteration, quality_score, len(improvements),
+            )
+
+        if iteration >= min_iterations and quality_score >= quality_threshold:
+            logger.info(
+                "Documentation self-review complete: reached quality threshold %.2f >= %.2f after %d iterations",
+                quality_score, quality_threshold, iteration,
+            )
+            break
+
+    summary = (
+        f"Documentation self-review completed after {iterations_performed} iteration(s). "
+        f"Final quality score: {final_score:.2f}. "
+        f"Total improvements made: {len(all_improvements)}."
+    )
+    logger.info(summary)
+
+    if detail_callback:
+        detail_callback(f"Documentation self-review complete (score: {final_score:.2f})")
+
+    return DocumentationSelfReviewResult(
+        documentation=current_docs,
+        iterations=iterations_performed,
+        final_quality_score=final_score,
+        improvements_made=all_improvements,
+        summary=summary,
     )

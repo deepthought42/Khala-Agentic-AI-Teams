@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 STYLE_GUIDE_PATH = Path(__file__).resolve().parent.parent / "docs" / "brandon_kindred_brand_and_writing_style_guide.md"
 
-# Number of draft-editor loop iterations (1 = draft only, no revisions; 3 = draft + 2 revision cycles)
-DRAFT_EDITOR_ITERATIONS = 3
+# Number of draft-editor loop iterations (1 = draft only, no revisions; 100 = draft + 99 revision cycles)
+DRAFT_EDITOR_ITERATIONS = 100
 
 llm_client = OllamaLLMClient()
 

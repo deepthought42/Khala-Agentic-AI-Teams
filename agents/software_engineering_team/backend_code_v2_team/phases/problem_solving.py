@@ -27,18 +27,182 @@ from ..models import (
 from ..output_templates import (
     parse_problem_solving_template,
     parse_problem_solving_single_issue_template,
+    parse_batch_fix_template,
 )
 from ..prompts import (
     PROBLEM_SOLVING_PROMPT,
     PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT,
+    BATCH_FIX_PROMPT,
     PYTHON_CONVENTIONS,
     JAVA_CONVENTIONS,
 )
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS_PER_ISSUE = 10
+MAX_ITERATIONS_PER_ISSUE = 100
 MAX_RELEVANT_CODE_CHARS = 8000
+MAX_BATCH_CODE_CHARS = 24000
+
+
+def _format_all_code(current_files: Dict[str, str], max_chars: int = MAX_BATCH_CODE_CHARS) -> str:
+    """Format all current files for batch fix prompt, respecting character limits."""
+    parts: List[str] = []
+    total = 0
+    for path, content in current_files.items():
+        chunk = f"--- {path} ---\n{content}\n"
+        if total + len(chunk) > max_chars:
+            remaining = max_chars - total
+            if remaining > 200:
+                chunk = f"--- {path} ---\n{content[:remaining]}\n... [truncated]"
+                parts.append(chunk)
+            break
+        parts.append(chunk)
+        total += len(chunk)
+    return "\n".join(parts) if parts else "(no code)"
+
+
+def _format_issues_for_batch(issues: List[ReviewIssue]) -> str:
+    """Format all issues into a numbered list for the batch fix prompt."""
+    lines: List[str] = []
+    for idx, issue in enumerate(issues, 1):
+        lines.append(f"### Issue {idx}")
+        lines.append(f"- **Source:** {issue.source or 'review'}")
+        lines.append(f"- **Severity:** {issue.severity or 'medium'}")
+        lines.append(f"- **File:** {issue.file_path or 'N/A'}")
+        lines.append(f"- **Description:** {issue.description or 'No description'}")
+        lines.append(f"- **Recommendation:** {issue.recommendation or 'Fix the issue.'}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def run_batch_coding_fixes(
+    *,
+    llm: LLMClient,
+    microtask: Microtask,
+    issues: List[ReviewIssue],
+    current_files: Dict[str, str],
+    language: str = "python",
+    repo_path: str = "",
+    task_id: str = "",
+    phase_name: str = "review",
+    detail_callback: Optional[Callable[[str], None]] = None,
+) -> ProblemSolvingResult:
+    """
+    Fix ALL issues from a review phase in a single batch.
+
+    Instead of fixing issues one at a time, this function sends all issues
+    to the coding agent at once, allowing it to decide how to organize
+    the fixes internally.
+
+    Args:
+        llm: LLM client for code generation
+        microtask: The microtask being fixed
+        issues: Complete list of issues from the review phase
+        current_files: Current state of all files
+        language: Programming language (python/java)
+        repo_path: Path to repository
+        task_id: Task identifier for logging
+        phase_name: Name of the review phase (code_review, qa, security)
+        detail_callback: Optional callback for status updates
+
+    Returns:
+        ProblemSolvingResult with updated files and summary
+    """
+    microtask_id = microtask.id
+    actionable = [i for i in issues if i.severity in ("critical", "high", "medium")]
+    
+    if not actionable:
+        logger.info("[%s] Batch fix for %s: no actionable issues.", task_id, phase_name)
+        return ProblemSolvingResult(
+            resolved=True,
+            files=current_files,
+            summary=f"No actionable {phase_name} issues to fix.",
+        )
+
+    lang_conv = JAVA_CONVENTIONS if language == "java" else PYTHON_CONVENTIONS
+    
+    logger.info(
+        "[%s] Microtask %s: batch fixing %d %s issues. Sending all issues to coding agent.",
+        task_id, microtask_id, len(actionable), phase_name,
+    )
+
+    if detail_callback:
+        detail_callback(f"Fixing all {len(actionable)} {phase_name} issues in batch...")
+
+    formatted_issues = _format_issues_for_batch(actionable)
+    current_code = _format_all_code(current_files)
+
+    prompt = BATCH_FIX_PROMPT.format(
+        language_conventions=lang_conv,
+        issue_count=len(actionable),
+        phase_name=phase_name,
+        formatted_issues=formatted_issues,
+        current_code=current_code,
+    )
+
+    try:
+        raw = llm.complete_text(prompt)
+    except Exception as exc:
+        logger.error(
+            "[%s] Microtask %s: batch fix LLM call failed: %s",
+            task_id, microtask_id, exc,
+        )
+        return ProblemSolvingResult(
+            resolved=False,
+            files=current_files,
+            summary=f"Batch fix failed: {exc}",
+            unresolved_issues=actionable,
+        )
+
+    parsed = parse_batch_fix_template(raw)
+    fixed_files = parsed.get("files") or {}
+    issues_addressed = parsed.get("issues_addressed") or []
+    summary = parsed.get("summary") or f"Batch fixed {len(fixed_files)} file(s)"
+
+    merged = dict(current_files)
+    merged.update(fixed_files)
+
+    addressed_count = len(issues_addressed)
+    unresolved_count = len(actionable) - addressed_count
+    
+    unresolved_issues: List[ReviewIssue] = []
+    if addressed_count < len(actionable):
+        addressed_indices = set()
+        for item in issues_addressed:
+            try:
+                idx = int(item.get("issue_index", 0)) - 1
+                if 0 <= idx < len(actionable):
+                    addressed_indices.add(idx)
+            except (ValueError, TypeError):
+                pass
+        for idx, issue in enumerate(actionable):
+            if idx not in addressed_indices:
+                unresolved_issues.append(issue)
+
+    resolved = len(unresolved_issues) == 0
+
+    logger.info(
+        "[%s] Microtask %s: batch fix complete. %d files updated, %d/%d issues addressed.",
+        task_id, microtask_id, len(fixed_files), addressed_count, len(actionable),
+    )
+
+    if detail_callback:
+        detail_callback(f"Batch fix complete: {addressed_count}/{len(actionable)} issues addressed")
+
+    return ProblemSolvingResult(
+        resolved=resolved,
+        files=merged,
+        summary=summary,
+        fixes_applied=[
+            {
+                "microtask": microtask_id,
+                "phase": phase_name,
+                "batch_size": len(actionable),
+                "addressed": addressed_count,
+            }
+        ],
+        unresolved_issues=unresolved_issues,
+    )
 
 
 def _relevant_code_for_issue(
