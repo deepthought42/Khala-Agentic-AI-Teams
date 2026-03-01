@@ -224,7 +224,7 @@ class OrderIntent(BaseModel):
 class ExecutionReport(BaseModel):
     strategy_id: str
     broker_order_id: str
-    status: SessionStatus
+    status: str
     avg_fill_price: Optional[float] = None
     slippage_bps: Optional[float] = None
     reconciled: bool = False

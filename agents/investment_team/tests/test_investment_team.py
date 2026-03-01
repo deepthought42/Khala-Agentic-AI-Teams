@@ -16,6 +16,7 @@ from agents.investment_team.models import (
     TaxProfile,
     UserGoal,
     UserPreferences,
+    ExecutionReport,
     ValidationCheck,
     ValidationReport,
     ValidationStatus,
@@ -145,3 +146,16 @@ def test_policy_guardian_rejects_excluded_asset_class() -> None:
     violations = PolicyGuardianAgent().check_portfolio(ips, proposal)
 
     assert any("excluded by IPS preferences" in item for item in violations)
+
+
+def test_execution_report_accepts_non_session_status_values() -> None:
+    report = ExecutionReport(
+        strategy_id="s1",
+        broker_order_id="ord-1",
+        status="filled",
+        avg_fill_price=101.25,
+        slippage_bps=1.5,
+        reconciled=True,
+    )
+
+    assert report.status == "filled"
