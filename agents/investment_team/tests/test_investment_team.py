@@ -230,3 +230,29 @@ def test_platform_action_models_capture_compliance_metadata() -> None:
     assert result.policy_gate_decisions[0].decision == GateResult.PASS
     assert result.human_approval.approved is True
     assert artifact.redaction_status == ArtifactRedactionStatus.PARTIAL
+
+
+def test_web_interface_coordinator_returns_run_scoped_artifacts() -> None:
+    coordinator = InvestmentWebInterfaceCoordinator(
+        provider="quantconnect",
+        config=WebAgentConfig(browser=BrowserType.CHROMIUM),
+    )
+
+    first = coordinator.execute_action(action="deploy_strategy", payload={"strategy_id": "s1"})
+    second = coordinator.execute_action(action="deploy_strategy", payload={"strategy_id": "s2"})
+
+    assert len(first["artifacts"]) == 1
+    assert first["artifacts"][0]["payload"]["strategy_id"] == "s1"
+    assert len(second["artifacts"]) == 1
+    assert second["artifacts"][0]["payload"]["strategy_id"] == "s2"
+
+
+def test_web_interface_coordinator_accepts_string_browser_config() -> None:
+    coordinator = InvestmentWebInterfaceCoordinator(
+        provider="tradingview",
+        config=WebAgentConfig(browser="firefox"),
+    )
+
+    result = coordinator.execute_action(action="capture_chart", payload={"symbol": "QQQ"})
+
+    assert result["results"]["login"]["details"]["browser"] == "firefox"
