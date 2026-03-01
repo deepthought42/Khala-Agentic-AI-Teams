@@ -66,6 +66,11 @@ def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _is_valid_mfa_code(code: Optional[str]) -> bool:
+    """Basic MFA code validation (6 numeric digits)."""
+    return bool(code and code.isdigit() and len(code) == 6)
+
+
 class CreateProfileRequest(BaseModel):
     user_id: str = Field(..., description="Unique user identifier")
     risk_tolerance: str = Field(..., description="low, medium, high, or very_high")
@@ -234,14 +239,16 @@ class TerminateSessionResponse(BaseModel):
 def start_authenticated_session(request: LoginRequest) -> StartSessionResponse:
     """Start an authenticated session using a credential reference."""
     session_id = f"sess-{uuid.uuid4().hex[:16]}"
-    session_material_id = f"smat-{uuid.uuid4().hex[:16]}"
     issued = datetime.now(tz=timezone.utc)
     expires_at = issued + timedelta(seconds=SESSION_TTL_SECONDS)
 
     mfa_challenge: Optional[MfaChallenge] = None
     status = SessionStatus.ACTIVE
-    if request.platform.value == "tradingview" and request.mfa_code is None:
+    session_material_id: Optional[str] = f"smat-{uuid.uuid4().hex[:16]}"
+
+    if request.platform.value == "tradingview" and not _is_valid_mfa_code(request.mfa_code):
         status = SessionStatus.PENDING_MFA
+        session_material_id = None
         mfa_challenge = MfaChallenge(
             challenge_id=f"mfa-{uuid.uuid4().hex[:10]}",
             method="totp",
@@ -270,17 +277,14 @@ def get_session_status(session_id: str) -> SessionStatusResponse:
     """Check current session status."""
     with _lock:
         session = _sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-
-    if session.status != SessionStatus.TERMINATED:
-        expires_at = datetime.fromisoformat(session.expires_at)
-        if expires_at <= datetime.now(tz=timezone.utc):
-            session.status = SessionStatus.EXPIRED
-            session.mfa_challenge = None
-            with _lock:
-                _sessions[session_id] = session
+        if session.status != SessionStatus.TERMINATED:
+            expires_at = datetime.fromisoformat(session.expires_at)
+            if expires_at <= datetime.now(tz=timezone.utc):
+                session.status = SessionStatus.EXPIRED
+                session.mfa_challenge = None
 
     return SessionStatusResponse(session=session)
 

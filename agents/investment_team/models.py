@@ -300,5 +300,5 @@ class SessionState(BaseModel):
     status: SessionStatus
     issued_at: str
     expires_at: str
-    session_material_id: str
+    session_material_id: Optional[str] = None
     mfa_challenge: Optional[MfaChallenge] = None
