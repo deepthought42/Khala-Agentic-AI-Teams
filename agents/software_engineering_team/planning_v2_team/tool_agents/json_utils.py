@@ -1,8 +1,8 @@
-"""Shared JSON parsing utilities for planning_v2_team tool agents."""
+"""Shared JSON parsing and truncation handling utilities for planning_v2_team tool agents."""
 
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from shared.llm import LLMClient
@@ -12,6 +12,148 @@ logger = logging.getLogger(__name__)
 MAX_DECOMPOSITION_DEPTH = 20
 MAX_CONTINUATION_CYCLES = 10
 DEFAULT_CHUNK_SIZE = 4000
+
+
+def complete_with_continuation(
+    llm: "LLMClient",
+    prompt: str,
+    *,
+    mode: str = "text",
+    agent_name: str = "PlanningV2",
+    max_continuation_cycles: int = MAX_CONTINUATION_CYCLES,
+    decompose_fn: Optional[Callable[[str], List[str]]] = None,
+    merge_fn: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]] = None,
+    original_content: Optional[str] = None,
+    chunk_prompt_template: Optional[str] = None,
+) -> Union[str, Dict[str, Any]]:
+    """Make an LLM call with automatic truncation handling via continuation.
+
+    This is a universal wrapper that works for ANY content type - JSON, HTML,
+    plain text, etc. Truncation is detected via finish_reason=length from the
+    API, which is content-agnostic.
+
+    Flow:
+    1. Call LLM (text or JSON mode)
+    2. If truncated (finish_reason=length), invoke continuation loop
+    3. Keep continuing until response is complete (finish_reason != length)
+    4. Return full concatenated response
+    5. Only after continuation exhausted, fall back to decomposition (if provided)
+
+    Args:
+        llm: LLM client for completions.
+        prompt: The prompt to send to the LLM.
+        mode: Response mode - "text" or "json". Default is "text".
+        agent_name: Name for logging purposes.
+        max_continuation_cycles: Maximum number of continuation attempts.
+        decompose_fn: Optional function to split content into chunks (for fallback).
+        merge_fn: Optional function to merge results from chunks (for fallback).
+        original_content: Content to decompose if continuation fails.
+        chunk_prompt_template: Template for chunk prompts (must have {chunk_content}).
+
+    Returns:
+        For mode="text": The complete response string.
+        For mode="json": The parsed JSON dict.
+
+    Raises:
+        RuntimeError: If all recovery strategies fail.
+    """
+    from shared.llm import LLMTruncatedError, LLMJsonParseError
+    from shared.continuation import ResponseContinuator
+    from shared.post_mortem import write_post_mortem
+
+    partial_responses: List[str] = []
+
+    try:
+        if mode == "json":
+            return llm.complete_json(prompt)
+        else:
+            return llm.complete_text(prompt)
+    except LLMTruncatedError as e:
+        partial_responses.append(e.partial_content)
+        logger.info(
+            "%s: Response truncated (%d chars). Starting continuation loop...",
+            agent_name,
+            len(e.partial_content),
+        )
+
+        continuator = ResponseContinuator(
+            base_url=llm.base_url,
+            model=llm.model,
+            timeout=llm.timeout,
+            max_cycles=max_continuation_cycles,
+        )
+
+        result = continuator.attempt_continuation(
+            original_prompt=prompt,
+            partial_content=e.partial_content,
+            json_mode=(mode == "json"),
+            task_id=agent_name,
+        )
+
+        if result.success:
+            logger.info(
+                "%s: Continuation successful after %d cycles (%d chars total)",
+                agent_name,
+                result.cycles_used,
+                len(result.content),
+            )
+            partial_responses.extend(result.partial_responses[1:])
+
+            if mode == "json":
+                try:
+                    return llm._extract_json(result.content)
+                except LLMJsonParseError:
+                    logger.warning(
+                        "%s: Continuation complete but JSON parse failed. "
+                        "Falling back to decomposition...",
+                        agent_name,
+                    )
+            else:
+                return result.content
+
+        logger.warning(
+            "%s: Continuation exhausted after %d cycles (%d chars accumulated). "
+            "Falling back to decomposition...",
+            agent_name,
+            result.cycles_used,
+            len(result.content),
+        )
+        partial_responses.extend(result.partial_responses[1:])
+
+        if decompose_fn and merge_fn and original_content:
+            decomp_result = _decompose_and_process(
+                llm=llm,
+                prompt=prompt,
+                agent_name=agent_name,
+                decompose_fn=decompose_fn,
+                merge_fn=merge_fn,
+                original_content=original_content,
+                chunk_prompt_template=chunk_prompt_template,
+                _depth=0,
+                _continuation_attempted=True,
+                _partial_responses=partial_responses,
+            )
+            if decomp_result:
+                if mode == "json":
+                    return decomp_result
+                else:
+                    return str(decomp_result.get("content", ""))
+
+        write_post_mortem(
+            agent_name=agent_name,
+            task_description=f"Planning V2 - {agent_name}",
+            original_prompt=prompt,
+            partial_responses=partial_responses,
+            continuation_attempts=result.cycles_used,
+            decomposition_depth=0,
+            error=e,
+        )
+
+        raise RuntimeError(
+            f"{agent_name}: All recovery strategies exhausted. "
+            f"Continuation cycles: {result.cycles_used}/{max_continuation_cycles}. "
+            f"See post_mortems/POST_MORTEMS.md for details."
+        ) from e
 
 
 def parse_json_with_recovery(

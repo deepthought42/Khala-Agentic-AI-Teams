@@ -67,14 +67,6 @@
       }
     </div>
   </mat-tab>
-  <mat-tab label="Clarification">
-    <div class="tab-content">
-      <app-clarification-sessions (submitRequest)="onClarificationSessionCreate($event)" />
-      @if (clarificationSessionId) {
-        <app-clarification-chat [sessionId]="clarificationSessionId" />
-      }
-    </div>
-  </mat-tab>
   <mat-tab label="Execution">
     <div class="tab-content">
       <app-execution-tasks />

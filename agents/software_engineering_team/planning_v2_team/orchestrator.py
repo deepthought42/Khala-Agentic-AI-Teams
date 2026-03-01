@@ -289,16 +289,26 @@ class PlanningV2PlanningAgent:
                 break
 
             # Phase: Problem-solving
+            issue_count = len(review_result.issues) if review_result.issues else 0
             logger.info(
-                "Planning-v2: Review did not pass. Next step -> Starting Problem-solving phase"
+                "Planning-v2: Review did not pass (%d issues). Next step -> Starting Problem-solving phase",
+                issue_count,
             )
             result.current_phase = Phase.PROBLEM_SOLVING
             _update_job(
                 current_phase=Phase.PROBLEM_SOLVING.value,
                 progress=70,
                 active_roles=_active_roles_for_phase(Phase.PROBLEM_SOLVING),
-                status_text="Resolving identified issues in the plan",
+                status_text=f"Resolving {issue_count} identified issues in the plan",
             )
+
+            def _problem_solving_detail_callback(detail: str) -> None:
+                """Update job status with problem-solving progress details."""
+                _update_job(
+                    current_phase=Phase.PROBLEM_SOLVING.value,
+                    status_text=detail,
+                )
+
             try:
                 problem_solving_result = run_problem_solving(
                     llm=self.llm,
@@ -309,8 +319,15 @@ class PlanningV2PlanningAgent:
                     implementation_result=implementation_result,
                     review_result=review_result,
                     tool_agents=self.tool_agents,
+                    detail_callback=_problem_solving_detail_callback,
                 )
                 result.problem_solving_result = problem_solving_result
+
+                if problem_solving_result.unresolved_issues:
+                    logger.warning(
+                        "Planning-v2: Problem-solving left %d unresolved issues",
+                        len(problem_solving_result.unresolved_issues),
+                    )
             except Exception as exc:
                 logger.warning("Planning-v2: Problem-solving failed (non-blocking): %s", exc)
                 break

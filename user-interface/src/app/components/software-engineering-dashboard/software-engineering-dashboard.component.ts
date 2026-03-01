@@ -16,8 +16,6 @@ import { ErrorMessageComponent } from '../../shared/error-message/error-message.
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
 import { RunTeamFormComponent } from '../run-team-form/run-team-form.component';
 import { RetryFailedComponent } from '../retry-failed/retry-failed.component';
-import { ClarificationSessionsComponent } from '../clarification-sessions/clarification-sessions.component';
-import { ClarificationChatComponent } from '../clarification-chat/clarification-chat.component';
 import { ExecutionTasksComponent } from '../execution-tasks/execution-tasks.component';
 import { ExecutionStreamComponent } from '../execution-stream/execution-stream.component';
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
@@ -34,7 +32,6 @@ import { ProductAnalysisJobStatusComponent } from '../product-analysis-job-statu
 import type {
   RunTeamRequest,
   JobStatusResponse,
-  ClarificationCreateRequest,
   ArchitectDesignResponse,
   BackendCodeV2RunRequest,
   FrontendCodeV2RunRequest,
@@ -62,8 +59,6 @@ import type {
     HealthIndicatorComponent,
     RunTeamFormComponent,
     RetryFailedComponent,
-    ClarificationSessionsComponent,
-    ClarificationChatComponent,
     ExecutionTasksComponent,
     ExecutionStreamComponent,
     ArchitectureResultsComponent,
@@ -85,9 +80,9 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   private static readonly JOB_TYPE_TAB_MAP: Record<string, number> = {
     run_team: 0,
     product_analysis: 1,
-    backend_code_v2: 4,
-    frontend_code_v2: 5,
-    planning_v2: 6,
+    backend_code_v2: 3,
+    frontend_code_v2: 4,
+    planning_v2: 5,
   };
   private readonly api = inject(SoftwareEngineeringApiService);
   private readonly route = inject(ActivatedRoute);
@@ -100,7 +95,6 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   jobId: string | null = null;
   selectedTabIndex = 0;
   jobStatus: JobStatusResponse | null = null;
-  clarificationSessionId: string | null = null;
   architectSpec = '';
   architectResults: ArchitectDesignResponse | null = null;
   backendCodeV2JobId: string | null = null;
@@ -213,13 +207,13 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       case 1:
         this.productAnalysisJobId = jobId;
         break;
-      case 4:
+      case 3:
         this.backendCodeV2JobId = jobId;
         break;
-      case 5:
+      case 4:
         this.frontendCodeV2JobId = jobId;
         break;
-      case 6:
+      case 5:
         this.planningV2JobId = jobId;
         break;
       default:
@@ -274,18 +268,6 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
     this.jobId = null;
     this.jobStatus = null;
     this.selectedRunningJob = null;
-  }
-
-  onClarificationSessionCreate(request: ClarificationCreateRequest): void {
-    this.error = null;
-    this.api.createClarificationSession(request).subscribe({
-      next: (res) => {
-        this.clarificationSessionId = res.session_id;
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Create session failed';
-      },
-    });
   }
 
   onBackendCodeV2Submit(request: BackendCodeV2RunRequest): void {

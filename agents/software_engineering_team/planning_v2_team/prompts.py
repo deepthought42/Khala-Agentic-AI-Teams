@@ -66,6 +66,38 @@ Respond with a JSON object only:
 Review issues: {issues}
 """
 
+PROBLEM_SOLVING_SINGLE_ISSUE_PROMPT = """You are a planning expert fixing a specific issue in the planning artifacts.
+
+ISSUE TO FIX:
+---
+{issue}
+---
+
+SPECIFICATION EXCERPT:
+---
+{spec_excerpt}
+---
+
+CURRENT PLANNING ARTIFACTS:
+---
+{current_artifacts}
+---
+
+Analyze this specific issue and provide a fix. If the issue requires updating a planning artifact file, provide the complete updated file content.
+
+Respond with a JSON object only:
+{{
+  "root_cause": "explanation of why this issue exists",
+  "fix_description": "description of the fix being applied",
+  "resolved": true or false,
+  "file_updates": {{
+    "plan/filename.md": "complete updated file content if needed"
+  }}
+}}
+
+If no file updates are needed (issue is informational or already addressed), set "file_updates" to an empty object and explain in "fix_description".
+"""
+
 # ---------------------------------------------------------------------------
 # Orchestration prompts (for coordinating tool agents)
 # ---------------------------------------------------------------------------
