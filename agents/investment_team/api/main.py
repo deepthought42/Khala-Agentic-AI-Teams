@@ -35,6 +35,9 @@ from investment_team.models import (
     ValidationReport,
     ValidationStatus,
     WorkflowMode,
+    LoginRequest,
+    SessionState,
+    MfaChallenge,
 )
 from investment_team.orchestrator import InvestmentTeamOrchestrator, QueueItem, WorkflowState
 
@@ -52,7 +55,10 @@ _proposals: Dict[str, PortfolioProposal] = {}
 _strategies: Dict[str, StrategySpec] = {}
 _validations: Dict[str, ValidationReport] = {}
 _workflow_state = WorkflowState()
+_sessions: Dict[str, SessionState] = {}
 _lock = threading.Lock()
+
+SESSION_TTL_SECONDS = 900
 
 
 def _now() -> str:
@@ -208,6 +214,78 @@ class CreateMemoRequest(BaseModel):
 
 class CreateMemoResponse(BaseModel):
     memo: InvestmentCommitteeMemo
+
+
+class StartSessionResponse(BaseModel):
+    session: SessionState
+
+
+class SessionStatusResponse(BaseModel):
+    session: SessionState
+
+
+class TerminateSessionResponse(BaseModel):
+    session_id: str
+    terminated: bool
+
+
+@app.post("/sessions/login", response_model=StartSessionResponse)
+def start_authenticated_session(request: LoginRequest) -> StartSessionResponse:
+    """Start an authenticated session using a credential reference."""
+    session_id = f"sess-{uuid.uuid4().hex[:16]}"
+    session_material_id = f"smat-{uuid.uuid4().hex[:16]}"
+    issued = datetime.now(tz=timezone.utc)
+    expires = issued.timestamp() + SESSION_TTL_SECONDS
+
+    mfa_challenge: Optional[MfaChallenge] = None
+    status = "active"
+    if request.platform.value == "tradingview" and request.mfa_code is None:
+        status = "pending_mfa"
+        mfa_challenge = MfaChallenge(
+            challenge_id=f"mfa-{uuid.uuid4().hex[:10]}",
+            method="totp",
+            expires_at=datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+        )
+
+    session = SessionState(
+        session_id=session_id,
+        platform=request.platform,
+        credential_id=request.credential.credential_id,
+        status=status,
+        issued_at=issued.isoformat(),
+        expires_at=datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+        session_material_id=session_material_id,
+        mfa_challenge=mfa_challenge,
+    )
+
+    with _lock:
+        _sessions[session_id] = session
+
+    return StartSessionResponse(session=session)
+
+
+@app.get("/sessions/{session_id}", response_model=SessionStatusResponse)
+def get_session_status(session_id: str) -> SessionStatusResponse:
+    """Check current session status."""
+    with _lock:
+        session = _sessions.get(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return SessionStatusResponse(session=session)
+
+
+@app.delete("/sessions/{session_id}", response_model=TerminateSessionResponse)
+def terminate_session(session_id: str) -> TerminateSessionResponse:
+    """Terminate an authenticated session."""
+    with _lock:
+        removed = _sessions.pop(session_id, None)
+
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return TerminateSessionResponse(session_id=session_id, terminated=True)
 
 
 @app.get("/health")

@@ -261,3 +261,35 @@ class InvestmentCommitteeMemo(BaseModel):
     dissenting_views: List[str] = Field(default_factory=list)
     attachments: List[str] = Field(default_factory=list)
     audit: AuditContext = Field(default_factory=AuditContext)
+
+
+class ExternalPlatform(str, Enum):
+    QUANTCONNECT = "quantconnect"
+    TRADINGVIEW = "tradingview"
+
+
+class CredentialRef(BaseModel):
+    credential_id: str
+
+
+class MfaChallenge(BaseModel):
+    challenge_id: str
+    method: str
+    expires_at: str
+
+
+class LoginRequest(BaseModel):
+    platform: ExternalPlatform
+    credential: CredentialRef
+    mfa_code: Optional[str] = Field(default=None, description="Optional one-time MFA code")
+
+
+class SessionState(BaseModel):
+    session_id: str
+    platform: ExternalPlatform
+    credential_id: str
+    status: str
+    issued_at: str
+    expires_at: str
+    session_material_id: str
+    mfa_challenge: Optional[MfaChallenge] = None
