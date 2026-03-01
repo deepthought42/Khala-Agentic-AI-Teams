@@ -224,7 +224,7 @@ class OrderIntent(BaseModel):
 class ExecutionReport(BaseModel):
     strategy_id: str
     broker_order_id: str
-    status: str
+    status: SessionStatus
     avg_fill_price: Optional[float] = None
     slippage_bps: Optional[float] = None
     reconciled: bool = False
@@ -268,6 +268,15 @@ class ExternalPlatform(str, Enum):
     TRADINGVIEW = "tradingview"
 
 
+
+
+class SessionStatus(str, Enum):
+    ACTIVE = "active"
+    PENDING_MFA = "pending_mfa"
+    EXPIRED = "expired"
+    TERMINATED = "terminated"
+
+
 class CredentialRef(BaseModel):
     credential_id: str
 
@@ -288,7 +297,7 @@ class SessionState(BaseModel):
     session_id: str
     platform: ExternalPlatform
     credential_id: str
-    status: str
+    status: SessionStatus
     issued_at: str
     expires_at: str
     session_material_id: str

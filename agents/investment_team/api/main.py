@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -38,6 +38,7 @@ from investment_team.models import (
     LoginRequest,
     SessionState,
     MfaChallenge,
+    SessionStatus,
 )
 from investment_team.orchestrator import InvestmentTeamOrchestrator, QueueItem, WorkflowState
 
@@ -235,16 +236,16 @@ def start_authenticated_session(request: LoginRequest) -> StartSessionResponse:
     session_id = f"sess-{uuid.uuid4().hex[:16]}"
     session_material_id = f"smat-{uuid.uuid4().hex[:16]}"
     issued = datetime.now(tz=timezone.utc)
-    expires = issued.timestamp() + SESSION_TTL_SECONDS
+    expires_at = issued + timedelta(seconds=SESSION_TTL_SECONDS)
 
     mfa_challenge: Optional[MfaChallenge] = None
-    status = "active"
+    status = SessionStatus.ACTIVE
     if request.platform.value == "tradingview" and request.mfa_code is None:
-        status = "pending_mfa"
+        status = SessionStatus.PENDING_MFA
         mfa_challenge = MfaChallenge(
             challenge_id=f"mfa-{uuid.uuid4().hex[:10]}",
             method="totp",
-            expires_at=datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+            expires_at=expires_at.isoformat(),
         )
 
     session = SessionState(
@@ -253,7 +254,7 @@ def start_authenticated_session(request: LoginRequest) -> StartSessionResponse:
         credential_id=request.credential.credential_id,
         status=status,
         issued_at=issued.isoformat(),
-        expires_at=datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+        expires_at=expires_at.isoformat(),
         session_material_id=session_material_id,
         mfa_challenge=mfa_challenge,
     )
@@ -272,6 +273,14 @@ def get_session_status(session_id: str) -> SessionStatusResponse:
 
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.status != SessionStatus.TERMINATED:
+        expires_at = datetime.fromisoformat(session.expires_at)
+        if expires_at <= datetime.now(tz=timezone.utc):
+            session.status = SessionStatus.EXPIRED
+            session.mfa_challenge = None
+            with _lock:
+                _sessions[session_id] = session
 
     return SessionStatusResponse(session=session)
 
