@@ -505,6 +505,114 @@ what documentation you fixed
 """
 
 # ---------------------------------------------------------------------------
+# Batch fix prompt: all issues from a review phase at once
+# ---------------------------------------------------------------------------
+
+BATCH_FIX_PROMPT = """You are a Senior Backend Software Engineer responsible for fixing all issues identified by the review team.
+
+""" + CODING_STANDARDS + """
+
+{language_conventions}
+
+**You have been given {issue_count} issues from the {phase_name} phase.**
+
+Your task is to address ALL of these issues in a single pass. Review each issue carefully, understand the root causes, and implement comprehensive fixes.
+
+## Issues to Fix
+
+{formatted_issues}
+
+## Current Code
+
+{current_code}
+
+## Instructions
+
+1. Analyze all issues to understand their root causes
+2. Identify any issues that can be fixed together with a single code change
+3. Plan your fixes strategically to avoid introducing new problems
+4. Implement ALL fixes - do not leave any issue unaddressed
+5. Ensure your changes maintain code quality and don't break existing functionality
+
+You decide how to organize the work internally. The key requirement is that ALL issues must be addressed.
+
+**Output format (template – use exactly these markers):**
+
+For each file you modify or create:
+## FILE path/to/file.ext ##
+<full file content>
+## FILE path/to/next.ext ##
+<full file content>
+## ISSUES_ADDRESSED ##
+---
+issue_index: 1
+description: brief description of what was fixed
+---
+issue_index: 2
+description: brief description of what was fixed
+---
+## END ISSUES_ADDRESSED ##
+## SUMMARY ##
+Overview of all fixes applied
+## END SUMMARY ##
+
+- Use "## FILE <path> ##" at the start of each file; the next "## FILE " or "## ISSUES_ADDRESSED ##" ends the previous file.
+- List each issue you addressed with its index (1-based) and a brief description.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
+# Documentation self-review prompt: iterative refinement
+# ---------------------------------------------------------------------------
+
+DOCUMENTATION_SELF_REVIEW_PROMPT = """You are a Documentation Quality Specialist performing a self-review pass on documentation.
+
+**Iteration:** {iteration} of {max_iterations}
+
+**Task Context:** {task_description}
+
+**Current Documentation:**
+
+{documentation}
+
+**Current Code:**
+
+{code}
+
+**Review criteria:**
+1. Clarity: Is the documentation easy to understand?
+2. Completeness: Does it cover all important aspects?
+3. Accuracy: Does it correctly describe the code behavior?
+4. Structure: Is it well-organized with appropriate sections?
+5. Grammar and style: Is it professionally written?
+
+**Your task:**
+1. Review the documentation against the criteria above
+2. Identify specific improvements needed
+3. Apply those improvements and output the refined documentation
+
+**Output format (template – use exactly these markers):**
+
+## QUALITY_SCORE ##
+0.0-1.0 (your assessment of current documentation quality)
+## END QUALITY_SCORE ##
+## IMPROVEMENTS ##
+- List of specific improvements you are making
+- Each on its own line
+## END IMPROVEMENTS ##
+## FILE path/to/doc.md ##
+<full refined documentation content>
+## FILE path/to/next.md ##
+<content if multiple files>
+## SUMMARY ##
+Brief summary of refinements made in this iteration
+## END SUMMARY ##
+
+- Only output documentation files that you actually improved.
+- Do not use JSON. Use only the template above. No explanatory text before or after.
+"""
+
+# ---------------------------------------------------------------------------
 # Deliver phase (no LLM prompt needed — this is procedural git work)
 # ---------------------------------------------------------------------------
 

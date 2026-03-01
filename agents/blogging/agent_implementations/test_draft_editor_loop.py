@@ -16,7 +16,7 @@ from blog_draft_agent import BlogDraftAgent, DraftInput, ReviseDraftInput
 from blog_copy_editor_agent import BlogCopyEditorAgent, CopyEditorInput
 
 STYLE_GUIDE_PATH = Path(__file__).resolve().parent.parent / "docs" / "brandon_kindred_brand_and_writing_style_guide.md"
-DRAFT_EDITOR_ITERATIONS = 3
+DRAFT_EDITOR_ITERATIONS = 100
 
 # Fixed context (no research pipeline)
 CONTEXT_BRIEF = "LLM observability best practices for large enterprises."

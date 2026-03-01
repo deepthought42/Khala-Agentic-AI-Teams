@@ -107,11 +107,11 @@ def _validate_file_paths(files: Dict[str, str]) -> tuple[Dict[str, str], list[st
             validated[path] = content
     return validated, warnings
 # ── Workflow constants ──────────────────────────────────────────────────────
-MAX_REVIEW_ITERATIONS = _int_env("SW_MAX_REVIEW_ITERATIONS", 20)
+MAX_REVIEW_ITERATIONS = _int_env("SW_MAX_REVIEW_ITERATIONS", 100)
 MAX_SAME_BUILD_FAILURES = _int_env("SW_MAX_SAME_BUILD_FAILURES", 6)  # Stop if build fails identically this many times
 MAX_PREWRITE_REGENERATIONS = _int_env("SW_MAX_PREWRITE_REGENERATIONS", 2)  # Max regenerations for pre-write test-route checks
-MAX_CLARIFICATION_ROUNDS = _int_env("SW_MAX_CLARIFICATION_ROUNDS", 20)
-MAX_PROBLEM_SOLVER_CYCLES = _int_env("SW_MAX_PROBLEM_SOLVER_CYCLES", 20)
+MAX_CLARIFICATION_ROUNDS = _int_env("SW_MAX_CLARIFICATION_ROUNDS", 100)
+MAX_PROBLEM_SOLVER_CYCLES = _int_env("SW_MAX_PROBLEM_SOLVER_CYCLES", 100)
 _REQUIRED_TASK_CONTRACT_FIELDS = (
     "goal",
     "scope",

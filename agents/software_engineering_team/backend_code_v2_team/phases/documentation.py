@@ -26,7 +26,7 @@ from ..models import (
 
 logger = logging.getLogger(__name__)
 
-MAX_DOCUMENTATION_ITERATIONS = 3
+MAX_DOCUMENTATION_ITERATIONS = 100
 
 
 def _write_files(repo_path: Path, files: Dict[str, str]) -> None:

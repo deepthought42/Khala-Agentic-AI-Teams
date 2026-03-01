@@ -223,7 +223,7 @@ backend/
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MAX_REVIEW_ITERATIONS` | Max review → problem-solving cycles | 5 |
+| `MAX_REVIEW_ITERATIONS` | Max review → problem-solving cycles | 100 |
 
 ## Directory Structure
 

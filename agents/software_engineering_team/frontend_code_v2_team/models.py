@@ -160,6 +160,39 @@ class DocumentationPhaseResult(BaseModel):
     summary: str = Field(default="")
 
 
+class BatchFixResult(BaseModel):
+    """Result from batch fixing all issues from a review phase."""
+
+    files: Dict[str, str] = Field(default_factory=dict, description="Updated files after batch fix")
+    issues_addressed: List[str] = Field(
+        default_factory=list,
+        description="List of issue descriptions that were addressed",
+    )
+    issues_count: int = Field(default=0, description="Total number of issues sent for fixing")
+    addressed_count: int = Field(default=0, description="Number of issues successfully addressed")
+    summary: str = Field(default="")
+    success: bool = Field(default=False, description="True if all issues were addressed")
+
+
+class DocumentationSelfReviewResult(BaseModel):
+    """Result from documentation self-review loop."""
+
+    documentation: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Final documentation files after self-review iterations",
+    )
+    iterations: int = Field(default=0, description="Number of self-review iterations performed")
+    final_quality_score: float = Field(
+        default=0.0,
+        description="Quality score from final iteration (0.0-1.0)",
+    )
+    improvements_made: List[str] = Field(
+        default_factory=list,
+        description="List of improvements made across all iterations",
+    )
+    summary: str = Field(default="")
+
+
 class DeliverResult(BaseModel):
     """Output of the Deliver phase."""
 
@@ -255,7 +288,7 @@ class MicrotaskReviewConfig(BaseModel):
     """Configuration for per-microtask review gates."""
 
     max_retries: int = Field(
-        default=3,
+        default=100,
         description="Max problem-solving attempts per microtask before marking as failed",
     )
     on_failure: Literal["stop", "skip_continue"] = Field(

@@ -92,6 +92,20 @@ Return a single JSON object with:
   - "suggestion": A concrete fix that tells the developer exactly WHAT to change. Include code snippets when possible. Example: "Add page and pageSize parameters to the loadUsers() method: `this.userService.getUsers(this.page, this.pageSize).subscribe(...)` and bind MatPaginator events to update these values."
 - The coding agent that receives these issues will use them as instructions, so each issue must be detailed enough to be acted upon WITHOUT additional context.
 
+**THOROUGHNESS REQUIREMENTS:**
+- You MUST review EVERY file in the code submission, not just a sample
+- For each file, check EVERY function, method, class, and code block
+- Do NOT skip files because they "look fine" - examine everything systematically
+- Your issue descriptions MUST be comprehensive and self-contained:
+  - Include the EXACT file path and line numbers where possible
+  - Quote the problematic code snippet directly
+  - Explain WHY this is a problem (impact, risk, consequence)
+  - Provide a COMPLETE code example showing the fix - not just a suggestion, but actual code
+- The coding agent will receive ONLY your issue descriptions, so each must be actionable without additional context
+- When in doubt, flag the issue - it's better to over-report than under-report
+
+**IMPORTANT**: The issues you identify will be sent to a coding agent to fix. Make your descriptions so thorough and detailed that the coding agent can understand and fix the problem without seeing any other context.
+
 Be thorough but fair. Focus on issues that actually matter for production code quality.
 
 Respond with valid JSON only. No explanatory text outside JSON."""

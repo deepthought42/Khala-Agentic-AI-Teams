@@ -196,18 +196,18 @@ def run_execution_with_review_gates(
     review_deps: Optional[ReviewDependencies] = None,
 ) -> ExecutionResult:
     """
-    Execute microtasks sequentially with distinct review phases.
+    Execute microtasks with batch-based review cycles.
 
-    After each microtask is coded, it must pass through distinct sequential phases:
-    1. Code Review (build + lint + code review) with fix loop
-    2. QA Testing with fix loop
-    3. Security Testing with fix loop
-    4. Documentation with fix loop
+    After each microtask is coded, it must pass through sequential review phases:
+    1. Code Review (build + lint + code review) - batch fix all issues
+    2. QA Testing - batch fix all issues, then restart from Code Review
+    3. Security Testing - batch fix all issues, then restart from Code Review
+    4. Documentation - self-review loop (3-5 iterations, never fails)
 
-    Each phase has its own retry limit. If any phase fails after retries,
-    behavior depends on review_config.on_failure:
-    - "stop": raises MicrotaskReviewFailedError
-    - "skip_continue": marks microtask as REVIEW_FAILED and continues
+    Key behavior:
+    - Each review phase collects ALL issues and sends them to the coding agent at once
+    - After QA or Security fixes, the flow restarts from Code Review
+    - Documentation uses self-review iterations (no failure mode)
 
     ``progress_callback(current_index, completed, total, title, microtask_phase, phase_detail)`` is called during execution.
     ``current_index`` is the 1-based index of the currently executing microtask.
@@ -218,14 +218,9 @@ def run_execution_with_review_gates(
         run_code_review_phase,
         run_qa_testing_phase,
         run_security_testing_phase,
-        run_documentation_review_phase,
+        run_documentation_self_review,
     )
-    from .problem_solving import (
-        run_code_review_fixes,
-        run_qa_fixes,
-        run_security_fixes,
-        run_documentation_fixes,
-    )
+    from .problem_solving import run_batch_coding_fixes
 
     config = review_config or MicrotaskReviewConfig()
     deps = review_deps or ReviewDependencies()
@@ -241,7 +236,7 @@ def run_execution_with_review_gates(
     total = len(microtasks)
 
     task_id = task.id
-    logger.info("[%s] Starting execution with sequential review phases: %d microtasks, on_failure=%s",
+    logger.info("[%s] Starting execution with batch review flow: %d microtasks, on_failure=%s",
                 task_id, total, config.on_failure)
 
     for idx, mt in enumerate(microtasks):
@@ -307,57 +302,23 @@ def run_execution_with_review_gates(
             continue
 
         phase_failed = False
+        total_cycles = 0
+        max_total_cycles = config.code_review_max_retries + config.qa_max_retries + config.security_max_retries
 
-        # ── Phase 2: Code Review (build + lint + code review) ─────────────────
-        mt.status = MicrotaskStatus.IN_CODE_REVIEW
-        current_phase = "code_review"
-        logger.info("[%s] Microtask %s: Next step -> Running code review phase (build, lint, review)", task_id, mt.id)
+        # ── Sequential Review Gates with Batch Fixes ──────────────────────────
+        # Flow: Code Review -> QA -> Security -> Documentation
+        # After QA/Security fixes, restart from Code Review
 
-        if progress_callback:
-            progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", "Starting code review...")
-
-        cr_result = run_code_review_phase(
-            llm=llm,
-            task=task,
-            microtask=mt,
-            repo_path=repo_path,
-            files=microtask_files,
-            build_verifier=deps.build_verifier,
-            code_review_agent=deps.code_review_agent,
-            linting_tool_agent=deps.linting_tool_agent,
-            detail_callback=lambda d: _detail_cb(d, current_idx, "code_review"),
-        )
-
-        retry_count = 0
-        while not cr_result.passed and retry_count < config.code_review_max_retries:
-            retry_count += 1
-            logger.info(
-                "[%s] Microtask %s: code review failed. Next step -> Attempting fix %d/%d",
-                task_id, mt.id, retry_count, config.code_review_max_retries,
-            )
+        while not phase_failed and total_cycles < max_total_cycles:
+            total_cycles += 1
+            
+            # ── Code Review Phase ─────────────────────────────────────────────
+            mt.status = MicrotaskStatus.IN_CODE_REVIEW
+            current_phase = "code_review"
+            logger.info("[%s] Microtask %s: Cycle %d - Running code review phase", task_id, mt.id, total_cycles)
 
             if progress_callback:
-                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", f"Fixing issues (attempt {retry_count})...")
-
-            ps_result = run_code_review_fixes(
-                llm=llm,
-                microtask=mt,
-                phase_result=cr_result,
-                current_files=microtask_files,
-                language=planning_result.language,
-                repo_path=str(repo_path),
-                tool_agents=deps.tool_agents,
-                task_id=task_id,
-                detail_callback=lambda d: _detail_cb(d, current_idx, "code_review"),
-            )
-
-            microtask_files = ps_result.files
-            _write_microtask_files(repo_path, microtask_files)
-            mt.output_files = microtask_files
-            all_files.update(microtask_files)
-
-            if progress_callback:
-                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", "Re-running code review...")
+                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", f"Code review (cycle {total_cycles})...")
 
             cr_result = run_code_review_phase(
                 llm=llm,
@@ -371,27 +332,70 @@ def run_execution_with_review_gates(
                 detail_callback=lambda d: _detail_cb(d, current_idx, "code_review"),
             )
 
-        if not cr_result.passed:
-            phase_failed = True
-            mt.status = MicrotaskStatus.REVIEW_FAILED
-            review_failed_ids.add(mt.id)
-            mt.notes = f"Code review failed after {config.code_review_max_retries} retries: {cr_result.summary}"
-            logger.warning(
-                "[%s] Microtask %s: CODE_REVIEW_FAILED. Recovery summary: "
-                "1) Initial code review failed, 2) Attempted %d fix iterations. Final issues: %s",
-                task_id, mt.id, config.code_review_max_retries, cr_result.summary[:200],
-            )
-            if config.on_failure == "stop":
-                raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=cr_result.issues, summary=cr_result.summary))
+            cr_retry = 0
+            while not cr_result.passed and cr_retry < config.code_review_max_retries:
+                cr_retry += 1
+                logger.info(
+                    "[%s] Microtask %s: Code review failed with %d issues. Batch fixing (attempt %d/%d)",
+                    task_id, mt.id, len(cr_result.issues), cr_retry, config.code_review_max_retries,
+                )
 
-        # ── Phase 3: QA Testing ───────────────────────────────────────────────
-        if not phase_failed:
+                if progress_callback:
+                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", 
+                                    f"Batch fixing {len(cr_result.issues)} issues (attempt {cr_retry})...")
+
+                ps_result = run_batch_coding_fixes(
+                    llm=llm,
+                    microtask=mt,
+                    issues=cr_result.issues,
+                    current_files=microtask_files,
+                    language=planning_result.language,
+                    repo_path=str(repo_path),
+                    task_id=task_id,
+                    phase_name="code_review",
+                    detail_callback=lambda d: _detail_cb(d, current_idx, "code_review"),
+                )
+
+                microtask_files = ps_result.files
+                _write_microtask_files(repo_path, microtask_files)
+                mt.output_files = microtask_files
+                all_files.update(microtask_files)
+
+                if progress_callback:
+                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "code_review", "Re-running code review...")
+
+                cr_result = run_code_review_phase(
+                    llm=llm,
+                    task=task,
+                    microtask=mt,
+                    repo_path=repo_path,
+                    files=microtask_files,
+                    build_verifier=deps.build_verifier,
+                    code_review_agent=deps.code_review_agent,
+                    linting_tool_agent=deps.linting_tool_agent,
+                    detail_callback=lambda d: _detail_cb(d, current_idx, "code_review"),
+                )
+
+            if not cr_result.passed:
+                phase_failed = True
+                mt.status = MicrotaskStatus.REVIEW_FAILED
+                review_failed_ids.add(mt.id)
+                mt.notes = f"Code review failed after {config.code_review_max_retries} batch fix attempts: {cr_result.summary}"
+                logger.warning(
+                    "[%s] Microtask %s: CODE_REVIEW_FAILED after %d batch fix attempts. Issues: %s",
+                    task_id, mt.id, config.code_review_max_retries, cr_result.summary[:200],
+                )
+                if config.on_failure == "stop":
+                    raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=cr_result.issues, summary=cr_result.summary))
+                break
+
+            # ── QA Testing Phase ──────────────────────────────────────────────
             mt.status = MicrotaskStatus.IN_QA_TESTING
             current_phase = "qa_testing"
-            logger.info("[%s] Microtask %s: Next step -> Running QA testing phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Cycle %d - Running QA testing phase", task_id, mt.id, total_cycles)
 
             if progress_callback:
-                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", "Starting QA testing...")
+                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", f"QA testing (cycle {total_cycles})...")
 
             qa_result = run_qa_testing_phase(
                 task=task,
@@ -403,26 +407,25 @@ def run_execution_with_review_gates(
                 detail_callback=lambda d: _detail_cb(d, current_idx, "qa_testing"),
             )
 
-            retry_count = 0
-            while not qa_result.passed and retry_count < config.qa_max_retries:
-                retry_count += 1
+            if not qa_result.passed:
                 logger.info(
-                    "[%s] Microtask %s: QA testing failed. Next step -> Attempting fix %d/%d",
-                    task_id, mt.id, retry_count, config.qa_max_retries,
+                    "[%s] Microtask %s: QA testing failed with %d issues. Batch fixing and restarting from code review.",
+                    task_id, mt.id, len(qa_result.issues),
                 )
 
                 if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", f"Fixing QA issues (attempt {retry_count})...")
+                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing",
+                                    f"Batch fixing {len(qa_result.issues)} QA issues...")
 
-                ps_result = run_qa_fixes(
+                ps_result = run_batch_coding_fixes(
                     llm=llm,
                     microtask=mt,
-                    phase_result=qa_result,
+                    issues=qa_result.issues,
                     current_files=microtask_files,
                     language=planning_result.language,
                     repo_path=str(repo_path),
-                    tool_agents=deps.tool_agents,
                     task_id=task_id,
+                    phase_name="qa",
                     detail_callback=lambda d: _detail_cb(d, current_idx, "qa_testing"),
                 )
 
@@ -431,40 +434,16 @@ def run_execution_with_review_gates(
                 mt.output_files = microtask_files
                 all_files.update(microtask_files)
 
-                if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "qa_testing", "Re-running QA testing...")
+                # Restart from code review
+                continue
 
-                qa_result = run_qa_testing_phase(
-                    task=task,
-                    microtask=mt,
-                    files=microtask_files,
-                    qa_agent=deps.qa_agent,
-                    tool_agents=deps.tool_agents,
-                    repo_path=repo_path,
-                    detail_callback=lambda d: _detail_cb(d, current_idx, "qa_testing"),
-                )
-
-            if not qa_result.passed:
-                phase_failed = True
-                mt.status = MicrotaskStatus.REVIEW_FAILED
-                review_failed_ids.add(mt.id)
-                mt.notes = f"QA testing failed after {config.qa_max_retries} retries: {qa_result.summary}"
-                logger.warning(
-                    "[%s] Microtask %s: QA_TESTING_FAILED. Recovery summary: "
-                    "1) Initial QA failed, 2) Attempted %d fix iterations. Final issues: %s",
-                    task_id, mt.id, config.qa_max_retries, qa_result.summary[:200],
-                )
-                if config.on_failure == "stop":
-                    raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=qa_result.issues, summary=qa_result.summary))
-
-        # ── Phase 4: Security Testing ─────────────────────────────────────────
-        if not phase_failed:
+            # ── Security Testing Phase ────────────────────────────────────────
             mt.status = MicrotaskStatus.IN_SECURITY_TESTING
             current_phase = "security_testing"
-            logger.info("[%s] Microtask %s: Next step -> Running security testing phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Cycle %d - Running security testing phase", task_id, mt.id, total_cycles)
 
             if progress_callback:
-                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", "Starting security testing...")
+                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", f"Security testing (cycle {total_cycles})...")
 
             sec_result = run_security_testing_phase(
                 task=task,
@@ -476,26 +455,25 @@ def run_execution_with_review_gates(
                 detail_callback=lambda d: _detail_cb(d, current_idx, "security_testing"),
             )
 
-            retry_count = 0
-            while not sec_result.passed and retry_count < config.security_max_retries:
-                retry_count += 1
+            if not sec_result.passed:
                 logger.info(
-                    "[%s] Microtask %s: security testing failed. Next step -> Attempting fix %d/%d",
-                    task_id, mt.id, retry_count, config.security_max_retries,
+                    "[%s] Microtask %s: Security testing failed with %d issues. Batch fixing and restarting from code review.",
+                    task_id, mt.id, len(sec_result.issues),
                 )
 
                 if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", f"Fixing security issues (attempt {retry_count})...")
+                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing",
+                                    f"Batch fixing {len(sec_result.issues)} security issues...")
 
-                ps_result = run_security_fixes(
+                ps_result = run_batch_coding_fixes(
                     llm=llm,
                     microtask=mt,
-                    phase_result=sec_result,
+                    issues=sec_result.issues,
                     current_files=microtask_files,
                     language=planning_result.language,
                     repo_path=str(repo_path),
-                    tool_agents=deps.tool_agents,
                     task_id=task_id,
+                    phase_name="security",
                     detail_callback=lambda d: _detail_cb(d, current_idx, "security_testing"),
                 )
 
@@ -504,42 +482,39 @@ def run_execution_with_review_gates(
                 mt.output_files = microtask_files
                 all_files.update(microtask_files)
 
-                if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "security_testing", "Re-running security testing...")
+                # Restart from code review
+                continue
 
-                sec_result = run_security_testing_phase(
-                    task=task,
-                    microtask=mt,
-                    files=microtask_files,
-                    security_agent=deps.security_agent,
-                    tool_agents=deps.tool_agents,
-                    repo_path=repo_path,
-                    detail_callback=lambda d: _detail_cb(d, current_idx, "security_testing"),
-                )
+            # All review phases passed - proceed to documentation
+            break
 
-            if not sec_result.passed:
+        # Check if we exceeded max cycles
+        if total_cycles >= max_total_cycles and not phase_failed:
+            # Check if we're still failing any phase
+            if not cr_result.passed or not qa_result.passed or not sec_result.passed:
                 phase_failed = True
                 mt.status = MicrotaskStatus.REVIEW_FAILED
                 review_failed_ids.add(mt.id)
-                mt.notes = f"Security testing failed after {config.security_max_retries} retries: {sec_result.summary}"
+                mt.notes = f"Review cycles exhausted after {total_cycles} iterations"
                 logger.warning(
-                    "[%s] Microtask %s: SECURITY_TESTING_FAILED. Recovery summary: "
-                    "1) Initial security scan failed, 2) Attempted %d fix iterations. Final issues: %s",
-                    task_id, mt.id, config.security_max_retries, sec_result.summary[:200],
+                    "[%s] Microtask %s: REVIEW_FAILED - exhausted %d total cycles",
+                    task_id, mt.id, total_cycles,
                 )
                 if config.on_failure == "stop":
-                    raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=sec_result.issues, summary=sec_result.summary))
+                    raise MicrotaskReviewFailedError(mt, ReviewResult(passed=False, issues=[], summary="Max cycles exceeded"))
 
-        # ── Phase 5: Documentation ────────────────────────────────────────────
+        # ── Phase 5: Documentation (Self-Review, Never Fails) ─────────────────
         if not phase_failed:
             mt.status = MicrotaskStatus.IN_DOCUMENTATION
             current_phase = "documentation"
-            logger.info("[%s] Microtask %s: Next step -> Running documentation phase", task_id, mt.id)
+            logger.info("[%s] Microtask %s: Running documentation self-review (3-5 iterations)", task_id, mt.id)
 
             if progress_callback:
-                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", "Starting documentation...")
+                progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", "Starting documentation self-review...")
 
+            # Generate initial documentation
             doc_agent = deps.tool_agents.get(ToolAgentKind.DOCUMENTATION) if deps.tool_agents else None
+            doc_files: Dict[str, str] = {}
             if doc_agent and hasattr(doc_agent, "document_microtask"):
                 try:
                     doc_result = doc_agent.document_microtask(
@@ -548,74 +523,39 @@ def run_execution_with_review_gates(
                         task_description=task.description or "",
                     )
                     if doc_result.files:
-                        microtask_files.update(doc_result.files)
-                        _write_microtask_files(repo_path, doc_result.files)
-                        mt.output_files = microtask_files
-                        all_files.update(doc_result.files)
-                        logger.info("[%s] Microtask %s: documentation updated %d file(s)", 
-                                    task_id, mt.id, len(doc_result.files))
+                        doc_files = doc_result.files
+                        logger.info("[%s] Microtask %s: initial documentation generated %d file(s)", 
+                                    task_id, mt.id, len(doc_files))
                 except Exception as e:
-                    logger.warning("[%s] Microtask %s: documentation update failed: %s", task_id, mt.id, e)
+                    logger.warning("[%s] Microtask %s: initial documentation generation failed: %s", task_id, mt.id, e)
 
-            doc_review_result = run_documentation_review_phase(
-                task=task,
-                microtask=mt,
-                files=microtask_files,
-                tool_agents=deps.tool_agents,
-                repo_path=repo_path,
+            # Run self-review iterations
+            self_review_result = run_documentation_self_review(
+                llm=llm,
+                documentation=doc_files,
+                code_files=microtask_files,
+                task_description=task.description or "",
+                min_iterations=3,
+                max_iterations=5,
+                quality_threshold=0.9,
                 detail_callback=lambda d: _detail_cb(d, current_idx, "documentation"),
             )
 
-            retry_count = 0
-            while not doc_review_result.passed and retry_count < config.documentation_max_retries:
-                retry_count += 1
-                logger.info(
-                    "[%s] Microtask %s: documentation review failed. Next step -> Attempting fix %d/%d",
-                    task_id, mt.id, retry_count, config.documentation_max_retries,
-                )
-
-                if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", f"Fixing documentation (attempt {retry_count})...")
-
-                ps_result = run_documentation_fixes(
-                    llm=llm,
-                    microtask=mt,
-                    phase_result=doc_review_result,
-                    current_files=microtask_files,
-                    language=planning_result.language,
-                    repo_path=str(repo_path),
-                    tool_agents=deps.tool_agents,
-                    task_id=task_id,
-                    detail_callback=lambda d: _detail_cb(d, current_idx, "documentation"),
-                )
-
-                microtask_files = ps_result.files
-                _write_microtask_files(repo_path, microtask_files)
+            # Update files with refined documentation
+            if self_review_result.documentation:
+                microtask_files.update(self_review_result.documentation)
+                _write_microtask_files(repo_path, self_review_result.documentation)
                 mt.output_files = microtask_files
-                all_files.update(microtask_files)
+                all_files.update(self_review_result.documentation)
 
-                if progress_callback:
-                    progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "documentation", "Re-running documentation review...")
-
-                doc_review_result = run_documentation_review_phase(
-                    task=task,
-                    microtask=mt,
-                    files=microtask_files,
-                    tool_agents=deps.tool_agents,
-                    repo_path=repo_path,
-                    detail_callback=lambda d: _detail_cb(d, current_idx, "documentation"),
-                )
-
-            if not doc_review_result.passed:
-                logger.warning(
-                    "[%s] Microtask %s: documentation review failed after %d attempts (continuing - low priority). "
-                    "Recovery summary: documentation fixes did not resolve all issues.",
-                    task_id, mt.id, config.documentation_max_retries,
-                )
+            logger.info(
+                "[%s] Microtask %s: documentation self-review complete after %d iterations (score: %.2f)",
+                task_id, mt.id, self_review_result.iterations, self_review_result.final_quality_score,
+            )
 
             mt.status = MicrotaskStatus.COMPLETED
             completed_ids.add(mt.id)
-            logger.info("[%s] Microtask %s: COMPLETED (passed all review phases)", task_id, mt.id)
+            logger.info("[%s] Microtask %s: COMPLETED (passed all review phases in %d cycles)", task_id, mt.id, total_cycles)
 
         if progress_callback:
             progress_callback(current_idx, len(completed_ids), total, mt.title or mt.id, "completed", "")
@@ -623,6 +563,6 @@ def run_execution_with_review_gates(
     completed_count = len(completed_ids)
     failed_count = len(review_failed_ids)
     summary = f"Executed {completed_count}/{total} microtasks successfully; {failed_count} review-failed; {len(all_files)} files produced."
-    logger.info("[%s] Execution with sequential review phases complete: %s", task_id, summary)
+    logger.info("[%s] Execution with batch review flow complete: %s", task_id, summary)
 
     return ExecutionResult(files=all_files, microtasks=microtasks, summary=summary)
