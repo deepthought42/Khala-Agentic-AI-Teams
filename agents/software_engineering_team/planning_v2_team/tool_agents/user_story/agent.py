@@ -406,6 +406,15 @@ class UserStoryToolAgent:
                 recommendations=fixes_applied if fixes_applied else [],
             )
         
+        existing_user_stories = (inp.current_files or {}).get("plan/user_stories.md")
+        if existing_user_stories and not story_issues:
+            return ToolAgentPhaseOutput(
+                summary="User story artifacts unchanged (file exists, no review issues).",
+                files={},
+                hierarchy=hierarchy,
+                recommendations=fixes_applied if fixes_applied else [],
+            )
+        
         content = _hierarchy_to_markdown(hierarchy)
         all_files["plan/user_stories.md"] = content
         
