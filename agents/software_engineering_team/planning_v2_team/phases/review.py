@@ -9,8 +9,9 @@ Uses universal truncation handling via complete_with_continuation.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.models import PlanningHierarchy
@@ -82,24 +83,37 @@ def run_review(
         ToolAgentKind.USER_STORY,
         ToolAgentKind.TASK_DEPENDENCY,
     ]
-    
+
+    def _run_one_review(agent_kind: ToolAgentKind) -> Tuple[ToolAgentKind, Any, Optional[Exception]]:
+        agent = tool_agents.get(agent_kind) if tool_agents else None
+        if agent and hasattr(agent, "review"):
+            try:
+                result = agent.review(tool_agent_input)
+                return (agent_kind, result, None)
+            except Exception as e:
+                return (agent_kind, None, e)
+        return (agent_kind, None, None)
+
     if tool_agents:
-        for agent_kind in participating_agents:
-            agent = tool_agents.get(agent_kind)
-            if agent and hasattr(agent, "review"):
-                try:
-                    result = agent.review(tool_agent_input)
+        with ThreadPoolExecutor(max_workers=len(participating_agents)) as executor:
+            futures = {
+                executor.submit(_run_one_review, kind): kind
+                for kind in participating_agents
+            }
+            for future in as_completed(futures):
+                agent_kind, result, exc = future.result()
+                if exc:
+                    logger.warning("Review: %s review failed: %s", agent_kind.value, exc)
+                    continue
+                if result:
                     all_issues.extend(result.issues)
                     logger.info("Review: %s found %d issues", agent_kind.value, len(result.issues))
-                    
                     if result.files:
                         for rel_path, content in result.files.items():
                             full_path = repo_path / rel_path
                             full_path.parent.mkdir(parents=True, exist_ok=True)
                             full_path.write_text(content, encoding="utf-8")
                             logger.info("Review: %s wrote %s", agent_kind.value, rel_path)
-                except Exception as e:
-                    logger.warning("Review: %s review failed: %s", agent_kind.value, e)
     
     artifacts_text = "\n".join(
         f"--- {path} ---\n{content[:2000]}"

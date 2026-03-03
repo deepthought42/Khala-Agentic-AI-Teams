@@ -8,6 +8,7 @@ Produces the hierarchical output: Initiative -> Epic -> Story -> Task.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
@@ -375,14 +376,13 @@ class UserStoryToolAgent:
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Implementation phase: generate user story artifacts and fix review issues.
         
-        If review_issues are provided, this agent handles fixes however it sees fit:
-        - May process all issues in one prompt
-        - May batch similar issues together
-        - May handle issues one-by-one
+        Applies fixes by writing the document to disk after each fix (update-in-place).
+        Returns files_written so the implementation phase does not overwrite.
         """
         hierarchy = inp.hierarchy
-        all_files: Dict[str, str] = {}
         fixes_applied: List[str] = []
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
         
         story_issues = [
             i for i in inp.review_issues
@@ -391,10 +391,19 @@ class UserStoryToolAgent:
         
         if story_issues and self.llm:
             logger.info("UserStory: handling %d review issues", len(story_issues))
+            fix_inp = inp.model_copy(update={"current_files": current_files})
             for issue in story_issues:
-                result = self.fix_single_issue(issue, inp)
+                result = self.fix_single_issue(issue, fix_inp)
                 if result.files:
-                    all_files.update(result.files)
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
                     fixes_applied.append(result.summary)
                 if result.hierarchy:
                     hierarchy = result.hierarchy
@@ -404,6 +413,7 @@ class UserStoryToolAgent:
             return ToolAgentPhaseOutput(
                 summary="User Story execute skipped (no hierarchy).",
                 recommendations=fixes_applied if fixes_applied else [],
+                files_written=files_written,
             )
         
         existing_user_stories = (inp.current_files or {}).get("plan/user_stories.md")
@@ -413,10 +423,17 @@ class UserStoryToolAgent:
                 files={},
                 hierarchy=hierarchy,
                 recommendations=fixes_applied if fixes_applied else [],
+                files_written=[],
             )
         
-        content = _hierarchy_to_markdown(hierarchy)
-        all_files["plan/user_stories.md"] = content
+        if not files_written:
+            content = _hierarchy_to_markdown(hierarchy)
+            repo = Path(inp.repo_path or ".")
+            rel_path = "plan/user_stories.md"
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written = [rel_path]
         
         summary = "User story artifacts generated."
         if fixes_applied:
@@ -424,9 +441,10 @@ class UserStoryToolAgent:
         
         return ToolAgentPhaseOutput(
             summary=summary,
-            files=all_files,
+            files={},
             hierarchy=hierarchy,
             recommendations=fixes_applied if fixes_applied else [],
+            files_written=files_written,
         )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:

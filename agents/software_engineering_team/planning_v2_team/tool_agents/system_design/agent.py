@@ -8,6 +8,7 @@ Focuses on component layout, system boundaries, and integration points.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
@@ -212,14 +213,14 @@ class SystemDesignToolAgent:
 
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Implementation phase: generate system design artifacts and fix review issues.
-        
-        If review_issues are provided, this agent handles fixes however it sees fit.
+        Writes to disk as fixes are applied; returns files_written so implementation phase does not overwrite.
         """
         if not self.llm:
             return ToolAgentPhaseOutput(summary="System Design execute skipped (no LLM).")
         
         fixes_applied: List[str] = []
-        all_files: Dict[str, str] = {}
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
         
         design_issues = [
             i for i in inp.review_issues
@@ -228,10 +229,19 @@ class SystemDesignToolAgent:
         
         if design_issues:
             logger.info("SystemDesign: handling %d review issues", len(design_issues))
+            fix_inp = inp.model_copy(update={"current_files": current_files})
             for issue in design_issues:
-                result = self.fix_single_issue(issue, inp)
+                result = self.fix_single_issue(issue, fix_inp)
                 if result.files:
-                    all_files.update(result.files)
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
                     fixes_applied.append(result.summary)
             logger.info("SystemDesign: fixed %d/%d issues", len(fixes_applied), len(design_issues))
         
@@ -241,6 +251,7 @@ class SystemDesignToolAgent:
                 summary="System design artifacts unchanged (file exists, no review issues).",
                 files={},
                 recommendations=fixes_applied if fixes_applied else [],
+                files_written=[],
             )
         
         component_design = inp.metadata.get("component_design", [])
@@ -268,8 +279,14 @@ class SystemDesignToolAgent:
             content_parts.append("## Integration Strategy\n")
             content_parts.append(f"{integration_strategy}\n\n")
         
-        if component_design or data_flow:
-            all_files["plan/system_design.md"] = "".join(content_parts)
+        if (component_design or data_flow) and "plan/system_design.md" not in files_written:
+            rel_path = "plan/system_design.md"
+            content = "".join(content_parts)
+            repo = Path(inp.repo_path or ".")
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written.append(rel_path)
         
         summary = "System design artifacts generated."
         if fixes_applied:
@@ -277,8 +294,9 @@ class SystemDesignToolAgent:
         
         return ToolAgentPhaseOutput(
             summary=summary,
-            files=all_files,
+            files={},
             recommendations=fixes_applied if fixes_applied else [],
+            files_written=files_written,
         )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
