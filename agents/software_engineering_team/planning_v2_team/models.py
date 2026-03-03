@@ -89,6 +89,10 @@ class ToolAgentPhaseOutput(BaseModel):
     )
     issues: List[str] = Field(default_factory=list)
     files: Dict[str, str] = Field(default_factory=dict)
+    files_written: List[str] = Field(
+        default_factory=list,
+        description="Paths already written to disk by the agent; implementation phase will skip writing these.",
+    )
     hierarchy: Optional[PlanningHierarchy] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     resolved: bool = Field(

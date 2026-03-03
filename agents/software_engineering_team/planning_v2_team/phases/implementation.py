@@ -16,8 +16,9 @@ Document Ownership: Each tool agent is responsible for its own document lifecycl
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from shared.llm import LLMClient
 from shared.models import PlanningHierarchy
@@ -127,30 +128,54 @@ def run_implementation(
             ToolAgentKind.UX_DESIGN,
             ToolAgentKind.TASK_CLASSIFICATION,
         ]
-        
+
+        def _run_one_execute(agent_kind: ToolAgentKind) -> Tuple[ToolAgentKind, Any, Optional[Exception]]:
+            agent = tool_agents.get(agent_kind) if tool_agents else None
+            if agent and hasattr(agent, "execute"):
+                try:
+                    result = agent.execute(tool_agent_input)
+                    return (agent_kind, result, None)
+                except Exception as e:
+                    return (agent_kind, None, e)
+            return (agent_kind, None, None)
+
+        agent_written: set = set()
         if tool_agents:
-            for agent_kind in participating_agents:
-                agent = tool_agents.get(agent_kind)
-                if agent and hasattr(agent, "execute"):
-                    try:
-                        result = agent.execute(tool_agent_input)
+            with ThreadPoolExecutor(max_workers=len(participating_agents)) as executor:
+                futures = {
+                    executor.submit(_run_one_execute, kind): kind
+                    for kind in participating_agents
+                }
+                for future in as_completed(futures):
+                    agent_kind, result, exc = future.result()
+                    if exc:
+                        logger.warning(
+                            "Implementation: %s execute failed: %s. Next step -> Continuing with other agents",
+                            agent_kind.value, exc,
+                        )
+                        continue
+                    if result:
+                        if result.files_written:
+                            agent_written.update(result.files_written)
                         if result.files:
                             all_files.update(result.files)
                             logger.info("Implementation: %s generated %d files", agent_kind.value, len(result.files))
-                    except Exception as e:
-                        logger.warning(
-                            "Implementation: %s execute failed: %s. Next step -> Continuing with other agents",
-                            agent_kind.value, e,
-                        )
         
         for rel_path, content in all_files.items():
+            if rel_path in agent_written:
+                logger.info("Implementation: skipped %s (already written by agent)", rel_path)
+                continue
             full_path = repo_path / rel_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
             if rel_path in current_files:
-                assets_updated.append(rel_path)
-                logger.info("Implementation: updated %s", rel_path)
+                if content == current_files[rel_path]:
+                    logger.info("Implementation: preserved %s (unchanged)", rel_path)
+                else:
+                    full_path.write_text(content, encoding="utf-8")
+                    assets_updated.append(rel_path)
+                    logger.info("Implementation: updated %s", rel_path)
             else:
+                full_path.write_text(content, encoding="utf-8")
                 assets_created.append(rel_path)
                 logger.info("Implementation: wrote %s", rel_path)
         
