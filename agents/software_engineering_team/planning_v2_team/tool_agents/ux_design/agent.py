@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
 from ...output_templates import parse_fix_output, parse_planning_tool_output
 from ..json_utils import complete_text_with_continuation
 
@@ -93,7 +93,7 @@ class UXDesignToolAgent:
         files_written: List[str] = []
         current_files: Dict[str, str] = dict(inp.current_files or {})
         
-        existing_doc = inp.current_files.get("plan/planning_team/ux_design.md") if inp.current_files else None
+        existing_doc = inp.current_files.get(planning_asset_path("ux_design.md")) if inp.current_files else None
         ux_issues = [
             i for i in inp.review_issues
             if any(kw in i.lower() for kw in ["ux", "persona", "journey", "flow", "usability", "user experience", "interaction"])
@@ -185,7 +185,7 @@ class UXDesignToolAgent:
             content_parts.append("\n")
 
         if component_design or recommendations:
-            rel_path = "plan/planning_team/ux_design.md"
+            rel_path = planning_asset_path("ux_design.md")
             content = "".join(content_parts)
             repo = Path(inp.repo_path or ".")
             full_path = repo / rel_path
@@ -217,7 +217,7 @@ class UXDesignToolAgent:
 
         current_artifact = ""
         if inp.current_files:
-            current_artifact = inp.current_files.get("plan/planning_team/ux_design.md", "")
+            current_artifact = inp.current_files.get(planning_asset_path("ux_design.md"), "")
             if not current_artifact:
                 for path, content in inp.current_files.items():
                     if "ux_design" in path.lower() or "ux" in path.lower():
@@ -244,7 +244,7 @@ class UXDesignToolAgent:
 
             files: Dict[str, str] = {}
             if updated_content and isinstance(updated_content, str) and updated_content.strip():
-                files["plan/planning_team/ux_design.md"] = updated_content
+                files[planning_asset_path("ux_design.md")] = updated_content
                 logger.info("UXDesign: fix applied (single-issue) — %s", fix_desc[:120])
             elif file_updates:
                 for path, content in file_updates.items():

@@ -17,6 +17,7 @@ from software_engineering_team.shared.models import PlanningHierarchy
 from ..models import (
     DeliverPhaseResult,
     ImplementationPhaseResult,
+    PLAN_PLANNING_TEAM_DIR,
     ToolAgentKind,
     ToolAgentPhaseInput,
 )
@@ -148,7 +149,7 @@ def _finalize_product_spec(repo_path: Path, fallback_spec: str) -> str:
     
     Returns the final spec content.
     """
-    plan_dir = repo_path / "plan" / "planning_team"
+    plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
     if not plan_dir.exists():
         logger.info("Deliver: No plan/planning_team directory, using original spec content")
         return fallback_spec

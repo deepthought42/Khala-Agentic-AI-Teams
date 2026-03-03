@@ -72,6 +72,20 @@ def _update_job(job_id: str, **fields: Any) -> None:
             _jobs[job_id]["last_updated_at"] = _now()
 
 
+def mark_all_running_jobs_failed(reason: str) -> None:
+    """Mark all pending or running SOC2 audit jobs as failed (e.g. on server shutdown)."""
+    try:
+        with _jobs_lock:
+            for job_id, job in list(_jobs.items()):
+                if job.get("status") in ("pending", "running"):
+                    job["status"] = "failed"
+                    job["error"] = reason
+                    job["current_stage"] = "Failed"
+                    job["last_updated_at"] = _now()
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
+
+
 def _run_audit_job(job_id: str, repo_path: str) -> None:
     try:
         _update_job(job_id, status="running", current_stage="Loading repository")

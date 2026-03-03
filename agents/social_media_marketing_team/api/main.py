@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from social_media_marketing_team.orchestrator import SocialMediaMarketingOrchest
 
 app = FastAPI(title="Social Media Marketing Team API", version="1.0.0")
 
+logger = logging.getLogger(__name__)
 _jobs: Dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
@@ -101,6 +103,19 @@ def _update_job(job_id: str, **fields) -> None:
         if job_id in _jobs:
             _jobs[job_id].update(fields)
             _jobs[job_id]["last_updated_at"] = _now()
+
+
+def mark_all_running_jobs_failed(reason: str) -> None:
+    """Mark all pending or running marketing jobs as failed (e.g. on server shutdown)."""
+    try:
+        with _jobs_lock:
+            for job in _jobs.values():
+                if job.get("status") in ("pending", "running"):
+                    job["status"] = "failed"
+                    job["error"] = reason
+                    job["last_updated_at"] = _now()
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
 
 
 def _run_team_job(job_id: str, request: RunMarketingTeamRequest) -> None:

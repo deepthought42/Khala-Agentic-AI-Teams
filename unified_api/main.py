@@ -17,6 +17,8 @@ Route Prefixes:
 - /api/investment           - Investment analysis and portfolio management
 """
 
+import atexit
+import importlib
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -84,6 +86,32 @@ class ApiInfoResponse(BaseModel):
 
 # Track mounted routers for health checks
 _mounted_teams: Dict[str, bool] = {}
+
+# Team keys that have async jobs: on shutdown, call their mark_all_running_jobs_failed(reason).
+# Maps team_key -> (module_dot_path, function_name).
+SHUTDOWN_HOOKS: Dict[str, tuple] = {
+    "blogging": ("blogging.shared.blog_job_store", "mark_all_running_jobs_failed"),
+    "software_engineering": ("software_engineering_team.shared.job_store", "mark_all_running_jobs_failed"),
+    "personal_assistant": ("personal_assistant_team.shared.pa_job_store", "mark_all_running_jobs_failed"),
+    "agent_provisioning": ("agent_provisioning_team.shared.job_store", "mark_all_running_jobs_failed"),
+    "ai_systems": ("ai_systems_team.shared.job_store", "mark_all_running_jobs_failed"),
+    "soc2_compliance": ("soc2_compliance_team.api.main", "mark_all_running_jobs_failed"),
+    "social_marketing": ("social_media_marketing_team.api.main", "mark_all_running_jobs_failed"),
+    "accessibility_audit": ("accessibility_audit_team.api.main", "mark_all_running_jobs_failed"),
+}
+
+
+def _run_shutdown_hooks(reason: str) -> None:
+    """Call each mounted team's mark_all_running_jobs_failed(reason). Used by lifespan and atexit."""
+    for team_key, (module_path, func_name) in SHUTDOWN_HOOKS.items():
+        if not _mounted_teams.get(team_key):
+            continue
+        try:
+            mod = importlib.import_module(module_path)
+            fn = getattr(mod, func_name)
+            fn(reason)
+        except Exception as e:
+            logger.warning("Shutdown hook for team %s failed: %s", team_key, e)
 
 
 def _try_mount_blogging(app: FastAPI) -> bool:
@@ -295,6 +323,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down Unified API Server...")
+    _run_shutdown_hooks("Server shutting down")
 
 
 # Create the unified FastAPI application
@@ -324,6 +353,8 @@ Visit the team-specific `/docs` endpoint for detailed API documentation
     version="1.0.0",
     lifespan=lifespan,
 )
+
+atexit.register(lambda: _run_shutdown_hooks("Server stopped or crashed"))
 
 # Enable CORS
 app.add_middleware(

@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -165,3 +166,152 @@ def test_run_team_poll_status(client: TestClient, temp_work_path: Path) -> None:
         assert any(backend_dir.rglob("*.py")), "Backend should have added Python files"
     if (work_path / "devops" / ".github" / "workflows" / "ci.yml").exists() or (work_path / ".github" / "workflows" / "ci.yml").exists():
         pass  # DevOps may add CI config
+
+
+# --- Resume endpoint tests ---
+
+
+def test_resume_404_when_job_missing(client: TestClient) -> None:
+    """POST /run-team/{job_id}/resume returns 404 for unknown job."""
+    job_id = str(uuid.uuid4())
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 404
+    assert "Job not found" in r.json().get("detail", "")
+
+
+def test_resume_400_when_no_repo_path(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when job has no repo_path."""
+    from software_engineering_team.shared.job_store import create_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(job_id, repo_path=None)
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+    assert "repo_path" in r.json().get("detail", "").lower()
+
+
+def test_resume_400_when_status_completed(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when job status is completed."""
+    from software_engineering_team.shared.job_store import create_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(job_id, status="completed")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+    assert "cannot be resumed" in r.json().get("detail", "").lower() or "status" in r.json().get("detail", "").lower()
+
+
+def test_resume_400_when_status_failed(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when job status is failed."""
+    from software_engineering_team.shared.job_store import create_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(job_id, status="failed")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+
+
+def test_resume_400_when_status_cancelled(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when job status is cancelled."""
+    from software_engineering_team.shared.job_store import create_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(job_id, status="cancelled")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+
+
+def test_resume_400_when_invalid_repo_path(client: TestClient) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when repo_path does not exist or is invalid."""
+    from software_engineering_team.shared.job_store import create_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "/nonexistent/path/for/resume/test", job_type="run_team")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+    assert "detail" in r.json()
+
+
+def test_resume_400_when_job_type_not_run_team(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 400 when job_type is not run_team."""
+    from software_engineering_team.shared.job_store import create_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="planning_v2")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 400
+    assert "run_team" in r.json().get("detail", "").lower() or "job_type" in r.json().get("detail", "").lower()
+
+
+def test_resume_200_when_pending(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 200 and starts thread when status is pending."""
+    from software_engineering_team.shared.job_store import create_job, get_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["job_id"] == job_id
+    assert data["status"] == "running"
+    assert "message" in data
+
+    # Job store should show running
+    time.sleep(0.15)
+    job_data = get_job(job_id)
+    assert job_data is not None
+    assert job_data.get("status") == "running"
+
+
+def test_resume_200_when_agent_crash(client: TestClient, temp_work_path: Path) -> None:
+    """POST /run-team/{job_id}/resume returns 200 when status is agent_crash."""
+    from software_engineering_team.shared.job_store import create_job, get_job, update_job
+    from software_engineering_team.shared.job_store import JOB_STATUS_AGENT_CRASH
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(job_id, status=JOB_STATUS_AGENT_CRASH, error="Simulated crash")
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 200
+    assert r.json()["job_id"] == job_id
+    assert r.json()["status"] == "running"
+
+    time.sleep(0.15)
+    job_data = get_job(job_id)
+    assert job_data is not None
+    assert job_data.get("status") == "running"
+
+
+def test_mark_all_running_jobs_failed(tmp_path: Path) -> None:
+    """mark_all_running_jobs_failed sets all running/pending jobs to failed with reason."""
+    from software_engineering_team.shared.job_store import (
+        create_job,
+        get_job,
+        mark_all_running_jobs_failed,
+        update_job,
+        JOB_STATUS_RUNNING,
+    )
+
+    cache_dir = tmp_path
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "/some/repo", cache_dir=cache_dir)
+    update_job(job_id, status=JOB_STATUS_RUNNING, cache_dir=cache_dir)
+
+    mark_all_running_jobs_failed("test", cache_dir=cache_dir)
+
+    job_data = get_job(job_id, cache_dir=cache_dir)
+    assert job_data is not None
+    assert job_data.get("status") == "failed"
+    assert job_data.get("error") == "test"

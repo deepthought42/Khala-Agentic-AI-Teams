@@ -18,6 +18,7 @@ from software_engineering_team.shared.models import PlanningHierarchy
 
 from ..models import (
     ImplementationPhaseResult,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
     ReviewPhaseResult,
     SpecReviewResult,
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 def _read_planning_artifacts(repo_path: Path) -> Dict[str, str]:
     """Read planning artifacts from plan/planning_team for review."""
     files: Dict[str, str] = {}
-    plan_dir = repo_path / "plan" / "planning_team"
+    plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
     if plan_dir.exists():
         for f in plan_dir.glob("*.md"):
             try:

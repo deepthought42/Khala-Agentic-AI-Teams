@@ -162,8 +162,8 @@ true or false
 ## END RESOLVED ##
 
 ## FILE_UPDATES ##
-### plan/filename.md ###
-Complete updated file content here (if needed). Use a new ### path ### block for each file.
+### plan/planning_team/filename.md ###
+Complete updated file content here (if needed). Use a new ### path ### block for each file. Paths must be under plan/planning_team/.
 ### END FILE ###
 ## END FILE_UPDATES ##
 

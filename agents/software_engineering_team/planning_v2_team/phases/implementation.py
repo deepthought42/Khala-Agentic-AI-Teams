@@ -25,6 +25,7 @@ from software_engineering_team.shared.models import PlanningHierarchy
 
 from ..models import (
     ImplementationPhaseResult,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
     ReviewPhaseResult,
     SpecReviewResult,
@@ -43,7 +44,7 @@ def _read_planning_artifacts(repo_path: Path) -> Dict[str, str]:
     instead of regenerating from scratch.
     """
     files: Dict[str, str] = {}
-    plan_dir = repo_path / "plan" / "planning_team"
+    plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
     if plan_dir.exists():
         for f in plan_dir.glob("*.md"):
             try:
@@ -81,7 +82,7 @@ def run_implementation(
     
     try:
         repo_path.mkdir(parents=True, exist_ok=True)
-        plan_dir = repo_path / "plan" / "planning_team"
+        plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
         plan_dir.mkdir(parents=True, exist_ok=True)
         
         effective_hierarchy = hierarchy
@@ -292,9 +293,9 @@ def run_implementation(
             parts.append(f"- {epic_count} Epic(s)\n")
             parts.append(f"- {story_count} Story(ies)\n")
             parts.append(f"- {task_count} Task(s)\n")
-            parts.append("\nSee `planning_hierarchy.md` in `/plan` for detailed hierarchy.\n")
+            parts.append(f"\nSee `planning_hierarchy.md` in `{PLAN_PLANNING_TEAM_DIR}` for detailed hierarchy.\n")
             
-            # Write full hierarchy to /plan/planning_hierarchy.md
+            # Write full hierarchy to plan/planning_team/planning_hierarchy.md
             try:
                 hierarchy_md = _hierarchy_to_markdown(effective_hierarchy)
                 hierarchy_file = plan_dir / "planning_hierarchy.md"

@@ -8,7 +8,7 @@ enters closed-loop rewrite until PASS or max_rewrite_iterations.
 Supports job_updater callback for UI phase tracking.
 """
 
-import _path_setup  # noqa: F401
+from . import _path_setup  # noqa: F401
 
 import logging
 from pathlib import Path

@@ -51,6 +51,9 @@ MAX_DECOMPOSITION_DEPTH = 20
 MAX_ISSUES = 10
 MAX_GAPS = 10
 
+# Subdirectory under repo where PRA writes all artifacts (validated_spec, PRD, updated_spec*, qa_history).
+PRODUCT_ANALYSIS_SUBDIR = "plan/product_analysis"
+
 
 # ---------------------------------------------------------------------------
 # Constraint Domain Definitions and Analysis
@@ -355,6 +358,10 @@ class ProductRequirementsAnalysisAgent:
 
         logger.info("Product Requirements Analysis Agent: WORKFLOW START")
 
+        product_analysis_dir = repo_path / "plan" / "product_analysis"
+        product_analysis_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Initialized %s for PRA artifacts", PRODUCT_ANALYSIS_SUBDIR)
+
         while iteration < max_iterations:
             iteration += 1
             result.iterations = iteration
@@ -491,15 +498,16 @@ class ProductRequirementsAnalysisAgent:
             logger.error("Product Requirements Analysis: %s", result.failure_reason)
             return result
 
-        # Save validated spec (PRD) and also keep the raw cleaned spec accessible
-        validated_spec_path = repo_path / "plan" / "validated_spec.md"
-        validated_spec_path.parent.mkdir(parents=True, exist_ok=True)
+        # Save validated spec (PRD) and also keep the raw cleaned spec accessible under plan/product_analysis
+        product_analysis_dir = repo_path / "plan" / "product_analysis"
+        product_analysis_dir.mkdir(parents=True, exist_ok=True)
+        validated_spec_path = product_analysis_dir / "validated_spec.md"
         validated_spec_path.write_text(result.final_spec_content, encoding="utf-8")
         result.validated_spec_path = str(validated_spec_path)
 
         # Also write an explicit PRD file for clarity
         try:
-            prd_path = validated_spec_path.parent / "product_requirements_document.md"
+            prd_path = product_analysis_dir / "product_requirements_document.md"
             prd_path.write_text(result.final_spec_content, encoding="utf-8")
             logger.info("Product Requirements Analysis: PRD saved to %s", prd_path.name)
         except Exception as exc:
@@ -728,8 +736,8 @@ Previously Answered Questions:
         return result, updated_spec
 
     def _read_qa_history(self, repo_path: Path) -> str:
-        """Read the QA history file if it exists."""
-        qa_file = repo_path / "plan" / "qa_history.md"
+        """Read the QA history file if it exists (from plan/product_analysis)."""
+        qa_file = repo_path / "plan" / "product_analysis" / "qa_history.md"
         if qa_file.exists():
             try:
                 return qa_file.read_text(encoding="utf-8")
@@ -1256,7 +1264,7 @@ Previously Answered Questions:
             logger.error("Failed to update spec with LLM: %s", e)
             return current_spec
 
-        plan_dir = repo_path / "plan"
+        plan_dir = repo_path / "plan" / "product_analysis"
         plan_dir.mkdir(parents=True, exist_ok=True)
 
         spec_file = plan_dir / f"updated_spec_v{iteration}.md"
@@ -1381,7 +1389,7 @@ Previously Answered Questions:
             return current_spec
         
         # Save the clarified spec using the same versioned pattern as _update_spec
-        plan_dir = repo_path / "plan"
+        plan_dir = repo_path / "plan" / "product_analysis"
         plan_dir.mkdir(parents=True, exist_ok=True)
         
         spec_file = plan_dir / f"updated_spec_v{iteration}.md"
@@ -1399,8 +1407,8 @@ Previously Answered Questions:
         answered_questions: List[AnsweredQuestion],
         iteration: int,
     ) -> None:
-        """Save answered questions to /plan/qa_history.md."""
-        plan_dir = repo_path / "plan"
+        """Save answered questions to plan/product_analysis/qa_history.md."""
+        plan_dir = repo_path / "plan" / "product_analysis"
         plan_dir.mkdir(parents=True, exist_ok=True)
 
         qa_file = plan_dir / "qa_history.md"

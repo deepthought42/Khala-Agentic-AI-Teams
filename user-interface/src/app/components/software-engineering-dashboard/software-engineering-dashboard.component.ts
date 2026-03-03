@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { CommonModule } from '@angular/common';
 import { Subscription, timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
@@ -16,8 +17,6 @@ import { ErrorMessageComponent } from '../../shared/error-message/error-message.
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
 import { RunTeamFormComponent } from '../run-team-form/run-team-form.component';
 import { RetryFailedComponent } from '../retry-failed/retry-failed.component';
-import { ExecutionTasksComponent } from '../execution-tasks/execution-tasks.component';
-import { ExecutionStreamComponent } from '../execution-stream/execution-stream.component';
 import { ArchitectureResultsComponent } from '../architecture-results/architecture-results.component';
 import { BackendCodeV2RunFormComponent } from '../backend-code-v2-run-form/backend-code-v2-run-form.component';
 import { BackendCodeV2JobStatusComponent } from '../backend-code-v2-job-status/backend-code-v2-job-status.component';
@@ -54,13 +53,12 @@ import type {
     MatInputModule,
     MatButtonModule,
     MatIconModule,
+    MatTooltipModule,
     LoadingSpinnerComponent,
     ErrorMessageComponent,
     HealthIndicatorComponent,
     RunTeamFormComponent,
     RetryFailedComponent,
-    ExecutionTasksComponent,
-    ExecutionStreamComponent,
     ArchitectureResultsComponent,
     BackendCodeV2RunFormComponent,
     BackendCodeV2JobStatusComponent,
@@ -80,9 +78,9 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
   private static readonly JOB_TYPE_TAB_MAP: Record<string, number> = {
     run_team: 0,
     product_analysis: 1,
-    backend_code_v2: 3,
-    frontend_code_v2: 4,
-    planning_v2: 5,
+    backend_code_v2: 2,
+    frontend_code_v2: 3,
+    planning_v2: 4,
   };
   private readonly api = inject(SoftwareEngineeringApiService);
   private readonly route = inject(ActivatedRoute);
@@ -117,6 +115,12 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
 
   healthCheck = (): ReturnType<SoftwareEngineeringApiService['health']> =>
     this.api.health();
+
+  /** True when the run_team job can be resumed (e.g. after server restart). */
+  isRunTeamJobResumable(): boolean {
+    const s = this.jobStatus?.status;
+    return s === 'running' || s === 'pending' || s === 'agent_crash';
+  }
 
   ngOnInit(): void {
     this.route.queryParams.subscribe((params) => {
@@ -207,13 +211,13 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       case 1:
         this.productAnalysisJobId = jobId;
         break;
-      case 3:
+      case 2:
         this.backendCodeV2JobId = jobId;
         break;
-      case 4:
+      case 3:
         this.frontendCodeV2JobId = jobId;
         break;
-      case 5:
+      case 4:
         this.planningV2JobId = jobId;
         break;
       default:
@@ -259,6 +263,21 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Retry failed';
+        this.loading = false;
+      },
+    });
+  }
+
+  onResumeRunTeamJob(): void {
+    if (!this.jobId) return;
+    this.loading = true;
+    this.error = null;
+    this.api.resumeRunTeamJob(this.jobId).subscribe({
+      next: () => {
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Resume failed';
         this.loading = false;
       },
     });

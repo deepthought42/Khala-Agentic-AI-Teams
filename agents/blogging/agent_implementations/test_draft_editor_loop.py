@@ -2,7 +2,10 @@
 Quick test of the draft-editor loop using DummyLLMClient (no Ollama or API keys needed).
 """
 
-import _path_setup  # noqa: F401  # Add blogging to path when run from project root
+try:
+    from . import _path_setup  # noqa: F401
+except ImportError:
+    import _path_setup  # noqa: F401  # when run as script
 
 import logging
 from pathlib import Path

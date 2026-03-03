@@ -3,6 +3,7 @@ FastAPI endpoints for the Digital Accessibility Audit Team.
 """
 
 import asyncio
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -24,10 +25,22 @@ from ..orchestrator import AccessibilityAuditOrchestrator, run_accessibility_aud
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # In-memory job store (would be replaced with persistent storage in production)
 _job_store: Dict[str, Dict[str, Any]] = {}
 _orchestrator: Optional[AccessibilityAuditOrchestrator] = None
+
+
+def mark_all_running_jobs_failed(reason: str) -> None:
+    """Mark all running accessibility audit jobs as failed (e.g. on server shutdown)."""
+    try:
+        for job in _job_store.values():
+            if job.get("status") == "running":
+                job["status"] = "failed"
+                job["error"] = reason
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
 
 
 def get_orchestrator() -> AccessibilityAuditOrchestrator:

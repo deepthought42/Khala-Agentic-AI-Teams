@@ -21,6 +21,7 @@ from software_engineering_team.shared.llm import LLMClient
 
 from ..models import (
     ImplementationPhaseResult,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
     ProblemSolvingPhaseResult,
     ReviewPhaseResult,
@@ -67,7 +68,7 @@ def _classify_issue(issue: str) -> ToolAgentKind:
 def _read_planning_artifacts(repo_path: Path) -> Dict[str, str]:
     """Read planning artifacts from plan/planning_team for problem-solving context."""
     files: Dict[str, str] = {}
-    plan_dir = repo_path / "plan" / "planning_team"
+    plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
     if plan_dir.exists():
         for f in plan_dir.glob("*.md"):
             try:

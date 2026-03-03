@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
 from ...output_templates import (
     parse_architecture_planning_output,
     parse_fix_output,
@@ -310,7 +310,7 @@ class ArchitectureToolAgent:
                 len(arch_issues),
             )
         
-        existing_arch = (inp.current_files or {}).get("plan/planning_team/architecture.md")
+        existing_arch = (inp.current_files or {}).get(planning_asset_path("architecture.md"))
         if existing_arch and not arch_issues:
             return ToolAgentPhaseOutput(
                 summary="Architecture artifacts unchanged (file exists, no review issues).",
@@ -349,8 +349,8 @@ class ArchitectureToolAgent:
         if deployment_model:
             content_parts.append(f"## Deployment Model\n{deployment_model}\n\n")
         
-        if (arch_style or layers) and "plan/planning_team/architecture.md" not in files_written:
-            rel_path = "plan/planning_team/architecture.md"
+        if (arch_style or layers) and planning_asset_path("architecture.md") not in files_written:
+            rel_path = planning_asset_path("architecture.md")
             content = "".join(content_parts)
             repo = Path(inp.repo_path or ".")
             full_path = repo / rel_path
@@ -445,7 +445,7 @@ class ArchitectureToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get("plan/planning_team/architecture.md", "")
+        current_artifact = inp.current_files.get(planning_asset_path("architecture.md"), "")
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "architect" in path.lower():
@@ -472,7 +472,7 @@ class ArchitectureToolAgent:
 
             files: Dict[str, str] = {}
             if updated_content and isinstance(updated_content, str) and updated_content.strip():
-                files["plan/planning_team/architecture.md"] = updated_content
+                files[planning_asset_path("architecture.md")] = updated_content
                 logger.info("Architecture: fix applied (single-issue) — %s", fix_desc[:120])
             elif file_updates:
                 for path, content in file_updates.items():
