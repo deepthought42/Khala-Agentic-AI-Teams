@@ -10,6 +10,12 @@ from agents.investment_team.models import (
     PortfolioPosition,
     PortfolioProposal,
     PromotionStage,
+    GateResult,
+    PolicyGateDecision,
+    HumanApprovalMarker,
+    PlatformActionArtifact,
+    ArtifactRedactionStatus,
+    PlatformActionRunResult,
     RiskTolerance,
     SavingsRate,
     StrategySpec,
@@ -145,3 +151,39 @@ def test_policy_guardian_rejects_excluded_asset_class() -> None:
     violations = PolicyGuardianAgent().check_portfolio(ips, proposal)
 
     assert any("excluded by IPS preferences" in item for item in violations)
+
+
+def test_platform_action_models_capture_compliance_metadata() -> None:
+    gate = PolicyGateDecision(
+        gate="human_approval",
+        decision=GateResult.PASS,
+        reason="Approved by supervisor",
+        policy_reference="policy://platform_actions/human_approval",
+    )
+    approval = HumanApprovalMarker(
+        required=True,
+        approved=True,
+        approver_id="supervisor-1",
+        approved_at="2026-01-01T00:00:00Z",
+        notes="Validated for execution",
+    )
+    artifact = PlatformActionArtifact(
+        artifact_id="art-1",
+        run_id="run-1",
+        artifact_type="screenshot",
+        platform="broker_portal",
+        action_type="place_order",
+        path="artifacts/run-1/screenshot.png",
+        timestamp="2026-01-01T00:00:00Z",
+        redaction_status=ArtifactRedactionStatus.PARTIAL,
+    )
+    result = PlatformActionRunResult(
+        output={"status": "ok"},
+        structured_extraction={"order_id": "abc"},
+        policy_gate_decisions=[gate],
+        human_approval=approval,
+    )
+
+    assert result.policy_gate_decisions[0].decision == GateResult.PASS
+    assert result.human_approval.approved is True
+    assert artifact.redaction_status == ArtifactRedactionStatus.PARTIAL

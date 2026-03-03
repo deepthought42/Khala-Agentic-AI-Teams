@@ -261,3 +261,75 @@ class InvestmentCommitteeMemo(BaseModel):
     dissenting_views: List[str] = Field(default_factory=list)
     attachments: List[str] = Field(default_factory=list)
     audit: AuditContext = Field(default_factory=AuditContext)
+
+
+class PlatformActionRunStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+
+class ArtifactRedactionStatus(str, Enum):
+    NONE = "none"
+    PARTIAL = "partial"
+    FULL = "full"
+    PENDING = "pending"
+
+
+class PolicyGateDecision(BaseModel):
+    gate: str
+    decision: GateResult
+    reason: str
+    policy_reference: Optional[str] = None
+
+
+class HumanApprovalMarker(BaseModel):
+    required: bool = False
+    approved: Optional[bool] = None
+    approver_id: Optional[str] = None
+    approved_at: Optional[str] = None
+    notes: str = ""
+
+
+class PlatformActionArtifact(BaseModel):
+    artifact_id: str
+    run_id: str
+    artifact_type: str
+    platform: str
+    action_type: str
+    path: Optional[str] = None
+    uri: Optional[str] = None
+    timestamp: str
+    redaction_status: ArtifactRedactionStatus = ArtifactRedactionStatus.PENDING
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PlatformActionRunResult(BaseModel):
+    output: Dict[str, Any] = Field(default_factory=dict)
+    structured_extraction: Dict[str, Any] = Field(default_factory=dict)
+    policy_gate_decisions: List[PolicyGateDecision] = Field(default_factory=list)
+    human_approval: HumanApprovalMarker = Field(default_factory=HumanApprovalMarker)
+
+
+class PlatformActionRunRecord(BaseModel):
+    run_id: str
+    platform: str
+    action: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    browser: Optional[str] = None
+    status: PlatformActionRunStatus
+    created_at: str
+    updated_at: str
+    result: Optional[PlatformActionRunResult] = None
+    error: Optional[str] = None
+
+
+class PlatformActionRunResponse(BaseModel):
+    run: PlatformActionRunRecord
+
+
+class PlatformActionArtifactsResponse(BaseModel):
+    run_id: str
+    artifacts: List[PlatformActionArtifact] = Field(default_factory=list)
