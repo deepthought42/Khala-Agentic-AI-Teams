@@ -287,6 +287,14 @@ class ArchitectureToolAgent:
                     fixes_applied.append(result.summary)
             logger.info("Architecture: fixed %d/%d issues", len(fixes_applied), len(arch_issues))
         
+        existing_arch = (inp.current_files or {}).get("plan/architecture.md")
+        if existing_arch and not arch_issues:
+            return ToolAgentPhaseOutput(
+                summary="Architecture artifacts unchanged (file exists, no review issues).",
+                files={},
+                recommendations=fixes_applied if fixes_applied else [],
+            )
+        
         arch_style = inp.metadata.get("architecture_style", "")
         layers = inp.metadata.get("layers", [])
         cross_cutting = inp.metadata.get("cross_cutting", [])

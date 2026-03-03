@@ -75,7 +75,8 @@ def run_implementation(
     """
     assets_created: list[str] = []
     assets_updated: list[str] = []
-    all_files: Dict[str, str] = {}
+    current_files = _read_planning_artifacts(repo_path)
+    all_files: Dict[str, str] = dict(current_files)
     
     try:
         repo_path.mkdir(parents=True, exist_ok=True)
@@ -86,7 +87,6 @@ def run_implementation(
         if planning_result and planning_result.hierarchy:
             effective_hierarchy = planning_result.hierarchy
         
-        current_files = _read_planning_artifacts(repo_path)
         if current_files:
             logger.info(
                 "Implementation: read %d existing planning artifacts for update semantics",
@@ -147,8 +147,12 @@ def run_implementation(
             full_path = repo_path / rel_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
-            assets_created.append(rel_path)
-            logger.info("Implementation: wrote %s", rel_path)
+            if rel_path in current_files:
+                assets_updated.append(rel_path)
+                logger.info("Implementation: updated %s", rel_path)
+            else:
+                assets_created.append(rel_path)
+                logger.info("Implementation: wrote %s", rel_path)
         
         parts = ["# Planning (v2) Artifacts\n\n"]
         if spec_review_result:

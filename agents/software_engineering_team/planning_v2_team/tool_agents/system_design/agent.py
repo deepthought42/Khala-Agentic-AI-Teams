@@ -235,6 +235,14 @@ class SystemDesignToolAgent:
                     fixes_applied.append(result.summary)
             logger.info("SystemDesign: fixed %d/%d issues", len(fixes_applied), len(design_issues))
         
+        existing_design = (inp.current_files or {}).get("plan/system_design.md")
+        if existing_design and not design_issues:
+            return ToolAgentPhaseOutput(
+                summary="System design artifacts unchanged (file exists, no review issues).",
+                files={},
+                recommendations=fixes_applied if fixes_applied else [],
+            )
+        
         component_design = inp.metadata.get("component_design", [])
         data_flow = inp.metadata.get("data_flow", "")
         integration_strategy = inp.metadata.get("integration_strategy", "")
