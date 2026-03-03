@@ -389,6 +389,7 @@ class PlatformActionRunResponse(BaseModel):
 class PlatformActionArtifactsResponse(BaseModel):
     run_id: str
     artifacts: List[PlatformActionArtifact] = Field(default_factory=list)
+
 class StrategyLabRecord(BaseModel):
     """Result of one strategy ideation + backtest + analysis cycle."""
 
