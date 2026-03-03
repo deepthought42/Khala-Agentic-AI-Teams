@@ -11,7 +11,19 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
+from software_engineering_team.shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy, ToolRecommendation
+
+
+# ---------------------------------------------------------------------------
+# Planning assets directory (all tool agents read/write assets here)
+# ---------------------------------------------------------------------------
+
+PLAN_PLANNING_TEAM_DIR = "plan/planning_team"
+
+
+def planning_asset_path(filename: str) -> str:
+    """Return path under plan/planning_team for a given filename (e.g. 'ui_design.md')."""
+    return f"{PLAN_PLANNING_TEAM_DIR}/{filename}"
 
 
 # ---------------------------------------------------------------------------
@@ -19,15 +31,15 @@ from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarc
 # ---------------------------------------------------------------------------
 
 class Phase(str, Enum):
-    """Lifecycle phases of the planning-v2 workflow (5 phases).
+    """Lifecycle phases of the planning-v2 workflow (4 phases).
     
     The team expects a pre-validated specification - no spec review is performed.
+    When review finds issues, they are passed back to Implementation for fixes.
     """
 
     PLANNING = "planning"
     IMPLEMENTATION = "implementation"
     REVIEW = "review"
-    PROBLEM_SOLVING = "problem_solving"
     DELIVER = "deliver"
 
 
@@ -83,10 +95,22 @@ class ToolAgentPhaseOutput(BaseModel):
 
     summary: str = Field(default="")
     recommendations: List[str] = Field(default_factory=list)
+    tool_recommendations: List[ToolRecommendation] = Field(
+        default_factory=list,
+        description="Structured tool/service recommendations with pricing, licensing, and adoption details.",
+    )
     issues: List[str] = Field(default_factory=list)
     files: Dict[str, str] = Field(default_factory=dict)
+    files_written: List[str] = Field(
+        default_factory=list,
+        description="Paths already written to disk by the agent; implementation phase will skip writing these.",
+    )
     hierarchy: Optional[PlanningHierarchy] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    resolved: bool = Field(
+        default=False,
+        description="Whether the issue was resolved (for fix_single_issue).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +213,10 @@ class PlanningPhaseResult(BaseModel):
     others: str = Field(default="", description="Additional notes")
     summary: str = Field(default="", description="Overall planning summary")
     hierarchy: Optional[PlanningHierarchy] = None
+    clarification_questions: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Questions requiring user clarification from tool agents (e.g., deployment target)",
+    )
 
 
 class ImplementationPhaseResult(BaseModel):
@@ -208,10 +236,18 @@ class ReviewPhaseResult(BaseModel):
 
 
 class ProblemSolvingPhaseResult(BaseModel):
-    """Output of Problem-solving phase (fixes applied)."""
+    """DEPRECATED: Problem-solving phase has been removed.
+    
+    Review issues are now passed directly to Implementation phase.
+    This model is kept for backward compatibility only.
+    """
 
     fixes_applied: List[str] = Field(default_factory=list)
     resolved: bool = Field(default=False)
+    unresolved_issues: List[str] = Field(
+        default_factory=list,
+        description="Issues that could not be resolved during problem-solving.",
+    )
     summary: str = Field(default="")
 
 
@@ -235,7 +271,7 @@ class PlanningV2WorkflowResult(BaseModel):
     """
     Full result of the planning-v2 team's workflow.
 
-    Captures outcome of the 5-phase lifecycle.
+    Captures outcome of the 4-phase lifecycle (Planning -> Implementation -> Review -> Deliver).
     """
 
     success: bool = Field(default=False)

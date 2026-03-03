@@ -8,62 +8,42 @@ Focuses on CI/CD pipelines, infrastructure, and deployment planning.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...output_templates import parse_devops_planning_output, parse_fix_output
+from ..json_utils import complete_text_with_continuation
 
 if TYPE_CHECKING:
-    from shared.llm import LLMClient
+    from software_engineering_team.shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
-def _merge_devops_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge devops results from multiple chunks."""
-    merged: Dict[str, Any] = {
-        "needs_clarification": False,
-        "clarification_questions": [],
-        "pipeline_stages": [],
-        "infrastructure": {},
-        "deployment_strategy": "",
-        "monitoring": [],
-        "security": [],
-        "recommendations": [],
-        "summary": "",
-    }
-    strategies = []
-    summaries = []
+DEVOPS_PLANNING_PROMPT = """You are a DevOps expert. Create a DevOps plan for the specification.
 
-    for r in results:
-        if r.get("needs_clarification"):
-            merged["needs_clarification"] = True
-        if isinstance(r.get("clarification_questions"), list):
-            for q in r["clarification_questions"]:
-                if q not in merged["clarification_questions"]:
-                    merged["clarification_questions"].append(q)
-        if isinstance(r.get("pipeline_stages"), list):
-            for stage in r["pipeline_stages"]:
-                if stage not in merged["pipeline_stages"]:
-                    merged["pipeline_stages"].append(stage)
-        if isinstance(r.get("infrastructure"), dict):
-            merged["infrastructure"].update(r["infrastructure"])
-        if r.get("deployment_strategy"):
-            strategies.append(str(r["deployment_strategy"]))
-        if isinstance(r.get("monitoring"), list):
-            merged["monitoring"].extend(r["monitoring"])
-        if isinstance(r.get("security"), list):
-            merged["security"].extend(r["security"])
-        if isinstance(r.get("recommendations"), list):
-            merged["recommendations"].extend(r["recommendations"])
-        if r.get("summary"):
-            summaries.append(str(r["summary"]))
+If deployment target is NOT specified in the spec, set NEEDS_CLARIFICATION to true and list questions in CLARIFICATION_QUESTIONS. Do not assume cloud provider.
 
-    merged["deployment_strategy"] = strategies[0] if strategies else ""
-    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
-    return merged
+Respond using this EXACT format:
 
-DEVOPS_PLANNING_PROMPT = """You are a DevOps expert. Create a DevOps plan for:
+## NEEDS_CLARIFICATION ##
+true or false
+## END NEEDS_CLARIFICATION ##
+
+## CLARIFICATION_QUESTIONS ##
+- Where should this application be deployed?
+- What are the expected SLA requirements?
+## END CLARIFICATION_QUESTIONS ##
+
+## RECOMMENDATIONS ##
+- DevOps recommendation 1
+- DevOps recommendation 2
+## END RECOMMENDATIONS ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 
 Specification:
 ---
@@ -71,72 +51,44 @@ Specification:
 ---
 
 Plan summary from spec review: {plan_summary}
-
-CRITICAL RULES:
-1. Do NOT assume any deployment target or cloud provider if not explicitly stated in the specification.
-2. If the spec does not clearly specify WHERE the application should be deployed (e.g., Heroku, AWS, DigitalOcean, on-premises), you MUST:
-   - Set "needs_clarification": true
-   - Add questions about deployment target to "clarification_questions"
-   - Do NOT generate provider-specific infrastructure recommendations
-3. If deployment IS specified, prefer cost-effective solutions:
-   - For simple apps: Heroku, Railway, Render, DigitalOcean App Platform
-   - Only suggest AWS/GCP/Azure if the requirements explicitly justify it (scale, compliance, specific services)
-
-Plan for:
-1. CI/CD pipeline stages
-2. Infrastructure requirements (ONLY if deployment target is specified)
-3. Deployment strategy
-4. Monitoring and observability
-5. Security considerations
-
-Respond with JSON:
-{{
-  "needs_clarification": false,
-  "clarification_questions": [],
-  "pipeline_stages": ["build", "test", "deploy"],
-  "infrastructure": {{"compute": "...", "database": "...", "networking": "..."}},
-  "deployment_strategy": "blue-green|rolling|canary",
-  "monitoring": ["metrics", "logs", "traces"],
-  "security": ["secrets management", "network policies"],
-  "recommendations": ["devops recommendations"],
-  "summary": "brief summary"
-}}
-
-If deployment target is NOT specified, respond with:
-{{
-  "needs_clarification": true,
-  "clarification_questions": [
-    "Where should this application be deployed? (e.g., Heroku, Railway, DigitalOcean, AWS, on-premises)",
-    "What are the expected SLA requirements (uptime, RTO, RPO)?",
-    "Are there any budget constraints for infrastructure?"
-  ],
-  "pipeline_stages": ["build", "test"],
-  "infrastructure": {{}},
-  "deployment_strategy": "",
-  "monitoring": [],
-  "security": [],
-  "recommendations": ["Deployment target must be specified before infrastructure planning can proceed"],
-  "summary": "Cannot complete DevOps planning - deployment target not specified in specification"
-}}
 """
 
-DEVOPS_PLANNING_CHUNK_PROMPT = """You are a DevOps expert. Analyze this SECTION of a specification for DevOps:
+DEVOPS_FIX_SINGLE_ISSUE_PROMPT = """You are a DevOps expert. Fix this specific issue in the DevOps artifacts.
 
-SECTION:
+ISSUE TO FIX:
 ---
-{chunk_content}
+{issue}
 ---
 
-Respond with concise JSON for THIS section only:
-{{
-  "pipeline_stages": ["relevant stages"],
-  "infrastructure": {{"relevant": "requirements"}},
-  "deployment_strategy": "strategy if applicable",
-  "monitoring": ["monitoring needs"],
-  "security": ["security considerations"],
-  "recommendations": ["devops recommendations"],
-  "summary": "brief summary"
-}}
+CURRENT DEVOPS ARTIFACT:
+---
+{current_artifact}
+---
+
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
+
+Respond using this EXACT format:
+
+## ROOT_CAUSE ##
+Why this issue exists.
+## END ROOT_CAUSE ##
+
+## FIX_DESCRIPTION ##
+What you are changing to fix it.
+## END FIX_DESCRIPTION ##
+
+## RESOLVED ##
+true or false
+## END RESOLVED ##
+
+## FILE_UPDATES ##
+### plan/planning_team/devops.md ###
+Complete updated file content here.
+### END FILE ###
+## END FILE_UPDATES ##
 """
 
 
@@ -167,15 +119,10 @@ class DevOpsToolAgent:
             spec_content=spec_content[:6000],
             plan_summary=plan_summary[:2000],
         )
-        data = parse_json_with_recovery(
-            self.llm,
-            prompt,
-            agent_name="DevOps",
-            decompose_fn=default_decompose_by_sections,
-            merge_fn=_merge_devops_results,
-            original_content=spec_content,
-            chunk_prompt_template=DEVOPS_PLANNING_CHUNK_PROMPT,
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="DevOps",
         )
+        data = parse_devops_planning_output(raw_text)
         
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):
@@ -205,12 +152,73 @@ class DevOpsToolAgent:
         )
 
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
-        """Implementation phase: generate DevOps artifacts."""
-        pipeline_stages = inp.metadata.get("pipeline_stages", [])
-        infrastructure = inp.metadata.get("infrastructure", {})
-        deployment_strategy = inp.metadata.get("deployment_strategy", "")
-        monitoring = inp.metadata.get("monitoring", [])
-        security = inp.metadata.get("security", [])
+        """Implementation phase: generate or update DevOps artifacts.
+        Writes to disk as fixes are applied; returns files_written so implementation phase does not overwrite.
+        """
+        fixes_applied: List[str] = []
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
+        
+        devops_issues = [
+            i for i in inp.review_issues
+            if any(kw in i.lower() for kw in ["devops", "ci/cd", "pipeline", "infrastructure", "deployment", "monitoring", "security", "cicd"])
+        ]
+        
+        if devops_issues and self.llm:
+            logger.info(
+                "DevOps: handling %d review issue(s) (will apply fixes and write updated artifacts to disk).",
+                len(devops_issues),
+            )
+            fix_inp = inp.model_copy(update={"current_files": current_files})
+            for issue in devops_issues:
+                result = self.fix_single_issue(issue, fix_inp)
+                if result.files:
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        file_name = full_path.name
+                        logger.info(
+                            "DevOps: applied fix — writing to file: %s; full contents:\n%s",
+                            file_name,
+                            content,
+                        )
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
+                    fixes_applied.append(result.summary)
+            logger.info(
+                "DevOps: fixed %d out of %d review issue(s) (all fixes written to planning artifacts).",
+                len(fixes_applied),
+                len(devops_issues),
+            )
+        
+        existing_doc = inp.current_files.get(planning_asset_path("devops.md")) if inp.current_files else None
+        if existing_doc and not devops_issues:
+            return ToolAgentPhaseOutput(
+                summary="DevOps artifacts unchanged (file exists, no review issues).",
+                files={},
+                recommendations=[],
+                files_written=[],
+            )
+        if files_written:
+            summary = "DevOps artifacts updated."
+            if fixes_applied:
+                summary = f"DevOps artifacts updated. Fixed {len(fixes_applied)} review issues."
+            return ToolAgentPhaseOutput(
+                summary=summary,
+                files={},
+                recommendations=fixes_applied if fixes_applied else [],
+                files_written=files_written,
+            )
+        
+        pipeline_stages = inp.metadata.get("pipeline_stages", []) if inp.metadata else []
+        infrastructure = inp.metadata.get("infrastructure", {}) if inp.metadata else {}
+        deployment_strategy = inp.metadata.get("deployment_strategy", "") if inp.metadata else ""
+        monitoring = inp.metadata.get("monitoring", []) if inp.metadata else []
+        security = inp.metadata.get("security", []) if inp.metadata else []
         
         content_parts = ["# DevOps Plan\n\n"]
         
@@ -241,14 +249,88 @@ class DevOpsToolAgent:
                 content_parts.append(f"- {item}\n")
             content_parts.append("\n")
         
-        files = {}
         if pipeline_stages or infrastructure:
-            files["plan/devops.md"] = "".join(content_parts)
+            rel_path = planning_asset_path("devops.md")
+            content = "".join(content_parts)
+            repo = Path(inp.repo_path or ".")
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written.append(rel_path)
         
         return ToolAgentPhaseOutput(
             summary="DevOps artifacts generated.",
-            files=files,
+            files={},
+            files_written=files_written,
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single DevOps issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="DevOps fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = ""
+        if inp.current_files:
+            current_artifact = inp.current_files.get(planning_asset_path("devops.md"), "")
+            if not current_artifact:
+                for path, content in inp.current_files.items():
+                    if "devops" in path.lower():
+                        current_artifact = content
+                        break
+
+        prompt = DEVOPS_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw_text = complete_text_with_continuation(
+                self.llm, prompt, agent_name="DevOps_FixSingleIssue",
+            )
+            raw = parse_fix_output(raw_text)
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+            file_updates = raw.get("file_updates") or {}
+            if not updated_content and file_updates:
+                updated_content = next(iter(file_updates.values()), "")
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files[planning_asset_path("devops.md")] = updated_content
+                logger.info("DevOps: fix applied (single-issue) — %s", fix_desc[:120])
+            elif file_updates:
+                for path, content in file_updates.items():
+                    if content and isinstance(content, str) and content.strip():
+                        files[path] = content
+                        logger.info("DevOps: fix applied (single-issue) — %s", fix_desc[:120])
+                        break
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"DevOps issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("DevOps fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Review phase: DevOps does not participate."""

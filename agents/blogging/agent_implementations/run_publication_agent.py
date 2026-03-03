@@ -10,7 +10,7 @@ This script demonstrates the full flow. In practice, approval/rejection may come
 from a CLI prompt, API, or another system.
 """
 
-import _path_setup  # noqa: F401  # Add blogging to path when run from project root
+from . import _path_setup  # noqa: F401  # Add blogging to path when run from project root
 
 import logging
 from pathlib import Path

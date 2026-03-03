@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from social_media_marketing_team.orchestrator import SocialMediaMarketingOrchest
 
 app = FastAPI(title="Social Media Marketing Team API", version="1.0.0")
 
+logger = logging.getLogger(__name__)
 _jobs: Dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
@@ -65,6 +67,15 @@ class MarketingJobStatusResponse(BaseModel):
     result: Optional[TeamOutput] = None
 
 
+class MarketingJobListItem(BaseModel):
+    job_id: str
+    status: str
+    current_stage: str
+    progress: int
+    created_at: Optional[str] = None
+    last_updated_at: Optional[str] = None
+
+
 class PerformanceIngestRequest(BaseModel):
     observations: List[PostPerformanceObservation] = Field(default_factory=list)
 
@@ -92,6 +103,19 @@ def _update_job(job_id: str, **fields) -> None:
         if job_id in _jobs:
             _jobs[job_id].update(fields)
             _jobs[job_id]["last_updated_at"] = _now()
+
+
+def mark_all_running_jobs_failed(reason: str) -> None:
+    """Mark all pending or running marketing jobs as failed (e.g. on server shutdown)."""
+    try:
+        with _jobs_lock:
+            for job in _jobs.values():
+                if job.get("status") in ("pending", "running"):
+                    job["status"] = "failed"
+                    job["error"] = reason
+                    job["last_updated_at"] = _now()
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
 
 
 def _run_team_job(job_id: str, request: RunMarketingTeamRequest) -> None:
@@ -159,6 +183,7 @@ def run_marketing_team(request: RunMarketingTeamRequest) -> RunMarketingTeamResp
             raise HTTPException(status_code=400, detail=f"File not found: {p}")
 
     job_id = str(uuid.uuid4())
+    now = _now()
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id": job_id,
@@ -172,7 +197,8 @@ def run_marketing_team(request: RunMarketingTeamRequest) -> RunMarketingTeamResp
             "error": None,
             "eta_hint": "queued",
             "performance_observations": [],
-            "last_updated_at": _now(),
+            "created_at": now,
+            "last_updated_at": now,
             "revision_history": [],
             "request_payload": request,
         }
@@ -238,6 +264,30 @@ def revise_marketing_team(job_id: str, request: ReviseMarketingTeamRequest) -> R
         status="running",
         message=f"Revision started for {job_id}. Poll GET /social-marketing/status/{job_id} for updates.",
     )
+
+
+@app.get("/social-marketing/jobs", response_model=List[MarketingJobListItem])
+def list_marketing_jobs(
+    running_only: bool = False,
+) -> List[MarketingJobListItem]:
+    """List all marketing jobs, optionally filtered to pending/running only."""
+    with _jobs_lock:
+        jobs = list(_jobs.values())
+    if running_only:
+        jobs = [j for j in jobs if j.get("status") in ("pending", "running")]
+    items = [
+        MarketingJobListItem(
+            job_id=j.get("job_id", ""),
+            status=j.get("status", "pending"),
+            current_stage=j.get("current_stage", ""),
+            progress=j.get("progress", 0),
+            created_at=j.get("created_at") or j.get("last_updated_at"),
+            last_updated_at=j.get("last_updated_at"),
+        )
+        for j in jobs
+    ]
+    items.sort(key=lambda x: x.created_at or x.last_updated_at or "", reverse=True)
+    return items
 
 
 @app.get("/social-marketing/status/{job_id}", response_model=MarketingJobStatusResponse)

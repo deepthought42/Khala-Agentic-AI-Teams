@@ -8,69 +8,102 @@ Focuses on high-level architecture, technology choices, and structural decisions
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...output_templates import (
+    parse_architecture_planning_output,
+    parse_fix_output,
+    parse_review_output,
+    parse_spec_review_output,
+)
+from ..json_utils import complete_text_with_continuation
+from software_engineering_team.shared.models import ToolRecommendation, PricingTier, LicenseType
 
 if TYPE_CHECKING:
-    from shared.llm import LLMClient
+    from software_engineering_team.shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
-def _merge_architecture_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge architecture results from multiple chunks."""
-    merged: Dict[str, Any] = {
-        "architecture_style": "",
-        "layers": [],
-        "cross_cutting": [],
-        "deployment_model": "",
-        "recommendations": [],
-        "summary": "",
-    }
-    styles = []
-    deployments = []
-    summaries = []
+def _parse_tool_recommendations(raw_recommendations: List[Dict[str, Any]]) -> List[ToolRecommendation]:
+    """Parse raw tool recommendation dicts into ToolRecommendation models."""
+    parsed = []
+    for rec in raw_recommendations:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            pricing_tier_str = rec.get("pricing_tier", "paid").lower()
+            try:
+                pricing_tier = PricingTier(pricing_tier_str)
+            except ValueError:
+                pricing_tier = PricingTier.PAID
 
-    for r in results:
-        if r.get("architecture_style"):
-            styles.append(str(r["architecture_style"]))
-        if isinstance(r.get("layers"), list):
-            merged["layers"].extend(r["layers"])
-        if isinstance(r.get("cross_cutting"), list):
-            merged["cross_cutting"].extend(r["cross_cutting"])
-        if r.get("deployment_model"):
-            deployments.append(str(r["deployment_model"]))
-        if isinstance(r.get("recommendations"), list):
-            merged["recommendations"].extend(r["recommendations"])
-        if r.get("summary"):
-            summaries.append(str(r["summary"]))
+            license_type_str = rec.get("license_type", "unknown").lower()
+            try:
+                license_type = LicenseType(license_type_str)
+            except ValueError:
+                license_type = LicenseType.UNKNOWN
 
-    merged["architecture_style"] = styles[0] if styles else ""
-    merged["deployment_model"] = " ".join(deployments)
-    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
-    return merged
+            tool_rec = ToolRecommendation(
+                name=rec.get("name", "Unknown"),
+                category=rec.get("category", "unknown"),
+                description=rec.get("description", ""),
+                rationale=rec.get("rationale", ""),
+                pricing_tier=pricing_tier,
+                pricing_details=rec.get("pricing_details", ""),
+                estimated_monthly_cost=rec.get("estimated_monthly_cost"),
+                license_type=license_type,
+                is_open_source=rec.get("is_open_source", False),
+                source_url=rec.get("source_url"),
+                ease_of_integration=rec.get("ease_of_integration", "medium"),
+                learning_curve=rec.get("learning_curve", "moderate"),
+                documentation_quality=rec.get("documentation_quality", "good"),
+                community_size=rec.get("community_size", "medium"),
+                maturity=rec.get("maturity", "mature"),
+                vendor_lock_in_risk=rec.get("vendor_lock_in_risk", "low"),
+                migration_complexity=rec.get("migration_complexity", "moderate"),
+                alternatives=rec.get("alternatives", []),
+                why_not_alternatives=rec.get("why_not_alternatives", ""),
+                confidence=float(rec.get("confidence", 0.8)),
+            )
+            parsed.append(tool_rec)
+        except Exception as e:
+            logger.warning("Failed to parse tool recommendation: %s - %s", rec.get("name", "?"), e)
+    return parsed
 
-ARCHITECTURE_SPEC_REVIEW_PROMPT = """You are an Architecture expert. Review this specification and identify:
-1. Architectural patterns needed (monolith, microservices, event-driven, etc.)
-2. Technology stack recommendations
-3. Non-functional requirements (performance, security, scalability)
-4. Architectural risks or constraints
+
+ARCHITECTURE_SPEC_REVIEW_PROMPT = """You are an Architecture expert. Review this specification and identify architectural patterns, gaps (as issues), and a brief summary.
 
 Specification:
 ---
 {spec_content}
 ---
 
-Respond with JSON:
-{{
-  "patterns": ["recommended architectural patterns"],
-  "tech_stack": {{"frontend": "...", "backend": "...", "database": "...", "infrastructure": "..."}},
-  "nfrs": ["non-functional requirements"],
-  "risks": ["architectural risks"],
-  "summary": "brief summary"
-}}
+Respond using this EXACT format:
+
+## COMPONENTS ##
+- Component or pattern 1
+- Component or pattern 2
+## END COMPONENTS ##
+
+## INTEGRATION_POINTS ##
+- Integration point 1
+## END INTEGRATION_POINTS ##
+
+## GAPS ##
+- Architectural gap or risk 1
+- Architectural gap or risk 2
+## END GAPS ##
+
+## SCALABILITY_NOTES ##
+Brief scalability considerations.
+## END SCALABILITY_NOTES ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 """
 
 ARCHITECTURE_PLANNING_PROMPT = """You are an Architecture expert. Create an architecture plan for:
@@ -82,15 +115,36 @@ Specification:
 
 Prior analysis: {prior_analysis}
 
-Respond with JSON:
-{{
-  "architecture_style": "chosen architecture pattern",
-  "layers": [{{"name": "layer_name", "technologies": ["tech1"], "responsibilities": "what it does"}}],
-  "cross_cutting": ["logging", "security", "monitoring"],
-  "deployment_model": "how it will be deployed",
-  "recommendations": ["architecture recommendations"],
-  "summary": "brief summary"
-}}
+Respond using this EXACT format:
+
+## ARCHITECTURE_STYLE ##
+Chosen architecture pattern (e.g. layered, microservices).
+## END ARCHITECTURE_STYLE ##
+
+## LAYERS ##
+Presentation: Angular, React - UI and user interaction
+Business: Python, Node - business logic
+Data: PostgreSQL, Redis - persistence and cache
+## END LAYERS ##
+
+## CROSS_CUTTING ##
+- Logging
+- Security
+- Monitoring
+## END CROSS_CUTTING ##
+
+## DEPLOYMENT_MODEL ##
+How the system will be deployed (e.g. Docker, K8s).
+## END DEPLOYMENT_MODEL ##
+
+## RECOMMENDATIONS ##
+- Recommendation 1
+- Recommendation 2
+## END RECOMMENDATIONS ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 """
 
 ARCHITECTURE_REVIEW_PROMPT = """You are an Architecture expert. Review these planning artifacts for architectural coherence:
@@ -100,31 +154,65 @@ Artifacts:
 {artifacts}
 ---
 
-Respond with JSON:
-{{
-  "passed": true or false,
-  "issues": ["list of architecture issues found"],
-  "recommendations": ["improvements"],
-  "summary": "brief summary"
-}}
+Respond using this EXACT format:
+
+## PASSED ##
+true or false
+## END PASSED ##
+
+## ISSUES ##
+- Issue 1
+- Issue 2
+## END ISSUES ##
+
+## RECOMMENDATIONS ##
+- Improvement 1
+- Improvement 2
+## END RECOMMENDATIONS ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 """
 
-ARCHITECTURE_PLANNING_CHUNK_PROMPT = """You are an Architecture expert. Analyze this SECTION of a specification for architecture:
+ARCHITECTURE_FIX_SINGLE_ISSUE_PROMPT = """You are an Architecture expert. Fix this specific issue in the planning artifacts.
 
-SECTION:
+ISSUE TO FIX:
 ---
-{chunk_content}
+{issue}
 ---
 
-Respond with concise JSON for THIS section only:
-{{
-  "architecture_style": "suggested pattern for this section",
-  "layers": [{{"name": "layer_name", "technologies": ["tech1"], "responsibilities": "what it does"}}],
-  "cross_cutting": ["concerns relevant to this section"],
-  "deployment_model": "deployment considerations",
-  "recommendations": ["architecture recommendations"],
-  "summary": "brief summary"
-}}
+CURRENT ARCHITECTURE ARTIFACT:
+---
+{current_artifact}
+---
+
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
+
+Analyze and fix this issue. Provide the complete updated file content using the format below.
+
+Respond using this EXACT format:
+
+## ROOT_CAUSE ##
+Why this issue exists.
+## END ROOT_CAUSE ##
+
+## FIX_DESCRIPTION ##
+What you are changing to fix it.
+## END FIX_DESCRIPTION ##
+
+## RESOLVED ##
+true or false
+## END RESOLVED ##
+
+## FILE_UPDATES ##
+### plan/planning_team/architecture.md ###
+Complete updated file content here.
+### END FILE ###
+## END FILE_UPDATES ##
 """
 
 
@@ -155,23 +243,18 @@ class ArchitectureToolAgent:
             spec_content=spec_content[:8000],
             prior_analysis=prior_analysis[:2000],
         )
-        data = parse_json_with_recovery(
-            self.llm,
-            prompt,
-            agent_name="Architecture",
-            decompose_fn=default_decompose_by_sections,
-            merge_fn=_merge_architecture_results,
-            original_content=spec_content,
-            chunk_prompt_template=ARCHITECTURE_PLANNING_CHUNK_PROMPT,
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="Architecture",
         )
-        
+        data = parse_architecture_planning_output(raw_text)
         recommendations = data.get("recommendations") or []
         if not isinstance(recommendations, list):
             recommendations = [str(recommendations)]
-        
+
         return ToolAgentPhaseOutput(
             summary=data.get("summary", "Architecture planning complete."),
             recommendations=recommendations,
+            tool_recommendations=[],
             metadata={
                 "architecture_style": data.get("architecture_style", ""),
                 "layers": data.get("layers", []),
@@ -181,9 +264,60 @@ class ArchitectureToolAgent:
         )
 
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
-        """Implementation phase: generate architecture artifacts."""
+        """Implementation phase: generate architecture artifacts and fix review issues.
+        Writes to disk as fixes are applied; returns files_written so implementation phase does not overwrite.
+        """
         if not self.llm:
             return ToolAgentPhaseOutput(summary="Architecture execute skipped (no LLM).")
+        
+        fixes_applied: List[str] = []
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
+        
+        arch_issues = [
+            i for i in inp.review_issues
+            if any(kw in i.lower() for kw in ["architect", "layer", "module", "component", "integration", "deployment"])
+        ]
+        
+        if arch_issues:
+            logger.info(
+                "Architecture: handling %d review issue(s) (will apply fixes and write updated artifacts to disk).",
+                len(arch_issues),
+            )
+            fix_inp = inp.model_copy(update={"current_files": current_files})
+            for issue in arch_issues:
+                result = self.fix_single_issue(issue, fix_inp)
+                if result.files:
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        file_name = full_path.name
+                        logger.info(
+                            "Architecture: applied fix — writing to file: %s; full contents:\n%s",
+                            file_name,
+                            content,
+                        )
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
+                    fixes_applied.append(result.summary)
+            logger.info(
+                "Architecture: fixed %d out of %d review issue(s) (all fixes written to planning artifacts).",
+                len(fixes_applied),
+                len(arch_issues),
+            )
+        
+        existing_arch = (inp.current_files or {}).get(planning_asset_path("architecture.md"))
+        if existing_arch and not arch_issues:
+            return ToolAgentPhaseOutput(
+                summary="Architecture artifacts unchanged (file exists, no review issues).",
+                files={},
+                recommendations=fixes_applied if fixes_applied else [],
+                files_written=[],
+            )
         
         arch_style = inp.metadata.get("architecture_style", "")
         layers = inp.metadata.get("layers", [])
@@ -215,13 +349,24 @@ class ArchitectureToolAgent:
         if deployment_model:
             content_parts.append(f"## Deployment Model\n{deployment_model}\n\n")
         
-        files = {}
-        if arch_style or layers:
-            files["plan/architecture.md"] = "".join(content_parts)
+        if (arch_style or layers) and planning_asset_path("architecture.md") not in files_written:
+            rel_path = planning_asset_path("architecture.md")
+            content = "".join(content_parts)
+            repo = Path(inp.repo_path or ".")
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written.append(rel_path)
+        
+        summary = "Architecture artifacts generated."
+        if fixes_applied:
+            summary = f"Architecture artifacts generated. Fixed {len(fixes_applied)} review issues."
         
         return ToolAgentPhaseOutput(
-            summary="Architecture artifacts generated.",
-            files=files,
+            summary=summary,
+            files={},
+            recommendations=fixes_applied if fixes_applied else [],
+            files_written=files_written,
         )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
@@ -241,8 +386,10 @@ class ArchitectureToolAgent:
             )
         
         prompt = ARCHITECTURE_REVIEW_PROMPT.format(artifacts=artifacts)
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="Architecture")
-        
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="Architecture",
+        )
+        data = parse_review_output(raw_text)
         issues = data.get("issues") or []
         if not isinstance(issues, list):
             issues = [str(issues)] if issues else []
@@ -261,15 +408,92 @@ class ArchitectureToolAgent:
         """Problem-solving phase: address architecture issues."""
         if not self.llm:
             return ToolAgentPhaseOutput(summary="Architecture problem_solve skipped (no LLM).")
-        
+
         arch_issues = [i for i in inp.review_issues if "architect" in i.lower() or "layer" in i.lower()]
         if not arch_issues:
             return ToolAgentPhaseOutput(summary="No architecture issues to resolve.")
-        
+
+        all_files: Dict[str, str] = {}
+        fixes_applied: List[str] = []
+
+        for issue in arch_issues:
+            result = self.fix_single_issue(issue, inp)
+            if result.files:
+                all_files.update(result.files)
+                fixes_applied.append(result.summary)
+
         return ToolAgentPhaseOutput(
-            summary=f"Architecture: {len(arch_issues)} issue(s) identified for resolution.",
-            recommendations=[f"Address: {issue}" for issue in arch_issues[:5]],
+            summary=f"Architecture: fixed {len(fixes_applied)}/{len(arch_issues)} issue(s).",
+            recommendations=fixes_applied,
+            files=all_files,
+            resolved=len(fixes_applied) == len(arch_issues),
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single architecture issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="Architecture fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = inp.current_files.get(planning_asset_path("architecture.md"), "")
+        if not current_artifact:
+            for path, content in inp.current_files.items():
+                if "architect" in path.lower():
+                    current_artifact = content
+                    break
+
+        prompt = ARCHITECTURE_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw_text = complete_text_with_continuation(
+                self.llm, prompt, agent_name="Architecture_FixSingleIssue",
+            )
+            raw = parse_fix_output(raw_text)
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+            file_updates = raw.get("file_updates") or {}
+            if not updated_content and file_updates:
+                updated_content = next(iter(file_updates.values()), "")
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files[planning_asset_path("architecture.md")] = updated_content
+                logger.info("Architecture: fix applied (single-issue) — %s", fix_desc[:120])
+            elif file_updates:
+                for path, content in file_updates.items():
+                    if content and isinstance(content, str) and content.strip():
+                        files[path] = content
+                        logger.info("Architecture: fix applied (single-issue) — %s", fix_desc[:120])
+                        break
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"Architecture issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("Architecture fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def deliver(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Deliver phase: finalize architecture documentation."""
@@ -289,18 +513,21 @@ class ArchitectureToolAgent:
         prompt = ARCHITECTURE_SPEC_REVIEW_PROMPT.format(
             spec_content=(inp.spec_content or "")[:10000],
         )
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="Architecture")
-        
-        risks = data.get("risks") or []
-        if not isinstance(risks, list):
-            risks = [str(risks)] if risks else []
-        
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="Architecture",
+        )
+        data = parse_spec_review_output(raw_text)
+        gaps = data.get("gaps") or []
+        if not isinstance(gaps, list):
+            gaps = [str(gaps)] if gaps else []
+
         return ToolAgentPhaseOutput(
             summary=data.get("summary", "Architecture spec review complete."),
-            issues=risks,
+            issues=gaps,
+            tool_recommendations=[],
             metadata={
-                "patterns": data.get("patterns", []),
-                "tech_stack": data.get("tech_stack", {}),
-                "nfrs": data.get("nfrs", []),
+                "patterns": data.get("components", []),
+                "integration_points": data.get("integration_points", []),
+                "scalability_notes": data.get("scalability_notes", ""),
             },
         )

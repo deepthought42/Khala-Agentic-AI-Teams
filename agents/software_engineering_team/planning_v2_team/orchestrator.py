@@ -1,11 +1,15 @@
 """
-Planning-V2 team orchestrator: 3-layer architecture with 5-phase state machine.
+Planning-V2 team orchestrator: 3-layer architecture with 4-phase state machine.
 
 Layer 1: PlanningV2ProductLead (top) - handles spec intake, inspiration, feedback
 Layer 2: PlanningV2PlanningAgent (middle) - orchestrates 8 tool agents across phases
-Layer 3: Tool Agents (bottom) - 8 specialized agents participating in 5 phases
+Layer 3: Tool Agents (bottom) - 8 specialized agents participating in phases
 
-Phases: Planning → Implementation → Review → Problem-solving → Deliver
+Phases: Planning → Implementation → Review → Deliver
+
+When Review finds issues, they are passed back to Implementation for fixing.
+When tool agents raise clarification questions (e.g., deployment target), they
+are surfaced to the user via the Open Questions UI.
 
 This team expects to receive a pre-validated, complete specification. Use the
 Product Requirements Analysis agent or similar upstream process to validate
@@ -18,22 +22,24 @@ No code from planning_team or project_planning_agent is imported or reused.
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from shared.llm import LLMClient
-from shared.models import PlanningHierarchy
+from software_engineering_team.shared.llm import LLMClient
+from software_engineering_team.shared.models import PlanningHierarchy
+from software_engineering_team.shared.job_store import add_pending_questions, is_waiting_for_answers
 
 from .models import (
     DeliverPhaseResult,
     ImplementationPhaseResult,
     Phase,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
     PlanningRole,
     PlanningV2WorkflowResult,
-    ProblemSolvingPhaseResult,
     ReviewPhaseResult,
     ToolAgentKind,
     ToolAgentPhaseInput,
@@ -42,17 +48,18 @@ from .models import (
 from .phases.planning import run_planning
 from .phases.implementation import run_implementation
 from .phases.review import run_review
-from .phases.problem_solving import run_problem_solving
 from .phases.deliver import run_deliver
 
 logger = logging.getLogger(__name__)
+
+CLARIFICATION_POLL_INTERVAL = 5.0
+MAX_CLARIFICATION_WAIT_SECONDS = 3600
 
 # Phase order for completed_phases and progress (snake_case for API/UI)
 PHASE_ORDER: List[str] = [
     Phase.PLANNING.value,
     Phase.IMPLEMENTATION.value,
     Phase.REVIEW.value,
-    Phase.PROBLEM_SOLVING.value,
     Phase.DELIVER.value,
 ]
 
@@ -71,7 +78,6 @@ PHASE_ROLES: dict[Phase, List[PlanningRole]] = {
         PlanningRole.ARCHITECTURE_HIGH_LEVEL,
         PlanningRole.TASK_DEPENDENCY_ANALYZER,
     ],
-    Phase.PROBLEM_SOLVING: [PlanningRole.SYSTEM_DESIGN, PlanningRole.ARCHITECTURE_HIGH_LEVEL],
     Phase.DELIVER: [PlanningRole.SYSTEM_DESIGN, PlanningRole.ARCHITECTURE_HIGH_LEVEL],
 }
 
@@ -99,11 +105,6 @@ PHASE_TOOL_AGENTS: Dict[Phase, List[ToolAgentKind]] = {
         ToolAgentKind.USER_STORY,
         ToolAgentKind.TASK_DEPENDENCY,
     ],
-    Phase.PROBLEM_SOLVING: [
-        ToolAgentKind.SYSTEM_DESIGN,
-        ToolAgentKind.ARCHITECTURE,
-        ToolAgentKind.USER_STORY,
-    ],
     Phase.DELIVER: [
         ToolAgentKind.SYSTEM_DESIGN,
         ToolAgentKind.ARCHITECTURE,
@@ -111,12 +112,75 @@ PHASE_TOOL_AGENTS: Dict[Phase, List[ToolAgentKind]] = {
     ],
 }
 
-MAX_REVIEW_ITERATIONS = 5
+MAX_REVIEW_ITERATIONS = 100
 
 
 def _active_roles_for_phase(phase: Phase) -> List[str]:
     """Return list of role names (snake_case) for the current phase."""
     return [r.value for r in PHASE_ROLES.get(phase, [])]
+
+
+def _convert_clarifications_to_pending_questions(
+    clarification_questions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert tool agent clarification questions to pending question format.
+    
+    Tool agents produce questions in the format:
+        {"source": "devops", "question_text": "What is the deployment target?"}
+    
+    This converts them to the job_store pending question format with sensible defaults.
+    """
+    pending: List[Dict[str, Any]] = []
+    for q in clarification_questions:
+        source = q.get("source", "unknown")
+        question_text = q.get("question_text", "")
+        if not question_text:
+            continue
+        
+        question_id = f"clarify-{source}-{uuid.uuid4().hex[:8]}"
+        
+        options = _generate_options_for_question(question_text, source)
+        
+        pending.append({
+            "id": question_id,
+            "question_text": question_text,
+            "context": f"This question was raised by the {source.upper()} agent during planning.",
+            "options": options,
+            "allow_multiple": False,
+            "required": True,
+            "source": f"planning_v2_{source}",
+            "category": "clarification",
+            "priority": "medium",
+        })
+    return pending
+
+
+def _generate_options_for_question(question_text: str, source: str) -> List[Dict[str, Any]]:
+    """Generate sensible default options based on the question content."""
+    question_lower = question_text.lower()
+    
+    if source == "devops":
+        if "deployment" in question_lower or "deploy" in question_lower:
+            return [
+                {"id": "aws", "label": "AWS (EC2/ECS/Lambda)", "is_default": False, "rationale": "Popular cloud provider", "confidence": 0.0},
+                {"id": "gcp", "label": "Google Cloud Platform", "is_default": False, "rationale": "Popular cloud provider", "confidence": 0.0},
+                {"id": "azure", "label": "Microsoft Azure", "is_default": False, "rationale": "Popular cloud provider", "confidence": 0.0},
+                {"id": "heroku", "label": "Heroku", "is_default": False, "rationale": "Simple PaaS option", "confidence": 0.0},
+                {"id": "digitalocean", "label": "DigitalOcean", "is_default": False, "rationale": "Developer-friendly hosting", "confidence": 0.0},
+                {"id": "vercel", "label": "Vercel", "is_default": False, "rationale": "Good for frontend/JAMstack", "confidence": 0.0},
+                {"id": "docker", "label": "Docker/Kubernetes (self-hosted)", "is_default": False, "rationale": "Container-based deployment", "confidence": 0.0},
+                {"id": "other", "label": "Other (specify in text field)", "is_default": False, "rationale": "", "confidence": 0.0},
+            ]
+        if "ci" in question_lower or "continuous" in question_lower:
+            return [
+                {"id": "github_actions", "label": "GitHub Actions", "is_default": False, "rationale": "Integrated with GitHub", "confidence": 0.0},
+                {"id": "gitlab_ci", "label": "GitLab CI/CD", "is_default": False, "rationale": "Integrated with GitLab", "confidence": 0.0},
+                {"id": "jenkins", "label": "Jenkins", "is_default": False, "rationale": "Traditional CI/CD server", "confidence": 0.0},
+                {"id": "circleci", "label": "CircleCI", "is_default": False, "rationale": "Cloud CI service", "confidence": 0.0},
+                {"id": "other", "label": "Other (specify in text field)", "is_default": False, "rationale": "", "confidence": 0.0},
+            ]
+    
+    return [{"id": "other", "label": "Provide answer in text field", "is_default": True, "rationale": "", "confidence": 0.0}]
 
 
 def _build_tool_agents(llm: LLMClient) -> Dict[ToolAgentKind, Any]:
@@ -144,7 +208,12 @@ def _build_tool_agents(llm: LLMClient) -> Dict[ToolAgentKind, Any]:
 
 class PlanningV2PlanningAgent:
     """
-    Layer 2: Planning Agent that orchestrates the 8 tool agents across 5 phases.
+    Layer 2: Planning Agent that orchestrates the 8 tool agents across 4 phases.
+    
+    Phases: Planning -> Implementation -> Review -> Deliver
+    
+    When Review finds issues, they are passed back to Implementation for fixing.
+    Implementation agents decide how to handle fixes (batch, one-by-one, or all at once).
     
     Called by PlanningV2ProductLead after initial spec intake.
     
@@ -165,8 +234,14 @@ class PlanningV2PlanningAgent:
         inspiration_content: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
         job_id: Optional[str] = None,
+        prd_content: Optional[str] = None,
     ) -> PlanningV2WorkflowResult:
         """Execute the planning workflow using tool agents.
+        
+        The planning team expects (1) a spec and (2) a product requirements document
+        (PRD). Both are written under plan/planning_team at init for downstream phases.
+        Spec comes from spec_content or from disk (get_latest_spec_path); PRD from
+        prd_content if provided, else copied from plan/product_analysis or plan/.
         
         Args:
             spec_content: The pre-validated specification content to plan from.
@@ -175,6 +250,8 @@ class PlanningV2PlanningAgent:
             inspiration_content: Optional inspiration/moodboard content.
             job_updater: Callback to update job status in the store.
             job_id: Job ID for tracking progress.
+            prd_content: Optional PRD content; when provided, written to plan/planning_team
+                         and disk copy is skipped.
         """
         start_time = time.monotonic()
         result = PlanningV2WorkflowResult()
@@ -192,10 +269,40 @@ class PlanningV2PlanningAgent:
 
         logger.info("Planning-v2 Planning Agent WORKFLOW START")
 
+        # Initialize plan/planning_team and copy validated spec (from PRA) or latest spec + PRD into it
+        planning_team_dir = repo_path / PLAN_PLANNING_TEAM_DIR
+        planning_team_dir.mkdir(parents=True, exist_ok=True)
+        validated_spec_src = repo_path / "plan" / "product_analysis" / "validated_spec.md"
+        if validated_spec_src.exists():
+            shutil.copy2(validated_spec_src, planning_team_dir / "updated_spec.md")
+            logger.info("Planning-v2: copied validated_spec from plan/product_analysis to plan/planning_team/updated_spec.md")
+        else:
+            try:
+                from spec_parser import get_latest_spec_path
+                src = get_latest_spec_path(repo_path)
+                shutil.copy2(src, planning_team_dir / "updated_spec.md")
+                logger.info("Planning-v2: copied latest spec to plan/planning_team/updated_spec.md (from %s)", src)
+            except FileNotFoundError as e:
+                logger.warning("Planning-v2: no spec file to copy into plan/planning_team: %s", e)
+        # PRD: use in-memory prd_content if provided, else copy from disk (product_analysis first, then plan root)
+        if prd_content is not None and prd_content.strip():
+            (planning_team_dir / "product_requirements_document.md").write_text(prd_content, encoding="utf-8")
+            logger.info("Planning-v2: wrote PRD from in-memory content to plan/planning_team/")
+        else:
+            prd_src = repo_path / "plan" / "product_analysis" / "product_requirements_document.md"
+            if prd_src.exists():
+                shutil.copy2(prd_src, planning_team_dir / "product_requirements_document.md")
+                logger.info("Planning-v2: copied PRD from plan/product_analysis to plan/planning_team/")
+            else:
+                prd_src = repo_path / "plan" / "product_requirements_document.md"
+                if prd_src.exists():
+                    shutil.copy2(prd_src, planning_team_dir / "product_requirements_document.md")
+                    logger.info("Planning-v2: copied PRD from plan/ to plan/planning_team/")
+        logger.info("Planning-v2: plan/planning_team initialized")
+
         planning_result: Optional[PlanningPhaseResult] = None
         implementation_result: Optional[ImplementationPhaseResult] = None
         review_result: Optional[ReviewPhaseResult] = None
-        problem_solving_result: Optional[ProblemSolvingPhaseResult] = None
         deliver_result: Optional[DeliverPhaseResult] = None
 
         # ── Phase 1: Planning ──────────────────────────────────────────────
@@ -225,19 +332,62 @@ class PlanningV2PlanningAgent:
             return result
         _update_job(current_phase=Phase.PLANNING.value, progress=35)
 
-        # ── Phases 2–3: Implementation → Review (with Problem-solving retry) ─
+        # ── Handle Clarification Questions from Tool Agents ─────────────────
+        if planning_result.clarification_questions and job_id:
+            logger.info(
+                "Planning-v2: Tool agents raised %d clarification questions",
+                len(planning_result.clarification_questions),
+            )
+            pending_questions = _convert_clarifications_to_pending_questions(
+                planning_result.clarification_questions
+            )
+            if pending_questions:
+                add_pending_questions(job_id, pending_questions)
+                _update_job(
+                    waiting_for_answers=True,
+                    status_text=f"Waiting for answers to {len(pending_questions)} question(s)",
+                )
+                logger.info(
+                    "Planning-v2: Sent %d clarification questions to Open Questions UI",
+                    len(pending_questions),
+                )
+                
+                wait_start = time.time()
+                while time.time() - wait_start < MAX_CLARIFICATION_WAIT_SECONDS:
+                    if not is_waiting_for_answers(job_id):
+                        logger.info("Planning-v2: Received answers to clarification questions")
+                        break
+                    time.sleep(CLARIFICATION_POLL_INTERVAL)
+                else:
+                    logger.warning(
+                        "Planning-v2: Timeout waiting for clarification answers after %ds",
+                        MAX_CLARIFICATION_WAIT_SECONDS,
+                    )
+
+        # ── Phases 2–3: Implementation → Review (loop until review passes) ─
+        review_result = None
         for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
             # Phase 2: Implementation
-            logger.info(
-                "Planning-v2: Next step -> Starting Phase 2: Implementation (iteration %d/%d)",
-                iteration, MAX_REVIEW_ITERATIONS,
-            )
+            issue_count = len(review_result.issues) if review_result and review_result.issues else 0
+            if issue_count > 0:
+                logger.info(
+                    "Planning-v2: Next step -> Starting Phase 2: Implementation (iteration %d/%d, fixing %d review issues)",
+                    iteration, MAX_REVIEW_ITERATIONS, issue_count,
+                )
+                status_text = f"Fixing {issue_count} review issues (iteration {iteration})"
+            else:
+                logger.info(
+                    "Planning-v2: Next step -> Starting Phase 2: Implementation (iteration %d/%d)",
+                    iteration, MAX_REVIEW_ITERATIONS,
+                )
+                status_text = f"Creating implementation plan and task breakdown (iteration {iteration})"
+            
             result.current_phase = Phase.IMPLEMENTATION
             _update_job(
                 current_phase=Phase.IMPLEMENTATION.value,
                 progress=40 + (iteration - 1) * 10,
                 active_roles=_active_roles_for_phase(Phase.IMPLEMENTATION),
-                status_text=f"Creating implementation plan and task breakdown (iteration {iteration})",
+                status_text=status_text,
             )
             try:
                 implementation_result = run_implementation(
@@ -249,6 +399,7 @@ class PlanningV2PlanningAgent:
                     inspiration_content=inspiration_content,
                     tool_agents=self.tool_agents,
                     hierarchy=hierarchy,
+                    review_result=review_result,
                 )
                 result.implementation_result = implementation_result
                 current_files.update({
@@ -288,35 +439,15 @@ class PlanningV2PlanningAgent:
                 logger.info("Planning-v2: Review passed on iteration %d", iteration)
                 break
 
-            # Phase: Problem-solving
+            # Review did not pass - log issues and loop back to Implementation
+            issue_count = len(review_result.issues) if review_result.issues else 0
             logger.info(
-                "Planning-v2: Review did not pass. Next step -> Starting Problem-solving phase"
+                "Planning-v2: Review did not pass (%d issues). Next step -> Returning to Implementation phase",
+                issue_count,
             )
-            result.current_phase = Phase.PROBLEM_SOLVING
-            _update_job(
-                current_phase=Phase.PROBLEM_SOLVING.value,
-                progress=70,
-                active_roles=_active_roles_for_phase(Phase.PROBLEM_SOLVING),
-                status_text="Resolving identified issues in the plan",
-            )
-            try:
-                problem_solving_result = run_problem_solving(
-                    llm=self.llm,
-                    spec_content=spec_content,
-                    repo_path=repo_path,
-                    spec_review_result=None,
-                    planning_result=planning_result,
-                    implementation_result=implementation_result,
-                    review_result=review_result,
-                    tool_agents=self.tool_agents,
-                )
-                result.problem_solving_result = problem_solving_result
-            except Exception as exc:
-                logger.warning("Planning-v2: Problem-solving failed (non-blocking): %s", exc)
-                break
 
         # ── Phase 4: Deliver ─────────────────────────────────────────────
-        logger.info("Planning-v2: Next step -> Starting Phase 4: Deliver")
+        logger.info("Planning-v2: Next step -> Starting Deliver phase")
         result.current_phase = Phase.DELIVER
         _update_job(
             current_phase=Phase.DELIVER.value,
@@ -380,12 +511,18 @@ class PlanningV2ProductLead:
         job_id: Optional[str] = None,
         use_product_analysis: bool = False,
         validated_spec_content: Optional[str] = None,
+        prd_content: Optional[str] = None,
     ) -> PlanningV2WorkflowResult:
         """
         Execute the full planning-v2 workflow.
         
         The Product Lead handles initial spec intake and then delegates to
         the Planning Agent for the planning workflow.
+        
+        The planning team expects (1) a spec (via spec_content/validated_spec_content
+        or from disk) and (2) a product requirements document (PRD). Both are
+        written under plan/planning_team at init. PRD can be passed as prd_content
+        or is copied from plan/product_analysis or plan/ when present.
         
         Important: This team expects a pre-validated, complete specification.
         No spec review or expansion is performed.
@@ -402,6 +539,8 @@ class PlanningV2ProductLead:
             validated_spec_content: Pre-validated spec content from Product Analysis.
                                     If provided, skips running Product Analysis even
                                     if use_product_analysis is True.
+            prd_content: Optional PRD content; when provided, passed to Planning Agent
+                         and written to plan/planning_team (skips disk copy).
         """
         logger.info("Planning-v2 Product Lead: starting workflow")
         
@@ -463,19 +602,22 @@ class PlanningV2ProductLead:
                     exc,
                 )
         
-        # Also check for validated_spec.md in repo
-        validated_spec_path = repo_path / "plan" / "validated_spec.md"
-        if validated_spec_path.exists() and not validated_spec_content:
+        # When no validated_spec_content was provided, try loading latest spec from repo (validated_spec, updated_spec, etc.)
+        if not validated_spec_content:
             try:
-                file_spec = validated_spec_path.read_text(encoding="utf-8")
-                if file_spec.strip():
+                from spec_parser import get_latest_spec_content
+
+                disk_spec = get_latest_spec_content(repo_path)
+                if disk_spec.strip():
                     logger.info(
-                        "Planning-v2: Found validated_spec.md, using it instead of original spec"
+                        "Planning-v2: Using latest spec from repo (validated_spec.md, updated_spec.md, or fallback)"
                     )
-                    final_spec = file_spec
+                    final_spec = disk_spec
+            except FileNotFoundError:
+                pass  # Keep final_spec from spec_content or PRA result
             except Exception as exc:
                 logger.warning(
-                    "Planning-v2: Could not read validated_spec.md: %s", exc
+                    "Planning-v2: Could not read latest spec from repo: %s", exc
                 )
         
         planning_agent = PlanningV2PlanningAgent(self.llm)
@@ -485,6 +627,7 @@ class PlanningV2ProductLead:
             inspiration_content=inspiration_content,
             job_updater=job_updater,
             job_id=job_id,
+            prd_content=prd_content,
         )
         
         logger.info("Planning-v2 Product Lead: workflow %s", "succeeded" if result.success else "failed")

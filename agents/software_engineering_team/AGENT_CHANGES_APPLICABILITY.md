@@ -21,7 +21,7 @@ The following changes were implemented to reduce max cycles exceeded and erroneo
 | Constant | Default | Env Override | Description |
 |----------|---------|-------------|-------------|
 | `MAX_PREWRITE_REGENERATIONS` | 2 | `SW_MAX_PREWRITE_REGENERATIONS` | Max regenerations for pre-write test-route checks (pre-flight, build fix, code review fix, etc.) |
-| `MAX_REVIEW_ITERATIONS` | 20 | — | Max review loop iterations per task |
+| `MAX_REVIEW_ITERATIONS` | 100 | — | Max review loop iterations per task |
 | `MAX_SAME_BUILD_FAILURES` | 6 | — | Absolute max same build failures (early exit at 5 so Tech Lead can create follow-up) |
 
 ---

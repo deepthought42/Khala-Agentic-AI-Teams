@@ -3,20 +3,31 @@ Implementation phase: create or update planning assets.
 
 Tool agents: All 8 (System Design, Architecture, User Story, DevOps, UI, UX, Task Classification, Task Dependency).
 Note: Task Dependency only participates in Review per the matrix, but we include others in Implementation.
+
+When review_result contains issues, they are passed to tool agents for fixing.
+Agents decide how to handle fixes (batch, one-by-one, or all at once).
+
+Document Ownership: Each tool agent is responsible for its own document lifecycle.
+- If a document already exists and there are review issues, agents apply targeted fixes
+- Only if no document exists does the agent generate from scratch
+- This prevents overwriting fixes made in previous iterations
 """
 
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from shared.llm import LLMClient
-from shared.models import PlanningHierarchy
+from software_engineering_team.shared.llm import LLMClient
+from software_engineering_team.shared.models import PlanningHierarchy
 
 from ..models import (
     ImplementationPhaseResult,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
+    ReviewPhaseResult,
     SpecReviewResult,
     ToolAgentKind,
     ToolAgentPhaseInput,
@@ -24,6 +35,24 @@ from ..models import (
 from ..tool_agents.user_story.agent import _hierarchy_to_markdown
 
 logger = logging.getLogger(__name__)
+
+
+def _read_planning_artifacts(repo_path: Path) -> Dict[str, str]:
+    """Read existing planning artifacts from plan/planning_team for update semantics.
+    
+    This allows agents to see their current documents and apply targeted fixes
+    instead of regenerating from scratch.
+    """
+    files: Dict[str, str] = {}
+    plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
+    if plan_dir.exists():
+        for f in plan_dir.glob("*.md"):
+            try:
+                content = f.read_text(encoding="utf-8")
+                files[str(f.relative_to(repo_path))] = content
+            except Exception:
+                pass
+    return files
 
 
 def run_implementation(
@@ -35,28 +64,48 @@ def run_implementation(
     inspiration_content: Optional[str] = None,
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
     hierarchy: Optional[PlanningHierarchy] = None,
+    review_result: Optional[ReviewPhaseResult] = None,
 ) -> ImplementationPhaseResult:
     """
     Run Implementation phase with all participating tool agents.
     
     Tool agents: System Design, Architecture, User Story, DevOps, UI Design, UX Design, Task Classification.
+    
+    Args:
+        review_result: If provided and contains issues, they are passed to tool agents for fixing.
+                      Agents decide how to handle fixes (batch, one-by-one, or all at once).
     """
     assets_created: list[str] = []
     assets_updated: list[str] = []
-    all_files: Dict[str, str] = {}
+    current_files = _read_planning_artifacts(repo_path)
+    all_files: Dict[str, str] = dict(current_files)
     
     try:
         repo_path.mkdir(parents=True, exist_ok=True)
-        plan_dir = repo_path / "plan"
+        plan_dir = repo_path / PLAN_PLANNING_TEAM_DIR
         plan_dir.mkdir(parents=True, exist_ok=True)
         
         effective_hierarchy = hierarchy
         if planning_result and planning_result.hierarchy:
             effective_hierarchy = planning_result.hierarchy
         
+        if current_files:
+            logger.info(
+                "Implementation: read %d existing planning artifacts for update semantics",
+                len(current_files),
+            )
+        
         metadata: Dict[str, Any] = {}
         if planning_result:
             pass
+        
+        review_issues: List[str] = []
+        if review_result and review_result.issues:
+            review_issues = review_result.issues
+            logger.info(
+                "Implementation: received %d review issues to address",
+                len(review_issues),
+            )
         
         tool_agent_input = ToolAgentPhaseInput(
             spec_content=spec_content,
@@ -64,8 +113,11 @@ def run_implementation(
             repo_path=str(repo_path),
             spec_review_result=spec_review_result,
             planning_result=planning_result,
+            review_result=review_result,
+            review_issues=review_issues,
             hierarchy=effective_hierarchy,
             metadata=metadata,
+            current_files=current_files,
         )
         
         participating_agents = [
@@ -77,28 +129,78 @@ def run_implementation(
             ToolAgentKind.UX_DESIGN,
             ToolAgentKind.TASK_CLASSIFICATION,
         ]
-        
+
+        def _run_one_execute(agent_kind: ToolAgentKind) -> Tuple[ToolAgentKind, Any, Optional[Exception]]:
+            agent = tool_agents.get(agent_kind) if tool_agents else None
+            if agent and hasattr(agent, "execute"):
+                try:
+                    result = agent.execute(tool_agent_input)
+                    return (agent_kind, result, None)
+                except Exception as e:
+                    return (agent_kind, None, e)
+            return (agent_kind, None, None)
+
+        agent_written: set = set()
         if tool_agents:
-            for agent_kind in participating_agents:
-                agent = tool_agents.get(agent_kind)
-                if agent and hasattr(agent, "execute"):
-                    try:
-                        result = agent.execute(tool_agent_input)
-                        if result.files:
-                            all_files.update(result.files)
-                            logger.info("Implementation: %s generated %d files", agent_kind.value, len(result.files))
-                    except Exception as e:
+            # Tool agents run in parallel; each writes only to its own file(s), so no coordination required.
+            with ThreadPoolExecutor(max_workers=len(participating_agents)) as executor:
+                futures = {
+                    executor.submit(_run_one_execute, kind): kind
+                    for kind in participating_agents
+                }
+                for future in as_completed(futures):
+                    agent_kind, result, exc = future.result()
+                    if exc:
                         logger.warning(
                             "Implementation: %s execute failed: %s. Next step -> Continuing with other agents",
-                            agent_kind.value, e,
+                            agent_kind.value, exc,
                         )
+                        continue
+                    if result:
+                        if result.files_written:
+                            agent_written.update(result.files_written)
+                        if result.files:
+                            all_files.update(result.files)
+                            file_names = [Path(p).name for p in result.files]
+                            logger.info(
+                                "Implementation: %s generated %d file(s) (writing to: %s)",
+                                agent_kind.value,
+                                len(result.files),
+                                ", ".join(file_names),
+                            )
         
         for rel_path, content in all_files.items():
+            if rel_path in agent_written:
+                logger.info(
+                    "Implementation: skipped %s (file already written by tool agent during this phase)",
+                    Path(rel_path).name,
+                )
+                continue
             full_path = repo_path / rel_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
-            assets_created.append(rel_path)
-            logger.info("Implementation: wrote %s", rel_path)
+            file_name = Path(rel_path).name
+            if rel_path in current_files:
+                if content == current_files[rel_path]:
+                    logger.info(
+                        "Implementation: preserved %s (content unchanged, no write performed)",
+                        file_name,
+                    )
+                else:
+                    full_path.write_text(content, encoding="utf-8")
+                    assets_updated.append(rel_path)
+                    logger.info(
+                        "Implementation: applied update — writing to file: %s; full contents:\n%s",
+                        file_name,
+                        content,
+                    )
+            else:
+                full_path.write_text(content, encoding="utf-8")
+                assets_created.append(rel_path)
+                logger.info(
+                    "Implementation: wrote new file: %s; full contents:\n%s",
+                    file_name,
+                    content,
+                )
         
         parts = ["# Planning (v2) Artifacts\n\n"]
         if spec_review_result:
@@ -191,9 +293,9 @@ def run_implementation(
             parts.append(f"- {epic_count} Epic(s)\n")
             parts.append(f"- {story_count} Story(ies)\n")
             parts.append(f"- {task_count} Task(s)\n")
-            parts.append("\nSee `planning_hierarchy.md` in `/plan` for detailed hierarchy.\n")
+            parts.append(f"\nSee `planning_hierarchy.md` in `{PLAN_PLANNING_TEAM_DIR}` for detailed hierarchy.\n")
             
-            # Write full hierarchy to /plan/planning_hierarchy.md
+            # Write full hierarchy to plan/planning_team/planning_hierarchy.md
             try:
                 hierarchy_md = _hierarchy_to_markdown(effective_hierarchy)
                 hierarchy_file = plan_dir / "planning_hierarchy.md"
@@ -201,7 +303,11 @@ def run_implementation(
                 hierarchy_rel_path = str(hierarchy_file.relative_to(repo_path))
                 if hierarchy_rel_path not in assets_created:
                     assets_created.append(hierarchy_rel_path)
-                logger.info("Implementation: wrote full hierarchy to %s", hierarchy_file)
+                logger.info(
+                    "Implementation: wrote full planning hierarchy to file: %s; full contents:\n%s",
+                    hierarchy_file.name,
+                    hierarchy_md,
+                )
             except Exception as e:
                 logger.warning(
                     "Implementation: failed to write hierarchy file: %s. Next step -> Continuing with main artifacts",
@@ -209,11 +315,16 @@ def run_implementation(
                 )
         
         out_file = plan_dir / "planning_artifacts.md"
-        out_file.write_text("".join(parts), encoding="utf-8")
+        artifacts_content = "".join(parts)
+        out_file.write_text(artifacts_content, encoding="utf-8")
         rel_path = str(out_file.relative_to(repo_path))
         if rel_path not in assets_created:
             assets_created.append(rel_path)
-        logger.info("Implementation: wrote %s", out_file)
+        logger.info(
+            "Implementation: wrote consolidated planning artifacts to file: %s; full contents:\n%s",
+            out_file.name,
+            artifacts_content,
+        )
         
     except Exception as e:
         logger.warning("Implementation write failed: %s", e)

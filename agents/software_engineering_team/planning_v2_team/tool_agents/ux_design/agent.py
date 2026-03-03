@@ -8,87 +8,65 @@ Focuses on user experience, user flows, and interaction design.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...output_templates import parse_fix_output, parse_planning_tool_output
+from ..json_utils import complete_text_with_continuation
 
 if TYPE_CHECKING:
-    from shared.llm import LLMClient
+    from software_engineering_team.shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
-def _merge_ux_design_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge UX design results from multiple chunks."""
-    merged: Dict[str, Any] = {
-        "personas": [],
-        "user_journeys": [],
-        "user_flows": [],
-        "interaction_patterns": [],
-        "usability": [],
-        "summary": "",
-    }
-    summaries = []
+UX_DESIGN_IMPLEMENTATION_PROMPT = """You are a UX Design expert. Create UX artifacts for the specification.
 
-    for r in results:
-        if isinstance(r.get("personas"), list):
-            merged["personas"].extend(r["personas"])
-        if isinstance(r.get("user_journeys"), list):
-            merged["user_journeys"].extend(r["user_journeys"])
-        if isinstance(r.get("user_flows"), list):
-            merged["user_flows"].extend(r["user_flows"])
-        if isinstance(r.get("interaction_patterns"), list):
-            merged["interaction_patterns"].extend(r["interaction_patterns"])
-        if isinstance(r.get("usability"), list):
-            merged["usability"].extend(r["usability"])
-        if r.get("summary"):
-            summaries.append(str(r["summary"]))
+Respond using this EXACT format:
 
-    merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
-    return merged
+## COMPONENT_DESIGN ##
+Persona or flow name: description
+## END COMPONENT_DESIGN ##
 
-UX_DESIGN_IMPLEMENTATION_PROMPT = """You are a UX Design expert. Create UX artifacts for:
+## RECOMMENDATIONS ##
+- UX recommendation 1
+- UX recommendation 2
+## END RECOMMENDATIONS ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 
 Specification:
 ---
 {spec_content}
 ---
-
-Create:
-1. User personas
-2. User journey maps
-3. Key user flows
-4. Interaction patterns
-5. Usability considerations
-
-Respond with JSON:
-{{
-  "personas": [{{"name": "User type", "goals": ["goal1"], "pain_points": ["pain1"]}}],
-  "user_journeys": [{{"name": "Journey name", "stages": ["awareness", "consideration", "action"]}}],
-  "user_flows": [{{"name": "Flow name", "steps": ["step1", "step2"]}}],
-  "interaction_patterns": ["pattern1", "pattern2"],
-  "usability": ["consideration1", "consideration2"],
-  "summary": "brief summary"
-}}
 """
 
-UX_DESIGN_IMPLEMENTATION_CHUNK_PROMPT = """You are a UX Design expert. Analyze this SECTION for UX:
+UX_DESIGN_FIX_SINGLE_ISSUE_PROMPT = """You are a UX Design expert. Fix this issue. Use this EXACT format:
 
-SECTION:
----
-{chunk_content}
----
+## ROOT_CAUSE ##
+Why this issue exists.
+## END ROOT_CAUSE ##
 
-Respond with concise JSON for THIS section only:
-{{
-  "personas": [{{"name": "User type", "goals": ["goal"], "pain_points": ["pain"]}}],
-  "user_journeys": [{{"name": "Journey", "stages": ["stage"]}}],
-  "user_flows": [{{"name": "Flow", "steps": ["step"]}}],
-  "interaction_patterns": ["patterns"],
-  "usability": ["considerations"],
-  "summary": "brief summary"
-}}
+## FIX_DESCRIPTION ##
+What you are changing to fix it.
+## END FIX_DESCRIPTION ##
+
+## RESOLVED ##
+true or false
+## END RESOLVED ##
+
+## FILE_UPDATES ##
+### plan/planning_team/ux_design.md ###
+Complete updated file content here.
+### END FILE ###
+## END FILE_UPDATES ##
+
+ISSUE: --- {issue} ---
+CURRENT ARTIFACT: --- {current_artifact} ---
+SPEC: --- {spec_excerpt} ---
 """
 
 
@@ -107,94 +85,187 @@ class UXDesignToolAgent:
         return ToolAgentPhaseOutput(summary="UX Design planning not applicable (per matrix).")
 
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
-        """Implementation phase: generate UX design artifacts."""
+        """Implementation phase: generate or update UX design artifacts.
+        
+        Writes to disk as fixes are applied; returns files_written so implementation phase does not overwrite.
+        """
+        fixes_applied: List[str] = []
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
+        
+        existing_doc = inp.current_files.get(planning_asset_path("ux_design.md")) if inp.current_files else None
+        ux_issues = [
+            i for i in inp.review_issues
+            if any(kw in i.lower() for kw in ["ux", "persona", "journey", "flow", "usability", "user experience", "interaction"])
+        ]
+        
+        if ux_issues and self.llm:
+            logger.info(
+                "UXDesign: handling %d review issue(s) (will apply fixes and write updated artifacts to disk).",
+                len(ux_issues),
+            )
+            fix_inp = inp.model_copy(update={"current_files": current_files})
+            for issue in ux_issues:
+                result = self.fix_single_issue(issue, fix_inp)
+                if result.files:
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        file_name = full_path.name
+                        logger.info(
+                            "UXDesign: applied fix — writing to file: %s; full contents:\n%s",
+                            file_name,
+                            content,
+                        )
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
+                    fixes_applied.append(result.summary)
+            logger.info(
+                "UXDesign: fixed %d out of %d review issue(s) (all fixes written to planning artifacts).",
+                len(fixes_applied),
+                len(ux_issues),
+            )
+        
+        if existing_doc and not ux_issues:
+            return ToolAgentPhaseOutput(
+                summary="UX Design artifacts preserved (no changes needed).",
+                files={},
+                recommendations=[],
+                files_written=[],
+            )
+        if files_written:
+            summary = "UX Design artifacts updated."
+            if fixes_applied:
+                summary = f"UX Design artifacts updated. Fixed {len(fixes_applied)} review issues."
+            return ToolAgentPhaseOutput(
+                summary=summary,
+                files={},
+                recommendations=fixes_applied if fixes_applied else [],
+                files_written=files_written,
+            )
+        
         if not self.llm:
             return ToolAgentPhaseOutput(
                 summary="UX Design execute skipped (no LLM).",
                 recommendations=["Define user personas", "Map user journeys"],
+                files_written=[],
             )
         
         spec_content = inp.spec_content or ""
         prompt = UX_DESIGN_IMPLEMENTATION_PROMPT.format(
             spec_content=spec_content[:6000],
         )
-        data = parse_json_with_recovery(
-            self.llm,
-            prompt,
-            agent_name="UXDesign",
-            decompose_fn=default_decompose_by_sections,
-            merge_fn=_merge_ux_design_results,
-            original_content=spec_content,
-            chunk_prompt_template=UX_DESIGN_IMPLEMENTATION_CHUNK_PROMPT,
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="UXDesign",
         )
-        
-        personas = data.get("personas") or []
-        user_journeys = data.get("user_journeys") or []
-        user_flows = data.get("user_flows") or []
-        interaction_patterns = data.get("interaction_patterns") or []
-        usability = data.get("usability") or []
-        
+        data = parse_planning_tool_output(raw_text)
+        component_design = data.get("component_design") or []
+        recommendations = data.get("recommendations") or []
+        data_flow = data.get("data_flow", "")
+
         content_parts = ["# UX Design\n\n"]
-        
-        if personas:
-            content_parts.append("## User Personas\n")
-            for persona in personas:
-                if isinstance(persona, dict):
-                    name = persona.get("name", "User")
-                    goals = persona.get("goals", [])
-                    pain_points = persona.get("pain_points", [])
-                    content_parts.append(f"### {name}\n")
-                    if goals:
-                        content_parts.append("**Goals:**\n")
-                        for g in goals:
-                            content_parts.append(f"- {g}\n")
-                    if pain_points:
-                        content_parts.append("**Pain Points:**\n")
-                        for p in pain_points:
-                            content_parts.append(f"- {p}\n")
-                    content_parts.append("\n")
-        
-        if user_journeys:
-            content_parts.append("## User Journeys\n")
-            for journey in user_journeys:
-                if isinstance(journey, dict):
-                    name = journey.get("name", "Journey")
-                    stages = journey.get("stages", [])
-                    content_parts.append(f"### {name}\n")
-                    stages_str = [str(s) if not isinstance(s, str) else s for s in stages]
-                    content_parts.append(f"Stages: {' → '.join(stages_str)}\n\n")
-        
-        if user_flows:
-            content_parts.append("## User Flows\n")
-            for flow in user_flows:
-                if isinstance(flow, dict):
-                    name = flow.get("name", "Flow")
-                    steps = flow.get("steps", [])
-                    content_parts.append(f"### {name}\n")
-                    for i, step in enumerate(steps, 1):
-                        content_parts.append(f"{i}. {step}\n")
-                    content_parts.append("\n")
-        
-        if interaction_patterns:
-            content_parts.append("## Interaction Patterns\n")
-            for pattern in interaction_patterns:
-                content_parts.append(f"- {pattern}\n")
+        if component_design:
+            content_parts.append("## Components / Personas / Flows\n")
+            for comp in component_design:
+                if isinstance(comp, dict):
+                    name = comp.get("name", "Item")
+                    resp = comp.get("responsibility", "")
+                    content_parts.append(f"### {name}\n{resp}\n\n")
+        if data_flow:
+            content_parts.append("## Data / Flow\n")
+            content_parts.append(f"{data_flow}\n\n")
+        if recommendations:
+            content_parts.append("## Recommendations\n")
+            for rec in recommendations:
+                content_parts.append(f"- {rec}\n")
             content_parts.append("\n")
-        
-        if usability:
-            content_parts.append("## Usability Considerations\n")
-            for item in usability:
-                content_parts.append(f"- {item}\n")
-            content_parts.append("\n")
-        
-        files = {}
-        if personas or user_flows:
-            files["plan/ux_design.md"] = "".join(content_parts)
+
+        if component_design or recommendations:
+            rel_path = planning_asset_path("ux_design.md")
+            content = "".join(content_parts)
+            repo = Path(inp.repo_path or ".")
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written.append(rel_path)
         
         return ToolAgentPhaseOutput(
             summary=data.get("summary", "UX Design artifacts generated."),
-            files=files,
+            files={},
+            files_written=files_written,
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single UX design issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="UX Design fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = ""
+        if inp.current_files:
+            current_artifact = inp.current_files.get(planning_asset_path("ux_design.md"), "")
+            if not current_artifact:
+                for path, content in inp.current_files.items():
+                    if "ux_design" in path.lower() or "ux" in path.lower():
+                        current_artifact = content
+                        break
+
+        prompt = UX_DESIGN_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw_text = complete_text_with_continuation(
+                self.llm, prompt, agent_name="UXDesign_FixSingleIssue",
+            )
+            raw = parse_fix_output(raw_text)
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+            file_updates = raw.get("file_updates") or {}
+            if not updated_content and file_updates:
+                updated_content = next(iter(file_updates.values()), "")
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files[planning_asset_path("ux_design.md")] = updated_content
+                logger.info("UXDesign: fix applied (single-issue) — %s", fix_desc[:120])
+            elif file_updates:
+                for path, content in file_updates.items():
+                    if content and isinstance(content, str) and content.strip():
+                        files[path] = content
+                        logger.info("UXDesign: fix applied (single-issue) — %s", fix_desc[:120])
+                        break
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"UX design issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("UXDesign fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Review phase: UX Design does not participate."""

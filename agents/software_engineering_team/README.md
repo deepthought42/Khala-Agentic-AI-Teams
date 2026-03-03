@@ -206,13 +206,13 @@ Ensure Ollama is running with the model (e.g. `ollama run qwen3.5:397b-cloud`). 
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SW_MAX_ALIGNMENT_ITERATIONS` | Max Tech Lead ↔ Architecture alignment loops | `20` |
-| `SW_MAX_CONFORMANCE_RETRIES` | Max spec conformance retries | `20` |
-| `SW_MAX_REVIEW_ITERATIONS` | Max code review → fix rounds (backend) | `20` |
-| `SW_MAX_CLARIFICATION_ROUNDS` | Max clarification rounds (backend) | `20` |
+| `SW_MAX_ALIGNMENT_ITERATIONS` | Max Tech Lead ↔ Architecture alignment loops | `100` |
+| `SW_MAX_CONFORMANCE_RETRIES` | Max spec conformance retries | `100` |
+| `SW_MAX_REVIEW_ITERATIONS` | Max code review → fix rounds (backend) | `100` |
+| `SW_MAX_CLARIFICATION_ROUNDS` | Max clarification rounds (backend) | `100` |
 | `SW_MAX_SAME_BUILD_FAILURES` | Stop if build fails identically N times (backend) | `6` |
-| `SW_MAX_CODE_REVIEW_ITERATIONS` | Max code review rounds (frontend) | `20` |
-| `SW_MAX_CLARIFICATION_REFINEMENTS` | Max clarification refinements (frontend) | `20` |
+| `SW_MAX_CODE_REVIEW_ITERATIONS` | Max code review rounds (frontend) | `100` |
+| `SW_MAX_CLARIFICATION_REFINEMENTS` | Max clarification refinements (frontend) | `100` |
 
 **Faster runs:** Set `SW_SKIP_PLANNING_AGENTS=observability,performance_doc` to skip specific planning agents, or `SW_MINIMAL_PLANNING=1` to skip all domain planning (spec → Tech Lead ↔ Architecture → consolidation → execution).
 

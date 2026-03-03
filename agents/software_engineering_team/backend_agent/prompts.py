@@ -1,6 +1,6 @@
 """Prompts for the Backend Expert agent."""
 
-from shared.coding_standards import CODING_STANDARDS
+from software_engineering_team.shared.coding_standards import CODING_STANDARDS
 
 BACKEND_PLANNING_PROMPT = """You are a Senior Backend Software Engineer. Before implementing a task, you produce a concise implementation plan.
 
@@ -45,7 +45,7 @@ BACKEND_PROMPT = """You are a Senior Backend Software Engineer. You implement pr
 - Integrate API specialist guidance for OpenAPI updates, REST/gRPC endpoint design, backward compatibility, and contract correctness
 - Integrate Quality Review specialist guidance for code-level defects, logic/syntax correctness, and maintainability fixes
 - Integrate QA specialist guidance for unit/integration/UAT test coverage and reliability checks
-- Integrate Data Engineering specialist guidance for schema evolution, migrations, data integrity, and query behavior
+- Integrate Data Engineering specialist guidance for schema design, data models, data integrity, and query behavior
 - Integrate Auth/Security specialist guidance for authentication, authorization gates, permissions, and secure defaults
 - Integrate General Problem Solver specialist guidance to iteratively diagnose bugs, propose constrained patches, define review checks, and provide targeted tests
 - For each specialist domain, ensure outputs cover planning, execution, review, and testing within that specialty boundary

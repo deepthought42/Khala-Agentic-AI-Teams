@@ -44,18 +44,4 @@ describe('SoftwareEngineeringApiService', () => {
     req.flush({ job_id: '1', status: 'running', task_results: [], task_ids: [], failed_tasks: [] });
   });
 
-  it('should call POST /clarification/sessions', () => {
-    service.createClarificationSession({ spec_text: 'Spec' }).subscribe((res) => {
-      expect(res.session_id).toBeDefined();
-    });
-    const req = httpMock.expectOne(`${baseUrl}/clarification/sessions`);
-    expect(req.request.method).toBe('POST');
-    req.flush({
-      session_id: 's1',
-      assistant_message: 'Hi',
-      open_questions: [],
-      assumptions: [],
-      done_clarifying: false,
-    });
-  });
 });

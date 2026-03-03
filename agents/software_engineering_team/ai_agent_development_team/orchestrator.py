@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
-from shared.llm import LLMClient
-from shared.models import Task
+from software_engineering_team.shared.llm import LLMClient
+from software_engineering_team.shared.models import Task
 
 from .models import (
     AIAgentDevelopmentWorkflowResult,
@@ -25,7 +25,7 @@ from .phases.problem_solving import run_problem_solving
 from .phases.review import run_review
 
 logger = logging.getLogger(__name__)
-MAX_REVIEW_ITERATIONS = 3
+MAX_REVIEW_ITERATIONS = 100
 
 
 class AIAgentDevelopmentTeamLead:

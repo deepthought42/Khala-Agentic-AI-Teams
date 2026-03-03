@@ -8,12 +8,7 @@ import type {
   JobStatusResponse,
   RunningJobsResponse,
   RetryResponse,
-  RePlanWithClarificationsRequest,
   SubmitAnswersRequest,
-  ClarificationCreateRequest,
-  ClarificationResponse,
-  ClarificationMessageRequest,
-  ClarificationSessionResponse,
   ArchitectDesignRequest,
   ArchitectDesignResponse,
   HealthResponse,
@@ -82,6 +77,17 @@ export class SoftwareEngineeringApiService {
   }
 
   /**
+   * POST /run-team/{job_id}/resume
+   * Resume an interrupted run_team job (e.g. after server restart).
+   */
+  resumeRunTeamJob(jobId: string): Observable<RunTeamResponse> {
+    return this.http.post<RunTeamResponse>(
+      `${this.baseUrl}/run-team/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /**
    * POST /run-team/{job_id}/cancel
    * Request cancellation for a running or pending job.
    */
@@ -89,19 +95,6 @@ export class SoftwareEngineeringApiService {
     return this.http.post<{ job_id: string; status: string; message: string }>(
       `${this.baseUrl}/run-team/${jobId}/cancel`,
       {}
-    );
-  }
-
-  /**
-   * POST /run-team/{job_id}/re-plan-with-clarifications
-   */
-  rePlanWithClarifications(
-    jobId: string,
-    request: RePlanWithClarificationsRequest
-  ): Observable<RunTeamResponse> {
-    return this.http.post<RunTeamResponse>(
-      `${this.baseUrl}/run-team/${jobId}/re-plan-with-clarifications`,
-      request
     );
   }
 
@@ -131,42 +124,6 @@ export class SoftwareEngineeringApiService {
     return this.http.post<AutoAnswerResponse>(
       `${this.baseUrl}/run-team/${jobId}/auto-answer/${questionId}`,
       request ?? {}
-    );
-  }
-
-  /**
-   * POST /clarification/sessions
-   */
-  createClarificationSession(
-    request: ClarificationCreateRequest
-  ): Observable<ClarificationResponse> {
-    return this.http.post<ClarificationResponse>(
-      `${this.baseUrl}/clarification/sessions`,
-      request
-    );
-  }
-
-  /**
-   * POST /clarification/sessions/{session_id}/messages
-   */
-  sendClarificationMessage(
-    sessionId: string,
-    request: ClarificationMessageRequest
-  ): Observable<ClarificationResponse> {
-    return this.http.post<ClarificationResponse>(
-      `${this.baseUrl}/clarification/sessions/${sessionId}/messages`,
-      request
-    );
-  }
-
-  /**
-   * GET /clarification/sessions/{session_id}
-   */
-  getClarificationSession(
-    sessionId: string
-  ): Observable<ClarificationSessionResponse> {
-    return this.http.get<ClarificationSessionResponse>(
-      `${this.baseUrl}/clarification/sessions/${sessionId}`
     );
   }
 

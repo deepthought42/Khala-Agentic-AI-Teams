@@ -8,21 +8,83 @@ Produces the hierarchical output: Initiative -> Epic -> Story -> Task.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
+from software_engineering_team.shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
-from ..json_utils import parse_json_with_recovery, default_decompose_by_sections
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...output_templates import parse_fix_output, parse_review_output
+from ..json_utils import complete_text_with_continuation
+from software_engineering_team.shared.deduplication import dedupe_by_key
 
 if TYPE_CHECKING:
-    from shared.llm import LLMClient
+    from software_engineering_team.shared.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
+def _parse_hierarchy_text_to_data(text: str) -> Dict[str, Any]:
+    """Parse line-based hierarchy format into dict for _build_hierarchy_from_data.
+
+    Format (one line per node; pipe-separated):
+    INIT | id | title | description
+    EPIC | id | title | description
+    STORY | id | title | description
+    TASK | id | title | assignee | complexity_points
+    Hierarchy: EPIC under last INIT, STORY under last EPIC, TASK under last STORY.
+    """
+    initiatives: List[Dict[str, Any]] = []
+    current_init: Optional[Dict[str, Any]] = None
+    current_epic: Optional[Dict[str, Any]] = None
+    current_story: Optional[Dict[str, Any]] = None
+    summary = ""
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2:
+            continue
+        kind = parts[0].upper()
+        if kind == "INIT" and len(parts) >= 3:
+            current_init = {"id": parts[1], "title": parts[2], "description": parts[3] if len(parts) > 3 else "", "epics": []}
+            initiatives.append(current_init)
+            current_epic = None
+            current_story = None
+        elif kind == "EPIC" and len(parts) >= 3 and current_init:
+            current_epic = {"id": parts[1], "title": parts[2], "description": parts[3] if len(parts) > 3 else "", "acceptance_criteria": [], "stories": []}
+            current_init["epics"].append(current_epic)
+            current_story = None
+        elif kind == "STORY" and len(parts) >= 3 and current_epic:
+            current_story = {"id": parts[1], "title": parts[2], "description": parts[3] if len(parts) > 3 else "", "acceptance_criteria": [], "tasks": []}
+            current_epic["stories"].append(current_story)
+        elif kind == "TASK" and len(parts) >= 4 and current_story:
+            assignee = parts[3] if len(parts) > 3 else "backend"
+            points = 2
+            if len(parts) > 4 and str(parts[4]).strip().isdigit():
+                points = min(13, max(1, int(parts[4])))
+            current_story["tasks"].append({
+                "id": parts[1],
+                "title": parts[2],
+                "description": "",
+                "assigned_team": assignee,
+                "acceptance_criteria": [],
+                "complexity_points": points,
+            })
+
+    summary_section = text.find("## SUMMARY ##")
+    if summary_section >= 0:
+        end = text.find("## END SUMMARY ##", summary_section)
+        if end > summary_section:
+            summary = text[summary_section + len("## SUMMARY ##"):end].strip().split("\n")[0].strip()[:500]
+
+    return {"initiatives": initiatives, "summary": summary or "User story hierarchy created."}
+
+
 def _merge_user_story_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge user story results from multiple chunks."""
+    """Merge user story results from multiple chunks with semantic deduplication by initiative name."""
     merged: Dict[str, Any] = {
         "initiatives": [],
         "summary": "",
@@ -36,37 +98,32 @@ def _merge_user_story_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             summaries.append(str(r["summary"]))
 
     merged["summary"] = f"Merged {len(results)} sections. " + " ".join(summaries[:2])
+    if merged["initiatives"]:
+        merged["initiatives"] = dedupe_by_key(
+            merged["initiatives"],
+            key_fn=lambda x: x.get("name", x.get("title", "")) if isinstance(x, dict) else str(x),
+        )
     return merged
 
-USER_STORY_PLANNING_PROMPT = """You are a Product Planning expert specializing in user story creation and prioritization.
 
-Given the specification below, create a hierarchical plan with:
-- Initiatives (high-level goals)
-- Epics (features within each initiative)
-- Stories (detailed user stories with acceptance criteria)
-- Tasks (actionable work items assigned to teams)
+USER_STORY_PLANNING_PROMPT = """You are a Product Planning expert. Create a hierarchical plan: Initiative -> Epic -> Story -> Task.
 
-IMPORTANT: Stories and Tasks must be highly detailed with:
-- Clear descriptions
-- Acceptance criteria
-- Examples where appropriate
-- Team assignment (frontend, backend, devops, qa)
+Output EXACTLY one line per node using this format (pipe-separated). No JSON.
 
-TASK SIZING - CRITICAL:
-Each task MUST be small enough that an experienced engineer would estimate it as a 1 or 2 on the Fibonacci scale (1, 2, 3, 5, 8, 13...) during sprint planning.
+INIT | id | title | description
+EPIC | id | title | description
+STORY | id | title | description
+TASK | id | title | assignee | complexity_points
 
-A 1-2 point task typically:
-- Can be completed in less than half a day to one day
-- Has a single, clear objective
-- Touches 1-3 files at most
-- Does NOT combine multiple concerns (e.g., "build API and UI" should be separate tasks)
-- Is independently testable
+Rules:
+- Each task should be Fibonacci 2-3 points (1-2 days, focused). Use complexity_points 2 or 3.
+- assignee is one of: frontend, backend, devops, qa
+- List INIT first, then EPIC under it, then STORY under EPIC, then TASK under STORY. Order matters.
 
-If a task feels like a 3, 5, or larger, BREAK IT DOWN into smaller tasks. For example:
-- BAD: "Implement user authentication" (too broad, likely 8+ points)
-- GOOD: Split into: "Create login form UI", "Add form validation", "Create /login API endpoint", "Add JWT token generation", "Store session in localStorage", "Add auth middleware"
-
-Prefer MORE granular tasks over fewer large ones.
+At the end add:
+## SUMMARY ##
+Brief planning summary.
+## END SUMMARY ##
 
 Specification:
 ---
@@ -74,114 +131,73 @@ Specification:
 ---
 
 Plan Summary: {plan_summary}
-
-Respond with JSON:
-{{
-  "initiatives": [
-    {{
-      "id": "INIT-1",
-      "title": "Initiative title",
-      "description": "What this initiative achieves",
-      "epics": [
-        {{
-          "id": "EPIC-1",
-          "title": "Epic title",
-          "description": "Feature description",
-          "acceptance_criteria": ["criterion 1", "criterion 2"],
-          "stories": [
-            {{
-              "id": "STORY-1",
-              "title": "Story title",
-              "description": "As a [user], I want [feature] so that [benefit]",
-              "acceptance_criteria": ["Given/When/Then criteria"],
-              "example": "Example usage scenario",
-              "tasks": [
-                {{
-                  "id": "TASK-1",
-                  "title": "Task title",
-                  "description": "Detailed task description",
-                  "acceptance_criteria": ["task completion criteria"],
-                  "assigned_team": "frontend|backend|devops|qa",
-                  "example": "Implementation example if applicable"
-                }}
-              ]
-            }}
-          ]
-        }}
-      ]
-    }}
-  ],
-  "summary": "Brief planning summary"
-}}
 """
 
-USER_STORY_REVIEW_PROMPT = """You are a Product Planning expert. Review these user stories and tasks for:
-1. Completeness of acceptance criteria
-2. Clear team assignments
-3. Task granularity - each task should be Fibonacci 1-2 points (small, single-objective, completable in under a day)
-4. Dependency clarity
-5. Tasks that are too large (3+ points) should be flagged for splitting
+USER_STORY_REVIEW_PROMPT = """You are a Product Planning expert. Review these user stories and tasks for completeness, team assignments, task granularity (Fibonacci 2-3 points), and flag issues.
 
 Artifacts:
 ---
 {artifacts}
 ---
 
-Respond with JSON:
-{{
-  "passed": true or false,
-  "issues": ["list of issues found"],
-  "recommendations": ["improvements"],
-  "summary": "brief summary"
-}}
+Respond using this EXACT format:
+
+## PASSED ##
+true or false
+## END PASSED ##
+
+## ISSUES ##
+- Issue 1
+- Issue 2
+## END ISSUES ##
+
+## RECOMMENDATIONS ##
+- Improvement 1
+## END RECOMMENDATIONS ##
+
+## SUMMARY ##
+Brief summary.
+## END SUMMARY ##
 """
 
-USER_STORY_PLANNING_CHUNK_PROMPT = """You are a Product Planning expert. Analyze this SECTION of a specification for user stories:
+USER_STORY_FIX_SINGLE_ISSUE_PROMPT = """You are a Product Planning expert. Fix this specific issue in the user story artifacts.
 
-SECTION:
+ISSUE TO FIX:
 ---
-{chunk_content}
+{issue}
 ---
 
-Create user stories and tasks for THIS section only.
+CURRENT USER STORY ARTIFACT:
+---
+{current_artifact}
+---
 
-TASK SIZING: Each task must be Fibonacci 1-2 points (half-day to one-day effort, single objective, 1-3 files). Break larger work into multiple small tasks.
+SPECIFICATION CONTEXT:
+---
+{spec_excerpt}
+---
 
-Respond with concise JSON:
-{{
-  "initiatives": [
-    {{
-      "id": "INIT-1",
-      "title": "Initiative for this section",
-      "description": "What this achieves",
-      "epics": [
-        {{
-          "id": "EPIC-1",
-          "title": "Epic title",
-          "description": "Feature description",
-          "acceptance_criteria": ["criterion"],
-          "stories": [
-            {{
-              "id": "STORY-1",
-              "title": "Story title",
-              "description": "As a user, I want...",
-              "acceptance_criteria": ["Given/When/Then"],
-              "tasks": [
-                {{
-                  "id": "TASK-1",
-                  "title": "Task title",
-                  "description": "Task details",
-                  "assigned_team": "frontend|backend|devops|qa"
-                }}
-              ]
-            }}
-          ]
-        }}
-      ]
-    }}
-  ],
-  "summary": "Brief summary"
-}}
+Analyze and fix this issue. If the issue requires updating the artifact, provide the complete updated file content.
+
+Respond using this EXACT format:
+
+## ROOT_CAUSE ##
+Why this issue exists.
+## END ROOT_CAUSE ##
+
+## FIX_DESCRIPTION ##
+What you are changing to fix it.
+## END FIX_DESCRIPTION ##
+
+## RESOLVED ##
+true or false
+## END RESOLVED ##
+
+## FILE_UPDATES ##
+### plan/planning_team/user_stories.md ###
+Complete updated file content here.
+### END FILE ###
+## END FILE_UPDATES ##
 """
 
 
@@ -337,16 +353,10 @@ class UserStoryToolAgent:
             spec_content=spec_content[:10000],
             plan_summary=plan_summary[:3000],
         )
-        data = parse_json_with_recovery(
-            self.llm,
-            prompt,
-            agent_name="UserStory",
-            decompose_fn=default_decompose_by_sections,
-            merge_fn=_merge_user_story_results,
-            original_content=spec_content,
-            chunk_prompt_template=USER_STORY_PLANNING_CHUNK_PROMPT,
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="UserStory",
         )
-        
+        data = _parse_hierarchy_text_to_data(raw_text)
         hierarchy = _build_hierarchy_from_data(data)
         
         init_count = len(hierarchy.initiatives) if hierarchy else 0
@@ -364,21 +374,90 @@ class UserStoryToolAgent:
         )
 
     def execute(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
-        """Implementation phase: generate user story artifacts."""
+        """Implementation phase: generate user story artifacts and fix review issues.
+        
+        Applies fixes by writing the document to disk after each fix (update-in-place).
+        Returns files_written so the implementation phase does not overwrite.
+        """
         hierarchy = inp.hierarchy
+        fixes_applied: List[str] = []
+        files_written: List[str] = []
+        current_files: Dict[str, str] = dict(inp.current_files or {})
+        
+        story_issues = [
+            i for i in inp.review_issues
+            if any(kw in i.lower() for kw in ["story", "task", "epic", "user", "acceptance", "criteria"])
+        ]
+        
+        if story_issues and self.llm:
+            logger.info(
+                "UserStory: handling %d review issue(s) (will apply fixes and write updated artifacts to disk).",
+                len(story_issues),
+            )
+            fix_inp = inp.model_copy(update={"current_files": current_files})
+            for issue in story_issues:
+                result = self.fix_single_issue(issue, fix_inp)
+                if result.files:
+                    repo = Path(inp.repo_path or ".")
+                    for rel_path, content in result.files.items():
+                        full_path = repo / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_text(content, encoding="utf-8")
+                        file_name = full_path.name
+                        logger.info(
+                            "UserStory: applied fix — writing to file: %s; full contents:\n%s",
+                            file_name,
+                            content,
+                        )
+                        if rel_path not in files_written:
+                            files_written.append(rel_path)
+                        current_files[rel_path] = content
+                    fix_inp = inp.model_copy(update={"current_files": current_files})
+                    fixes_applied.append(result.summary)
+                if result.hierarchy:
+                    hierarchy = result.hierarchy
+            logger.info(
+                "UserStory: fixed %d out of %d review issue(s) (all fixes written to planning artifacts).",
+                len(fixes_applied),
+                len(story_issues),
+            )
+        
         if not hierarchy:
-            return ToolAgentPhaseOutput(summary="User Story execute skipped (no hierarchy).")
+            return ToolAgentPhaseOutput(
+                summary="User Story execute skipped (no hierarchy).",
+                recommendations=fixes_applied if fixes_applied else [],
+                files_written=files_written,
+            )
         
-        content = _hierarchy_to_markdown(hierarchy)
+        existing_user_stories = (inp.current_files or {}).get(planning_asset_path("user_stories.md"))
+        if existing_user_stories and not story_issues:
+            return ToolAgentPhaseOutput(
+                summary="User story artifacts unchanged (file exists, no review issues).",
+                files={},
+                hierarchy=hierarchy,
+                recommendations=fixes_applied if fixes_applied else [],
+                files_written=[],
+            )
         
-        files = {
-            "plan/user_stories.md": content,
-        }
+        if not files_written:
+            content = _hierarchy_to_markdown(hierarchy)
+            repo = Path(inp.repo_path or ".")
+            rel_path = planning_asset_path("user_stories.md")
+            full_path = repo / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            files_written = [rel_path]
+        
+        summary = "User story artifacts generated."
+        if fixes_applied:
+            summary = f"User story artifacts generated. Fixed {len(fixes_applied)} review issues."
         
         return ToolAgentPhaseOutput(
-            summary="User story artifacts generated.",
-            files=files,
+            summary=summary,
+            files={},
             hierarchy=hierarchy,
+            recommendations=fixes_applied if fixes_applied else [],
+            files_written=files_written,
         )
 
     def review(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
@@ -399,7 +478,10 @@ class UserStoryToolAgent:
             )
         
         prompt = USER_STORY_REVIEW_PROMPT.format(artifacts=artifacts)
-        data = parse_json_with_recovery(self.llm, prompt, agent_name="UserStory")
+        raw_text = complete_text_with_continuation(
+            self.llm, prompt, agent_name="UserStory_Review",
+        )
+        data = parse_review_output(raw_text)
         
         issues = data.get("issues") or []
         if not isinstance(issues, list):
@@ -419,15 +501,92 @@ class UserStoryToolAgent:
         """Problem-solving phase: address user story issues."""
         if not self.llm:
             return ToolAgentPhaseOutput(summary="User Story problem_solve skipped (no LLM).")
-        
+
         story_issues = [i for i in inp.review_issues if "story" in i.lower() or "task" in i.lower() or "epic" in i.lower()]
         if not story_issues:
             return ToolAgentPhaseOutput(summary="No user story issues to resolve.")
-        
+
+        all_files: Dict[str, str] = {}
+        fixes_applied: List[str] = []
+
+        for issue in story_issues:
+            result = self.fix_single_issue(issue, inp)
+            if result.files:
+                all_files.update(result.files)
+                fixes_applied.append(result.summary)
+
         return ToolAgentPhaseOutput(
-            summary=f"User Story: {len(story_issues)} issue(s) identified for resolution.",
-            recommendations=[f"Address: {issue}" for issue in story_issues[:5]],
+            summary=f"User Story: fixed {len(fixes_applied)}/{len(story_issues)} issue(s).",
+            recommendations=fixes_applied,
+            files=all_files,
+            resolved=len(fixes_applied) == len(story_issues),
         )
+
+    def fix_single_issue(self, issue: str, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
+        """Fix a single user story issue.
+
+        Args:
+            issue: The issue description to fix.
+            inp: Tool agent phase input with context.
+
+        Returns:
+            ToolAgentPhaseOutput with updated files if fix was applied.
+        """
+        if not self.llm:
+            return ToolAgentPhaseOutput(
+                summary="User Story fix skipped (no LLM).",
+                resolved=False,
+            )
+
+        current_artifact = inp.current_files.get(planning_asset_path("user_stories.md"), "")
+        if not current_artifact:
+            for path, content in inp.current_files.items():
+                if "user_stor" in path.lower() or "planning" in path.lower():
+                    current_artifact = content
+                    break
+
+        prompt = USER_STORY_FIX_SINGLE_ISSUE_PROMPT.format(
+            issue=issue,
+            current_artifact=current_artifact[:6000] if current_artifact else "(no existing artifact)",
+            spec_excerpt=(inp.spec_content or "")[:3000],
+        )
+
+        try:
+            raw_text = complete_text_with_continuation(
+                self.llm, prompt, agent_name="UserStory_FixSingleIssue",
+            )
+            raw = parse_fix_output(raw_text)
+            updated_content = raw.get("updated_content", "")
+            fix_desc = raw.get("fix_description", "")
+            resolved = raw.get("resolved", False)
+            file_updates = raw.get("file_updates") or {}
+            if not updated_content and file_updates:
+                updated_content = next(iter(file_updates.values()), "")
+
+            files: Dict[str, str] = {}
+            if updated_content and isinstance(updated_content, str) and updated_content.strip():
+                files[planning_asset_path("user_stories.md")] = updated_content
+                logger.info("UserStory: fix applied (single-issue) — %s", fix_desc[:120])
+            elif file_updates:
+                for path, content in file_updates.items():
+                    if content and isinstance(content, str) and content.strip():
+                        files[path] = content
+                        logger.info("UserStory: fix applied (single-issue) — %s", fix_desc[:120])
+                        break
+
+            return ToolAgentPhaseOutput(
+                summary=fix_desc or f"User story issue addressed: {issue[:50]}",
+                files=files,
+                resolved=resolved or bool(files),
+                metadata={"root_cause": raw.get("root_cause", "")},
+            )
+
+        except Exception as e:
+            logger.warning("UserStory fix_single_issue failed: %s", e)
+            return ToolAgentPhaseOutput(
+                summary=f"Fix failed: {str(e)[:50]}",
+                resolved=False,
+            )
 
     def deliver(self, inp: ToolAgentPhaseInput) -> ToolAgentPhaseOutput:
         """Deliver phase: finalize user story documentation."""

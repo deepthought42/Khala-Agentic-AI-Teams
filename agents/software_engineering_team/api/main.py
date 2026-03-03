@@ -30,14 +30,15 @@ if _arch_dir.exists() and str(_arch_dir) not in sys.path:
     sys.path.insert(0, str(_arch_dir))
 
 from spec_parser import validate_work_path
-from shared.clarification_store import clarification_store
-from shared.execution_tracker import execution_tracker
-from shared.job_store import (
+from software_engineering_team.shared.execution_tracker import execution_tracker
+from software_engineering_team.shared.job_store import (
+    JOB_STATUS_AGENT_CRASH,
     JOB_STATUS_CANCELLED,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_PENDING,
     JOB_STATUS_PAUSED_LLM_CONNECTIVITY,
+    JOB_STATUS_RUNNING,
     create_job,
     get_job,
     is_cancel_requested,
@@ -47,7 +48,7 @@ from shared.job_store import (
     submit_answers as store_submit_answers,
 )
 
-from shared.logging_config import setup_logging
+from software_engineering_team.shared.logging_config import setup_logging
 
 setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -74,12 +75,7 @@ class RunTeamRequest(BaseModel):
     repo_path: str = Field(
         ...,
         max_length=4096,
-        description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
-    )
-    clarification_session_id: Optional[str] = Field(
-        None,
-        max_length=256,
-        description="Use refined_spec and resolved_questions from this clarification session",
+        description="Local filesystem path to the folder where work will be saved. Must contain a spec: at root (initial_spec.md or spec.md) or under plan/ or plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md). Does not need to be a git repository.",
     )
 
 
@@ -128,6 +124,9 @@ class TaskStateEntry(BaseModel):
     started_at: Optional[str] = Field(None, description="ISO timestamp when task started.")
     finished_at: Optional[str] = Field(None, description="ISO timestamp when task finished.")
     error: Optional[str] = Field(None, description="Error message if failed.")
+    initiative_id: Optional[str] = Field(None, description="Parent initiative ID from planning hierarchy.")
+    epic_id: Optional[str] = Field(None, description="Parent epic ID from planning hierarchy.")
+    story_id: Optional[str] = Field(None, description="Parent story ID from planning hierarchy.")
 
 
 class TeamProgressEntry(BaseModel):
@@ -231,6 +230,10 @@ class JobStatusResponse(BaseModel):
         default_factory=list,
         description="Completed subprocesses within the product_analysis phase.",
     )
+    planning_hierarchy: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Planning hierarchy with initiatives, epics, stories for work breakdown tree display.",
+    )
 
 
 class RetryResponse(BaseModel):
@@ -240,15 +243,6 @@ class RetryResponse(BaseModel):
     status: str = Field(default="running", description="Status after retry start.")
     retrying_tasks: List[str] = Field(default_factory=list, description="Task IDs being retried.")
     message: str = Field(default="")
-
-
-class RePlanWithClarificationsRequest(BaseModel):
-    """Request body for re-plan-with-clarifications endpoint."""
-
-    clarification_session_id: str = Field(
-        ...,
-        description="Clarification session with refined_spec and resolved_questions to use for re-planning",
-    )
 
 
 class AnswerSubmission(BaseModel):
@@ -272,37 +266,6 @@ class SubmitAnswersRequest(BaseModel):
         ...,
         description="List of answers to submit.",
     )
-
-
-class ClarificationCreateRequest(BaseModel):
-    spec_text: str = Field(..., max_length=500_000, description="Initial product/engineering specification text.")
-
-
-class ClarificationMessageRequest(BaseModel):
-    message: str = Field(..., max_length=50_000, description="User clarification response message.")
-
-
-class ClarificationResponse(BaseModel):
-    session_id: str
-    assistant_message: str
-    open_questions: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
-    done_clarifying: bool = False
-    refined_spec: Optional[str] = None
-
-
-class ClarificationSessionResponse(BaseModel):
-    session_id: str
-    spec_text: str
-    status: str
-    created_at: str
-    clarification_round: int
-    max_rounds: int
-    confidence_score: float
-    open_questions: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
-    refined_spec: Optional[str] = None
-    turns: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class ArchitectDesignRequest(BaseModel):
@@ -387,25 +350,9 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
     job_id = str(uuid.uuid4())
     create_job(job_id, str(repo_path), job_type="run_team")
 
-    spec_override: Optional[str] = None
-    resolved_override: Optional[List[Dict[str, Any]]] = None
-    if request.clarification_session_id:
-        session = clarification_store.get_session(request.clarification_session_id)
-        if not session:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Clarification session {request.clarification_session_id} not found",
-            )
-        spec_override = session.refined_spec or session.spec_text
-        resolved_override = session.resolved_questions or []
-
     thread = threading.Thread(
         target=_run_orchestrator_background,
         args=(job_id, str(repo_path)),
-        kwargs={
-            "spec_content_override": spec_override,
-            "resolved_questions_override": resolved_override,
-        },
     )
     thread.daemon = True
     thread.start()
@@ -568,6 +515,7 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         "planning_completed_phases": data.get("planning_completed_phases") or [],
         "analysis_subprocess": data.get("analysis_subprocess"),
         "analysis_completed_phases": data.get("analysis_completed_phases") or [],
+        "planning_hierarchy": data.get("planning_hierarchy"),
     }
     return JobStatusResponse.model_validate(payload)
 
@@ -649,6 +597,67 @@ def cancel_job(job_id: str) -> CancelJobResponse:
         job_id=job_id,
         status="cancelled",
         message="Job cancellation requested. Running agents will stop at the next checkpoint.",
+    )
+
+
+RESUMABLE_STATUSES = (JOB_STATUS_PENDING, JOB_STATUS_RUNNING, JOB_STATUS_AGENT_CRASH)
+
+
+@app.post(
+    "/run-team/{job_id}/resume",
+    response_model=RunTeamResponse,
+    summary="Resume an interrupted job",
+    description="Re-start the orchestrator for a run_team job that was interrupted (e.g. server halt or runtime error). "
+    "Allowed when status is pending, running, or agent_crash. Use after server restart to re-initiate the job; "
+    "poll GET /run-team/{job_id} for status.",
+)
+def resume_run_team_job(job_id: str) -> RunTeamResponse:
+    """Resume a run_team job by re-starting the orchestrator. Use after server restart or when the job appears stuck."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_type = data.get("job_type")
+    if job_type is not None and job_type != "run_team":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only run_team jobs can be resumed via this endpoint (job_type={job_type}).",
+        )
+
+    status = data.get("status", JOB_STATUS_PENDING)
+    if status not in RESUMABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job cannot be resumed (status={status}). Resume is only allowed for pending, running, or agent_crash.",
+        )
+
+    repo_path = data.get("repo_path")
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="Job has no repo_path; cannot resume.")
+
+    try:
+        validate_work_path(repo_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    update_job(
+        job_id,
+        status=JOB_STATUS_RUNNING,
+        error=None,
+        agent_crash_details=None,
+    )
+
+    thread = threading.Thread(
+        target=_run_orchestrator_background,
+        args=(job_id, str(repo_path)),
+        daemon=True,
+    )
+    thread.start()
+
+    return RunTeamResponse(
+        job_id=job_id,
+        status="running",
+        message="Job resumed. Poll GET /run-team/{job_id} for status.",
     )
 
 
@@ -783,122 +792,7 @@ def submit_pending_answers(job_id: str, request: SubmitAnswersRequest) -> JobSta
         planning_completed_phases=updated_data.get("planning_completed_phases") or [],
         analysis_subprocess=updated_data.get("analysis_subprocess"),
         analysis_completed_phases=updated_data.get("analysis_completed_phases") or [],
-    )
-
-
-def _run_replan_background(
-    job_id: str,
-    repo_path: str,
-    spec_content_override: str,
-    resolved_questions_override: List[Dict[str, Any]],
-) -> None:
-    """Run orchestrator in planning-only mode with clarification overrides."""
-    try:
-        from orchestrator import run_orchestrator
-        run_orchestrator(
-            job_id,
-            repo_path,
-            spec_content_override=spec_content_override,
-            resolved_questions_override=resolved_questions_override,
-            planning_only=True,
-        )
-    except Exception as e:
-        logger.exception("Re-plan orchestrator failed")
-        update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
-
-
-@app.post(
-    "/run-team/{job_id}/re-plan-with-clarifications",
-    response_model=RunTeamResponse,
-    summary="Re-plan with clarifications",
-    description="Re-run the planning phase (spec intake through conformance) using refined_spec and "
-    "resolved_questions from a clarification session. Does not re-run execution. "
-    "Use when user has provided clarification answers after a run completed.",
-)
-def re_plan_with_clarifications(job_id: str, request: RePlanWithClarificationsRequest) -> RunTeamResponse:
-    """Re-run planning phase with clarification session data."""
-    data = get_job(job_id)
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    if data.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Job is still running")
-
-    repo_path = data.get("repo_path")
-    if not repo_path:
-        raise HTTPException(status_code=400, detail="Job has no repo_path")
-
-    session = clarification_store.get_session(request.clarification_session_id)
-    if not session:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Clarification session {request.clarification_session_id} not found",
-        )
-
-    spec_override = session.refined_spec or session.spec_text
-    resolved_override = session.resolved_questions or []
-
-    thread = threading.Thread(
-        target=_run_replan_background,
-        args=(job_id, str(repo_path), spec_override, resolved_override),
-    )
-    thread.daemon = True
-    thread.start()
-
-    return RunTeamResponse(
-        job_id=job_id,
-        status="running",
-        message="Re-planning started. Poll GET /run-team/{job_id} for status.",
-    )
-
-
-@app.post("/clarification/sessions", response_model=ClarificationResponse)
-def create_clarification_session(request: ClarificationCreateRequest) -> ClarificationResponse:
-    """Create a clarification session from initial spec text."""
-    session = clarification_store.create_session(request.spec_text)
-    return ClarificationResponse(
-        session_id=session.session_id,
-        assistant_message=session.turns[-1].message,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        done_clarifying=False,
-    )
-
-
-@app.post("/clarification/sessions/{session_id}/messages", response_model=ClarificationResponse)
-def send_clarification_message(session_id: str, request: ClarificationMessageRequest) -> ClarificationResponse:
-    """Append a user message and return next question or completion."""
-    session = clarification_store.add_user_message(session_id, request.message)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return ClarificationResponse(
-        session_id=session.session_id,
-        assistant_message=session.turns[-1].message,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        done_clarifying=session.status == "completed",
-        refined_spec=session.refined_spec,
-    )
-
-
-@app.get("/clarification/sessions/{session_id}", response_model=ClarificationSessionResponse)
-def get_clarification_session(session_id: str) -> ClarificationSessionResponse:
-    """Get full clarification session transcript and state."""
-    session = clarification_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return ClarificationSessionResponse(
-        session_id=session.session_id,
-        spec_text=session.spec_text,
-        status=session.status,
-        created_at=session.created_at,
-        clarification_round=session.clarification_round,
-        max_rounds=session.max_rounds,
-        confidence_score=session.confidence_score,
-        open_questions=session.open_questions,
-        assumptions=session.assumptions,
-        refined_spec=session.refined_spec,
-        turns=[{"role": t.role, "message": t.message, "timestamp": t.timestamp} for t in session.turns],
+        planning_hierarchy=updated_data.get("planning_hierarchy"),
     )
 
 
@@ -940,7 +834,7 @@ def architect_design(request: ArchitectDesignRequest) -> ArchitectDesignResponse
         from architecture_expert import ArchitectureExpertAgent
         from architecture_expert.models import ArchitectureInput
         from spec_parser import parse_spec_with_llm
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
     except ImportError as e:
         logger.exception("Failed to import architect dependencies")
         raise HTTPException(status_code=500, detail=f"Architect agent unavailable: {e}") from e
@@ -1082,8 +976,8 @@ def _run_frontend_code_v2_background(job_id: str, repo_path: str, task_dict: dic
     try:
         from pathlib import Path as _Path
         from frontend_code_v2_team import FrontendCodeV2TeamLead
-        from shared.llm import get_llm_for_agent
-        from shared.models import Task, TaskStatus, TaskType, SystemArchitecture
+        from software_engineering_team.shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.models import Task, TaskStatus, TaskType, SystemArchitecture
         import uuid as _uuid
 
         update_job(job_id, status="running")
@@ -1258,8 +1152,8 @@ def _run_backend_code_v2_background(job_id: str, repo_path: str, task_dict: dict
     try:
         from pathlib import Path as _Path
         from backend_code_v2_team import BackendCodeV2TeamLead
-        from shared.llm import get_llm_for_agent
-        from shared.models import Task, TaskStatus, TaskType, SystemArchitecture
+        from software_engineering_team.shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.models import Task, TaskStatus, TaskType, SystemArchitecture
         import uuid as _uuid
 
         update_job(job_id, status="running")
@@ -1323,7 +1217,7 @@ def _run_planning_v2_background(
         from pathlib import Path as _Path
         from planning_v2_team import PlanningV2TeamLead
         from planning_v2_team.models import Phase
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
 
         update_job(job_id, status="running")
 
@@ -1737,7 +1631,7 @@ def auto_answer_run_team_question(
 
     try:
         from product_requirements_analysis_agent import get_auto_answer_for_job
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
 
         llm = get_llm_for_agent("backend")
         result = get_auto_answer_for_job(
@@ -1814,7 +1708,7 @@ def auto_answer_planning_v2_question(
 
     try:
         from product_requirements_analysis_agent import get_auto_answer_for_job
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
 
         llm = get_llm_for_agent("backend")
         result = get_auto_answer_for_job(
@@ -1854,28 +1748,19 @@ def auto_answer_planning_v2_question(
 
 
 def _get_spec_content_for_job(data: Dict[str, Any]) -> str:
-    """Get spec content for a job from its repo path."""
+    """Get latest spec content for a job from its repo path. Returns '' if no spec file found."""
     repo_path = data.get("repo_path")
     if not repo_path:
         return ""
 
     repo = Path(repo_path)
+    try:
+        from spec_parser import get_latest_spec_content
 
-    spec_files = [
-        repo / "plan" / "validated_spec.md",
-        repo / "plan" / "updated_spec.md",
-        repo / "initial_spec.md",
-        repo / "spec.md",
-    ]
-
-    for spec_file in spec_files:
-        if spec_file.exists():
-            try:
-                return spec_file.read_text(encoding="utf-8")[:12000]
-            except Exception:
-                continue
-
-    return ""
+        content = get_latest_spec_content(repo)
+        return content[:12000]
+    except FileNotFoundError:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1889,12 +1774,12 @@ class ProductAnalysisRunRequest(BaseModel):
     repo_path: str = Field(
         ...,
         max_length=4096,
-        description="Local filesystem path to the folder containing initial_spec.md.",
+        description="Local filesystem path to the folder. A spec can be at root (initial_spec.md or spec.md) or under plan/ or plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md).",
     )
     spec_content: Optional[str] = Field(
         None,
         max_length=500_000,
-        description="Optional spec content. If not provided, reads from initial_spec.md.",
+        description="Optional spec content. If not provided, loads the latest spec from repo (plan/product_analysis, plan/, or root).",
     )
 
 
@@ -1941,7 +1826,7 @@ def _run_product_analysis_background(
             AnalysisPhase,
             ProductRequirementsAnalysisAgent,
         )
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
         from spec_parser import gather_context_files
 
         update_job(job_id, status="running")
@@ -1997,13 +1882,15 @@ def run_product_analysis(request: ProductAnalysisRunRequest) -> ProductAnalysisR
 
     spec_content = request.spec_content
     if not spec_content:
-        spec_file = repo / "initial_spec.md"
-        if not spec_file.exists():
+        try:
+            from spec_parser import get_latest_spec_content
+
+            spec_content = get_latest_spec_content(repo)
+        except FileNotFoundError as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"No spec_content provided and {spec_file} does not exist.",
-            )
-        spec_content = spec_file.read_text(encoding="utf-8")
+                detail=f"No spec file found. {e}. Provide spec_content or add a spec file (e.g. initial_spec.md, plan/validated_spec.md).",
+            ) from e
 
     job_id = str(uuid.uuid4())
     create_job(job_id, request.repo_path, job_type="product_analysis")
@@ -2162,7 +2049,7 @@ def auto_answer_product_analysis_question(
 
     try:
         from product_requirements_analysis_agent import get_auto_answer_for_job
-        from shared.llm import get_llm_for_agent
+        from software_engineering_team.shared.llm import get_llm_for_agent
 
         llm = get_llm_for_agent("backend")
         result = get_auto_answer_for_job(

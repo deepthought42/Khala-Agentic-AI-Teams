@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from shared.llm import LLMClient
-from shared.models import SystemArchitecture, Task, TaskUpdate
+from software_engineering_team.shared.llm import LLMClient
+from software_engineering_team.shared.models import SystemArchitecture, Task, TaskUpdate
 
 from .models import (
     BackendCodeV2WorkflowResult,
@@ -34,7 +34,7 @@ from .phases.setup import run_setup
 
 logger = logging.getLogger(__name__)
 
-MAX_REVIEW_ITERATIONS = 5
+MAX_REVIEW_ITERATIONS = 100
 
 
 def _build_tool_agents(llm: LLMClient) -> Dict[ToolAgentKind, Any]:

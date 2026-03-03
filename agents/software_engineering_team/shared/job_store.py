@@ -146,6 +146,21 @@ def list_jobs(
     return result
 
 
+def mark_all_running_jobs_failed(
+    reason: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Mark all pending or running jobs as failed (e.g. on server shutdown)."""
+    try:
+        jobs = list_jobs(cache_dir=cache_dir, running_only=True)
+        for job in jobs:
+            job_id = job.get("job_id")
+            if job_id:
+                update_job(job_id, status=JOB_STATUS_FAILED, error=reason, cache_dir=cache_dir)
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
+
+
 def update_job(
     job_id: str,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
