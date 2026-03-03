@@ -77,6 +77,17 @@ export class SoftwareEngineeringApiService {
   }
 
   /**
+   * POST /run-team/{job_id}/resume
+   * Resume an interrupted run_team job (e.g. after server restart).
+   */
+  resumeRunTeamJob(jobId: string): Observable<RunTeamResponse> {
+    return this.http.post<RunTeamResponse>(
+      `${this.baseUrl}/run-team/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /**
    * POST /run-team/{job_id}/cancel
    * Request cancellation for a running or pending job.
    */

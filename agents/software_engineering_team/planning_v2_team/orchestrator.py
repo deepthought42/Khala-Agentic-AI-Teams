@@ -36,6 +36,7 @@ from .models import (
     DeliverPhaseResult,
     ImplementationPhaseResult,
     Phase,
+    PLAN_PLANNING_TEAM_DIR,
     PlanningPhaseResult,
     PlanningRole,
     PlanningV2WorkflowResult,
@@ -233,8 +234,14 @@ class PlanningV2PlanningAgent:
         inspiration_content: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
         job_id: Optional[str] = None,
+        prd_content: Optional[str] = None,
     ) -> PlanningV2WorkflowResult:
         """Execute the planning workflow using tool agents.
+        
+        The planning team expects (1) a spec and (2) a product requirements document
+        (PRD). Both are written under plan/planning_team at init for downstream phases.
+        Spec comes from spec_content or from disk (get_latest_spec_path); PRD from
+        prd_content if provided, else copied from plan/product_analysis or plan/.
         
         Args:
             spec_content: The pre-validated specification content to plan from.
@@ -243,6 +250,8 @@ class PlanningV2PlanningAgent:
             inspiration_content: Optional inspiration/moodboard content.
             job_updater: Callback to update job status in the store.
             job_id: Job ID for tracking progress.
+            prd_content: Optional PRD content; when provided, written to plan/planning_team
+                         and disk copy is skipped.
         """
         start_time = time.monotonic()
         result = PlanningV2WorkflowResult()
@@ -260,20 +269,35 @@ class PlanningV2PlanningAgent:
 
         logger.info("Planning-v2 Planning Agent WORKFLOW START")
 
-        # Initialize plan/planning_team and copy latest spec + PRD into it
-        planning_team_dir = repo_path / "plan" / "planning_team"
+        # Initialize plan/planning_team and copy validated spec (from PRA) or latest spec + PRD into it
+        planning_team_dir = repo_path / PLAN_PLANNING_TEAM_DIR
         planning_team_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            from spec_parser import get_latest_spec_path
-            src = get_latest_spec_path(repo_path)
-            shutil.copy2(src, planning_team_dir / "updated_spec.md")
-            logger.info("Planning-v2: copied latest spec to plan/planning_team/updated_spec.md (from %s)", src)
-        except FileNotFoundError as e:
-            logger.warning("Planning-v2: no spec file to copy into plan/planning_team: %s", e)
-        prd_src = repo_path / "plan" / "product_requirements_document.md"
-        if prd_src.exists():
-            shutil.copy2(prd_src, planning_team_dir / "product_requirements_document.md")
-            logger.info("Planning-v2: copied plan/product_requirements_document.md to plan/planning_team/")
+        validated_spec_src = repo_path / "plan" / "product_analysis" / "validated_spec.md"
+        if validated_spec_src.exists():
+            shutil.copy2(validated_spec_src, planning_team_dir / "updated_spec.md")
+            logger.info("Planning-v2: copied validated_spec from plan/product_analysis to plan/planning_team/updated_spec.md")
+        else:
+            try:
+                from spec_parser import get_latest_spec_path
+                src = get_latest_spec_path(repo_path)
+                shutil.copy2(src, planning_team_dir / "updated_spec.md")
+                logger.info("Planning-v2: copied latest spec to plan/planning_team/updated_spec.md (from %s)", src)
+            except FileNotFoundError as e:
+                logger.warning("Planning-v2: no spec file to copy into plan/planning_team: %s", e)
+        # PRD: use in-memory prd_content if provided, else copy from disk (product_analysis first, then plan root)
+        if prd_content is not None and prd_content.strip():
+            (planning_team_dir / "product_requirements_document.md").write_text(prd_content, encoding="utf-8")
+            logger.info("Planning-v2: wrote PRD from in-memory content to plan/planning_team/")
+        else:
+            prd_src = repo_path / "plan" / "product_analysis" / "product_requirements_document.md"
+            if prd_src.exists():
+                shutil.copy2(prd_src, planning_team_dir / "product_requirements_document.md")
+                logger.info("Planning-v2: copied PRD from plan/product_analysis to plan/planning_team/")
+            else:
+                prd_src = repo_path / "plan" / "product_requirements_document.md"
+                if prd_src.exists():
+                    shutil.copy2(prd_src, planning_team_dir / "product_requirements_document.md")
+                    logger.info("Planning-v2: copied PRD from plan/ to plan/planning_team/")
         logger.info("Planning-v2: plan/planning_team initialized")
 
         planning_result: Optional[PlanningPhaseResult] = None
@@ -487,12 +511,18 @@ class PlanningV2ProductLead:
         job_id: Optional[str] = None,
         use_product_analysis: bool = False,
         validated_spec_content: Optional[str] = None,
+        prd_content: Optional[str] = None,
     ) -> PlanningV2WorkflowResult:
         """
         Execute the full planning-v2 workflow.
         
         The Product Lead handles initial spec intake and then delegates to
         the Planning Agent for the planning workflow.
+        
+        The planning team expects (1) a spec (via spec_content/validated_spec_content
+        or from disk) and (2) a product requirements document (PRD). Both are
+        written under plan/planning_team at init. PRD can be passed as prd_content
+        or is copied from plan/product_analysis or plan/ when present.
         
         Important: This team expects a pre-validated, complete specification.
         No spec review or expansion is performed.
@@ -509,6 +539,8 @@ class PlanningV2ProductLead:
             validated_spec_content: Pre-validated spec content from Product Analysis.
                                     If provided, skips running Product Analysis even
                                     if use_product_analysis is True.
+            prd_content: Optional PRD content; when provided, passed to Planning Agent
+                         and written to plan/planning_team (skips disk copy).
         """
         logger.info("Planning-v2 Product Lead: starting workflow")
         
@@ -595,6 +627,7 @@ class PlanningV2ProductLead:
             inspiration_content=inspiration_content,
             job_updater=job_updater,
             job_id=job_id,
+            prd_content=prd_content,
         )
         
         logger.info("Planning-v2 Product Lead: workflow %s", "succeeded" if result.success else "failed")

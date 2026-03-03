@@ -231,7 +231,7 @@ def parse_fix_output(text: str) -> Dict[str, Any]:
 
     File updates format:
       ## FILE_UPDATES ##
-      ### plan/filename.md ###
+      ### plan/planning_team/filename.md ###
       content here...
       ### END FILE ###
       ## END FILE_UPDATES ##

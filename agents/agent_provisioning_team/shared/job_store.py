@@ -5,6 +5,7 @@ Thread-safe persistence of job state to .agent_cache/provisioning_jobs/{job_id}.
 """
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ JOB_STATUS_FAILED = "failed"
 
 DEFAULT_CACHE_DIR = Path(".agent_cache/provisioning_jobs")
 
+logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 
 
@@ -132,6 +134,21 @@ def list_jobs(
     
     jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return jobs
+
+
+def mark_all_running_jobs_failed(
+    reason: str,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Mark all pending or running provisioning jobs as failed (e.g. on server shutdown)."""
+    try:
+        jobs = list_jobs(running_only=True, cache_dir=cache_dir)
+        for job in jobs:
+            job_id = job.get("job_id")
+            if job_id:
+                update_job(job_id, cache_dir=cache_dir, status=JOB_STATUS_FAILED, error=reason)
+    except Exception as e:
+        logger.warning("mark_all_running_jobs_failed: %s", e)
 
 
 def mark_job_running(

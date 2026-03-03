@@ -1873,12 +1873,23 @@ def run_orchestrator(
             except Exception:
                 pass
 
+        # Optionally pass PRD from PRA output so Planning V2 does not need to read from disk
+        prd_content: Optional[str] = None
+        prd_file = path / "plan" / "product_analysis" / "product_requirements_document.md"
+        if prd_file.exists():
+            try:
+                prd_content = prd_file.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning("Could not read PRD from plan/product_analysis: %s", e)
+
         planning_v2_lead = PlanningV2TeamLead(get_llm_for_agent("project_planning"))
         p2_result = planning_v2_lead.run_workflow(
             spec_content=validated_spec,
             repo_path=path,
             inspiration_content=None,
             job_updater=_planning_v2_job_updater,
+            validated_spec_content=validated_spec,
+            prd_content=prd_content,
         )
         if not p2_result.success:
             err = p2_result.failure_reason or "Planning-v2 workflow did not complete successfully."

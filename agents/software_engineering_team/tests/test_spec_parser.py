@@ -7,6 +7,7 @@ from spec_parser import (
     load_spec_from_repo,
     parse_spec_with_llm,
     validate_repo_path,
+    validate_work_path,
     SPEC_FILENAME,
 )
 from software_engineering_team.shared.llm import DummyLLMClient
@@ -81,9 +82,9 @@ def test_validate_repo_path_raises_no_git(tmp_path) -> None:
 
 
 def test_validate_repo_path_raises_no_spec(tmp_path) -> None:
-    """validate_repo_path raises when initial_spec.md missing."""
+    """validate_repo_path raises when no spec exists anywhere."""
     (tmp_path / ".git").mkdir()  # Minimal git repo marker
-    with pytest.raises(ValueError, match=SPEC_FILENAME):
+    with pytest.raises(ValueError, match="No spec file found"):
         validate_repo_path(tmp_path)
 
 
@@ -95,9 +96,49 @@ def test_validate_repo_path_success(tmp_path) -> None:
     assert result == tmp_path.resolve()
 
 
+def test_validate_repo_path_success_with_only_product_analysis_spec(tmp_path) -> None:
+    """validate_repo_path succeeds when only plan/product_analysis/validated_spec.md exists (no root spec)."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
+    (tmp_path / "plan" / "product_analysis" / "validated_spec.md").write_text("# validated")
+    result = validate_repo_path(tmp_path)
+    assert result == tmp_path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# validate_work_path
+# ---------------------------------------------------------------------------
+
+
+def test_validate_work_path_succeeds_with_only_product_analysis_spec(tmp_path) -> None:
+    """validate_work_path succeeds when only plan/product_analysis/validated_spec.md exists (no root spec)."""
+    (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
+    (tmp_path / "plan" / "product_analysis" / "validated_spec.md").write_text("# validated")
+    result = validate_work_path(tmp_path)
+    assert result == tmp_path.resolve()
+
+
+def test_validate_work_path_raises_when_no_spec(tmp_path) -> None:
+    """validate_work_path fails when no spec exists anywhere."""
+    with pytest.raises(ValueError, match="No spec file found"):
+        validate_work_path(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # get_latest_spec_content
 # ---------------------------------------------------------------------------
+
+
+def test_get_latest_spec_content_prefers_product_analysis_over_plan(tmp_path) -> None:
+    """When both plan/product_analysis/validated_spec.md and plan/validated_spec.md exist, content comes from product_analysis."""
+    plan = tmp_path / "plan"
+    plan.mkdir()
+    (plan / "validated_spec.md").write_text("# plan validated")
+    (plan / "product_analysis").mkdir()
+    (plan / "product_analysis" / "validated_spec.md").write_text("# product_analysis validated")
+
+    content = get_latest_spec_content(tmp_path)
+    assert content == "# product_analysis validated"
 
 
 def test_get_latest_spec_content_precedence_validated_over_updated(tmp_path) -> None:

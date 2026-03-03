@@ -32,11 +32,13 @@ if _arch_dir.exists() and str(_arch_dir) not in sys.path:
 from spec_parser import validate_work_path
 from software_engineering_team.shared.execution_tracker import execution_tracker
 from software_engineering_team.shared.job_store import (
+    JOB_STATUS_AGENT_CRASH,
     JOB_STATUS_CANCELLED,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_PENDING,
     JOB_STATUS_PAUSED_LLM_CONNECTIVITY,
+    JOB_STATUS_RUNNING,
     create_job,
     get_job,
     is_cancel_requested,
@@ -73,7 +75,7 @@ class RunTeamRequest(BaseModel):
     repo_path: str = Field(
         ...,
         max_length=4096,
-        description="Local filesystem path to the folder where work will be saved. Must contain initial_spec.md at the root. Does not need to be a git repository.",
+        description="Local filesystem path to the folder where work will be saved. Must contain a spec: at root (initial_spec.md or spec.md) or under plan/ or plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md). Does not need to be a git repository.",
     )
 
 
@@ -595,6 +597,67 @@ def cancel_job(job_id: str) -> CancelJobResponse:
         job_id=job_id,
         status="cancelled",
         message="Job cancellation requested. Running agents will stop at the next checkpoint.",
+    )
+
+
+RESUMABLE_STATUSES = (JOB_STATUS_PENDING, JOB_STATUS_RUNNING, JOB_STATUS_AGENT_CRASH)
+
+
+@app.post(
+    "/run-team/{job_id}/resume",
+    response_model=RunTeamResponse,
+    summary="Resume an interrupted job",
+    description="Re-start the orchestrator for a run_team job that was interrupted (e.g. server halt or runtime error). "
+    "Allowed when status is pending, running, or agent_crash. Use after server restart to re-initiate the job; "
+    "poll GET /run-team/{job_id} for status.",
+)
+def resume_run_team_job(job_id: str) -> RunTeamResponse:
+    """Resume a run_team job by re-starting the orchestrator. Use after server restart or when the job appears stuck."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_type = data.get("job_type")
+    if job_type is not None and job_type != "run_team":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only run_team jobs can be resumed via this endpoint (job_type={job_type}).",
+        )
+
+    status = data.get("status", JOB_STATUS_PENDING)
+    if status not in RESUMABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job cannot be resumed (status={status}). Resume is only allowed for pending, running, or agent_crash.",
+        )
+
+    repo_path = data.get("repo_path")
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="Job has no repo_path; cannot resume.")
+
+    try:
+        validate_work_path(repo_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    update_job(
+        job_id,
+        status=JOB_STATUS_RUNNING,
+        error=None,
+        agent_crash_details=None,
+    )
+
+    thread = threading.Thread(
+        target=_run_orchestrator_background,
+        args=(job_id, str(repo_path)),
+        daemon=True,
+    )
+    thread.start()
+
+    return RunTeamResponse(
+        job_id=job_id,
+        status="running",
+        message="Job resumed. Poll GET /run-team/{job_id} for status.",
     )
 
 
@@ -1711,12 +1774,12 @@ class ProductAnalysisRunRequest(BaseModel):
     repo_path: str = Field(
         ...,
         max_length=4096,
-        description="Local filesystem path to the folder containing initial_spec.md.",
+        description="Local filesystem path to the folder. A spec can be at root (initial_spec.md or spec.md) or under plan/ or plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md).",
     )
     spec_content: Optional[str] = Field(
         None,
         max_length=500_000,
-        description="Optional spec content. If not provided, reads from initial_spec.md.",
+        description="Optional spec content. If not provided, loads the latest spec from repo (plan/product_analysis, plan/, or root).",
     )
 
 

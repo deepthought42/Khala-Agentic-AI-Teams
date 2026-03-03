@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from software_engineering_team.shared.models import PlanningHierarchy
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
 from ...output_templates import parse_review_output
 from ..json_utils import complete_text_with_continuation
 
@@ -214,7 +214,7 @@ class TaskDependencyToolAgent:
 
         files: Dict[str, str] = {}
         if issues or recommendations or summary:
-            files["plan/planning_team/task_dependencies.md"] = "".join(content_parts)
+            files[planning_asset_path("task_dependencies.md")] = "".join(content_parts)
 
         return ToolAgentPhaseOutput(
             summary=summary,

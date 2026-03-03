@@ -106,8 +106,8 @@ def load_spec_from_repo(repo_path: str | Path) -> str:
 
 
 _NO_SPEC_MESSAGE = (
-    "No spec file found; looked for plan/validated_spec.md, plan/updated_spec.md, "
-    "plan/updated_spec_v*.md, "
+    "No spec file found; looked for plan/product_analysis/*.md, plan/validated_spec.md, "
+    "plan/updated_spec.md, plan/updated_spec_v*.md, "
     f"{SPEC_FILENAME}, spec.md"
 )
 
@@ -117,11 +117,10 @@ def get_latest_spec_content(repo_path: str | Path) -> str:
     Load the latest specification content from the repo, following PRA versioning.
 
     Precedence (first existing wins):
-    1. plan/validated_spec.md
-    2. plan/updated_spec.md
-    3. plan/updated_spec_vN.md with largest N
-    4. initial_spec.md at repo root
-    5. spec.md at repo root
+    0. plan/product_analysis/: validated_spec.md, updated_spec.md, updated_spec_vN.md (largest N)
+    1. plan/: validated_spec.md, updated_spec.md, updated_spec_vN.md (largest N)
+    2. initial_spec.md at repo root
+    3. spec.md at repo root
 
     Raises FileNotFoundError if no candidate file exists.
     """
@@ -130,6 +129,29 @@ def get_latest_spec_content(repo_path: str | Path) -> str:
         raise FileNotFoundError(
             f"{_NO_SPEC_MESSAGE}. Repo path does not exist or is not a directory."
         )
+
+    # 0. plan/product_analysis/ (PRA output) - first precedence
+    product_analysis_dir = path / "plan" / "product_analysis"
+    if product_analysis_dir.exists():
+        candidate = product_analysis_dir / "validated_spec.md"
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+        candidate = product_analysis_dir / "updated_spec.md"
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+        versioned = list(product_analysis_dir.glob("updated_spec_v*.md"))
+        if versioned:
+            best: Optional[Tuple[int, Path]] = None
+            for f in versioned:
+                try:
+                    n_str = f.stem.split("_v")[-1] if "_v" in f.stem else ""
+                    n = int(n_str) if n_str.isdigit() else -1
+                    if best is None or n > best[0]:
+                        best = (n, f)
+                except (ValueError, IndexError):
+                    continue
+            if best is not None:
+                return best[1].read_text(encoding="utf-8")
 
     plan_dir = path / "plan"
 
@@ -146,10 +168,9 @@ def get_latest_spec_content(repo_path: str | Path) -> str:
     # 3. plan/updated_spec_vN.md with largest N
     versioned = list(plan_dir.glob("updated_spec_v*.md")) if plan_dir.exists() else []
     if versioned:
-        best: Optional[Tuple[int, Path]] = None
+        best = None
         for f in versioned:
             try:
-                # stem is e.g. "updated_spec_v2"
                 n_str = f.stem.split("_v")[-1] if "_v" in f.stem else ""
                 n = int(n_str) if n_str.isdigit() else -1
                 if best is None or n > best[0]:
@@ -177,11 +198,10 @@ def get_latest_spec_path(repo_path: str | Path) -> Path:
     Return the Path of the latest specification file in the repo (same precedence as get_latest_spec_content).
 
     Precedence (first existing wins):
-    1. plan/validated_spec.md
-    2. plan/updated_spec.md
-    3. plan/updated_spec_vN.md with largest N
-    4. initial_spec.md at repo root
-    5. spec.md at repo root
+    0. plan/product_analysis/: validated_spec.md, updated_spec.md, updated_spec_vN.md (largest N)
+    1. plan/: validated_spec.md, updated_spec.md, updated_spec_vN.md (largest N)
+    2. initial_spec.md at repo root
+    3. spec.md at repo root
 
     Raises FileNotFoundError if no candidate file exists.
     """
@@ -190,6 +210,29 @@ def get_latest_spec_path(repo_path: str | Path) -> Path:
         raise FileNotFoundError(
             f"{_NO_SPEC_MESSAGE}. Repo path does not exist or is not a directory."
         )
+
+    # 0. plan/product_analysis/ (PRA output) - first precedence
+    product_analysis_dir = path / "plan" / "product_analysis"
+    if product_analysis_dir.exists():
+        candidate = product_analysis_dir / "validated_spec.md"
+        if candidate.exists():
+            return candidate
+        candidate = product_analysis_dir / "updated_spec.md"
+        if candidate.exists():
+            return candidate
+        versioned = list(product_analysis_dir.glob("updated_spec_v*.md"))
+        if versioned:
+            best: Optional[Tuple[int, Path]] = None
+            for f in versioned:
+                try:
+                    n_str = f.stem.split("_v")[-1] if "_v" in f.stem else ""
+                    n = int(n_str) if n_str.isdigit() else -1
+                    if best is None or n > best[0]:
+                        best = (n, f)
+                except (ValueError, IndexError):
+                    continue
+            if best is not None:
+                return best[1]
 
     plan_dir = path / "plan"
 
@@ -206,7 +249,7 @@ def get_latest_spec_path(repo_path: str | Path) -> Path:
     # 3. plan/updated_spec_vN.md with largest N
     versioned = list(plan_dir.glob("updated_spec_v*.md")) if plan_dir.exists() else []
     if versioned:
-        best: Optional[Tuple[int, Path]] = None
+        best = None
         for f in versioned:
             try:
                 n_str = f.stem.split("_v")[-1] if "_v" in f.stem else ""
@@ -354,9 +397,12 @@ def format_context_for_prompt(context_files: Dict[str, str]) -> str:
 
 def load_spec_with_context(repo_path: str | Path) -> Tuple[str, Dict[str, str]]:
     """
-    Load the initial_spec.md and gather all context files from the repository.
+    Load the latest spec and gather all context files from the repository.
     
-    This provides the PRA agent with full visibility into all provided materials.
+    Uses the same precedence as get_latest_spec_content: plan/product_analysis/
+    (validated_spec.md, updated_spec.md, updated_spec_vN.md), then plan/, then
+    root (initial_spec.md, spec.md). This provides the PRA agent with full
+    visibility into all provided materials.
     
     Args:
         repo_path: Path to the repository root.
@@ -365,9 +411,9 @@ def load_spec_with_context(repo_path: str | Path) -> Tuple[str, Dict[str, str]]:
         Tuple of (spec_content, context_files_dict).
         
     Raises:
-        FileNotFoundError: If initial_spec.md is not found.
+        FileNotFoundError: If no spec file is found.
     """
-    spec_content = load_spec_from_repo(repo_path)
+    spec_content = get_latest_spec_content(repo_path)
     context_files = gather_context_files(repo_path)
     
     return spec_content, context_files
@@ -397,7 +443,9 @@ def _check_workspace_containment(path: Path) -> None:
 
 def validate_work_path(work_path: str | Path) -> Path:
     """
-    Validate that the path exists, is a directory, and has initial_spec.md.
+    Validate that the path exists, is a directory, and has at least one loadable spec.
+    A spec can be at repo root (initial_spec.md or spec.md) or under plan/ or
+    plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md).
     Does not require the path to be a git repository.
     When WORKSPACE_ROOT is set, also verifies the path does not escape the
     workspace root (path-traversal protection).
@@ -409,15 +457,18 @@ def validate_work_path(work_path: str | Path) -> Path:
         raise ValueError(f"Path does not exist: {path}")
     if not path.is_dir():
         raise ValueError(f"Path is not a directory: {path}")
-    spec_file = path / SPEC_FILENAME
-    if not spec_file.exists():
-        raise ValueError(f"{SPEC_FILENAME} not found at {spec_file}")
+    try:
+        get_latest_spec_content(path)
+    except FileNotFoundError as e:
+        raise ValueError(str(e)) from e
     return path
 
 
 def validate_repo_path(repo_path: str | Path) -> Path:
     """
-    Validate that the path exists, is a directory, is a git repo, and has initial_spec.md.
+    Validate that the path exists, is a directory, is a git repo, and has at least one loadable spec.
+    A spec can be at repo root (initial_spec.md or spec.md) or under plan/ or
+    plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md).
     When WORKSPACE_ROOT is set, also verifies the path does not escape the
     workspace root (path-traversal protection).
     Returns the resolved Path. Raises ValueError on failure.
@@ -430,7 +481,8 @@ def validate_repo_path(repo_path: str | Path) -> Path:
         raise ValueError(f"Path is not a directory: {path}")
     if not (path / ".git").exists():
         raise ValueError(f"Path is not a git repository (no .git): {path}")
-    spec_file = path / SPEC_FILENAME
-    if not spec_file.exists():
-        raise ValueError(f"{SPEC_FILENAME} not found in repo root at {spec_file}")
+    try:
+        get_latest_spec_content(path)
+    except FileNotFoundError as e:
+        raise ValueError(str(e)) from e
     return path

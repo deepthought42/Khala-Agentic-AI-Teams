@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from software_engineering_team.shared.models import Initiative, Epic, StoryPlan, TaskPlan, PlanningHierarchy
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput
+from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
 from ...output_templates import parse_fix_output, parse_review_output
 from ..json_utils import complete_text_with_continuation
 from software_engineering_team.shared.deduplication import dedupe_by_key
@@ -429,7 +429,7 @@ class UserStoryToolAgent:
                 files_written=files_written,
             )
         
-        existing_user_stories = (inp.current_files or {}).get("plan/planning_team/user_stories.md")
+        existing_user_stories = (inp.current_files or {}).get(planning_asset_path("user_stories.md"))
         if existing_user_stories and not story_issues:
             return ToolAgentPhaseOutput(
                 summary="User story artifacts unchanged (file exists, no review issues).",
@@ -442,7 +442,7 @@ class UserStoryToolAgent:
         if not files_written:
             content = _hierarchy_to_markdown(hierarchy)
             repo = Path(inp.repo_path or ".")
-            rel_path = "plan/planning_team/user_stories.md"
+            rel_path = planning_asset_path("user_stories.md")
             full_path = repo / rel_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
@@ -538,7 +538,7 @@ class UserStoryToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get("plan/planning_team/user_stories.md", "")
+        current_artifact = inp.current_files.get(planning_asset_path("user_stories.md"), "")
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "user_stor" in path.lower() or "planning" in path.lower():
@@ -565,7 +565,7 @@ class UserStoryToolAgent:
 
             files: Dict[str, str] = {}
             if updated_content and isinstance(updated_content, str) and updated_content.strip():
-                files["plan/planning_team/user_stories.md"] = updated_content
+                files[planning_asset_path("user_stories.md")] = updated_content
                 logger.info("UserStory: fix applied (single-issue) — %s", fix_desc[:120])
             elif file_updates:
                 for path, content in file_updates.items():

@@ -15,6 +15,18 @@ from software_engineering_team.shared.models import Initiative, Epic, StoryPlan,
 
 
 # ---------------------------------------------------------------------------
+# Planning assets directory (all tool agents read/write assets here)
+# ---------------------------------------------------------------------------
+
+PLAN_PLANNING_TEAM_DIR = "plan/planning_team"
+
+
+def planning_asset_path(filename: str) -> str:
+    """Return path under plan/planning_team for a given filename (e.g. 'ui_design.md')."""
+    return f"{PLAN_PLANNING_TEAM_DIR}/{filename}"
+
+
+# ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
