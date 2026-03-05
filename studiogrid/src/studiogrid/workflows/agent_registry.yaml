@@ -1,5 +1,25 @@
 agents:
   design_lead:
+    description: Leads UX strategy and UI quality standards across product initiatives.
+    skills:
+      - ui_design
+      - accessibility_review
+      - design_systems
+    actions:
+      - review_wireframes
+      - recommend_ui_improvements
+      - define_design_direction
+    keywords:
+      - ux
+      - accessibility
+      - interface
+      - design
+    resources:
+      - figma_files
+      - design_tokens
+    schemas:
+      input: schemas/task.schema.json
+      output: schemas/review.schema.json
     prompt_file: prompts/agents/design_lead.md
     tools:
       - figma_tool
@@ -7,3 +27,69 @@ agents:
     permissions:
       - read_artifacts
       - write_artifacts
+  qa_specialist:
+    description: Performs QA validation, usability checks, and regression risk assessment.
+    skills:
+      - accessibility_review
+      - regression_testing
+      - quality_assurance
+    actions:
+      - validate_acceptance_criteria
+      - create_test_plan
+      - identify_regressions
+    keywords:
+      - testing
+      - qa
+      - validation
+      - quality
+    resources:
+      - test_cases
+      - qa_reports
+    schemas:
+      input: schemas/task.schema.json
+      output: schemas/review.schema.json
+    prompt_file: prompts/agents/design_lead.md
+    tools:
+      - contrast_check_tool
+    permissions:
+      - read_artifacts
+  backend_architect:
+    description: Designs backend services, APIs, and integration strategies.
+    skills:
+      - api_design
+      - systems_design
+      - scalability
+    actions:
+      - draft_service_architecture
+      - define_api_contracts
+      - assess_system_constraints
+    keywords:
+      - backend
+      - api
+      - architecture
+      - integration
+    resources:
+      - service_diagrams
+      - api_specs
+    schemas:
+      input: schemas/task.schema.json
+      output: schemas/decision.schema.json
+    prompt_file: prompts/agents/design_lead.md
+    tools:
+      - token_export_tool
+    permissions:
+      - read_artifacts
+      - write_artifacts
+
+teams:
+  product_design_team:
+    description: Product design and UX quality team.
+    availability: available
+    agents:
+      - design_lead
+      - qa_specialist
+  platform_engineering_team:
+    description: Platform architecture and integration team.
+    availability: available
+    agents:
+      - backend_architect

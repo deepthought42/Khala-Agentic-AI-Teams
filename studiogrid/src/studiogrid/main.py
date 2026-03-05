@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from studiogrid.runtime.registry_loader import RegistryLoader
 from studiogrid.runtime.runtime_factory import build_orchestrator
 
 
@@ -49,6 +50,29 @@ def cmd_decision_choose(args: argparse.Namespace) -> None:
     _print(orch.get_decision(decision_id=args.decision_id))
 
 
+
+def cmd_registry_list(args: argparse.Namespace) -> None:
+    registry = RegistryLoader(Path(__file__).parent)
+    _print({"agents": registry.list_agents()})
+
+
+def cmd_registry_find(args: argparse.Namespace) -> None:
+    registry = RegistryLoader(Path(__file__).parent)
+    skills = [skill.strip() for skill in args.skills.split(",") if skill.strip()] if args.skills else []
+    _print(
+        registry.find_assisting_agents(
+            problem_description=args.problem,
+            required_skills=skills,
+            requesting_agent_id=args.requesting_agent,
+            limit=args.limit,
+        )
+    )
+
+
+def cmd_team_list(args: argparse.Namespace) -> None:
+    registry = RegistryLoader(Path(__file__).parent)
+    _print({"teams": registry.list_teams(available_only=args.available_only)})
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="studiogrid")
     sub = parser.add_subparsers(dest="group", required=True)
@@ -74,6 +98,26 @@ def build_parser() -> argparse.ArgumentParser:
     choose.add_argument("--decision-id", required=True)
     choose.add_argument("--option", required=True)
     choose.set_defaults(func=cmd_decision_choose)
+
+    registry = sub.add_parser("registry")
+    registry_sub = registry.add_subparsers(dest="action", required=True)
+
+    registry_list = registry_sub.add_parser("list")
+    registry_list.set_defaults(func=cmd_registry_list)
+
+    registry_find = registry_sub.add_parser("find")
+    registry_find.add_argument("--problem", required=True)
+    registry_find.add_argument("--skills", default="")
+    registry_find.add_argument("--requesting-agent")
+    registry_find.add_argument("--limit", type=int, default=5)
+    registry_find.set_defaults(func=cmd_registry_find)
+
+    team = sub.add_parser("team")
+    team_sub = team.add_subparsers(dest="action", required=True)
+
+    team_list = team_sub.add_parser("list")
+    team_list.add_argument("--available-only", action="store_true")
+    team_list.set_defaults(func=cmd_team_list)
 
     return parser
 
