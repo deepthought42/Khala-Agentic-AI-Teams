@@ -11,8 +11,8 @@ describe('BloggingDashboardComponent', () => {
 
   beforeEach(async () => {
     apiSpy = jasmine.createSpyObj('BloggingApiService', [
-      'researchAndReview',
-      'fullPipeline',
+      'startResearchReviewAsync',
+      'startFullPipelineAsync',
       'getJobs',
       'getJobStatus',
       'getJobArtifacts',
@@ -38,25 +38,21 @@ describe('BloggingDashboardComponent', () => {
     expect(apiSpy.getJobs).toHaveBeenCalledWith(false);
   });
 
-  it('should call researchAndReview and set result on success', () => {
-    const mockResult = {
-      title_choices: [{ title: 'T', probability_of_success: 0.9 }],
-      outline: 'Outline',
-    };
-    apiSpy.researchAndReview.and.returnValue(of(mockResult));
+  it('should call startResearchReviewAsync and refetch jobs on success', () => {
+    apiSpy.startResearchReviewAsync.and.returnValue(of({ job_id: 'new-job-123' }));
+    apiSpy.getJobs.and.returnValue(of([{ job_id: 'new-job-123', status: 'running', brief: 'Test', progress: 0 }]));
 
     component.onResearchReviewSubmit({ brief: 'Test', max_results: 20 });
 
-    expect(apiSpy.researchAndReview).toHaveBeenCalledWith({
+    expect(apiSpy.startResearchReviewAsync).toHaveBeenCalledWith({
       brief: 'Test',
       max_results: 20,
     });
-    expect(component.researchReviewResult).toEqual(mockResult);
     expect(component.loading).toBeFalse();
   });
 
-  it('should set error on researchAndReview failure', () => {
-    apiSpy.researchAndReview.and.returnValue(
+  it('should set error on startResearchReviewAsync failure', () => {
+    apiSpy.startResearchReviewAsync.and.returnValue(
       throwError(() => ({ error: { detail: 'Server error' } }))
     );
 

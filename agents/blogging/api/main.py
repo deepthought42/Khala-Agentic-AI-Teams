@@ -519,7 +519,9 @@ class ArtifactContentResponse(BaseModel):
     """Response with the content of a single artifact (string for .md/.yaml, object for .json)."""
 
     name: str = Field(..., description="Artifact filename")
-    content: Union[str, Dict[str, Any]] = Field(..., description="Artifact content as string or parsed JSON")
+    content: Union[str, Dict[str, Any], List[Any]] = Field(
+        ..., description="Artifact content as string or parsed JSON (dict/list)"
+    )
 
 
 class StartPipelineResponse(BaseModel):
