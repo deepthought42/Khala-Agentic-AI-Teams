@@ -132,6 +132,14 @@ class DesignSystemContractRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+
+@router.get("/agency/profile")
+async def get_agency_profile() -> Dict[str, Any]:
+    """Get the scaffold-backed agency profile and implemented roster metadata."""
+    orchestrator = get_orchestrator()
+    return orchestrator.get_agency_profile()
+
+
 @router.post("/audit/create", response_model=AuditJobResponse)
 async def create_audit(
     request: CreateAuditRequest,

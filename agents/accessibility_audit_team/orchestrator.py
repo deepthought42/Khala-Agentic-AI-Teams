@@ -47,6 +47,12 @@ from .phases import (
     run_report_packaging_phase,
     run_retest_phase,
 )
+from .addons import (
+    AccessibilityTrainingAgent,
+    AccessibilityMonitoringAgent,
+    AccessibleDesignSystemAgent,
+)
+from .team_profile import load_agency_blueprint, validate_agent_roster, AgencyProfileError
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,32 @@ class AccessibilityAuditOrchestrator:
         self.ree = EvidenceEngineer(llm_client)
         self.ra = RemediationAdvisor(llm_client)
         self.qcr = QAConsistencyReviewer(llm_client)
+
+        # Add-on agency agents
+        self.aet = AccessibilityTrainingAgent(llm_client)
+        self.arm = AccessibilityMonitoringAgent(llm_client)
+        self.adse = AccessibleDesignSystemAgent(llm_client)
+
+        # Load scaffold-backed agency profile and validate implemented roster
+        self.agency_blueprint = load_agency_blueprint()
+        roster_errors = validate_agent_roster(
+            self.agency_blueprint,
+            [
+                self.apl.agent_code,
+                self.was.agent_code,
+                self.mas.agent_code,
+                self.ats.agent_code,
+                self.slms.agent_code,
+                self.ree.agent_code,
+                self.ra.agent_code,
+                self.qcr.agent_code,
+                self.aet.agent_code,
+                self.arm.agent_code,
+                self.adse.agent_code,
+            ],
+        )
+        if roster_errors:
+            raise AgencyProfileError("; ".join(roster_errors))
 
         # Store for in-progress audits
         self._audits: Dict[str, AccessibilityAuditResult] = {}
@@ -221,6 +253,10 @@ class AccessibilityAuditOrchestrator:
             result.success = False
             result.failure_reason = str(e)
             return result
+
+    def get_agency_profile(self) -> Dict[str, Any]:
+        """Return the loaded agency scaffold blueprint in a response-safe structure."""
+        return self.agency_blueprint
 
     async def run_retest(
         self,

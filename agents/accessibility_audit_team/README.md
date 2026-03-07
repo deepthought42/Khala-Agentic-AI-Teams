@@ -1,8 +1,19 @@
 # Digital Accessibility Audit Team
 
+## Agency Scaffold Alignment
+
+The accessibility audit team now follows an **agency-style operating scaffold** named **Inclusive Experience Agency (IEA)**.
+
+Scaffold assets:
+- `scaffold/agency_blueprint.yaml` – canonical agency structure, lane model, team composition, and required deliverables.
+- `scaffold/service_catalog.md` – packaged engagement offerings and add-on services.
+- `scaffold/delivery_playbook.md` – phase-by-phase execution playbook and quality gates.
+
+These assets are intended to be the primary reference for configuring team behavior, engagement packaging, and delivery expectations.
+
 A team of specialist agents that deliver **repeatable, evidence-backed accessibility audits** for websites, web applications, and mobile apps against WCAG 2.2 and Section 508 standards.
 
-## Team Mission
+## Team Mission (IEA Charter)
 
 Identify accessibility issues and frame them in two ways:
 
@@ -56,7 +67,7 @@ Identify accessibility issues and frame them in two ways:
 | **Accessibility Regression Monitor** | ARM | Continuous monitoring with baseline diffing and alerts |
 | **Accessible Design System Engineer** | ADSE | Hardens design system components with a11y contracts |
 
-## Workflow Phases
+## Workflow Phases (Agency Delivery Lifecycle)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -195,6 +206,7 @@ The team exposes a REST API via FastAPI:
 | POST | `/designsystem/inventory` | Build component inventory |
 | POST | `/designsystem/contract` | Generate a11y contract |
 | GET | `/health` | Health check |
+| GET | `/agency/profile` | Return scaffold-backed agency blueprint used by orchestrator |
 
 ### Example API Usage
 

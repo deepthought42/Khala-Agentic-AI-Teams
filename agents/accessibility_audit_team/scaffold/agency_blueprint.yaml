@@ -1,0 +1,86 @@
+agency:
+  name: Inclusive Experience Agency
+  codename: IEA
+  mission: >
+    Deliver repeatable, evidence-backed accessibility audits that combine engineering
+    pragmatism with standards-aligned compliance confidence.
+  positioning:
+    audience:
+      - Product engineering teams
+      - Design system teams
+      - Compliance and governance stakeholders
+    promise:
+      - Every reported issue includes reproduction clarity, user impact, and fix acceptance criteria.
+      - Every mapped criterion includes confidence and rationale.
+      - Every engagement ends with a prioritized remediation roadmap.
+
+engagement_model:
+  lifecycle:
+    - Intake
+    - Discovery
+    - Verification
+    - ReportPackaging
+    - Retest
+  operating_lanes:
+    - name: Coverage Lane
+      objective: Sweep broad surface area quickly to find likely defects.
+      owners: [WAS, MAS]
+    - name: Credibility Lane
+      objective: Verify impact with assistive technologies and standards certainty.
+      owners: [ATS, SLMS, REE]
+    - name: Quality Lane
+      objective: Enforce finding quality, deduplication, and report readiness.
+      owners: [QCR, RA, APL]
+
+team:
+  leadership:
+    - role: Accessibility Program Lead
+      code: APL
+      responsibility: Scope, strategy, executive narrative, and final report signoff.
+  specialists:
+    - role: Web Audit Specialist
+      code: WAS
+      handoff: FindingDraft[]
+    - role: Mobile Accessibility Specialist
+      code: MAS
+      handoff: FindingDraft[]
+    - role: Assistive Technology Specialist
+      code: ATS
+      handoff: AT verified findings
+    - role: Standards & Legal Mapping Specialist
+      code: SLMS
+      handoff: WCAG and Section 508 mappings with confidence
+    - role: Reproduction & Evidence Engineer
+      code: REE
+      handoff: Evidence packs and minimal repro assets
+    - role: Remediation Advisor
+      code: RA
+      handoff: developer-ready fix guidance and acceptance criteria
+    - role: QA & Consistency Reviewer
+      code: QCR
+      handoff: deduped, quality-screened backlog
+  addons:
+    - code: AET
+      role: Accessibility Education & Training
+      activation: pattern-based enablement and coaching
+    - code: ARM
+      role: Accessibility Regression Monitor
+      activation: baseline diffing and alerting
+    - code: ADSE
+      role: Accessible Design System Engineer
+      activation: component contract hardening
+
+artifacts:
+  required_per_finding:
+    - reproduction steps
+    - expected_vs_actual
+    - user_impact
+    - evidence_pack
+    - wcag_mapping_with_confidence
+    - remediation_plan
+  final_deliverables:
+    - executive_summary
+    - prioritized_backlog
+    - coverage_matrix
+    - remediation_roadmap
+    - optional_training_backlog
