@@ -155,3 +155,52 @@ def test_run_workflow_renames_validated_spec_when_needs_more_detail(tmp_path: Pa
     assert v1.read_text() == "# Validated content", "v1 should contain the original validated content from the rename"
     assert len(update_spec_calls) >= 1
     assert update_spec_calls[0] == 2, "First _update_spec after rename should use version 2"
+
+
+def test_find_missing_prd_sections_detects_expected_gaps() -> None:
+    """Missing required PRD sections should be reported."""
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+
+    prd = """
+# Product Overview
+
+## Functional Requirements
+
+## Risks, Assumptions, and Open Questions
+"""
+    missing = agent._find_missing_prd_sections(prd)
+
+    assert "Objectives and Success Metrics" in missing
+    assert "Target Users and Personas" in missing
+    assert "Release Plan and Milestones" in missing
+    assert "Product Overview" not in missing
+
+
+def test_generate_prd_repairs_missing_sections_with_second_pass() -> None:
+    """When first PRD draft is incomplete, agent should run repair prompt and return repaired output."""
+    llm = MagicMock()
+    llm.complete_text.side_effect = [
+        "# Product Overview\n\n## Functional Requirements\n",  # missing most required sections
+        """
+# Product Overview
+## Objectives and Success Metrics
+## Target Users and Personas
+## User Journeys and Use Cases
+## Scope
+## Functional Requirements
+## Non-Functional Requirements
+## Technical and Operational Constraints
+## Release Plan and Milestones
+## Risks, Assumptions, and Open Questions
+""",
+    ]
+    agent = ProductRequirementsAnalysisAgent(llm)
+
+    prd = agent._generate_prd_document(
+        cleaned_spec="# Cleaned spec",
+        answered_questions=[],
+    )
+
+    assert "## Release Plan and Milestones" in prd
+    assert llm.complete_text.call_count == 2

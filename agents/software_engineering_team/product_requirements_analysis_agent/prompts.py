@@ -403,38 +403,51 @@ Your goal is to synthesize these into a single, cohesive **Product Requirements 
 
 ### PRD Structure (Markdown)
 
-Use headings and subheadings similar to:
+Use these **required sections** so the PRD is complete across who/what/where/why/how:
 
 1. Product Overview
    - Vision
    - Problem statement
-   - In-scope vs out-of-scope
-2. Target Users & Use Cases
-   - Primary personas
-   - Key user journeys
-3. Goals & Success Metrics
-   - Business goals
-   - User goals
-   - Measurable KPIs/metrics
-4. Functional Requirements
-   - Group by feature or area (e.g., Authentication, Onboarding, Dashboard, Reporting)
-   - For each requirement, be specific and testable
-5. Non-Functional Requirements
-   - Performance and scalability
-   - Reliability & availability
-   - Security & compliance
-   - Observability, logging, and monitoring
-6. Technology & Architecture Constraints
-   - Hosting / deployment decisions (infrastructure domain)
-   - Frontend stack (framework, rendering strategy, styling)
-   - Backend stack (language, framework, API style)
-   - Database & data stores (primary DB, additional stores, hosting model)
-   - Authentication & authorization strategy
-   - Any other hard constraints the implementation must follow
-7. Risks, Assumptions, and Open Questions
-   - Known risks or trade-offs
-   - Key assumptions
-   - Remaining open questions (if any)
+   - Strategic/business objective (the "why")
+2. Objectives and Success Metrics
+   - Business outcomes
+   - User outcomes
+   - Measurable KPIs (include baseline if known, target, and timeframe)
+3. Target Users and Personas
+   - Primary personas (who)
+   - Stakeholders/owners
+   - Persona pain points/jobs-to-be-done
+4. User Journeys and Use Cases
+   - Key end-to-end workflows
+   - Primary use cases and trigger conditions
+5. Scope
+   - In scope
+   - Out of scope / non-goals
+6. Functional Requirements
+   - Group by feature area
+   - Make each requirement specific and testable
+   - Include acceptance criteria for each major feature
+7. Non-Functional Requirements
+   - Performance and scalability targets
+   - Reliability & availability expectations
+   - Security & compliance constraints
+   - Observability, logging, and monitoring expectations
+8. Technical and Operational Constraints
+   - Deployment/hosting decisions (where the product runs)
+   - Frontend/backend/database/auth constraints
+   - Dependencies and integration constraints
+9. Release Plan and Milestones
+   - Delivery phases / milestones
+   - Launch readiness notes
+10. Risks, Assumptions, and Open Questions
+   - Key risks and trade-offs
+   - Critical assumptions
+   - Remaining open questions with suggested owner if clear
+
+Important completeness rules:
+- Do not omit any required section above.
+- If an input does not provide enough detail for a section, include the section and explicitly state what is currently unknown.
+- Keep all content grounded in the provided cleaned spec and answered questions.
 
 ### Inputs
 
@@ -453,6 +466,55 @@ Answered questions (including technology and constraint decisions):
 - Respond with **only** the final PRD in Markdown format.
 - Do **not** wrap the PRD in JSON or code fences.
 - Do **not** include any commentary about how you constructed it; just output the PRD content.
+"""
+
+PRD_COMPLETENESS_REPAIR_PROMPT = """You are a senior Product Manager improving a draft PRD.
+
+You are given:
+1) A cleaned product specification
+2) Answered clarification questions
+3) An initial PRD draft
+4) A list of missing required PRD sections
+
+Task:
+- Return a revised PRD in Markdown that preserves the original valid content,
+  and adds the missing sections so it is complete across who/what/where/why/how.
+- Do not invent unsupported requirements. If a section lacks source detail, explicitly
+  state that details are currently unspecified and should be confirmed.
+
+Required section checklist:
+- Product Overview
+- Objectives and Success Metrics
+- Target Users and Personas
+- User Journeys and Use Cases
+- Scope
+- Functional Requirements
+- Non-Functional Requirements
+- Technical and Operational Constraints
+- Release Plan and Milestones
+- Risks, Assumptions, and Open Questions
+
+Cleaned specification:
+---
+{cleaned_spec}
+---
+
+Answered questions:
+---
+{answered_questions_summary}
+---
+
+Initial PRD draft:
+---
+{initial_prd}
+---
+
+Missing sections:
+---
+{missing_sections}
+---
+
+Respond with only the revised PRD in Markdown.
 """
 
 QUESTION_GENERATION_PROMPT = """Based on the following gap or issue identified in the specification, generate a structured question with answer options.
