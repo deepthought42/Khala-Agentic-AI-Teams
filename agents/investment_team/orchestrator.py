@@ -49,6 +49,16 @@ class ExternalUIAction:
             WebActionClass.ACCOUNT_SETTINGS,
         }
 
+    @property
+    def semantic_action_class(self) -> WebActionClass:
+        operation_class_map = {
+            "submit_live_order": WebActionClass.LIVE_TRADING,
+            "modify_account_settings": WebActionClass.ACCOUNT_SETTINGS,
+            "submit_paper_order": WebActionClass.PAPER_TRADING,
+            "read_market_data": WebActionClass.READ_ONLY,
+        }
+        return operation_class_map.get(self.operation, self.action_class)
+
 
 @dataclass
 class WorkflowState:
@@ -166,11 +176,12 @@ class InvestmentTeamOrchestrator:
             },
             WorkflowMode.ADVISORY: {WebActionClass.READ_ONLY},
         }
+        effective_action_class = action.semantic_action_class
         allowed_actions = mode_gate.get(state.mode, {WebActionClass.READ_ONLY})
-        if action.action_class not in allowed_actions:
+        if effective_action_class not in allowed_actions:
             return False, f"mode_blocked:{state.mode.value}"
 
-        if action.action_class == WebActionClass.LIVE_TRADING and not ips.live_trading_enabled:
+        if effective_action_class == WebActionClass.LIVE_TRADING and not ips.live_trading_enabled:
             return False, "ips_live_trading_disabled"
 
         if action.requires_human_approval and not human_approval:

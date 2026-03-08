@@ -165,6 +165,41 @@ def test_external_ui_action_gate_blocks_live_action_in_paper_mode() -> None:
     assert state.audit_log[-1] == "ui_action:order_123:alpaca:live_trading:denied:mode_blocked:paper"
 
 
+def test_external_ui_action_gate_blocks_mislabeled_live_operation_in_paper_mode() -> None:
+    state = WorkflowState(mode=WorkflowMode.PAPER)
+    ips = _sample_ips()
+    orch = InvestmentTeamOrchestrator()
+    action = ExternalUIAction(
+        event_id="Order 456",
+        platform="alpaca",
+        action_class=WebActionClass.PAPER_TRADING,
+        operation="submit_live_order",
+    )
+
+    allowed = orch.dispatch_external_ui_action(state=state, ips=ips, action=action, human_approval=True)
+
+    assert not allowed
+    assert state.audit_log[-1] == "ui_action:order_456:alpaca:paper_trading:denied:mode_blocked:paper"
+
+
+def test_external_ui_action_gate_blocks_mislabeled_live_operation_when_ips_disabled() -> None:
+    state = WorkflowState(mode=WorkflowMode.LIVE)
+    ips = _sample_ips()
+    ips.live_trading_enabled = False
+    orch = InvestmentTeamOrchestrator()
+    action = ExternalUIAction(
+        event_id="Order 789",
+        platform="ibkr",
+        action_class=WebActionClass.READ_ONLY,
+        operation="submit_live_order",
+    )
+
+    allowed = orch.dispatch_external_ui_action(state=state, ips=ips, action=action, human_approval=True)
+
+    assert not allowed
+    assert state.audit_log[-1] == "ui_action:order_789:ibkr:read_only:denied:ips_live_trading_disabled"
+
+
 def test_external_ui_action_gate_requires_human_approval_for_irreversible_action() -> None:
     state = WorkflowState(mode=WorkflowMode.LIVE)
     ips = _sample_ips()
