@@ -29,6 +29,7 @@ class OrchestratorState:
     coverage_counts: dict[str, int] = field(default_factory=dict)
     pending_approvals: list[str] = field(default_factory=list)
     retry_counters: dict[str, int] = field(default_factory=dict)
+    approval_granted: bool = False
 
 
 class EngagementOrchestrator:
@@ -117,7 +118,9 @@ class EngagementOrchestrator:
     def request_human_approval(self, engagement_id: str) -> dict:
         result = run_approval_and_comms(engagement_id, "Delivery package ready", self.context)
         self.state.pending_approvals.append(result["artifact"])
-        self._mark_complete("approval")
+        self.state.approval_granted = bool(result.get("approved", False))
+        if self.state.approval_granted:
+            self._mark_complete("approval")
         return result
 
     def run_delivery(self) -> dict:
@@ -143,7 +146,9 @@ class EngagementOrchestrator:
             raise ValueError(f"Reporting blocked; missing phases: {sorted(missing)}")
 
     def _enforce_delivery_gate(self) -> None:
-        required = {"reporting", "remediation", "sec508_mapping", "approval"}
+        required = {"reporting", "remediation", "sec508_mapping"}
         missing = required.difference(set(self.state.completed_tasks))
         if missing:
             raise ValueError(f"Delivery blocked; missing phases: {sorted(missing)}")
+        if not self.state.approval_granted:
+            raise ValueError("Delivery blocked; approval not granted")
