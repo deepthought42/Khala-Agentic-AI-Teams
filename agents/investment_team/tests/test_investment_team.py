@@ -179,7 +179,7 @@ def test_external_ui_action_gate_blocks_mislabeled_live_operation_in_paper_mode(
     allowed = orch.dispatch_external_ui_action(state=state, ips=ips, action=action, human_approval=True)
 
     assert not allowed
-    assert state.audit_log[-1] == "ui_action:order_456:alpaca:paper_trading:denied:mode_blocked:paper"
+    assert state.audit_log[-1] == "ui_action:order_456:alpaca:live_trading:denied:mode_blocked:paper"
 
 
 def test_external_ui_action_gate_blocks_mislabeled_live_operation_when_ips_disabled() -> None:
@@ -197,7 +197,7 @@ def test_external_ui_action_gate_blocks_mislabeled_live_operation_when_ips_disab
     allowed = orch.dispatch_external_ui_action(state=state, ips=ips, action=action, human_approval=True)
 
     assert not allowed
-    assert state.audit_log[-1] == "ui_action:order_789:ibkr:read_only:denied:ips_live_trading_disabled"
+    assert state.audit_log[-1] == "ui_action:order_789:ibkr:live_trading:denied:ips_live_trading_disabled"
 
 
 def test_external_ui_action_gate_requires_human_approval_for_irreversible_action() -> None:
