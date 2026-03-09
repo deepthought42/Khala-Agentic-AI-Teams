@@ -5,6 +5,64 @@ Prompts for spec review, auto-answer generation, spec update, and spec cleanup p
 """
 
 # ---------------------------------------------------------------------------
+# Context and Constraints Discovery (pre-review)
+# ---------------------------------------------------------------------------
+
+CONTEXT_CONSTRAINTS_QUESTIONS_PROMPT = """You are a Product Analyst. Before diving into detailed spec review, we need to uncover high-level project context and constraints that shape how the spec should be interpreted.
+
+Generate 1-2 focused questions per category below. These are NOT feature-level details—they are outside constraints and mandates (who is this for, where will it run, what principles must the build follow, what organizational mandates apply).
+
+Categories:
+1. **Project context** – Who is this for? (e.g. startup vs enterprise, internal vs external product, regulatory environment) so MVP and requirements are appropriate.
+2. **Deployment** – Where will it run? On-prem, cloud, or hybrid; if cloud: which provider (AWS, GCP, Azure, Rackspace, DigitalOcean, Heroku, other) and any constraints.
+3. **Tenets** – What principles must the build follow? (e.g. event-driven, API-driven, serverless, agility, ease of change, user behavior analysis, security-first, cost-conscious). Allow multiple or single depending on question design.
+4. **Organizational mandates** – Company-wide expectations: SLAs (e.g. 99.9% vs 99.999%), RTO/RPO, compliance (SOC2, HIPAA), or "none / standard." Do NOT ask about org structure, approval chains, or decision hierarchy; we only care about compliance/SLA/tenets that affect the build, not how decisions are made inside an organization.
+
+For each question provide 2-4 options with: id, label, is_default (exactly one true), rationale, confidence (0.0-1.0).
+Output must be valid JSON that can be parsed into a list of open questions. Use the same structure as spec review questions: id, question_text, context, category, priority, allow_multiple, options (each with id, label, is_default, rationale, confidence). Include constraint_domain: "" and constraint_layer: 0 for context questions. Use source: "context_discovery".
+
+Specification excerpt (optional context):
+---
+{spec_excerpt}
+---
+
+Respond with a JSON object only, no markdown:
+{{
+  "open_questions": [
+    {{
+      "id": "ctx_project_type",
+      "question_text": "What type of organization or product context is this?",
+      "context": "This shapes MVP scope and governance expectations.",
+      "category": "business",
+      "priority": "high",
+      "allow_multiple": false,
+      "constraint_domain": "",
+      "constraint_layer": 0,
+      "options": [
+        {{ "id": "opt_startup", "label": "Startup / early-stage (agility, speed, user behavior focus)", "is_default": true, "rationale": "Common for new products.", "confidence": 0.6 }},
+        {{ "id": "opt_enterprise", "label": "Enterprise (governance, consistency, compliance)", "is_default": false, "rationale": "For established orgs.", "confidence": 0.5 }}
+      ]
+    }},
+    {{
+      "id": "ctx_deployment",
+      "question_text": "Where will this be deployed?",
+      "context": "Deployment model affects infrastructure and provider choices.",
+      "category": "infrastructure",
+      "priority": "high",
+      "allow_multiple": false,
+      "constraint_domain": "",
+      "constraint_layer": 0,
+      "options": [
+        {{ "id": "opt_cloud", "label": "Cloud (AWS, GCP, Azure, etc.)", "is_default": true, "rationale": "Most common for new apps.", "confidence": 0.7 }},
+        {{ "id": "opt_onprem", "label": "On-premises", "is_default": false, "rationale": "For air-gapped or regulated environments.", "confidence": 0.3 }},
+        {{ "id": "opt_hybrid", "label": "Hybrid", "is_default": false, "rationale": "Mix of cloud and on-prem.", "confidence": 0.4 }}
+      ]
+    }}
+  ]
+}}
+"""
+
+# ---------------------------------------------------------------------------
 # Constraint Domains and Drilling Instructions
 # ---------------------------------------------------------------------------
 
@@ -113,7 +171,11 @@ SPEC_REVIEW_PROMPT = """You are a Product Requirements Analysis expert. Review t
 
 Your goal is to ensure the specification is complete and unambiguous before it moves to the planning phase.
 
+**SOURCE OF TRUTH:** The specification and any "Previously Answered Questions" below are the source of truth. Do NOT ask open questions about decisions that are already clearly specified in the spec or already answered in the Q&A. Only ask about topics that are genuinely unspecified, ambiguous, or conflicting. If something is already stated or answered, do not ask how it should be done.
+
 NOTE: The specification may include additional context files (documentation, config files, code samples, etc.) that were provided alongside the main spec. Review ALL provided content to understand the full picture before identifying gaps.
+
+**Do not ask organizational/process questions:** Do NOT ask about organizational structure, approval workflows, decision-making process, who has final say, consensus, product manager vs team, or stakeholder sign-off. The client/user is the source of truth: their feedback and direction define what should be done. Implementation is handled by AI agents; there are no human roles or hierarchies to clarify. Focus open questions on product and technical decisions (what to build, how it should behave, technology choices), not on how a company would run or who approves what.
 
 """ + CONSTRAINT_DOMAINS + """
 
@@ -417,7 +479,8 @@ For each answered question:
 4. Make the spec more actionable and unambiguous
 
 Rules:
-- Preserve all existing valid content
+- **The answers are the source of truth.** Where the spec contradicts an answer (e.g. spec says "HTTP-only cookies" but the answer is "stateless JWT"), REPLACE or REMOVE the conflicting statement so the spec reflects only the answer. Do not leave both options in the spec.
+- Preserve all existing valid content that does not conflict with the answers
 - Add new sections or details where needed
 - Write in clear, professional language
 - Use specific, measurable requirements where possible
@@ -598,6 +661,8 @@ SPEC_CLARIFICATION_PROMPT = """You are a Product Specification Writer. The speci
 
 Update the specification to make the following previously-answered information clearer and more explicit. The goal is to ensure these answers are prominently integrated so the same questions don't arise again.
 
+**The answers below are the source of truth.** Where the spec contradicts an answer (e.g. spec says "HTTP-only cookies" but the answer is "stateless JWT"), REPLACE or REMOVE the conflicting statement so the spec reflects only the answer. Do not leave both options in the spec.
+
 Current Specification:
 ---
 {spec_content}
@@ -611,11 +676,12 @@ Questions that were asked again (with their existing answers from previous itera
 Instructions:
 1. Find where each answer SHOULD be documented in the spec
 2. Make the answered information more explicit and visible in those locations
-3. Add specific details, constraints, or requirements based on the answers
-4. Do NOT just append to an appendix - integrate naturally into relevant sections
-5. Use clear, unambiguous language
-6. Preserve all existing content that is still valid
-7. If a section is missing, create it with proper structure
+3. Replace any conflicting spec content with the answer; the answer wins
+4. Add specific details, constraints, or requirements based on the answers
+5. Do NOT just append to an appendix - integrate naturally into relevant sections
+6. Use clear, unambiguous language
+7. Preserve all existing content that does not conflict with the answers
+8. If a section is missing, create it with proper structure
 
 The updated spec should make it obvious what the answers are without needing to re-ask the questions.
 
@@ -650,6 +716,7 @@ SPEC_REVIEW_CHUNK_PROMPT = """You are a Product Requirements Analysis expert. Re
 
 CRITICAL CONSTRAINTS:
 - Maximum 5 issues, 5 gaps, and 5 open questions for this section
+- **Do NOT ask questions about topics already specified in the spec or already answered** (see "Already answered" below if present). The spec and prior Q&A are the source of truth.
 - Only include items MATERIAL to this project's success
 - Do NOT list generic web development concerns or hypothetical edge cases
 - Do NOT repeat variations of the same concern - consolidate similar items

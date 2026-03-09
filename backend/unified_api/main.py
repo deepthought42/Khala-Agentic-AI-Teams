@@ -99,6 +99,7 @@ SHUTDOWN_HOOKS: Dict[str, tuple] = {
     "social_marketing": ("social_media_marketing_team.api.main", "mark_all_running_jobs_failed"),
     "accessibility_audit": ("accessibility_audit_team.api.main", "mark_all_running_jobs_failed"),
     "nutrition_meal_planning": ("nutrition_meal_planning_team.shared.job_store", "mark_all_running_jobs_failed"),
+    "planning_v3": ("planning_v3_team.shared.job_store", "mark_all_running_jobs_failed"),
 }
 
 
@@ -295,6 +296,20 @@ def _try_mount_nutrition_meal_planning(app: FastAPI) -> bool:
         return False
 
 
+def _try_mount_planning_v3(app: FastAPI) -> bool:
+    """Mount Planning V3 team API."""
+    try:
+        from planning_v3_team.api.main import app as planning_v3_app
+
+        config = TEAM_CONFIGS["planning_v3"]
+        app.mount(config.prefix, planning_v3_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Planning V3 API: %s", e)
+        return False
+
+
 def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
     """Mount all enabled team APIs and return mount status."""
     mount_functions = {
@@ -310,6 +325,7 @@ def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
         "ai_systems": _try_mount_ai_systems,
         "investment": _try_mount_investment,
         "nutrition_meal_planning": _try_mount_nutrition_meal_planning,
+        "planning_v3": _try_mount_planning_v3,
     }
 
     results = {}
