@@ -8,6 +8,8 @@ export const environment = {
   bloggingApiUrl: 'http://localhost:8080/api/blogging',
   /** Software Engineering Team API */
   softwareEngineeringApiUrl: 'http://localhost:8080/api/software-engineering',
+  /** Planning V3 Team API (client-facing discovery / PRD) */
+  planningV3ApiUrl: 'http://localhost:8080/api/planning-v3',
   /** Market Research Team API */
   marketResearchApiUrl: 'http://localhost:8080/api/market-research',
   /** SOC2 Compliance Team API */

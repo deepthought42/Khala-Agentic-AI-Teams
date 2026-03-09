@@ -27,6 +27,7 @@ from .models import (
 )
 from .prompts import (
     CONSOLIDATE_QUESTIONS_PROMPT,
+    CONTEXT_CONSTRAINTS_QUESTIONS_PROMPT,
     GENERATE_QUESTION_RECOMMENDATIONS_PROMPT,
     REVIEW_QUESTIONS_ALIGNMENT_PROMPT,
     SPEC_CLEANUP_CHUNK_PROMPT,
@@ -60,6 +61,99 @@ MAX_CONSISTENCY_LOOPS = 3
 
 # Subdirectory under repo where PRA writes all artifacts (validated_spec, PRD, updated_spec*, qa_history).
 PRODUCT_ANALYSIS_SUBDIR = "plan/product_analysis"
+
+
+def _section_title_from_chunk(chunk: str, max_len: int = 55) -> str:
+    """Extract a short, meaningful title from a spec chunk (e.g. first markdown heading)."""
+    if not chunk or not chunk.strip():
+        return ""
+    first_line = chunk.strip().split("\n")[0].strip()
+    while first_line.startswith("#"):
+        first_line = first_line.lstrip("#").strip()
+    if not first_line:
+        return ""
+    return first_line[:max_len].strip()
+
+
+def _context_discovery_fallback_questions() -> List[OpenQuestion]:
+    """Fixed list of context/constraint questions used when LLM returns empty or invalid."""
+    return [
+        OpenQuestion(
+            id="ctx_project_type",
+            question_text="What type of organization or product context is this?",
+            context="Shapes MVP scope and governance expectations.",
+            options=[
+                QuestionOption(id="opt_startup", label="Startup / early-stage (agility, speed)", is_default=True, rationale="Common for new products.", confidence=0.6),
+                QuestionOption(id="opt_enterprise", label="Enterprise (governance, compliance)", is_default=False, rationale="For established orgs.", confidence=0.5),
+            ],
+            source="context_discovery",
+            category="business",
+        ),
+        OpenQuestion(
+            id="ctx_deployment",
+            question_text="Where will this be deployed?",
+            context="Deployment model affects infrastructure and provider choices.",
+            options=[
+                QuestionOption(id="opt_cloud", label="Cloud (AWS, GCP, Azure, etc.)", is_default=True, rationale="Most common for new apps.", confidence=0.7),
+                QuestionOption(id="opt_onprem", label="On-premises", is_default=False, rationale="For air-gapped or regulated environments.", confidence=0.3),
+                QuestionOption(id="opt_hybrid", label="Hybrid (cloud + on-prem)", is_default=False, rationale="Mix of cloud and on-prem.", confidence=0.4),
+            ],
+            source="context_discovery",
+            category="infrastructure",
+        ),
+        OpenQuestion(
+            id="ctx_cloud_provider",
+            question_text="If cloud: which provider (or primary provider)?",
+            context="Affects service selection and constraints.",
+            options=[
+                QuestionOption(id="opt_aws", label="AWS", is_default=True, rationale="Widely used, broad service set.", confidence=0.6),
+                QuestionOption(id="opt_gcp", label="GCP", is_default=False, rationale="Strong data/ML offerings.", confidence=0.5),
+                QuestionOption(id="opt_azure", label="Azure", is_default=False, rationale="Good for Microsoft ecosystem.", confidence=0.5),
+                QuestionOption(id="opt_other", label="Other (Rackspace, DigitalOcean, Heroku, etc.)", is_default=False, rationale="Varies by need.", confidence=0.3),
+            ],
+            source="context_discovery",
+            category="infrastructure",
+        ),
+        OpenQuestion(
+            id="ctx_tenets",
+            question_text="What architectural or product tenets must the build follow? (select all that apply)",
+            context="Principles that shape technology and design decisions.",
+            options=[
+                QuestionOption(id="opt_event_driven", label="Event-driven", is_default=False, rationale="Async, decoupled systems.", confidence=0.5),
+                QuestionOption(id="opt_api_driven", label="API-driven", is_default=True, rationale="Clear contracts, integrability.", confidence=0.7),
+                QuestionOption(id="opt_serverless", label="Serverless / managed services", is_default=False, rationale="Reduce ops, scale to zero.", confidence=0.5),
+                QuestionOption(id="opt_agility", label="Agility / ease of change", is_default=True, rationale="Fast iteration.", confidence=0.7),
+                QuestionOption(id="opt_security_first", label="Security-first", is_default=False, rationale="Compliance and risk focus.", confidence=0.5),
+            ],
+            allow_multiple=True,
+            source="context_discovery",
+            category="architecture",
+        ),
+        OpenQuestion(
+            id="ctx_sla",
+            question_text="What availability/SLA target applies (if any)?",
+            context="Organizational mandate for uptime.",
+            options=[
+                QuestionOption(id="opt_none", label="None / standard", is_default=True, rationale="No formal SLA.", confidence=0.6),
+                QuestionOption(id="opt_three_nines", label="99.9% (three nines)", is_default=False, rationale="~8.7h downtime/year.", confidence=0.5),
+                QuestionOption(id="opt_five_nines", label="99.99% or higher (four/five nines)", is_default=False, rationale="High availability mandate.", confidence=0.4),
+            ],
+            source="context_discovery",
+            category="business",
+        ),
+        OpenQuestion(
+            id="ctx_rto_rpo",
+            question_text="Any RTO/RPO or disaster-recovery mandates?",
+            context="Recovery time and recovery point objectives.",
+            options=[
+                QuestionOption(id="opt_none", label="None / standard backup", is_default=True, rationale="No strict RTO/RPO.", confidence=0.6),
+                QuestionOption(id="opt_moderate", label="Moderate (e.g. RTO 4h, RPO 1h)", is_default=False, rationale="Some DR requirements.", confidence=0.5),
+                QuestionOption(id="opt_strict", label="Strict (e.g. RTO <1h, RPO <15min)", is_default=False, rationale="Critical systems.", confidence=0.4),
+            ],
+            source="context_discovery",
+            category="business",
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +468,43 @@ class ProductRequirementsAnalysisAgent:
         product_analysis_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Initialized %s for PRA artifacts", PRODUCT_ANALYSIS_SUBDIR)
 
+        # One-time context and constraints discovery (before first spec review) when job_id is set
+        if job_id is not None:
+            result.current_phase = AnalysisPhase.CONTEXT_DISCOVERY
+            _update_job(
+                current_phase=AnalysisPhase.CONTEXT_DISCOVERY.value,
+                progress=2,
+                message="Gathering project context and constraints...",
+                status_text="Gathering project context and constraints...",
+            )
+            context_questions = self._run_context_constraints_discovery(
+                current_spec, repo_path
+            )
+            if context_questions:
+                _update_job(
+                    status_text=f"Waiting for answers to {len(context_questions)} context/constraint question(s)",
+                )
+                try:
+                    context_answered = self._communicate_with_user(
+                        job_id=job_id,
+                        open_questions=context_questions,
+                        repo_path=repo_path,
+                        iteration=0,
+                    )
+                except Exception as exc:
+                    result.failure_reason = f"Context discovery communication failed: {exc}"
+                    logger.error("Product Requirements Analysis: %s", result.failure_reason)
+                    return result
+                if context_answered:
+                    current_spec = self._inject_context_answers_into_spec(
+                        current_spec, context_answered, repo_path
+                    )
+                    all_answered_questions.extend(context_answered)
+                    self._record_answers(repo_path, context_answered, iteration=0)
+            # If no context questions or no answers, proceed with current_spec unchanged
+        else:
+            logger.info("job_id is None; skipping context discovery")
+
         while iteration < max_iterations:
             iteration += 1
             result.iterations = iteration
@@ -389,10 +520,15 @@ class ProductRequirementsAnalysisAgent:
 
             try:
                 _update_job(status_text="Performing gap analysis on the specification")
+                spec_review_chunks = default_decompose_by_sections(current_spec)
+                spec_review_titles = [_section_title_from_chunk(c) for c in spec_review_chunks]
+
                 def _on_spec_review_chunk(chunk_index: int, total_chunks: int) -> None:
-                    _update_job(
-                        status_text=f"Analyzing specification (section {chunk_index + 1}/{total_chunks})..."
-                    )
+                    if chunk_index < len(spec_review_titles) and spec_review_titles[chunk_index]:
+                        status_text = f"Analyzing: {spec_review_titles[chunk_index]}..."
+                    else:
+                        status_text = f"Analyzing specification (section {chunk_index + 1}/{total_chunks})..."
+                    _update_job(status_text=status_text)
 
                 spec_before_review = current_spec
                 spec_review_result, current_spec = self._run_spec_review(
@@ -407,13 +543,23 @@ class ProductRequirementsAnalysisAgent:
                     _update_job(
                         status_text="Re-analyzing specification after clarification..."
                     )
+                    spec_review_chunks = default_decompose_by_sections(current_spec)
+                    spec_review_titles = [_section_title_from_chunk(c) for c in spec_review_chunks]
+
+                    def _on_spec_review_chunk_rerun(chunk_index: int, total_chunks: int) -> None:
+                        if chunk_index < len(spec_review_titles) and spec_review_titles[chunk_index]:
+                            status_text = f"Analyzing: {spec_review_titles[chunk_index]}..."
+                        else:
+                            status_text = f"Analyzing specification (section {chunk_index + 1}/{total_chunks})..."
+                        _update_job(status_text=status_text)
+
                     spec_review_result, current_spec = self._run_spec_review(
                         current_spec,
                         repo_path,
                         iteration=iteration,
                         spec_version=base_version + (iteration - 1),
                         answered_questions=all_answered_questions,
-                        on_chunk_progress=_on_spec_review_chunk,
+                        on_chunk_progress=_on_spec_review_chunk_rerun,
                     )
                     logger.info("Re-ran spec review on clarified spec")
                 result.spec_review_result = spec_review_result
@@ -428,10 +574,16 @@ class ProductRequirementsAnalysisAgent:
 
             # Consolidate duplicate/semantically-similar questions before sending to user
             original_count = len(spec_review_result.open_questions)
+            _update_job(
+                status_text="Consolidating open questions (merging duplicates)...",
+            )
             consolidated_questions = self._consolidate_open_questions(
                 spec_review_result.open_questions
             )
             if len(consolidated_questions) < original_count:
+                _update_job(
+                    status_text=f"Consolidated {original_count} questions into {len(consolidated_questions)} distinct questions",
+                )
                 logger.info(
                     "Consolidated open questions: %d -> %d",
                     original_count,
@@ -443,10 +595,16 @@ class ProductRequirementsAnalysisAgent:
             open_count = len(spec_review_result.open_questions)
             count_before_dedup = open_count
 
+            _update_job(
+                status_text="Deduplicating similar questions...",
+            )
             deduped_questions = self._dedupe_questions_by_similarity(
                 spec_review_result.open_questions
             )
             if len(deduped_questions) < open_count:
+                _update_job(
+                    status_text=f"Reduced to {len(deduped_questions)} questions after removing similar ones",
+                )
                 logger.info(
                     "Deduped open questions by similarity: %d -> %d",
                     open_count,
@@ -471,9 +629,12 @@ class ProductRequirementsAnalysisAgent:
             ):
                 consistency_loops += 1
                 _update_job(
-                    status_text="Dedup reduced questions significantly - updating spec for consistency and clarity..."
+                    status_text="Many duplicate questions found. Updating spec for clarity and to resolve conflicts using Q&A history...",
                 )
                 qa_history = self._read_qa_history(repo_path)
+                _update_job(
+                    status_text="Editing spec: clarifying answers and removing conflicting information...",
+                )
                 current_spec = self._update_spec_for_consistency_and_clarity(
                     current_spec,
                     repo_path,
@@ -482,17 +643,32 @@ class ProductRequirementsAnalysisAgent:
                     base_version + (iteration - 1),
                     consistency_loops,
                 )
-                _update_job(status_text="Re-analyzing specification after consistency update...")
+                _update_job(
+                    status_text="Spec updated. Re-analyzing specification after consistency update...",
+                )
+                consistency_chunks = default_decompose_by_sections(current_spec)
+                consistency_titles = [_section_title_from_chunk(c) for c in consistency_chunks]
+
+                def _on_consistency_review_chunk(chunk_index: int, total_chunks: int) -> None:
+                    if chunk_index < len(consistency_titles) and consistency_titles[chunk_index]:
+                        status_text = f"Analyzing: {consistency_titles[chunk_index]}..."
+                    else:
+                        status_text = f"Analyzing specification (section {chunk_index + 1}/{total_chunks})..."
+                    _update_job(status_text=status_text)
+
                 spec_review_result, current_spec = self._run_spec_review(
                     current_spec,
                     repo_path,
                     iteration=iteration,
                     spec_version=base_version + (iteration - 1),
                     answered_questions=all_answered_questions,
-                    on_chunk_progress=_on_spec_review_chunk,
+                    on_chunk_progress=_on_consistency_review_chunk,
                 )
                 result.spec_review_result = spec_review_result
                 # Re-consolidate and re-dedupe
+                _update_job(
+                    status_text="Re-consolidating and re-deduplicating questions after spec update...",
+                )
                 consolidated_questions = self._consolidate_open_questions(
                     spec_review_result.open_questions
                 )
@@ -524,6 +700,9 @@ class ProductRequirementsAnalysisAgent:
                     logger.info("No open questions after consistency update, proceeding")
                     break
 
+            _update_job(
+                status_text="Checking question and answer alignment...",
+            )
             aligned_questions = self._review_question_answer_alignment(
                 spec_review_result.open_questions
             )
@@ -531,6 +710,9 @@ class ProductRequirementsAnalysisAgent:
                 update={"open_questions": aligned_questions}
             )
 
+            _update_job(
+                status_text="Adding recommendations to questions...",
+            )
             questions_with_recommendations = self._add_recommendations(
                 spec_review_result.open_questions, current_spec
             )
@@ -634,11 +816,15 @@ class ProductRequirementsAnalysisAgent:
 
         try:
             _update_job(status_text="Running final validation and cleanup on specification")
+            cleanup_chunks = default_decompose_by_sections(current_spec)
+            cleanup_titles = [_section_title_from_chunk(c) for c in cleanup_chunks]
 
             def _on_spec_cleanup_chunk(chunk_index: int, total_chunks: int) -> None:
-                _update_job(
-                    status_text=f"Validating specification (section {chunk_index + 1}/{total_chunks})..."
-                )
+                if chunk_index < len(cleanup_titles) and cleanup_titles[chunk_index]:
+                    status_text = f"Validating: {cleanup_titles[chunk_index]}..."
+                else:
+                    status_text = f"Validating specification (section {chunk_index + 1}/{total_chunks})..."
+                _update_job(status_text=status_text)
 
             cleanup_result = self._run_spec_cleanup(
                 current_spec,
@@ -840,7 +1026,7 @@ The following additional files were provided in the project folder. Review these
             )
             prompt += f"""
 
-IMPORTANT: The following questions have ALREADY been answered. Do NOT ask these questions again or any variations of them. Only ask NEW questions about topics NOT covered below:
+IMPORTANT: The following questions have ALREADY been answered. Do NOT ask these questions again or any variations of them. Only ask NEW questions about topics NOT covered below. The spec and this Q&A are the source of truth.
 
 Previously Answered Questions:
 ---
@@ -853,6 +1039,20 @@ Previously Answered Questions:
                 constraint_hints=constraint_hints,
             )
 
+        # When chunking, each chunk must also see already-answered Q&A so we don't re-ask
+        chunk_template = SPEC_REVIEW_CHUNK_PROMPT
+        if qa_history:
+            already_block = (
+                "Already answered (do NOT ask again - these are the source of truth):\n---\n"
+                + qa_history[:2500]
+                + "\n---\n\n"
+            )
+            chunk_template = chunk_template.replace(
+                "SECTION TO REVIEW:",
+                already_block + "SECTION TO REVIEW:",
+                1,
+            )
+
         raw = parse_json_with_recovery(
             llm=self.llm,
             prompt=prompt,
@@ -860,7 +1060,7 @@ Previously Answered Questions:
             decompose_fn=default_decompose_by_sections,
             merge_fn=self._merge_spec_review_results,
             original_content=spec_content,
-            chunk_prompt_template=SPEC_REVIEW_CHUNK_PROMPT,
+            chunk_prompt_template=chunk_template,
             on_chunk_progress=on_chunk_progress,
         )
 
@@ -900,6 +1100,9 @@ Previously Answered Questions:
                     duplicates, qa_history, spec_content, repo_path, spec_version
                 )
 
+        result.open_questions = self._filter_organizational_questions(
+            result.open_questions
+        )
         return result, updated_spec
 
     def _read_qa_history(self, repo_path: Path) -> str:
@@ -919,6 +1122,10 @@ Previously Answered Questions:
     ) -> tuple[List[OpenQuestion], List[OpenQuestion]]:
         """Filter out questions that appear to be duplicates of answered ones.
         
+        Uses normalized word stems (e.g. token/tokens, store/stored) and a lower
+        match threshold so semantic duplicates are not re-asked. Treats spec + Q&A
+        as source of truth.
+        
         Returns:
             Tuple of (filtered_questions, duplicate_questions).
             - filtered_questions: Questions that are NOT duplicates (should be asked)
@@ -927,37 +1134,96 @@ Previously Answered Questions:
         qa_history_lower = qa_history.lower()
         filtered = []
         duplicates = []
-        
+
+        def _stem(w: str) -> str:
+            """Normalize word for matching (e.g. tokens->token, stored->store)."""
+            w = w.strip()
+            if len(w) <= 3:
+                return w
+            if w.endswith("ed") and len(w) > 4:
+                return w[:-2]  # stored -> store
+            if w.endswith("s") and not w.endswith("ss") and len(w) > 4:
+                return w[:-1]  # tokens -> token
+            return w
+
         for q in new_questions:
             q_text_lower = q.question_text.lower()
-            
-            # Check for exact or near-exact matches in qa_history
-            # Extract key phrases from the question (simplified heuristic)
-            key_words = [w for w in q_text_lower.split() if len(w) > 4]
-            
-            # If most key words appear in qa_history, likely a duplicate
-            if key_words:
-                matches = sum(1 for w in key_words if w in qa_history_lower)
-                match_ratio = matches / len(key_words)
-                
-                if match_ratio > 0.6:
-                    logger.debug(
-                        "Filtering duplicate question (%.0f%% match): %s",
-                        match_ratio * 100,
-                        q.question_text[:60],
-                    )
-                    duplicates.append(q)
-                    continue
-            
+            # Key words: length > 3, normalized to stems for plural/tense
+            words = [w for w in q_text_lower.split() if len(w) > 3]
+            key_stems = set(_stem(w) for w in words)
+            if not key_stems:
+                filtered.append(q)
+                continue
+            # Count how many stems (or their plural) appear in qa_history
+            matches = sum(
+                1
+                for stem in key_stems
+                if stem in qa_history_lower
+                or (stem + "s") in qa_history_lower
+                or (stem + "ed") in qa_history_lower
+            )
+            match_ratio = matches / len(key_stems)
+            # Lower threshold (0.45) so we catch more semantic duplicates
+            if match_ratio >= 0.45:
+                logger.info(
+                    "Filtering duplicate question (%.0f%% match): %s",
+                    match_ratio * 100,
+                    q.question_text[:60],
+                )
+                duplicates.append(q)
+                continue
             filtered.append(q)
-        
+
         if duplicates:
             logger.info(
                 "Filtered %d duplicate questions based on qa_history",
                 len(duplicates),
             )
-        
+
         return filtered, duplicates
+
+    def _filter_organizational_questions(
+        self, questions: List[OpenQuestion]
+    ) -> List[OpenQuestion]:
+        """Remove questions about organizational structure, approval processes, or decision hierarchy.
+
+        The client/user is the source of truth; we do not ask who approves, how decisions
+        are made, or about org structure. A question is considered organizational if any
+        of the configured phrases appear in question_text or (if present) context.
+        """
+        ORGANIZATIONAL_PHRASES = [
+            "decision process",
+            "approval process",
+            "who makes",
+            "final decision",
+            "consensus",
+            "product manager",
+            "stakeholder approval",
+            "organizational structure",
+            "who approves",
+            "sign-off",
+            "sign off",
+            "hierarchy",
+            "reporting",
+        ]
+        kept: List[OpenQuestion] = []
+        for q in questions:
+            text_norm = (q.question_text or "").lower().strip()
+            context_norm = (q.context or "").lower().strip() if q.context else ""
+            is_org = False
+            for phrase in ORGANIZATIONAL_PHRASES:
+                if phrase in text_norm or (context_norm and phrase in context_norm):
+                    is_org = True
+                    break
+            if not is_org:
+                kept.append(q)
+        removed = len(questions) - len(kept)
+        if removed:
+            logger.info(
+                "Filtered %d organizational/process question(s)",
+                removed,
+            )
+        return kept
 
     def _extract_answer_from_qa_history(
         self,
@@ -1119,7 +1385,7 @@ Previously Answered Questions:
                 recommendation=str(q_data.get("recommendation", "") or ""),
                 options=options,
                 allow_multiple=bool(q_data.get("allow_multiple", False)),
-                source="spec_review",
+                source=str(q_data.get("source", "spec_review")),
                 category=str(q_data.get("category", "general")),
                 priority=str(q_data.get("priority", "medium")),
                 constraint_domain=str(q_data.get("constraint_domain", "")),
@@ -1155,6 +1421,66 @@ Previously Answered Questions:
             status="open",
             asked_via=[],
         )
+
+    def _run_context_constraints_discovery(
+        self, spec_content: str, repo_path: Path
+    ) -> List[OpenQuestion]:
+        """Formulate context/constraint questions (project context, deployment, tenets, mandates).
+        Uses LLM with CONTEXT_CONSTRAINTS_QUESTIONS_PROMPT; on empty or invalid response
+        returns a fixed fallback list.
+        """
+        spec_excerpt = (spec_content or "")[:4000]
+        prompt = CONTEXT_CONSTRAINTS_QUESTIONS_PROMPT.format(spec_excerpt=spec_excerpt)
+        try:
+            raw = self.llm.complete_text(prompt)
+            if not raw or not raw.strip():
+                return _context_discovery_fallback_questions()
+            # Try to extract JSON (allow optional markdown code fence)
+            text = raw.strip()
+            parsed = None
+            if "```" in text:
+                for part in text.split("```"):
+                    part = part.strip()
+                    if part.lower().startswith("json"):
+                        part = part[4:].strip()
+                    if part.startswith("{"):
+                        try:
+                            parsed = json.loads(part)
+                            break
+                        except json.JSONDecodeError:
+                            continue
+            if parsed is None:
+                parsed = json.loads(text)
+            questions_data = parsed.get("open_questions") if isinstance(parsed, dict) else None
+            if not questions_data or not isinstance(questions_data, list):
+                return _context_discovery_fallback_questions()
+            out: List[OpenQuestion] = []
+            for i, q_data in enumerate(questions_data):
+                q = self._parse_open_question(q_data, i)
+                if q.source == "spec_review":
+                    q = q.model_copy(update={"source": "context_discovery"})
+                out.append(q)
+            return out if out else _context_discovery_fallback_questions()
+        except Exception as e:
+            logger.warning(
+                "Context constraints discovery LLM failed, using fallback: %s",
+                str(e)[:200],
+            )
+            return _context_discovery_fallback_questions()
+
+    def _inject_context_answers_into_spec(
+        self,
+        current_spec: str,
+        answered_questions: List[AnsweredQuestion],
+        repo_path: Path,
+    ) -> str:
+        """Build '## Project context and constraints' section from Q&A and prepend to current_spec."""
+        if not answered_questions:
+            return current_spec
+        section = "## Project context and constraints\n\n"
+        section += self._format_answered_questions(answered_questions)
+        section += "\n\n---\n\n"
+        return section + current_spec
 
     def _parse_question_option(self, opt_data: Any, index: int) -> QuestionOption:
         """Parse a single question option from LLM output."""

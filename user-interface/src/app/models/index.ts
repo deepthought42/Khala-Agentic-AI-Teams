@@ -14,3 +14,4 @@ export * from './ai-systems.model';
 export * from './investment.model';
 export * from './jobs-dashboard.model';
 export * from './integrations.model';
+export * from './planning-v3.model';

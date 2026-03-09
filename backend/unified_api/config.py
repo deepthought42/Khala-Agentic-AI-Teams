@@ -96,6 +96,12 @@ TEAM_CONFIGS: Dict[str, TeamConfig] = {
         description="Personal nutrition and meal planning with learning from feedback",
         tags=["nutrition", "meal-planning", "health"],
     ),
+    "planning_v3": TeamConfig(
+        name="Planning V3",
+        prefix="/api/planning-v3",
+        description="Client-facing discovery and requirements; PRD and handoff for dev/UI/UX",
+        tags=["planning", "discovery", "prd"],
+    ),
 }
 
 

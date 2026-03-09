@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from product_requirements_analysis_agent import ProductRequirementsAnalysisAgent
+from product_requirements_analysis_agent.agent import _context_discovery_fallback_questions
 from product_requirements_analysis_agent.models import (
     AnsweredQuestion,
     OpenQuestion,
@@ -136,19 +137,20 @@ def test_run_workflow_re_runs_spec_review_after_clarification(
             return spec_review_with_question, "# Clarified spec"
         return spec_review_no_questions, "# Clarified spec"
 
-    with patch.object(agent, "_run_spec_review", side_effect=run_spec_review):
-        with patch.object(agent, "_communicate_with_user") as mock_comm:
-            mock_comm.return_value = [
-                AnsweredQuestion(question_id="q1", question_text="Which OAuth provider?", selected_answer="GitHub")
-            ]
-            with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
-                with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
-                    result = agent.run_workflow(
-                        spec_content="# Original spec",
-                        repo_path=tmp_path,
-                        job_id="test-job",
-                        job_updater=lambda **kw: None,
-                    )
+    with patch.object(agent, "_run_context_constraints_discovery", return_value=[]):
+        with patch.object(agent, "_run_spec_review", side_effect=run_spec_review):
+            with patch.object(agent, "_communicate_with_user") as mock_comm:
+                mock_comm.return_value = [
+                    AnsweredQuestion(question_id="q1", question_text="Which OAuth provider?", selected_answer="GitHub")
+                ]
+                with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
+                    with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
+                        result = agent.run_workflow(
+                            spec_content="# Original spec",
+                            repo_path=tmp_path,
+                            job_id="test-job",
+                            job_updater=lambda **kw: None,
+                        )
 
     assert result.success
     assert len(run_spec_review_calls) == 2, "Should call _run_spec_review twice (initial + re-run after clarification)"
@@ -238,15 +240,16 @@ def test_run_workflow_writes_validated_spec_and_prd_separately(tmp_path: Path) -
     llm = MagicMock()
     agent = ProductRequirementsAnalysisAgent(llm)
 
-    with patch.object(agent, "_run_spec_review", return_value=(spec_review_no_questions, "# Spec")):
-        with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
-            with patch.object(agent, "_generate_prd_document", return_value=prd_content):
-                result = agent.run_workflow(
-                    spec_content="# Spec",
-                    repo_path=tmp_path,
-                    job_id="test-job",
-                    job_updater=lambda **kw: None,
-                )
+    with patch.object(agent, "_run_context_constraints_discovery", return_value=[]):
+        with patch.object(agent, "_run_spec_review", return_value=(spec_review_no_questions, "# Spec")):
+            with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
+                with patch.object(agent, "_generate_prd_document", return_value=prd_content):
+                    result = agent.run_workflow(
+                        spec_content="# Spec",
+                        repo_path=tmp_path,
+                        job_id="test-job",
+                        job_updater=lambda **kw: None,
+                    )
 
     assert result.success
     validated_path = tmp_path / "plan" / "product_analysis" / "validated_spec.md"
@@ -503,6 +506,27 @@ def test_dedupe_questions_by_similarity_keeps_first_and_drops_near_duplicates() 
     assert result[1].id == "c"
 
 
+def test_filter_organizational_questions_removes_org_keeps_technical() -> None:
+    """_filter_organizational_questions removes organizational/process questions and keeps technical ones."""
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+    opt = QuestionOption(id="o1", label="Option", is_default=True, rationale="", confidence=0.8)
+    q_org = OpenQuestion(
+        id="org1",
+        question_text="What is the process for making a decision?",
+        options=[opt],
+    )
+    q_tech = OpenQuestion(
+        id="tech1",
+        question_text="Which OAuth provider?",
+        options=[opt],
+    )
+    result = agent._filter_organizational_questions([q_org, q_tech])
+    assert len(result) == 1
+    assert result[0].id == "tech1"
+    assert result[0].question_text == "Which OAuth provider?"
+
+
 def test_record_answers_supersede_removes_old_qa_from_history(tmp_path: Path) -> None:
     """When a new answer is the same decision as an existing Q&A, the old entry is removed and the new one is recorded."""
     (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
@@ -560,3 +584,176 @@ def test_record_answers_different_topic_keeps_existing_qa(tmp_path: Path) -> Non
     assert "Where to deploy?" in content
     assert "**Answer:** AWS" in content
     assert "Iteration 2" in content
+
+
+# ---------------------------------------------------------------------------
+# Context and constraints discovery (pre-review)
+# ---------------------------------------------------------------------------
+
+
+def test_run_context_constraints_discovery_returns_questions_when_llm_valid(
+    tmp_path: Path,
+) -> None:
+    """_run_context_constraints_discovery returns non-empty List[OpenQuestion] when LLM returns valid JSON."""
+    llm = MagicMock()
+    llm.complete_text.return_value = '''{
+      "open_questions": [
+        {
+          "id": "ctx_project_type",
+          "question_text": "What type of organization is this?",
+          "context": "Shapes MVP scope.",
+          "category": "business",
+          "priority": "high",
+          "allow_multiple": false,
+          "constraint_domain": "",
+          "constraint_layer": 0,
+          "options": [
+            {"id": "opt_startup", "label": "Startup", "is_default": true, "rationale": "", "confidence": 0.7},
+            {"id": "opt_enterprise", "label": "Enterprise", "is_default": false, "rationale": "", "confidence": 0.5}
+          ]
+        }
+      ]
+    }'''
+    agent = ProductRequirementsAnalysisAgent(llm)
+    result = agent._run_context_constraints_discovery("# Spec", tmp_path)
+    assert len(result) >= 1
+    assert result[0].id == "ctx_project_type"
+    assert "organization" in result[0].question_text
+    assert result[0].source == "context_discovery"
+    assert len(result[0].options) == 2
+
+
+def test_run_context_constraints_discovery_uses_fallback_on_llm_failure(
+    tmp_path: Path,
+) -> None:
+    """_run_context_constraints_discovery uses fixed fallback when LLM raises or returns empty/invalid."""
+    llm = MagicMock()
+    llm.complete_text.side_effect = Exception("LLM unavailable")
+    agent = ProductRequirementsAnalysisAgent(llm)
+    result = agent._run_context_constraints_discovery("# Spec", tmp_path)
+    fallback = _context_discovery_fallback_questions()
+    assert len(result) == len(fallback)
+    assert all(q.source == "context_discovery" for q in result)
+    ids = [q.id for q in result]
+    assert "ctx_project_type" in ids
+    assert "ctx_deployment" in ids
+    assert "ctx_sla" in ids
+
+
+def test_run_context_constraints_discovery_uses_fallback_on_empty_json(tmp_path: Path) -> None:
+    """_run_context_constraints_discovery uses fallback when LLM returns empty open_questions."""
+    llm = MagicMock()
+    llm.complete_text.return_value = '{"open_questions": []}'
+    agent = ProductRequirementsAnalysisAgent(llm)
+    result = agent._run_context_constraints_discovery("# Spec", tmp_path)
+    fallback = _context_discovery_fallback_questions()
+    assert len(result) == len(fallback)
+
+
+def test_inject_context_answers_into_spec_prepends_section(tmp_path: Path) -> None:
+    """_inject_context_answers_into_spec returns spec starting with '## Project context and constraints' and containing Q&A."""
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+    answered = [
+        AnsweredQuestion(
+            question_id="ctx_1",
+            question_text="What type of organization?",
+            selected_answer="Startup",
+        ),
+        AnsweredQuestion(
+            question_id="ctx_2",
+            question_text="Where to deploy?",
+            selected_answer="Cloud",
+        ),
+    ]
+    current_spec = "# Original spec\n\nSome content."
+    result = agent._inject_context_answers_into_spec(current_spec, answered, tmp_path)
+    assert result.startswith("## Project context and constraints")
+    assert "What type of organization?" in result
+    assert "Startup" in result
+    assert "Where to deploy?" in result
+    assert "Cloud" in result
+    assert "# Original spec" in result
+    assert "Some content." in result
+
+
+def test_run_workflow_skips_context_discovery_when_no_job_id(tmp_path: Path) -> None:
+    """run_workflow with job_id=None does not call _run_context_constraints_discovery; proceeds to spec review."""
+    (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
+    spec_review_no_questions = SpecReviewResult(
+        summary="Complete", issues=[], gaps=[], open_questions=[]
+    )
+    cleanup_result = SpecCleanupResult(
+        is_valid=True, validation_issues=[], cleaned_spec="# Cleaned", summary="Done"
+    )
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+    with patch.object(agent, "_run_context_constraints_discovery") as mock_context:
+        with patch.object(agent, "_run_spec_review", return_value=(spec_review_no_questions, "# Spec")):
+            with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
+                with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
+                    agent.run_workflow(
+                        spec_content="# Spec",
+                        repo_path=tmp_path,
+                        job_id=None,
+                        job_updater=lambda **kw: None,
+                    )
+    mock_context.assert_not_called()
+
+
+def test_run_workflow_with_context_discovery_injects_into_spec(tmp_path: Path) -> None:
+    """With job_id set, context discovery runs; first spec review receives spec that includes injected context section."""
+    (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
+    context_questions = [
+        OpenQuestion(
+            id="ctx_deploy",
+            question_text="Where to deploy?",
+            options=[QuestionOption(id="opt_cloud", label="Cloud", is_default=True, rationale="", confidence=0.8)],
+        )
+    ]
+    context_answered = [
+        AnsweredQuestion(
+            question_id="ctx_deploy",
+            question_text="Where to deploy?",
+            selected_answer="Cloud",
+        )
+    ]
+    spec_review_no_questions = SpecReviewResult(
+        summary="Complete", issues=[], gaps=[], open_questions=[]
+    )
+    cleanup_result = SpecCleanupResult(
+        is_valid=True, validation_issues=[], cleaned_spec="# Cleaned", summary="Done"
+    )
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+    spec_review_received_specs = []
+
+    def capture_spec_review(*args, **kwargs):
+        spec = args[0] if args else kwargs.get("spec_content", "")
+        spec_review_received_specs.append(spec)
+        return spec_review_no_questions, spec
+
+    with patch.object(agent, "_run_context_constraints_discovery", return_value=context_questions):
+        with patch.object(agent, "_communicate_with_user", return_value=context_answered):
+            with patch.object(agent, "_run_spec_review", side_effect=capture_spec_review):
+                with patch.object(agent, "_run_spec_cleanup", return_value=cleanup_result):
+                    with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
+                        result = agent.run_workflow(
+                            spec_content="# Original",
+                            repo_path=tmp_path,
+                            job_id="test-job",
+                            job_updater=lambda **kw: None,
+                        )
+    assert result.success
+    assert len(spec_review_received_specs) >= 1
+    first_spec = spec_review_received_specs[0]
+    assert first_spec.startswith("## Project context and constraints")
+    assert "Where to deploy?" in first_spec
+    assert "Cloud" in first_spec
+    # qa_history should contain context Q&A (iteration 0)
+    qa_file = tmp_path / "plan" / "product_analysis" / "qa_history.md"
+    assert qa_file.exists()
+    content = qa_file.read_text(encoding="utf-8")
+    assert "Where to deploy?" in content
+    assert "Cloud" in content
+    assert "Iteration 0" in content
