@@ -8,6 +8,7 @@ import { SocialMarketingDashboardComponent } from './components/social-marketing
 import { BrandingDashboardComponent } from './components/branding-dashboard/branding-dashboard.component';
 import { SoftwareEngineeringDashboardComponent } from './components/software-engineering-dashboard/software-engineering-dashboard.component';
 import { PlanningV2PageComponent } from './components/planning-v2-page/planning-v2-page.component';
+import { PlanningV3PageComponent } from './components/planning-v3-page/planning-v3-page.component';
 import { PersonalAssistantDashboardComponent } from './components/personal-assistant-dashboard/personal-assistant-dashboard.component';
 import { AccessibilityDashboardComponent } from './components/accessibility-dashboard/accessibility-dashboard.component';
 import { AgentProvisioningDashboardComponent } from './components/agent-provisioning-dashboard/agent-provisioning-dashboard.component';
@@ -25,6 +26,7 @@ export const routes: Routes = [
       { path: 'blogging', component: BloggingDashboardComponent },
       { path: 'software-engineering', component: SoftwareEngineeringDashboardComponent },
       { path: 'software-engineering/planning-v2', component: PlanningV2PageComponent },
+      { path: 'software-engineering/planning-v3', component: PlanningV3PageComponent },
       { path: 'market-research', component: MarketResearchDashboardComponent },
       { path: 'soc2-compliance', component: Soc2ComplianceDashboardComponent },
       { path: 'social-marketing', component: SocialMarketingDashboardComponent },

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 class AnalysisPhase(str, Enum):
     """Phases of the Product Requirements Analysis workflow."""
 
+    CONTEXT_DISCOVERY = "context_discovery"
     SPEC_REVIEW = "spec_review"
     COMMUNICATE = "communicate"
     SPEC_UPDATE = "spec_update"

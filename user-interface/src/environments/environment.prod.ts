@@ -6,6 +6,7 @@ export const environment = {
   production: true,
   bloggingApiUrl: '/api/blogging',
   softwareEngineeringApiUrl: '/api/software-engineering',
+  planningV3ApiUrl: '/api/planning-v3',
   marketResearchApiUrl: '/api/market-research',
   soc2ComplianceApiUrl: '/api/soc2-compliance',
   socialMarketingApiUrl: '/api/social-marketing',
