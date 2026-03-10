@@ -1,5 +1,9 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { MatTabsModule } from '@angular/material/tabs';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
@@ -19,6 +23,8 @@ import type {
   standalone: true,
   imports: [
     MatTabsModule,
+    MatButtonModule,
+    MatIconModule,
     LoadingSpinnerComponent,
     ErrorMessageComponent,
     HealthIndicatorComponent,
@@ -30,8 +36,10 @@ import type {
   templateUrl: './social-marketing-dashboard.component.html',
   styleUrl: './social-marketing-dashboard.component.scss',
 })
-export class SocialMarketingDashboardComponent {
+export class SocialMarketingDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(SocialMarketingApiService);
+  private readonly route = inject(ActivatedRoute);
+  private queryParamsSub: Subscription | null = null;
 
   loading = false;
   error: string | null = null;
@@ -39,6 +47,17 @@ export class SocialMarketingDashboardComponent {
 
   healthCheck = (): ReturnType<SocialMarketingApiService['health']> =>
     this.api.health();
+
+  ngOnInit(): void {
+    this.queryParamsSub = this.route.queryParams.subscribe((params) => {
+      const id = params['jobId'];
+      this.jobId = id ?? null;
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.queryParamsSub?.unsubscribe();
+  }
 
   onRunSubmit(request: RunMarketingTeamRequest): void {
     this.loading = true;
@@ -80,5 +99,38 @@ export class SocialMarketingDashboardComponent {
         this.loading = false;
       },
     });
+  }
+
+  stopJob(): void {
+    if (!this.jobId) return;
+    this.error = null;
+    this.api.cancelJob(this.jobId).subscribe({
+      next: () => {
+        this.jobId = null;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  deleteJob(): void {
+    if (!this.jobId) return;
+    if (!confirm('Delete this job? This cannot be undone.')) return;
+    const id = this.jobId;
+    this.error = null;
+    this.api.deleteJob(id).subscribe({
+      next: () => {
+        this.jobId = null;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+      },
+    });
+  }
+
+  clearJob(): void {
+    this.jobId = null;
+    this.error = null;
   }
 }

@@ -1,4 +1,5 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -11,6 +12,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTableModule } from '@angular/material/table';
 import { MatExpansionModule } from '@angular/material/expansion';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { Observable, Subscription, interval, switchMap, takeWhile } from 'rxjs';
 import { AISystemsApiService } from '../../services/ai-systems-api.service';
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
@@ -40,6 +42,7 @@ type DashboardTab = 'build' | 'jobs' | 'blueprints';
     MatChipsModule,
     MatTableModule,
     MatExpansionModule,
+    MatTooltipModule,
     HealthIndicatorComponent,
   ],
   templateUrl: './ai-systems-dashboard.component.html',
@@ -48,8 +51,11 @@ type DashboardTab = 'build' | 'jobs' | 'blueprints';
 export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(AISystemsApiService);
   private readonly fb = inject(FormBuilder);
-  
+  private readonly route = inject(ActivatedRoute);
+
   private jobPollSub: Subscription | null = null;
+  private queryParamsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
 
   selectedTabIndex = 0;
   activeTab: DashboardTab = 'build';
@@ -84,11 +90,16 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    this.queryParamsSub = this.route.queryParams.subscribe((params) => {
+      const id = params['jobId'];
+      if (id) this.pendingJobId = id;
+    });
     this.loadJobs();
     this.loadBlueprintNames();
   }
 
   ngOnDestroy(): void {
+    this.queryParamsSub?.unsubscribe();
     this.jobPollSub?.unsubscribe();
   }
 
@@ -153,6 +164,10 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.jobs = res.jobs;
         this.jobsLoading = false;
+        if (this.pendingJobId != null) {
+          this.viewJobStatus(this.pendingJobId);
+          this.pendingJobId = null;
+        }
       },
       error: (err) => {
         console.error('Failed to load jobs:', err);
@@ -214,6 +229,46 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
       project_name: '',
       spec_path: '',
       output_dir: '',
+    });
+  }
+
+  get canStopCurrentJob(): boolean {
+    const status = this.currentJobStatus?.status;
+    return status === 'pending' || status === 'running';
+  }
+
+  stopCurrentJob(): void {
+    if (!this.currentJobId) return;
+    this.api.cancelJob(this.currentJobId).subscribe({
+      next: () => {
+        this.jobPollSub?.unsubscribe();
+        this.jobPollSub = null;
+        this.api.getJobStatus(this.currentJobId!).subscribe({
+          next: (status) => {
+            this.currentJobStatus = status;
+          },
+        });
+      },
+      error: (err) => {
+        console.error('Failed to cancel job:', err);
+        this.submitError = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  deleteCurrentJob(): void {
+    if (!this.currentJobId) return;
+    if (!confirm('Delete this job? This cannot be undone.')) return;
+    const id = this.currentJobId;
+    this.api.deleteJob(id).subscribe({
+      next: () => {
+        this.clearCurrentJob();
+        this.loadJobs();
+      },
+      error: (err) => {
+        console.error('Failed to delete job:', err);
+        this.submitError = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+      },
     });
   }
 

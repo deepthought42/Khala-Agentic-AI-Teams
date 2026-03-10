@@ -1,45 +1,33 @@
 """
-File-based job store for async provisioning execution with progress tracking.
+Job store for Agent Provisioning team: persists async job status via CentralJobManager.
 
-Thread-safe persistence of job state to .agent_cache/provisioning_jobs/{job_id}.json
+Jobs are stored under {cache_dir}/agent_provisioning_team/jobs/{job_id}.json
 """
 
-import json
+from __future__ import annotations
+
+import copy
 import logging
-import threading
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from shared_job_management import CentralJobManager
+
+logger = logging.getLogger(__name__)
 
 JOB_STATUS_PENDING = "pending"
 JOB_STATUS_RUNNING = "running"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
+JOB_STATUS_CANCELLED = "cancelled"
 
-DEFAULT_CACHE_DIR = Path(".agent_cache/provisioning_jobs")
-
-logger = logging.getLogger(__name__)
-_lock = threading.Lock()
+DEFAULT_CACHE_DIR: Path = Path(os.environ.get("AGENT_CACHE", ".agent_cache")).resolve()
 
 
-def _job_file(job_id: str, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
-    """Get the path to a job's JSON file."""
-    return cache_dir / f"{job_id}.json"
-
-
-def _ensure_cache_dir(cache_dir: Path = DEFAULT_CACHE_DIR) -> None:
-    """Ensure the cache directory exists."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-
-def _read_job_file(path: Path) -> Optional[Dict[str, Any]]:
-    """Read and parse a job file, returning None if it doesn't exist."""
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
-        return None
+def _manager(cache_dir: Path | str = DEFAULT_CACHE_DIR) -> CentralJobManager:
+    return CentralJobManager(team="agent_provisioning_team", cache_dir=cache_dir)
 
 
 def create_job(
@@ -50,8 +38,7 @@ def create_job(
     cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> None:
     """Create a new provisioning job with initial state."""
-    _ensure_cache_dir(cache_dir)
-    
+    now = datetime.now(timezone.utc).isoformat()
     data: Dict[str, Any] = {
         "job_id": job_id,
         "agent_id": agent_id,
@@ -67,15 +54,19 @@ def create_job(
         "phase_results": {},
         "error": None,
         "result": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now,
+        "updated_at": now,
     }
-    
-    with _lock:
-        _job_file(job_id, cache_dir).write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
+    _manager(cache_dir).create_job(job_id, status=JOB_STATUS_PENDING, **data)
+
+
+def get_job(
+    job_id: str,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> Dict[str, Any]:
+    """Get job data by ID. Returns empty dict if not found."""
+    data = _manager(cache_dir).get_job(job_id)
+    return copy.deepcopy(data) if data else {}
 
 
 def update_job(
@@ -84,32 +75,7 @@ def update_job(
     **kwargs: Any,
 ) -> None:
     """Update job fields. Merges kwargs into existing job data."""
-    with _lock:
-        path = _job_file(job_id, cache_dir)
-        data = _read_job_file(path)
-        if data is None:
-            return
-        
-        for key, value in kwargs.items():
-            if value is not None:
-                data[key] = value
-        
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        
-        path.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
-
-
-def get_job(
-    job_id: str,
-    cache_dir: Path = DEFAULT_CACHE_DIR,
-) -> Dict[str, Any]:
-    """Get job data by ID. Returns empty dict if not found."""
-    with _lock:
-        data = _read_job_file(_job_file(job_id, cache_dir))
-        return data if data is not None else {}
+    _manager(cache_dir).update_job(job_id, **kwargs)
 
 
 def list_jobs(
@@ -117,23 +83,10 @@ def list_jobs(
     cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> List[Dict[str, Any]]:
     """List all jobs, optionally filtered to running/pending only."""
-    _ensure_cache_dir(cache_dir)
-    jobs: List[Dict[str, Any]] = []
-    
-    with _lock:
-        for job_file in cache_dir.glob("*.json"):
-            data = _read_job_file(job_file)
-            if data is None:
-                continue
-            
-            if running_only:
-                if data.get("status") in (JOB_STATUS_PENDING, JOB_STATUS_RUNNING):
-                    jobs.append(data)
-            else:
-                jobs.append(data)
-    
-    jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
-    return jobs
+    statuses: Optional[List[str]] = (
+        [JOB_STATUS_PENDING, JOB_STATUS_RUNNING] if running_only else None
+    )
+    return _manager(cache_dir).list_jobs(statuses=statuses)
 
 
 def mark_all_running_jobs_failed(
@@ -151,6 +104,18 @@ def mark_all_running_jobs_failed(
         logger.warning("mark_all_running_jobs_failed: %s", e)
 
 
+def cancel_job(
+    job_id: str,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> bool:
+    """Set job status to cancelled. Returns True if job existed and was updated."""
+    data = get_job(job_id, cache_dir=cache_dir)
+    if not data:
+        return False
+    _manager(cache_dir).update_job(job_id, status=JOB_STATUS_CANCELLED, heartbeat=False)
+    return True
+
+
 def mark_job_running(
     job_id: str,
     cache_dir: Path = DEFAULT_CACHE_DIR,
@@ -165,13 +130,10 @@ def mark_job_completed(
     cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> None:
     """Mark a job as completed with optional result."""
-    update_job(
-        job_id,
-        cache_dir,
-        status=JOB_STATUS_COMPLETED,
-        progress=100,
-        result=result,
-    )
+    updates: Dict[str, Any] = {"status": JOB_STATUS_COMPLETED, "progress": 100}
+    if result is not None:
+        updates["result"] = result
+    update_job(job_id, cache_dir=cache_dir, **updates)
 
 
 def mark_job_failed(
@@ -182,7 +144,7 @@ def mark_job_failed(
     """Mark a job as failed with error message."""
     update_job(
         job_id,
-        cache_dir,
+        cache_dir=cache_dir,
         status=JOB_STATUS_FAILED,
         error=error,
     )
@@ -208,8 +170,7 @@ def update_phase_progress(
         updates["tools_completed"] = tools_completed
     if tools_total is not None:
         updates["tools_total"] = tools_total
-    
-    update_job(job_id, cache_dir, **updates)
+    update_job(job_id, cache_dir=cache_dir, **updates)
 
 
 def add_completed_phase(
@@ -219,28 +180,18 @@ def add_completed_phase(
     cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> None:
     """Add a phase to the completed phases list."""
-    with _lock:
-        path = _job_file(job_id, cache_dir)
-        data = _read_job_file(path)
-        if data is None:
-            return
-        
-        completed = data.get("completed_phases", [])
-        if phase not in completed:
-            completed.append(phase)
-        data["completed_phases"] = completed
-        
-        if phase_result is not None:
-            phase_results = data.get("phase_results", {})
-            phase_results[phase] = phase_result
-            data["phase_results"] = phase_results
-        
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        
-        path.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
+    data = get_job(job_id, cache_dir=cache_dir)
+    if not data:
+        return
+    completed = list(data.get("completed_phases", []))
+    if phase not in completed:
+        completed.append(phase)
+    updates: Dict[str, Any] = {"completed_phases": completed}
+    if phase_result is not None:
+        phase_results = dict(data.get("phase_results", {}))
+        phase_results[phase] = phase_result
+        updates["phase_results"] = phase_results
+    update_job(job_id, cache_dir=cache_dir, **updates)
 
 
 def delete_job(
@@ -248,9 +199,4 @@ def delete_job(
     cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> bool:
     """Delete a job file. Returns True if deleted, False if not found."""
-    with _lock:
-        path = _job_file(job_id, cache_dir)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+    return _manager(cache_dir).delete_job(job_id)

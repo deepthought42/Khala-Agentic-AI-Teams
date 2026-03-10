@@ -18,6 +18,20 @@
     <div class="tab-content">
       <app-social-marketing-run-form (submitRequest)="onRunSubmit($event)" />
       @if (jobId) {
+        <div class="job-actions-row">
+          <button mat-stroked-button (click)="stopJob()" type="button">
+            <mat-icon>stop</mat-icon>
+            Stop
+          </button>
+          <button mat-stroked-button (click)="deleteJob()" type="button">
+            <mat-icon>delete</mat-icon>
+            Delete
+          </button>
+          <button mat-stroked-button (click)="clearJob()" type="button">
+            <mat-icon>add</mat-icon>
+            Start new
+          </button>
+        </div>
         <app-social-marketing-status [jobId]="jobId" />
       }
     </div>

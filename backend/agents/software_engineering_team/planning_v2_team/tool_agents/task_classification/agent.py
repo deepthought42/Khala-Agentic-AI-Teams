@@ -352,7 +352,10 @@ class TaskClassificationToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            task_classification_path = planning_asset_path("task_classification.md")
+            if file_updates.get(task_classification_path):
+                updated_content = file_updates[task_classification_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -362,9 +365,8 @@ class TaskClassificationToolAgent:
                         self.llm, prompt, raw_text, "TaskClassification_FixSingleIssue",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(task_classification_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("task_classification.md")] = updated_content
                         logger.info("TaskClassification: fix applied after continuation (single-issue).")
@@ -387,7 +389,7 @@ class TaskClassificationToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(task_classification_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("task_classification.md")] = uc
                         logger.info("TaskClassification: fix applied after continuation (single-issue).")
@@ -456,7 +458,10 @@ class TaskClassificationToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            task_classification_path = planning_asset_path("task_classification.md")
+            if file_updates.get(task_classification_path):
+                updated_content = file_updates[task_classification_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -466,9 +471,8 @@ class TaskClassificationToolAgent:
                         self.llm, prompt, raw_text, "TaskClassification_FixAllIssues",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(task_classification_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("task_classification.md")] = updated_content
                     else:
@@ -488,7 +492,7 @@ class TaskClassificationToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(task_classification_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("task_classification.md")] = uc
                     else:

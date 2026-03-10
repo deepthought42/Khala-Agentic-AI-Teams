@@ -3,6 +3,10 @@ Job store for blogging pipeline: persists job status and progress via CentralJob
 
 Jobs are stored under {cache_dir}/blogging_team/jobs/{job_id}.json so state survives
 process restarts. This enables async API endpoints with polling for UI progress tracking.
+
+Note: Jobs created before migration from the legacy store (under .agent_cache/blog_jobs/)
+are not automatically migrated. New jobs use the central store only. Historical jobs
+in the old path are not read by this module.
 """
 
 from __future__ import annotations

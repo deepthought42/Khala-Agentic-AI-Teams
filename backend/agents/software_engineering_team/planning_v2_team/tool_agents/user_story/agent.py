@@ -595,7 +595,10 @@ class UserStoryToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            user_stories_path = planning_asset_path("user_stories.md")
+            if file_updates.get(user_stories_path):
+                updated_content = file_updates[user_stories_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -605,9 +608,8 @@ class UserStoryToolAgent:
                         self.llm, prompt, raw_text, "UserStory_FixSingleIssue",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(user_stories_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("user_stories.md")] = updated_content
                         logger.info("UserStory: fix applied after continuation (single-issue) — %s", (raw.get("fix_description") or "")[:120])
@@ -631,7 +633,7 @@ class UserStoryToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(user_stories_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("user_stories.md")] = uc
                         logger.info("UserStory: fix applied after continuation (single-issue).")
@@ -698,7 +700,10 @@ class UserStoryToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            user_stories_path = planning_asset_path("user_stories.md")
+            if file_updates.get(user_stories_path):
+                updated_content = file_updates[user_stories_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -709,9 +714,8 @@ class UserStoryToolAgent:
                         self.llm, prompt, raw_text, "UserStory_FixAllIssues",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(user_stories_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("user_stories.md")] = updated_content
                     else:
@@ -732,7 +736,7 @@ class UserStoryToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(user_stories_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("user_stories.md")] = uc
                     else:

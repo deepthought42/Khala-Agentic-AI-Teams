@@ -269,7 +269,10 @@ class UXDesignToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            ux_design_path = planning_asset_path("ux_design.md")
+            if file_updates.get(ux_design_path):
+                updated_content = file_updates[ux_design_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -279,9 +282,8 @@ class UXDesignToolAgent:
                         self.llm, prompt, raw_text, "UXDesign_FixSingleIssue",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(ux_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("ux_design.md")] = updated_content
                         logger.info("UXDesign: fix applied after continuation (single-issue).")
@@ -304,7 +306,7 @@ class UXDesignToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(ux_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("ux_design.md")] = uc
                         logger.info("UXDesign: fix applied after continuation (single-issue).")
@@ -373,7 +375,10 @@ class UXDesignToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            ux_design_path = planning_asset_path("ux_design.md")
+            if file_updates.get(ux_design_path):
+                updated_content = file_updates[ux_design_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -383,9 +388,8 @@ class UXDesignToolAgent:
                         self.llm, prompt, raw_text, "UXDesign_FixAllIssues",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(ux_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("ux_design.md")] = updated_content
                     else:
@@ -405,7 +409,7 @@ class UXDesignToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(ux_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("ux_design.md")] = uc
                     else:
