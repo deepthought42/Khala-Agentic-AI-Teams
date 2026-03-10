@@ -335,7 +335,7 @@ class TaskPlan(BaseModel):
         default=2,
         ge=1,
         le=13,
-        description="Fibonacci complexity estimate (1, 2, 3, 5, 8, 13). Target 2-3 points per task.",
+        description="Fibonacci complexity estimate. Planning V2 targets 2, 3, or 5 points (approx 2-5 days) per task; downstream teams break tasks into subtasks.",
     )
 
 

@@ -1,0 +1,88 @@
+
+================================================================================
+CONTINUATION CYCLE 0/10
+Timestamp: 2026-03-09T17:57:32.338008
+Done Reason: length (initial truncated response)
+Content Length: 0 chars
+--------------------------------------------------------------------------------
+
+================================================================================
+
+================================================================================
+CONTINUATION CYCLE 1/10
+Timestamp: 2026-03-09T17:58:47.145497
+Done Reason: stop
+Content Length: 6905 chars
+--------------------------------------------------------------------------------
+## ROOT_CAUSE ##
+The specification incorrectly mandated Service Account JWTs for background job authentication within an AWS-exclusive environment. This contradicts the architectural tenet of following "Standard AWS best practices" by introducing unnecessary secret management overhead (storage, rotation, revocation) where native AWS IAM Roles (such as ECS Task Roles) provide secure, managed identity without secrets.
+## END ROOT_CAUSE ##
+
+## FIX_DESCRIPTION ##
+Update the Security constraint within the UI Sprint Backlog to specify that Background Job Authentication utilizes AWS IAM Roles instead of Service Account JWTs. This removes the requirement for secret management for internal jobs and aligns with the AWS-exclusive deployment environment.
+## END FIX_DESCRIPTION ##
+
+## RESOLVED ##
+true
+## END RESOLVED ##
+
+## FILE_UPDATES ##
+### plan/planning_team/ui_design.md ###
+# UI Sprint Backlog: Todo Application (OAuth Auth)
+
+## 1. Sprint Scope & UI Constraints
+This backlog defines the user stories and tasks required for the Frontend/UI team to deliver the Public-facing Todo Application. 
+
+**Key UI Constraints:**
+- **Auth:** OAuth via Managed IdP (e.g., Cognito/Auth0). No custom login forms.
+- **Security:** Due to `SameSite=None` cookie usage for cross-subdomain access, explicit CSRF protection is mandatory. **Auth Tokens are stored in HttpOnly Secure Cookies; JavaScript cannot access these tokens.** The UI must not attempt to read or manage Auth Tokens directly. **All mutating requests MUST include a valid `X-CSRF-Token` AND originate from a verified `Origin` header.** **Implementation must follow the Double Submit Cookie pattern: The Auth JWT is stored in an HttpOnly Cookie, while the CSRF Token is stored in a separate non-HttpOnly Cookie or fetched via a dedicated endpoint and stored in JS memory. The CSRF Token must be sent in the `X-CSRF-Token` header matching the cookie/value.** UI must not rely on client-side logic for data isolation; all access controls are enforced server-side. **Background Job Authentication utilizes AWS IAM Roles (e.g., ECS Task Roles) for internal service-to-service API access; no Service Account JWTs are required.** **Application must operate exclusively over HTTPS to support `Secure` cookie attributes.**
+- **Token Lifecycle:** **UI is strictly prohibited from implementing token refresh logic.** Token validity and extension are managed entirely by Backend Middleware via Cookie attributes (Max-Age/Secure). UI tasks related to "Token Refresh" (e.g., TASK-029) are out of scope for Frontend.
+- **Connectivity:** All API calls target the Public ALB DNS endpoint.
+- **Backend Compute:** API hosted on **AWS Fargate (Containers)**; UI should expect persistent backend connections (no cold starts). **UI must limit concurrent requests to protect backend DB connection pool.**
+- **Cost Alignment:** UI request patterns must minimize backend load (throttling/batching) to support serverless cost optimization and prevent DB over-provisioning.
+- **Offline:** PWA service workers must cache task data for offline access; sync upon reconnection using automatic cookie-based session validation. **Sync logic must not interact with Auth headers directly; reliance is on browser-automatic cookie transmission.** **Critical: UI must NOT attempt to refresh tokens before syncing. If sync requests return 401/403, the UI must treat this as a hard session failure: clear offline cache and redirect to login. No retry or client-side token exchange is permitted.**
+- **Retention:** UI must visualize the 30-day auto-purge countdown for items in the Trash Bin.
+- **API Contract Stability:** **UI development requires signed-off OpenAPI/Swagger specifications prior to implementation.** UI must develop against **Mock Servers mirroring these contracts until Backend APIs are stable** to prevent rework due to API changes. **Critical: UI Authentication tasks (TASK-009/010) must proceed in parallel with Backend Auth tasks (TASK-006/007) using Mock Servers; UI must not block waiting for Backend Auth Middleware implementation readiness.**
+- **Timezone:** **All DateTime data exchanged with API must be in UTC (ISO 8601). UI is responsible for converting UTC timestamps to User's Local Timezone for display.**
+
+## 2. User Stories (Prioritized)
+
+### Story 1: OAuth Authentication Flow
+**As a** new or returning user,  
+**I want** to log in using my existing OAuth provider,  
+**So that** I can securely access my tasks without managing a new password.  
+- **Priority:** Critical  
+- **Acceptance Criteria:**
+  - [ ] "Login with Provider" button redirects to IdP login page.
+  - [ ] Upon successful auth, User is redirected to Task List.
+  - [ ] **Session expiration is handled gracefully via HTTP 401 responses (redirect to login); Client does not track JWT expiry nor implement refresh logic.**
+  - [ ] **CSRF token is retrieved via Double Submit Cookie pattern (read from non-HttpOnly cookie or initialization endpoint) and stored in memory upon session initialization.**
+  - [ ] **Mitigation:** Flow must be testable against Mock Auth Service prior to backend integration.
+  - [ ] **Decoupling:** UI Auth flow development is not blocked by Backend Auth Middleware (TASK-006/007) completion; Mock Server usage is mandatory for parallel development.
+  - [ ] **Security:** CSRF validation failures (403) trigger immediate session invalidation, not retry.
+  - [ ] **Security:** All requests must preserve and send the `Origin` header for server-side validation.
+  - [ ] **Security:** Application enforces HTTPS context to satisfy `Secure` cookie attribute requirements.
+  - [ ] **Security:** Browser cookies are verified to possess `SameSite=None` attribute for cross-subdomain SSO compatibility.
+  - [ ] **Dependency:** UI implementation proceeds **in parallel with Backend Auth implementation** once Auth API Contract is signed off.
+  - [ ] **Decoupling:** UI Auth flow is independent of Backend Token Refresh middleware changes.
+  - [ ] **Offline Sync:** **Session expiration during offline sync queue processing must trigger immediate cache clearance and login redirect, identical to online 401 handling.**
+
+### Story 2: Task List & Sorting
+**As a** logged-in user,  
+**I want** to view my active tasks sorted by Due Date,  
+**So that** I can prioritize my work effectively.  
+- **Priority:** High  
+- **Acceptance Criteria:**
+  - [ ] Only "Active" tasks are shown (Completed tasks excluded).
+  - [ ] List sorts automatically by Due Date (Ascending).
+  - [ ] Empty state displays clearly if no tasks exist.
+  - [ ] WCAG 2.1 AA compliance for list readability.
+  - [ ] **Dependency:** UI components built against Mock Task API based on OpenAPI spec.
+  - [ ] **Data:** Due Dates received in UTC are rendered in the User's Local Timezone.
+
+### Story 3: Task Creation
+**As a** user,  
+**I want** to create a new task with a ti
+### END FILE ###
+## END FILE_UPDATES ##
+================================================================================
