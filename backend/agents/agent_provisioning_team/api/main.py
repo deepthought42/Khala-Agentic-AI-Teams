@@ -32,7 +32,9 @@ from ..shared.job_store import (
     JOB_STATUS_PENDING,
     JOB_STATUS_RUNNING,
     add_completed_phase,
+    cancel_job as store_cancel_job,
     create_job,
+    delete_job as store_delete_job,
     get_job,
     list_jobs,
     mark_job_completed,
@@ -202,6 +204,54 @@ def list_provisioning_jobs(
     ]
     
     return ProvisionJobsListResponse(jobs=jobs)
+
+
+class CancelProvisionJobResponse(BaseModel):
+    job_id: str
+    status: str = "cancelled"
+    message: str = "Job cancellation requested."
+
+
+class DeleteProvisionJobResponse(BaseModel):
+    job_id: str
+    message: str = "Job deleted."
+
+
+@app.post(
+    "/provision/job/{job_id}/cancel",
+    response_model=CancelProvisionJobResponse,
+    summary="Cancel a provisioning job",
+    description="Set job status to cancelled. Only allowed for pending or running jobs.",
+)
+def cancel_provision_job(job_id: str) -> CancelProvisionJobResponse:
+    """Cancel a pending or running provisioning job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    current = data.get("status", JOB_STATUS_PENDING)
+    if current not in (JOB_STATUS_PENDING, JOB_STATUS_RUNNING):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {current}. Cannot cancel.",
+        )
+    store_cancel_job(job_id)
+    return CancelProvisionJobResponse(job_id=job_id, message="Job cancellation requested.")
+
+
+@app.delete(
+    "/provision/job/{job_id}",
+    response_model=DeleteProvisionJobResponse,
+    summary="Delete a provisioning job",
+    description="Remove the job from the store. Returns 404 if not found.",
+)
+def delete_provision_job(job_id: str) -> DeleteProvisionJobResponse:
+    """Delete a provisioning job by id."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not store_delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return DeleteProvisionJobResponse(job_id=job_id, message="Job deleted.")
 
 
 @app.delete(

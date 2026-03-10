@@ -305,6 +305,44 @@ def get_marketing_job_status(job_id: str) -> MarketingJobStatusResponse:
     return MarketingJobStatusResponse(**{k: v for k, v in job.items() if k in MarketingJobStatusResponse.model_fields})
 
 
+class CancelMarketingJobResponse(BaseModel):
+    job_id: str
+    status: str = "cancelled"
+    message: str = "Job cancellation requested."
+
+
+class DeleteMarketingJobResponse(BaseModel):
+    job_id: str
+    message: str = "Job deleted."
+
+
+@app.post("/social-marketing/job/{job_id}/cancel", response_model=CancelMarketingJobResponse)
+def cancel_marketing_job(job_id: str) -> CancelMarketingJobResponse:
+    """Cancel a pending or running marketing job."""
+    job = _job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    current = job.get("status", JOB_STATUS_PENDING)
+    if current not in (JOB_STATUS_PENDING, JOB_STATUS_RUNNING):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {current}. Cannot cancel.",
+        )
+    _job_manager.update_job(job_id, status="cancelled", heartbeat=False)
+    return CancelMarketingJobResponse(job_id=job_id, message="Job cancellation requested.")
+
+
+@app.delete("/social-marketing/job/{job_id}", response_model=DeleteMarketingJobResponse)
+def delete_marketing_job(job_id: str) -> DeleteMarketingJobResponse:
+    """Delete a marketing job from the store."""
+    job = _job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not _job_manager.delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return DeleteMarketingJobResponse(job_id=job_id, message="Job deleted.")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}

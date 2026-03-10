@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from ..models import (
     AgentBlueprint,
@@ -26,7 +27,9 @@ from ..shared.job_store import (
     JOB_STATUS_PENDING,
     JOB_STATUS_RUNNING,
     add_completed_phase,
+    cancel_job as store_cancel_job,
     create_job,
+    delete_job as store_delete_job,
     get_job,
     list_jobs,
     mark_job_completed,
@@ -191,6 +194,54 @@ def list_build_jobs(
     ]
     
     return AISystemJobsListResponse(jobs=jobs)
+
+
+class CancelBuildJobResponse(BaseModel):
+    job_id: str
+    status: str = "cancelled"
+    message: str = "Job cancellation requested."
+
+
+class DeleteBuildJobResponse(BaseModel):
+    job_id: str
+    message: str = "Job deleted."
+
+
+@app.post(
+    "/build/job/{job_id}/cancel",
+    response_model=CancelBuildJobResponse,
+    summary="Cancel a build job",
+    description="Set job status to cancelled. Only allowed for pending or running jobs.",
+)
+def cancel_build_job(job_id: str) -> CancelBuildJobResponse:
+    """Cancel a pending or running build job."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    current = data.get("status", JOB_STATUS_PENDING)
+    if current not in (JOB_STATUS_PENDING, JOB_STATUS_RUNNING):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {current}. Cannot cancel.",
+        )
+    store_cancel_job(job_id)
+    return CancelBuildJobResponse(job_id=job_id, message="Job cancellation requested.")
+
+
+@app.delete(
+    "/build/job/{job_id}",
+    response_model=DeleteBuildJobResponse,
+    summary="Delete a build job",
+    description="Remove the job from the store. Returns 404 if not found.",
+)
+def delete_build_job(job_id: str) -> DeleteBuildJobResponse:
+    """Delete a build job by id."""
+    data = get_job(job_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not store_delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return DeleteBuildJobResponse(job_id=job_id, message="Job deleted.")
 
 
 @app.get(

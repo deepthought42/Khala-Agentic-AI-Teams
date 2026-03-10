@@ -38,6 +38,7 @@ except ImportError:
 try:
     from shared.blog_job_store import (
         create_blog_job,
+        delete_blog_job,
         get_blog_job,
         list_blog_jobs,
         update_blog_job,
@@ -50,6 +51,7 @@ try:
     from shared.errors import BloggingError
 except ImportError:
     create_blog_job = None
+    delete_blog_job = None
     get_blog_job = None
     list_blog_jobs = None
     update_blog_job = None
@@ -722,6 +724,64 @@ def get_job_status(job_id: str) -> BlogJobStatusResponse:
         started_at=job.get("started_at"),
         completed_at=job.get("completed_at"),
     )
+
+
+class CancelJobResponse(BaseModel):
+    job_id: str
+    status: str = "cancelled"
+    message: str = "Job cancellation requested."
+
+
+class DeleteJobResponse(BaseModel):
+    job_id: str
+    message: str = "Job deleted."
+
+
+@app.post(
+    "/job/{job_id}/cancel",
+    response_model=CancelJobResponse,
+    summary="Cancel a running or pending job",
+    description="Sets job status to cancelled. Only allowed for pending or running jobs. Returns 400 for terminal states, 404 if job not found.",
+)
+def cancel_job(job_id: str) -> CancelJobResponse:
+    """Request cancellation for a pending or running pipeline job."""
+    if get_blog_job is None or update_blog_job is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Job store not available",
+        )
+    job = get_blog_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    current = job.get("status", "pending")
+    if current not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {current}. Cannot cancel.",
+        )
+    update_blog_job(job_id, status="cancelled")
+    return CancelJobResponse(job_id=job_id, message="Job cancellation requested.")
+
+
+@app.delete(
+    "/job/{job_id}",
+    response_model=DeleteJobResponse,
+    summary="Delete a job",
+    description="Remove the job from the store. Returns 404 if job not found.",
+)
+def delete_job(job_id: str) -> DeleteJobResponse:
+    """Delete a pipeline job by id."""
+    if get_blog_job is None or delete_blog_job is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Job store not available",
+        )
+    job = get_blog_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not delete_blog_job(job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return DeleteJobResponse(job_id=job_id, message="Job deleted.")
 
 
 @app.get(

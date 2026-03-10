@@ -500,7 +500,10 @@ class ArchitectureToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            architecture_path = planning_asset_path("architecture.md")
+            if file_updates.get(architecture_path):
+                updated_content = file_updates[architecture_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -510,9 +513,8 @@ class ArchitectureToolAgent:
                         self.llm, prompt, raw_text, "Architecture_FixSingleIssue",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(architecture_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("architecture.md")] = updated_content
                         logger.info("Architecture: fix applied after continuation (single-issue).")
@@ -535,7 +537,7 @@ class ArchitectureToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(architecture_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("architecture.md")] = uc
                         logger.info("Architecture: fix applied after continuation (single-issue).")
@@ -602,7 +604,10 @@ class ArchitectureToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            architecture_path = planning_asset_path("architecture.md")
+            if file_updates.get(architecture_path):
+                updated_content = file_updates[architecture_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -612,9 +617,8 @@ class ArchitectureToolAgent:
                         self.llm, prompt, raw_text, "Architecture_FixAllIssues",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(architecture_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("architecture.md")] = updated_content
                     else:
@@ -634,7 +638,7 @@ class ArchitectureToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(architecture_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("architecture.md")] = uc
                     else:

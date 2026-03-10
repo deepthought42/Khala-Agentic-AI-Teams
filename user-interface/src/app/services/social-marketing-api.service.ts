@@ -58,6 +58,27 @@ export class SocialMarketingApiService {
   }
 
   /**
+   * POST /social-marketing/job/{job_id}/cancel
+   * Cancel a pending or running marketing job.
+   */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/social-marketing/job/${jobId}/cancel`,
+      {}
+    );
+  }
+
+  /**
+   * DELETE /social-marketing/job/{job_id}
+   * Delete a marketing job from the store.
+   */
+  deleteJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.delete<{ job_id: string; message: string }>(
+      `${this.baseUrl}/social-marketing/job/${jobId}`
+    );
+  }
+
+  /**
    * POST /social-marketing/performance/{job_id}
    */
   ingestPerformance(

@@ -442,7 +442,10 @@ class SystemDesignToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            system_design_path = planning_asset_path("system_design.md")
+            if file_updates.get(system_design_path):
+                updated_content = file_updates[system_design_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -452,9 +455,8 @@ class SystemDesignToolAgent:
                         self.llm, prompt, raw_text, "SystemDesign_FixSingleIssue",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(system_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("system_design.md")] = updated_content
                         logger.info("SystemDesign: fix applied after continuation (single-issue).")
@@ -477,7 +479,7 @@ class SystemDesignToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(system_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("system_design.md")] = uc
                         logger.info("SystemDesign: fix applied after continuation (single-issue).")
@@ -544,7 +546,10 @@ class SystemDesignToolAgent:
             fix_desc = raw.get("fix_description", "")
             resolved = raw.get("resolved", False)
             file_updates = raw.get("file_updates") or {}
-            if not updated_content and file_updates:
+            system_design_path = planning_asset_path("system_design.md")
+            if file_updates.get(system_design_path):
+                updated_content = file_updates[system_design_path]
+            elif not updated_content and file_updates:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
@@ -554,9 +559,8 @@ class SystemDesignToolAgent:
                         self.llm, prompt, raw_text, "SystemDesign_FixAllIssues",
                     )
                     raw = parse_fix_output(continued)
-                    updated_content = raw.get("updated_content", "") or next(
-                        iter((raw.get("file_updates") or {}).values()), ""
-                    )
+                    fu = raw.get("file_updates") or {}
+                    updated_content = fu.get(system_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if updated_content and not looks_like_truncated_file_content(updated_content):
                         files[planning_asset_path("system_design.md")] = updated_content
                     else:
@@ -576,7 +580,7 @@ class SystemDesignToolAgent:
                     )
                     raw = parse_fix_output(continued)
                     fu = raw.get("file_updates") or {}
-                    uc = raw.get("updated_content", "") or next(iter(fu.values()), "")
+                    uc = fu.get(system_design_path) or raw.get("updated_content", "") or next(iter(fu.values()), "")
                     if uc and not looks_like_truncated_file_content(uc):
                         files[planning_asset_path("system_design.md")] = uc
                     else:

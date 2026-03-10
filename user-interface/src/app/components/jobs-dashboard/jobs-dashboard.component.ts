@@ -388,18 +388,59 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
 
   stopJob(event: Event, job: DashboardRow): void {
     event.stopPropagation();
-    if (job.unified.source !== 'software_engineering') return;
     const label = job.unified.label;
     if (!confirm(`Are you sure you want to stop the job for "${label}"?`)) {
       return;
     }
-    this.seApi.cancelJob(job.unified.jobId).subscribe({
-      next: () => this.refresh(),
-      error: (err) => {
-        console.error('Failed to stop job:', err);
-        this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
-      },
-    });
+    if (job.unified.source === 'software_engineering') {
+      this.seApi.cancelJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to stop job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'blogging') {
+      this.bloggingApi.cancelJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to stop job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'agent_provisioning') {
+      this.agentProvisioningApi.cancelJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to stop job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'ai_systems') {
+      this.aiSystemsApi.cancelJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to stop job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'social_marketing') {
+      this.socialMarketingApi.cancelJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to stop job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to stop job';
+        },
+      });
+    }
   }
 
   resumeJob(event: Event, job: DashboardRow): void {
@@ -431,17 +472,58 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
 
   deleteJob(event: Event, job: DashboardRow): void {
     event.stopPropagation();
-    if (job.unified.source !== 'software_engineering') return;
     if (!confirm('Permanently delete this job? It will be removed from the list.')) {
       return;
     }
-    this.seApi.deleteJob(job.unified.jobId).subscribe({
-      next: () => this.refresh(),
-      error: (err) => {
-        console.error('Failed to delete job:', err);
-        this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
-      },
-    });
+    if (job.unified.source === 'software_engineering') {
+      this.seApi.deleteJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to delete job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'blogging') {
+      this.bloggingApi.deleteJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to delete job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'agent_provisioning') {
+      this.agentProvisioningApi.deleteJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to delete job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'ai_systems') {
+      this.aiSystemsApi.deleteJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to delete job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+        },
+      });
+      return;
+    }
+    if (job.unified.source === 'social_marketing') {
+      this.socialMarketingApi.deleteJob(job.unified.jobId).subscribe({
+        next: () => this.refresh(),
+        error: (err) => {
+          console.error('Failed to delete job:', err);
+          this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+        },
+      });
+    }
   }
 
   canStopJob(job: DashboardRow): boolean {
@@ -461,7 +543,13 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   }
 
   canDeleteJob(job: DashboardRow): boolean {
-    return job.unified.source === 'software_engineering';
+    return [
+      'software_engineering',
+      'blogging',
+      'agent_provisioning',
+      'ai_systems',
+      'social_marketing',
+    ].includes(job.unified.source);
   }
 
   trackByJobId(_index: number, job: DashboardRow): string {

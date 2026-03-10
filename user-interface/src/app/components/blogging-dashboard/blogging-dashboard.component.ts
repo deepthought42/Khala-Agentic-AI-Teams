@@ -1,4 +1,5 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { CommonModule, SlicePipe } from '@angular/common';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
@@ -11,6 +12,9 @@ import { MatListModule } from '@angular/material/list';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { ResearchReviewFormComponent } from '../research-review-form/research-review-form.component';
 import { ResearchReviewResultsComponent } from '../research-review-results/research-review-results.component';
 import { FullPipelineFormComponent } from '../full-pipeline-form/full-pipeline-form.component';
@@ -61,6 +65,9 @@ export function artifactLabel(name: string): string {
     MatExpansionModule,
     MatChipsModule,
     MatDividerModule,
+    MatButtonModule,
+    MatIconModule,
+    MatTooltipModule,
     LoadingSpinnerComponent,
     ErrorMessageComponent,
     ResearchReviewFormComponent,
@@ -74,8 +81,11 @@ export function artifactLabel(name: string): string {
 export class BloggingDashboardComponent implements OnInit, OnDestroy {
   readonly artifactLabel = artifactLabel;
   private readonly api = inject(BloggingApiService);
+  private readonly route = inject(ActivatedRoute);
   private jobsSub: Subscription | null = null;
   private statusPollSub: Subscription | null = null;
+  private queryParamsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
 
   loading = false;
   error: string | null = null;
@@ -97,7 +107,47 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     return (TERMINAL_STATUSES as readonly string[]).includes(status);
   }
 
+  canStopSelectedJob(): boolean {
+    const status = this.selectedJobStatus?.status ?? this.selectedBlogJob?.status;
+    return !!this.selectedBlogJob && !!status && !this.isTerminalStatus(status) && status !== 'cancelled';
+  }
+
+  cancelSelectedJob(): void {
+    if (!this.selectedBlogJob) return;
+    const jobId = this.selectedBlogJob.job_id;
+    this.api.cancelJob(jobId).subscribe({
+      next: () => {
+        this.api.getJobStatus(jobId).subscribe({
+          next: (status) => {
+            this.selectedJobStatus = status;
+          },
+        });
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  deleteSelectedJob(): void {
+    if (!this.selectedBlogJob) return;
+    if (!confirm('Delete this job? This cannot be undone.')) return;
+    const jobId = this.selectedBlogJob.job_id;
+    this.api.deleteJob(jobId).subscribe({
+      next: () => {
+        this.clearSelection();
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+      },
+    });
+  }
+
   ngOnInit(): void {
+    this.queryParamsSub = this.route.queryParams.subscribe((params) => {
+      const id = params['jobId'];
+      if (id) this.pendingJobId = id;
+    });
     this.jobsSub = timer(0, POLL_JOBS_MS).pipe(
       switchMap(() => this.api.getJobs(false))
     ).subscribe({
@@ -105,7 +155,11 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
         this.allJobs = jobs;
         this.runningJobs = jobs.filter((j) => j.status === 'pending' || j.status === 'running');
         this.completedJobs = jobs.filter((j) => this.isTerminalStatus(j.status));
-        if (this.selectedBlogJob) {
+        if (this.pendingJobId != null) {
+          const job = jobs.find((j) => j.job_id === this.pendingJobId);
+          if (job) this.selectJob(job);
+          this.pendingJobId = null;
+        } else if (this.selectedBlogJob) {
           const still = jobs.find((j) => j.job_id === this.selectedBlogJob!.job_id);
           if (!still) this.clearSelection();
         } else if (this.runningJobs.length > 0) {
@@ -118,6 +172,7 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.queryParamsSub?.unsubscribe();
     this.jobsSub?.unsubscribe();
     this.statusPollSub?.unsubscribe();
   }

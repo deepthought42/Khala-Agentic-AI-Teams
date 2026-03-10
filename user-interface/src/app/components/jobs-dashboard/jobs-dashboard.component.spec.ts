@@ -24,10 +24,26 @@ describe('JobsDashboardComponent', () => {
       getBackendCodeV2Status: vi.fn(),
       getFrontendCodeV2Status: vi.fn(),
     };
-    const bloggingApi = { getJobs: vi.fn().mockReturnValue(of([])) };
-    const aiApi = { listJobs: vi.fn().mockReturnValue(of({ jobs: [] })) };
-    const provApi = { listJobs: vi.fn().mockReturnValue(of({ jobs: [] })) };
-    const socialApi = { listJobs: vi.fn().mockReturnValue(of([])) };
+    const bloggingApi = {
+      getJobs: vi.fn().mockReturnValue(of([])),
+      cancelJob: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'cancelled', message: 'Ok' })),
+      deleteJob: vi.fn().mockReturnValue(of({ job_id: 'j1', message: 'Deleted' })),
+    };
+    const aiApi = {
+      listJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      cancelJob: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'cancelled', message: 'Ok' })),
+      deleteJob: vi.fn().mockReturnValue(of({ job_id: 'j1', message: 'Deleted' })),
+    };
+    const provApi = {
+      listJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      cancelJob: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'cancelled', message: 'Ok' })),
+      deleteJob: vi.fn().mockReturnValue(of({ job_id: 'j1', message: 'Deleted' })),
+    };
+    const socialApi = {
+      listJobs: vi.fn().mockReturnValue(of([])),
+      cancelJob: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'cancelled', message: 'Ok' })),
+      deleteJob: vi.fn().mockReturnValue(of({ job_id: 'j1', message: 'Deleted' })),
+    };
 
     await TestBed.configureTestingModule({
       imports: [JobsDashboardComponent],
@@ -117,6 +133,35 @@ describe('JobsDashboardComponent', () => {
     it('returns false for non-software_engineering source', () => {
       const job = { unified: { source: 'blogging', jobId: 'j1', status: 'failed' }, seDetail: null } as any;
       expect(component.canResumeJob(job)).toBe(false);
+    });
+  });
+
+  describe('canStopJob', () => {
+    it('returns true for software_engineering when pending or running', () => {
+      expect(component.canStopJob({ unified: { source: 'software_engineering', status: 'pending' }, seDetail: null } as any)).toBe(true);
+      expect(component.canStopJob({ unified: { source: 'software_engineering', status: 'running' }, seDetail: null } as any)).toBe(true);
+    });
+    it('returns true for blogging when pending or running', () => {
+      expect(component.canStopJob({ unified: { source: 'blogging', status: 'pending' }, seDetail: null } as any)).toBe(true);
+      expect(component.canStopJob({ unified: { source: 'blogging', status: 'running' }, seDetail: null } as any)).toBe(true);
+    });
+    it('returns true for agent_provisioning, ai_systems, social_marketing when pending or running', () => {
+      expect(component.canStopJob({ unified: { source: 'agent_provisioning', status: 'running' }, seDetail: null } as any)).toBe(true);
+      expect(component.canStopJob({ unified: { source: 'ai_systems', status: 'pending' }, seDetail: null } as any)).toBe(true);
+      expect(component.canStopJob({ unified: { source: 'social_marketing', status: 'running' }, seDetail: null } as any)).toBe(true);
+    });
+    it('returns false when status is not pending or running', () => {
+      expect(component.canStopJob({ unified: { source: 'blogging', status: 'completed' }, seDetail: null } as any)).toBe(false);
+    });
+  });
+
+  describe('canDeleteJob', () => {
+    it('returns true for software_engineering, blogging, agent_provisioning, ai_systems, social_marketing', () => {
+      expect(component.canDeleteJob({ unified: { source: 'software_engineering' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'blogging' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'agent_provisioning' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'ai_systems' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'social_marketing' } } as any)).toBe(true);
     });
   });
 });
