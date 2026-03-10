@@ -44,6 +44,21 @@ export class AgentProvisioningApiService {
     return this.http.get<ProvisionJobsListResponse>(`${this.baseUrl}/provision/jobs`, { params });
   }
 
+  /** Cancel a pending or running provisioning job. */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/provision/job/${jobId}/cancel`,
+      {}
+    );
+  }
+
+  /** Delete a provisioning job from the store. */
+  deleteJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.delete<{ job_id: string; message: string }>(
+      `${this.baseUrl}/provision/job/${jobId}`
+    );
+  }
+
   /** Get the status of a provisioned agent environment. */
   getAgentStatus(agentId: string): Observable<AgentStatusResponse> {
     return this.http.get<AgentStatusResponse>(`${this.baseUrl}/environments/${agentId}`);

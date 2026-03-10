@@ -70,6 +70,25 @@
           @if (selectedBlogJob && selectedJobStatus) {
             <mat-divider />
             <div class="job-detail">
+              <div class="job-detail-actions">
+                <button
+                  mat-stroked-button
+                  (click)="cancelSelectedJob()"
+                  [disabled]="!canStopSelectedJob()"
+                  matTooltip="Cancel this job"
+                >
+                  <mat-icon>stop</mat-icon>
+                  Stop
+                </button>
+                <button
+                  mat-stroked-button
+                  (click)="deleteSelectedJob()"
+                  matTooltip="Remove this job from the list"
+                >
+                  <mat-icon>delete</mat-icon>
+                  Delete
+                </button>
+              </div>
               <h3>Job details</h3>
               <p class="detail-row"><strong>Phase:</strong> {{ selectedJobStatus.phase ?? '—' }}</p>
               <p class="detail-row"><strong>Progress:</strong> {{ selectedJobStatus.progress }}%</p>

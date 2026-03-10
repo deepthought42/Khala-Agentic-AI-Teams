@@ -225,7 +225,70 @@ MARKER_RESOLVED = "## RESOLVED ##"
 MARKER_END_RESOLVED = "## END RESOLVED ##"
 MARKER_FILE_UPDATES = "## FILE_UPDATES ##"
 MARKER_END_FILE_UPDATES = "## END FILE_UPDATES ##"
+# LLM sometimes continues with this variant in later continuation chunks
+MARKER_FILE_UPDATES_CONTINUED = "## FILE_UPDATES (CONTINUED) ##"
+MARKER_END_FILE_UPDATES_CONTINUED = "## END FILE_UPDATES (CONTINUED) ##"
 MARKER_END_FILE = "### END FILE ###"
+
+
+def _collect_all_file_updates_sections(text: str) -> List[str]:
+    """Collect every FILE_UPDATES block (including CONTINUED) from merged continuation text.
+
+    When the LLM response is continued across multiple chunks, later chunks may add
+    another ## FILE_UPDATES ## or ## FILE_UPDATES (CONTINUED) ## block. We need all
+    of them so the written document includes the full content, not just the first block.
+    """
+    sections: List[str] = []
+    markers_start = (MARKER_FILE_UPDATES, MARKER_FILE_UPDATES_CONTINUED)
+    markers_end = (MARKER_END_FILE_UPDATES, MARKER_END_FILE_UPDATES_CONTINUED)
+    pos = 0
+    while pos < len(text):
+        start_idx = -1
+        start_marker = ""
+        for m in markers_start:
+            i = text.find(m, pos)
+            if i != -1 and (start_idx == -1 or i < start_idx):
+                start_idx = i
+                start_marker = m
+        if start_idx == -1:
+            break
+        content_start = start_idx + len(start_marker)
+        end_idx = -1
+        for m in markers_end:
+            i = text.find(m, content_start)
+            if i != -1 and (end_idx == -1 or i < end_idx):
+                end_idx = i
+        if end_idx == -1:
+            end_idx = len(text)
+        section = text[content_start:end_idx].strip()
+        if section:
+            sections.append(section)
+        # Advance past the end marker we actually found (so we don't skip into next block)
+        end_marker_len = 0
+        for m in markers_end:
+            if text[end_idx:end_idx + len(m)] == m:
+                end_marker_len = len(m)
+                break
+        if not end_marker_len:
+            end_marker_len = len(MARKER_END_FILE_UPDATES)
+        pos = end_idx + end_marker_len
+    return sections
+
+
+def _parse_one_file_updates_section(updates_section: str) -> Dict[str, str]:
+    """Parse a single FILE_UPDATES block into path -> content."""
+    file_updates: Dict[str, str] = {}
+    for m in _RE_FILE_HEADER.finditer(updates_section):
+        path = m.group(1).strip()
+        content_start = m.end()
+        end_file = updates_section.find(MARKER_END_FILE, content_start)
+        content_end = end_file if end_file != -1 else len(updates_section)
+        content = updates_section[content_start:content_end].rstrip()
+        if path:
+            # Keep longest content per path (continuation often adds more to same file)
+            if path not in file_updates or len(content) > len(file_updates[path]):
+                file_updates[path] = content
+    return file_updates
 
 
 def parse_fix_output(text: str) -> Dict[str, Any]:
@@ -255,23 +318,24 @@ def parse_fix_output(text: str) -> Dict[str, Any]:
         resolved = first in ("true", "yes", "1")
 
     file_updates: Dict[str, str] = {}
-    updates_section = _section(text, MARKER_FILE_UPDATES, MARKER_END_FILE_UPDATES)
-    if not updates_section and MARKER_FILE_UPDATES in text:
-        idx = text.find(MARKER_FILE_UPDATES) + len(MARKER_FILE_UPDATES)
-        updates_section = text[idx:].strip()
-        if MARKER_END_FILE_UPDATES in updates_section:
-            updates_section = updates_section.split(MARKER_END_FILE_UPDATES)[0].strip()
+    all_sections = _collect_all_file_updates_sections(text)
+    if not all_sections and (MARKER_FILE_UPDATES in text or MARKER_FILE_UPDATES_CONTINUED in text):
+        # Fallback: single block (original behavior)
+        updates_section = _section(text, MARKER_FILE_UPDATES, MARKER_END_FILE_UPDATES)
+        if not updates_section:
+            idx = text.find(MARKER_FILE_UPDATES) + len(MARKER_FILE_UPDATES)
+            updates_section = text[idx:].strip()
+            if MARKER_END_FILE_UPDATES in updates_section:
+                updates_section = updates_section.split(MARKER_END_FILE_UPDATES)[0].strip()
+        if updates_section:
+            all_sections = [updates_section]
+    for section in all_sections:
+        one = _parse_one_file_updates_section(section)
+        for path, content in one.items():
+            if path and (path not in file_updates or len(content) > len(file_updates[path])):
+                file_updates[path] = content
 
-    for m in _RE_FILE_HEADER.finditer(updates_section):
-        path = m.group(1).strip()
-        content_start = m.end()
-        end_file = updates_section.find(MARKER_END_FILE, content_start)
-        content_end = end_file if end_file != -1 else len(updates_section)
-        content = updates_section[content_start:content_end].rstrip()
-        if path:
-            file_updates[path] = content
-
-    # Single file convenience: first (or only) file content as updated_content
+    # Single file convenience: first path's content (primary artifact; all paths have longest from merge)
     updated_content = ""
     if file_updates:
         updated_content = next(iter(file_updates.values()), "")

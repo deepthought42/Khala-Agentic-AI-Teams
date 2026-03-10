@@ -32,17 +32,18 @@ from ..shared.credential_store import CredentialStore
 from ..shared.llm import get_llm_client
 from ..shared.user_profile_store import UserProfileStore
 from ..shared.pa_job_store import (
-    create_job,
-    get_job,
-    update_job,
-    list_jobs,
     cancel_job,
+    create_job,
+    delete_job,
+    get_job,
     is_job_cancelled,
-    PA_JOB_STATUS_PENDING,
-    PA_JOB_STATUS_RUNNING,
+    list_jobs,
+    update_job,
+    PA_JOB_STATUS_CANCELLED,
     PA_JOB_STATUS_COMPLETED,
     PA_JOB_STATUS_FAILED,
-    PA_JOB_STATUS_CANCELLED,
+    PA_JOB_STATUS_PENDING,
+    PA_JOB_STATUS_RUNNING,
 )
 
 try:
@@ -464,6 +465,17 @@ async def cancel_assistant_job(job_id: str):
             "success": False,
             "message": f"Cannot cancel job with status: {job_data.get('status')}",
         }
+
+
+@app.delete("/assistant/jobs/{job_id}")
+async def delete_assistant_job(job_id: str):
+    """Delete an assistant job from the store. Returns 404 if not found."""
+    job_data = get_job(job_id)
+    if job_data is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not delete_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, "message": "Job deleted"}
 
 
 @app.get("/users/{user_id}/assistant/jobs", response_model=AssistantJobListResponse)

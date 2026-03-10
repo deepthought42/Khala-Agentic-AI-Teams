@@ -1,4 +1,5 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -11,6 +12,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTableModule } from '@angular/material/table';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { Observable, Subscription, interval, switchMap, takeWhile } from 'rxjs';
 import { AgentProvisioningApiService } from '../../services/agent-provisioning-api.service';
 import { HealthIndicatorComponent } from '../health-indicator/health-indicator.component';
@@ -41,6 +43,7 @@ type DashboardTab = 'provision' | 'jobs' | 'environments';
     MatProgressBarModule,
     MatChipsModule,
     MatTableModule,
+    MatTooltipModule,
     HealthIndicatorComponent,
   ],
   templateUrl: './agent-provisioning-dashboard.component.html',
@@ -49,8 +52,11 @@ type DashboardTab = 'provision' | 'jobs' | 'environments';
 export class AgentProvisioningDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(AgentProvisioningApiService);
   private readonly fb = inject(FormBuilder);
-  
+  private readonly route = inject(ActivatedRoute);
+
   private jobPollSub: Subscription | null = null;
+  private queryParamsSub: Subscription | null = null;
+  private pendingJobId: string | null = null;
 
   selectedTabIndex = 0;
   activeTab: DashboardTab = 'provision';
@@ -86,11 +92,16 @@ export class AgentProvisioningDashboardComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    this.queryParamsSub = this.route.queryParams.subscribe((params) => {
+      const id = params['jobId'];
+      if (id) this.pendingJobId = id;
+    });
     this.loadJobs();
     this.loadAgents();
   }
 
   ngOnDestroy(): void {
+    this.queryParamsSub?.unsubscribe();
     this.jobPollSub?.unsubscribe();
   }
 
@@ -156,6 +167,10 @@ export class AgentProvisioningDashboardComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.jobs = res.jobs;
         this.jobsLoading = false;
+        if (this.pendingJobId != null) {
+          this.viewJobStatus(this.pendingJobId);
+          this.pendingJobId = null;
+        }
       },
       error: (err) => {
         console.error('Failed to load jobs:', err);
@@ -217,6 +232,46 @@ export class AgentProvisioningDashboardComponent implements OnInit, OnDestroy {
       manifest_path: 'default.yaml',
       access_tier: 'standard',
       workspace_path: '',
+    });
+  }
+
+  get canStopCurrentJob(): boolean {
+    const status = this.currentJobStatus?.status;
+    return status === 'pending' || status === 'running';
+  }
+
+  stopCurrentJob(): void {
+    if (!this.currentJobId) return;
+    this.api.cancelJob(this.currentJobId).subscribe({
+      next: () => {
+        this.jobPollSub?.unsubscribe();
+        this.jobPollSub = null;
+        this.api.getJobStatus(this.currentJobId!).subscribe({
+          next: (status) => {
+            this.currentJobStatus = status;
+          },
+        });
+      },
+      error: (err) => {
+        console.error('Failed to cancel job:', err);
+        this.submitError = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  deleteCurrentJob(): void {
+    if (!this.currentJobId) return;
+    if (!confirm('Delete this job? This cannot be undone.')) return;
+    const id = this.currentJobId;
+    this.api.deleteJob(id).subscribe({
+      next: () => {
+        this.clearCurrentJob();
+        this.loadJobs();
+      },
+      error: (err) => {
+        console.error('Failed to delete job:', err);
+        this.submitError = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+      },
     });
   }
 

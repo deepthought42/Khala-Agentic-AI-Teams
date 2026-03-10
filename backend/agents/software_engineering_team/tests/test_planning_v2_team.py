@@ -605,6 +605,47 @@ class TestTruncatedFixOutputNoWrite:
         assert not result.files, "must not write truncated content; result.files must be empty"
 
 
+class TestParseFixOutputMultipleBlocks:
+    """parse_fix_output should merge all FILE_UPDATES blocks (e.g. from continuation)."""
+
+    def test_merges_multiple_file_updates_blocks_and_keeps_longest_per_path(self):
+        """When merged continuation text has multiple ## FILE_UPDATES ## blocks, use longest content per path."""
+        from planning_v2_team.output_templates import parse_fix_output
+
+        # First block: short user_stories; second block (e.g. continuation): longer user_stories
+        text = (
+            "## ROOT_CAUSE ##\nR.\n## END ROOT_CAUSE ##\n"
+            "## FIX_DESCRIPTION ##\nF.\n## END FIX_DESCRIPTION ##\n"
+            "## RESOLVED ##\ntrue\n## END RESOLVED ##\n"
+            "## FILE_UPDATES ##\n"
+            "### plan/planning_team/user_stories.md ###\n"
+            "# Short\nOnly first block.\n"
+            "### END FILE ###\n## END FILE_UPDATES ##\n"
+            "## FILE_UPDATES ##\n"
+            "### plan/planning_team/user_stories.md ###\n"
+            "# Planning Hierarchy\n\n## Initiative\nFull content from continuation block here.\n"
+            "### END FILE ###\n## END FILE_UPDATES ##"
+        )
+        raw = parse_fix_output(text)
+        assert raw["file_updates"]
+        content = raw["file_updates"].get("plan/planning_team/user_stories.md", "")
+        assert "Full content from continuation" in content
+        assert "Short" not in content or "Full content" in content
+        assert len(content) > 30
+
+    def test_parses_file_updates_continued_marker(self):
+        """FILE_UPDATES (CONTINUED) / END FILE_UPDATES (CONTINUED) blocks are collected."""
+        from planning_v2_team.output_templates import parse_fix_output
+
+        text = (
+            "## FILE_UPDATES ##\n### path/a.md ###\nPart one.\n### END FILE ###\n## END FILE_UPDATES ##\n"
+            "## FILE_UPDATES (CONTINUED) ##\n### path/a.md ###\nPart two longer.\n### END FILE ###\n## END FILE_UPDATES (CONTINUED) ##"
+        )
+        raw = parse_fix_output(text)
+        assert "path/a.md" in raw["file_updates"]
+        assert "Part two longer" in raw["file_updates"]["path/a.md"]
+
+
 # ---------------------------------------------------------------------------
 # Issue classification and status breakdown (problem_solving helpers)
 # ---------------------------------------------------------------------------

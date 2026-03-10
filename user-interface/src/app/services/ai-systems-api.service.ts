@@ -43,6 +43,21 @@ export class AISystemsApiService {
     return this.http.get<AISystemJobsListResponse>(`${this.baseUrl}/build/jobs`, { params });
   }
 
+  /** Cancel a pending or running build job. */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/build/job/${jobId}/cancel`,
+      {}
+    );
+  }
+
+  /** Delete a build job from the store. */
+  deleteJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.delete<{ job_id: string; message: string }>(
+      `${this.baseUrl}/build/job/${jobId}`
+    );
+  }
+
   /** List all generated blueprints. */
   listBlueprints(): Observable<{ blueprints: string[] }> {
     return this.http.get<{ blueprints: string[] }>(`${this.baseUrl}/blueprints`);

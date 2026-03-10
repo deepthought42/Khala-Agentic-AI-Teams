@@ -99,6 +99,27 @@ export class BloggingApiService {
   }
 
   /**
+   * POST /job/{job_id}/cancel
+   * Cancel a pending or running blog pipeline job.
+   */
+  cancelJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/job/${jobId}/cancel`,
+      {}
+    );
+  }
+
+  /**
+   * DELETE /job/{job_id}
+   * Delete a blog pipeline job from the store.
+   */
+  deleteJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.delete<{ job_id: string; message: string }>(
+      `${this.baseUrl}/job/${jobId}`
+    );
+  }
+
+  /**
    * GET /job/{job_id}/artifacts
    * List artifact filenames that exist for a pipeline job.
    */
