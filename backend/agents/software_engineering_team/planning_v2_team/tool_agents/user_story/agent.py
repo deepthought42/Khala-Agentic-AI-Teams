@@ -62,6 +62,7 @@ def _parse_hierarchy_text_to_data(text: str) -> Dict[str, Any]:
             current_epic["stories"].append(current_story)
         elif kind == "TASK" and len(parts) >= 4 and current_story:
             assignee = parts[3] if len(parts) > 3 else "backend"
+            # Planning V2: complexity_points 2/3/5 correspond to approx 2/3/5 days.
             points = 2
             if len(parts) > 4 and str(parts[4]).strip().isdigit():
                 points = min(13, max(1, int(parts[4])))
@@ -116,7 +117,9 @@ STORY | id | title | description
 TASK | id | title | assignee | complexity_points
 
 Rules:
-- Each task should be Fibonacci 2-3 points (1-2 days, focused). Use complexity_points 2 or 3.
+- Each task should be a substantial chunk of work estimated at 2-5 days of implementation. Use complexity_points 2, 3, or 5 only (roughly 2 days, 3 days, 5 days). Do not use 1 (sub-day).
+- Tasks must be high-level and broad in scope. The development team that picks up a task will break it into subtasks and implementation details; the plan should not pre-slice work into small items.
+- Avoid tasks that would take less than two days; prefer fewer, larger tasks over many small ones.
 - assignee is one of: frontend, backend, devops, qa
 - List INIT first, then EPIC under it, then STORY under EPIC, then TASK under STORY. Order matters.
 
@@ -133,7 +136,7 @@ Specification:
 Plan Summary: {plan_summary}
 """
 
-USER_STORY_REVIEW_PROMPT = """You are a Product Planning expert. Review these user stories and tasks for completeness, team assignments, task granularity (Fibonacci 2-3 points), and flag issues.
+USER_STORY_REVIEW_PROMPT = """You are a Product Planning expert. Review these user stories and tasks for completeness, team assignments, and task granularity. Each task should be 2-5 days and high-level; flag any task that is too small (under two days) or too granular, and recommend merging or broadening so that downstream teams own subtask breakdown. Flag other issues as needed.
 
 Artifacts:
 ---
