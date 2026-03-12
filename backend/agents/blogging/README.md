@@ -6,7 +6,7 @@ This package provides the **blogging agent suite**: research, review, draft, cop
 
 | Agent | Role |
 |-------|------|
-| **Research** | Brief → web (Tavily) + arXiv search → ranked references, compiled document, notes |
+| **Research** | Brief → web (Ollama web_search) + arXiv search → ranked references, compiled document, notes |
 | **Review** | Brief + references → title choices + outline |
 | **Draft** | Research document + outline + style guide → draft; supports revise-from-feedback (e.g. from Copy Editor) |
 | **Copy Editor** | Draft → feedback items and summary (for Draft revision loop) |
@@ -58,7 +58,7 @@ When `work_dir` is provided, the pipeline persists all outputs as versioned arti
 
 - Accepts a short content brief plus optional audience and purpose.
 - Generates multiple targeted web search queries from the brief.
-- Fetches and skims candidate pages from the public web (Tavily) and arXiv.
+- Fetches and skims candidate pages from the public web (Ollama web_search) and arXiv.
 - Ranks sources by relevance, authority, recency, and diversity.
 - Returns structured references with summaries and key points.
 - Exposes models and agent classes that can be wired into a Strands runtime.
@@ -175,7 +175,7 @@ blogging/
 │   ├── agent_cache.py
 │   ├── strands_integration.py
 │   └── tools/
-│       ├── web_search.py    # Tavily web search
+│       ├── web_search.py    # Ollama web_search
 │       ├── web_fetch.py     # Web fetch/scrape
 │       └── arxiv_search.py # arXiv search
 ├── blog_review_agent/       # Title choices + outline

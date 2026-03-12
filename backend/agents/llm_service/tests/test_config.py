@@ -45,13 +45,13 @@ def test_resolve_model_agent_default(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_resolve_base_url_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("SW_LLM_BASE_URL", raising=False)
-    assert config.resolve_base_url() == "http://127.0.0.1:11434"
+    assert config.resolve_base_url() == "https://ollama.com"
 
 
 def test_resolve_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_TIMEOUT", raising=False)
     monkeypatch.delenv("SW_LLM_TIMEOUT", raising=False)
-    assert config.resolve_timeout() == 1800.0
+    assert config.resolve_timeout() == 120.0
 
 
 def test_resolve_context_size_for_model_known(monkeypatch: pytest.MonkeyPatch) -> None:

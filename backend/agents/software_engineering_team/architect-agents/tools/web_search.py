@@ -1,34 +1,45 @@
-"""Web search tool for current AWS pricing, service limits, and docs."""
+"""Web search tool for current AWS pricing, service limits, and docs using Ollama web_search."""
 
 from __future__ import annotations
 
+import os
 from strands import tool
 
+import httpx
 
-def _tavily_search_impl(query: str, search_depth: str = "basic") -> str:
-    """Use Tavily via strands-agents-tools if available."""
+
+def _ollama_web_search_impl(query: str, max_results: int = 10) -> str:
+    """Use Ollama web_search API (https://ollama.com/api/web_search)."""
+    api_key = os.environ.get("OLLAMA_API_KEY")
+    if not api_key:
+        return "Ollama web search not available: OLLAMA_API_KEY is not set (e.g. from https://ollama.com/settings/keys)."
+
+    base_url = (os.environ.get("OLLAMA_WEB_SEARCH_BASE_URL") or "https://ollama.com/api").rstrip("/")
+    url = f"{base_url}/web_search"
+    payload = {"query": query, "max_results": min(max_results, 10)}
+    headers = {"Authorization": f"Bearer {api_key}"}
+
     try:
-        from strands_tools import tavily_search
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+    except httpx.HTTPError as e:
+        return f"Web search request failed: {e}"
 
-        result = tavily_search(query=query, search_depth=search_depth)
-        if hasattr(result, "message"):
-            return str(result.message)
-        return str(result)
-    except ImportError:
-        return "Tavily not available (install strands-agents-tools with tavily extras)"
+    if resp.status_code != 200:
+        return f"Ollama web search failed with status {resp.status_code}: {resp.text}"
 
+    data = resp.json()
+    raw_results = data.get("results", []) or []
+    if not raw_results:
+        return "No results found."
 
-def _http_fetch_impl(url: str) -> str:
-    """Fetch URL content via strands-agents-tools http_request if available."""
-    try:
-        from strands_tools import http_request
-
-        result = http_request(method="GET", url=url)
-        if hasattr(result, "message"):
-            return str(result.message)
-        return str(result)
-    except ImportError:
-        return "http_request not available (install strands-agents-tools)"
+    lines = []
+    for idx, item in enumerate(raw_results, start=1):
+        title = item.get("title") or "Untitled"
+        url_str = item.get("url") or ""
+        content = (item.get("content") or "")[:500]
+        lines.append(f"{idx}. {title}\n   URL: {url_str}\n   {content}")
+    return "\n\n".join(lines)
 
 
 @tool
@@ -42,10 +53,10 @@ def web_search_tool(query: str, search_depth: str = "basic") -> str:
     Args:
         query: Search query (e.g. "AWS Lambda pricing 2025",
             "Amazon RDS Multi-AZ cost", "Bedrock Claude model availability").
-        search_depth: "basic" for quick results, "advanced" for deeper search.
+        search_depth: Kept for compatibility; Ollama web_search does not use this.
 
     Returns:
-        Search results or fetched content. Returns an error message if
-        the search backend (Tavily) is not configured.
+        Search results as formatted text. Returns an error message if
+        OLLAMA_API_KEY is not set.
     """
-    return _tavily_search_impl(query, search_depth)
+    return _ollama_web_search_impl(query, max_results=10)

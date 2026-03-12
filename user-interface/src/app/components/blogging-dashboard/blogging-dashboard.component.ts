@@ -10,10 +10,7 @@ import { switchMap } from 'rxjs/operators';
 import { BloggingApiService } from '../../services/blogging-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
-import { MatListModule } from '@angular/material/list';
 import { MatExpansionModule } from '@angular/material/expansion';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatDividerModule } from '@angular/material/divider';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -39,7 +36,7 @@ import type {
  */
 const TERMINAL_STATUSES = ['completed', 'needs_human_review', 'failed'] as const;
 const POLL_JOBS_MS = 12000;
-const POLL_STATUS_MS = 8000;
+const POLL_STATUS_MS = 2000; // Poll selected job status every 2s for frequent status updates
 
 export function artifactLabel(name: string): string {
   const labels: Record<string, string> = {
@@ -67,10 +64,7 @@ export function artifactLabel(name: string): string {
     SlicePipe,
     MatTabsModule,
     MatCardModule,
-    MatListModule,
     MatExpansionModule,
-    MatChipsModule,
-    MatDividerModule,
     MatButtonModule,
     MatIconModule,
     MatTooltipModule,

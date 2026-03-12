@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import logging
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from pydantic import HttpUrl
 
@@ -44,7 +44,7 @@ class ResearchAgent:
         self,
         llm_client: LLMClient,
         *,
-        web_search: TavilyWebSearch | None = None,
+        web_search: OllamaWebSearch | None = None,
         web_fetcher: SimpleWebFetcher | None = None,
         max_fetch_documents: int = 20,
         cache: AgentCache | None = None,
@@ -67,11 +67,18 @@ class ResearchAgent:
 
     # Public API ---------------------------------------------------------
 
-    def run(self, brief_input: ResearchBriefInput) -> ResearchAgentOutput:
+    def run(
+        self,
+        brief_input: ResearchBriefInput,
+        *,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> ResearchAgentOutput:
         """
         Execute the full research workflow and return structured output.
 
         If cache is enabled, will resume from the last completed step on failure.
+
+        progress_callback: Optional callback (status_text, sub_progress_0_to_1) for UI updates.
 
         Preconditions:
             - brief_input is a valid ResearchBriefInput (e.g. from model_validate).
@@ -80,6 +87,10 @@ class ResearchAgent:
               length <= brief_input.max_results), notes (str or None), and
               compiled_document (formatted document of most relevant links with summaries).
         """
+        def _report(status: str, sub: float) -> None:
+            if progress_callback:
+                progress_callback(status, sub)
+
         brief_preview = (
             (brief_input.brief[:77] + "...") if len(brief_input.brief) > 80 else brief_input.brief
         )
@@ -89,6 +100,8 @@ class ResearchAgent:
             brief_input.max_results,
         )
 
+        _report("Starting research...", 0.0)
+
         # Try to load checkpoint
         cached_state = None
         if self.cache:
@@ -97,6 +110,7 @@ class ResearchAgent:
                 logger.info("Resuming from checkpoint: last_step=%s", cached_state.last_completed_step)
 
         # Step 1: Parse brief
+        _report("Parsing brief...", 0.05)
         if cached_state and cached_state.normalized:
             logger.info("Using cached normalized brief")
             normalized = cached_state.normalized
@@ -106,6 +120,7 @@ class ResearchAgent:
                 self.cache.save_checkpoint(brief_input, "normalized", normalized=normalized)
 
         # Step 2: Generate queries
+        _report("Generating search queries...", 0.10)
         if cached_state and cached_state.queries:
             logger.info("Using cached queries (%s)", len(cached_state.queries))
             queries = [SearchQuery(**q) for q in cached_state.queries]
@@ -119,9 +134,13 @@ class ResearchAgent:
             logger.info("Using cached candidates (%s)", len(cached_state.candidates))
             candidates = [CandidateResult(**c) for c in cached_state.candidates]
         else:
-            candidates = self._run_searches(queries, brief_input)
-            if self.cache:
-                self.cache.save_checkpoint(brief_input, "candidates", candidates=candidates)
+            _report("Running web searches...", 0.15)
+            candidates = self._run_searches(
+                queries,
+                brief_input,
+                on_search_progress=lambda i, n: _report(f"Running web search {i + 1}/{n}...", 0.15 + 0.20 * (i + 1) / max(1, n)),
+            )
+        _report("Fetching and reading web pages...", 0.38)
 
         # Step 4: Fetch documents
         if cached_state and cached_state.documents:
@@ -133,6 +152,7 @@ class ResearchAgent:
                 self.cache.save_checkpoint(brief_input, "documents", documents=documents)
 
         # Step 5: Score documents
+        _report("Scoring documents for relevance...", 0.50)
         if cached_state and cached_state.scored_docs:
             logger.info("Using cached scored documents (%s)", len(cached_state.scored_docs))
             scored_docs = []
@@ -152,6 +172,7 @@ class ResearchAgent:
                 self.cache.save_checkpoint(brief_input, "scored_docs", scored_docs=scored_docs)
 
         # Step 6: Summarize documents
+        _report("Summarizing references...", 0.65)
         if cached_state and cached_state.references:
             logger.info("Using cached references (%s)", len(cached_state.references))
             references = [ResearchReference(**r) for r in cached_state.references]
@@ -161,6 +182,7 @@ class ResearchAgent:
                 self.cache.save_checkpoint(brief_input, "references", references=references)
 
         # Step 7: Synthesize overview
+        _report("Synthesizing overview...", 0.78)
         if cached_state and cached_state.notes is not None:
             logger.info("Using cached notes")
             notes = cached_state.notes
@@ -170,16 +192,20 @@ class ResearchAgent:
                 self.cache.save_checkpoint(brief_input, "notes", notes=notes)
 
         # Step 8: Fetch academic sources (arXiv)
+        _report("Searching arXiv for papers...", 0.85)
         academic_papers = self._fetch_academic_papers(brief_input)
 
         # Step 9: Similar topics (score > 70%)
+        _report("Finding similar topics...", 0.90)
         similar_topics = self._get_similar_topics(brief_input, references)
 
         # Step 10: Compile document (Blog Post Research format)
+        _report("Compiling research document...", 0.95)
         compiled_document = self._compile_document(
             brief_input, references, notes, academic_papers, similar_topics
         )
 
+        _report("Research complete", 1.0)
         logger.info(
             "Research complete: %s references, %s academic papers, %s similar topics, compiled_document=%s",
             len(references),
@@ -257,6 +283,8 @@ class ResearchAgent:
         self,
         queries: List[SearchQuery],
         brief_input: ResearchBriefInput,
+        *,
+        on_search_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[CandidateResult]:
         """
         Preconditions: queries non-empty; brief_input valid.
@@ -268,6 +296,8 @@ class ResearchAgent:
         n_queries = len(queries)
 
         for i, query in enumerate(queries):
+            if on_search_progress:
+                on_search_progress(i, n_queries)
             query_preview = (
                 (query.query_text[:77] + "...") if len(query.query_text) > 80 else query.query_text
             )
