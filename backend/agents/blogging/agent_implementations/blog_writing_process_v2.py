@@ -121,16 +121,13 @@ def run_pipeline(
         logger.info("Artifact work_dir: %s", work_path)
 
     # 1. Research
-    _update(
-        BlogPhase.RESEARCH,
-        sub_progress=0.0,
-        status_text="Starting web and arXiv research...",
-    )
-    
+    def _research_progress(status_text: str, sub_progress: float) -> None:
+        _update(BlogPhase.RESEARCH, sub_progress=sub_progress, status_text=status_text)
+
     try:
         cache = AgentCache(cache_dir=".agent_cache")
         research_agent = ResearchAgent(llm_client=llm_client, cache=cache)
-        research_result = research_agent.run(brief)
+        research_result = research_agent.run(brief, progress_callback=_research_progress)
     except BloggingError:
         raise
     except Exception as e:

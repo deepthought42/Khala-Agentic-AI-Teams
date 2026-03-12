@@ -73,7 +73,7 @@ Include:
 - Request/response examples
 - How to run:
   - `PYTHONPATH=blogging uvicorn api.main:app --reload --host 0.0.0.0 --port 8000`
-- Environment variables (`TAVILY_API_KEY`)
+- Environment variables (`OLLAMA_API_KEY` for web search)
 - Reference to full blogging pipeline in `[blogging/README.md](blogging/README.md)`
 
 ---
@@ -135,7 +135,7 @@ pytest tests/ -v --log-cli-level=INFO
 - Python 3.10+
 - NVM + Node 22.12+ (for frontend builds in software_engineering_team)
 - Ollama (optional, for LLM)
-- API keys (TAVILY_API_KEY for blogging research)
+- API keys (OLLAMA_API_KEY for blogging research web search)
 
 ### 3.6 Add Environment Variables section
 

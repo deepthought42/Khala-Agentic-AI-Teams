@@ -93,61 +93,86 @@
     <mat-card>
       <mat-card-header>
         <mat-card-title>Jobs</mat-card-title>
-        <mat-card-subtitle>Running and completed pipeline jobs</mat-card-subtitle>
+        <mat-card-subtitle>
+          @if (allJobs.length === 0) {
+            Running and completed pipeline jobs
+          } @else {
+            {{ runningJobs.length }} running, {{ completedJobs.length }} completed
+          }
+        </mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
         @if (allJobs.length === 0) {
           <p class="no-jobs">No jobs yet. Start a pipeline from the tabs.</p>
         } @else {
-          <mat-list>
-            <h3 mat-subheader>Running</h3>
-            @for (job of runningJobs; track job.job_id) {
-              <mat-list-item (click)="selectJob(job)" class="job-list-item" [class.selected]="selectedBlogJob?.job_id === job.job_id">
-                <span matListItemTitle>{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
-                <span matListItemLine class="job-meta">{{ job.job_id }}</span>
-                <mat-chip-set matListItemMeta>
-                  <mat-chip [class]="'status-' + job.status">{{ job.status }}</mat-chip>
-                </mat-chip-set>
-              </mat-list-item>
+          <div class="jobs-list-section">
+            @if (runningJobs.length > 0) {
+              <h3 class="list-section-title">Running</h3>
+              <div class="jobs-list">
+                @for (job of runningJobs; track job.job_id) {
+                  <button
+                    type="button"
+                    class="job-item"
+                    [class.selected]="selectedBlogJob?.job_id === job.job_id"
+                    (click)="selectJob(job)"
+                  >
+                    <span class="job-brief">{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
+                    <span class="job-id">{{ job.job_id }}</span>
+                    <span class="job-status-pill" [class]="'status-' + job.status">{{ job.status }}</span>
+                  </button>
+                }
+              </div>
             }
-            @if (runningJobs.length === 0) {
-              <mat-list-item><span matListItemTitle>None</span></mat-list-item>
+            @if (completedJobs.length > 0) {
+              <h3 class="list-section-title">Completed</h3>
+              <div class="jobs-list">
+                @for (job of completedJobs; track job.job_id) {
+                  <button
+                    type="button"
+                    class="job-item"
+                    [class.selected]="selectedBlogJob?.job_id === job.job_id"
+                    (click)="selectJob(job)"
+                  >
+                    <span class="job-brief">{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
+                    <span class="job-id">{{ job.job_id }}{{ job.created_at ? ' · ' + (job.created_at | slice:0:10) : '' }}</span>
+                    <span class="job-status-pill" [class]="'status-' + job.status">{{ job.status }}</span>
+                  </button>
+                }
+              </div>
             }
-            <h3 mat-subheader>Completed</h3>
-            @for (job of completedJobs; track job.job_id) {
-              <mat-list-item (click)="selectJob(job)" class="job-list-item" [class.selected]="selectedBlogJob?.job_id === job.job_id">
-                <span matListItemTitle>{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
-                <span matListItemLine class="job-meta">{{ job.job_id }} · {{ job.created_at ? (job.created_at | slice:0:10) : '' }}</span>
-                <mat-chip-set matListItemMeta>
-                  <mat-chip [class]="'status-' + job.status">{{ job.status }}</mat-chip>
-                </mat-chip-set>
-              </mat-list-item>
-            }
-          </mat-list>
+          </div>
 
           @if (selectedBlogJob && selectedJobStatus) {
-            <mat-divider />
+            <div class="panel-divider"></div>
             <div class="job-detail">
-              <div class="job-detail-actions">
-                <button
-                  mat-stroked-button
-                  (click)="cancelSelectedJob()"
-                  [disabled]="!canStopSelectedJob()"
-                  matTooltip="Cancel this job"
-                >
-                  <mat-icon>stop</mat-icon>
-                  Stop
-                </button>
-                <button
-                  mat-stroked-button
-                  (click)="deleteSelectedJob()"
-                  matTooltip="Remove this job from the list"
-                >
-                  <mat-icon>delete</mat-icon>
-                  Delete
-                </button>
+              <div class="job-detail-header">
+                <div class="job-detail-info">
+                  <mat-icon>article</mat-icon>
+                  <span class="job-detail-label">Selected job</span>
+                  <span class="job-detail-id">{{ selectedBlogJob.job_id }}</span>
+                  <span class="job-status-pill" [class]="'status-' + selectedJobStatus.status">{{ selectedJobStatus.status }}</span>
+                </div>
+                <div class="job-detail-buttons">
+                  <button
+                    mat-stroked-button
+                    (click)="cancelSelectedJob()"
+                    [disabled]="!canStopSelectedJob()"
+                    matTooltip="Cancel this job"
+                  >
+                    <mat-icon>stop</mat-icon>
+                    Stop
+                  </button>
+                  <button
+                    mat-stroked-button
+                    (click)="deleteSelectedJob()"
+                    matTooltip="Remove this job from the list"
+                  >
+                    <mat-icon>delete</mat-icon>
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div class="job-detail-actions approval-actions">
+              <div class="job-detail-actions">
                 <button
                   mat-stroked-button
                   (click)="approveSelectedJob()"
@@ -167,52 +192,54 @@
                   Unapprove
                 </button>
               </div>
-              <h3>Job details</h3>
-              <p class="detail-row"><strong>Approved:</strong> {{ jobApprovedLabel() }}</p>
-              @if (selectedJobStatus.approved_at) {
-                <p class="detail-row"><strong>Approved at:</strong> {{ selectedJobStatus.approved_at }}</p>
-              }
-              @if (selectedJobStatus.approved_by) {
-                <p class="detail-row"><strong>Approved by:</strong> {{ selectedJobStatus.approved_by }}</p>
-              }
-              <p class="detail-row"><strong>Phase:</strong> {{ selectedJobStatus.phase ?? '—' }}</p>
-              <p class="detail-row"><strong>Progress:</strong> {{ selectedJobStatus.progress }}%</p>
-              @if (selectedJobStatus.status_text) {
-                <p class="detail-row"><strong>Status:</strong> {{ selectedJobStatus.status_text }}</p>
-              }
-              @if (selectedJobStatus.error) {
-                <p class="detail-row error"><strong>Error:</strong> {{ selectedJobStatus.error }}</p>
-              }
-              @if (selectedJobStatus.failed_phase) {
-                <p class="detail-row"><strong>Failed phase:</strong> {{ selectedJobStatus.failed_phase }}</p>
-              }
-              <p class="detail-row"><strong>Research sources:</strong> {{ selectedJobStatus.research_sources_count }}</p>
-              <p class="detail-row"><strong>Draft iterations:</strong> {{ selectedJobStatus.draft_iterations }}</p>
-              <p class="detail-row"><strong>Rewrite iterations:</strong> {{ selectedJobStatus.rewrite_iterations }}</p>
-              @if (selectedJobStatus.created_at) {
-                <p class="detail-row"><strong>Created:</strong> {{ selectedJobStatus.created_at }}</p>
-              }
-              @if (selectedJobStatus.started_at) {
-                <p class="detail-row"><strong>Started:</strong> {{ selectedJobStatus.started_at }}</p>
-              }
-              @if (selectedJobStatus.completed_at) {
-                <p class="detail-row"><strong>Completed:</strong> {{ selectedJobStatus.completed_at }}</p>
-              }
-              @if (selectedJobStatus.title_choices.length) {
-                <p class="detail-row"><strong>Title choices:</strong> {{ selectedJobStatus.title_choices.length }}</p>
-              }
+              <h3 class="detail-section-title">Job details</h3>
+              <div class="detail-grid">
+                <p class="detail-row"><strong>Phase</strong> {{ selectedJobStatus.phase ?? '—' }}</p>
+                <p class="detail-row"><strong>Progress</strong> {{ selectedJobStatus.progress }}%</p>
+                <p class="detail-row"><strong>Approved</strong> {{ jobApprovedLabel() }}</p>
+                @if (selectedJobStatus.approved_at) {
+                  <p class="detail-row"><strong>Approved at</strong> {{ selectedJobStatus.approved_at }}</p>
+                }
+                @if (selectedJobStatus.approved_by) {
+                  <p class="detail-row"><strong>Approved by</strong> {{ selectedJobStatus.approved_by }}</p>
+                }
+                @if (selectedJobStatus.status_text) {
+                  <p class="detail-row detail-row-full"><strong>Status</strong> {{ selectedJobStatus.status_text }}</p>
+                }
+                @if (selectedJobStatus.error) {
+                  <p class="detail-row detail-row-full error"><strong>Error</strong> {{ selectedJobStatus.error }}</p>
+                }
+                @if (selectedJobStatus.failed_phase) {
+                  <p class="detail-row"><strong>Failed phase</strong> {{ selectedJobStatus.failed_phase }}</p>
+                }
+                <p class="detail-row"><strong>Research sources</strong> {{ selectedJobStatus.research_sources_count }}</p>
+                <p class="detail-row"><strong>Draft iterations</strong> {{ selectedJobStatus.draft_iterations }}</p>
+                <p class="detail-row"><strong>Rewrite iterations</strong> {{ selectedJobStatus.rewrite_iterations }}</p>
+                @if (selectedJobStatus.created_at) {
+                  <p class="detail-row"><strong>Created</strong> {{ selectedJobStatus.created_at }}</p>
+                }
+                @if (selectedJobStatus.started_at) {
+                  <p class="detail-row"><strong>Started</strong> {{ selectedJobStatus.started_at }}</p>
+                }
+                @if (selectedJobStatus.completed_at) {
+                  <p class="detail-row"><strong>Completed</strong> {{ selectedJobStatus.completed_at }}</p>
+                }
+                @if (selectedJobStatus.title_choices?.length) {
+                  <p class="detail-row"><strong>Title choices</strong> {{ selectedJobStatus.title_choices.length }}</p>
+                }
+              </div>
               @if (selectedJobStatus.draft_preview) {
                 <div class="draft-preview">
-                  <strong>Draft preview:</strong>
+                  <strong>Draft preview</strong>
                   <p>{{ selectedJobStatus.draft_preview | slice:0:300 }}{{ selectedJobStatus.draft_preview.length > 300 ? '…' : '' }}</p>
                 </div>
               }
             </div>
 
             @if (isTerminalStatus(selectedJobStatus.status)) {
-              <mat-divider />
+              <div class="panel-divider"></div>
               <div class="produced-assets">
-                <h3>Produced assets</h3>
+                <h3 class="detail-section-title">Produced assets</h3>
                 @if (artifactsLoading) {
                   <p class="assets-loading">Loading artifacts…</p>
                 } @else if (artifactsError) {
@@ -220,11 +247,7 @@
                 } @else if (selectedJobArtifacts.length === 0) {
                   <p class="assets-empty">No artifacts found for this job.</p>
                 } @else {
-                  <p class="detail-row"><strong>Approved:</strong> {{ jobApprovedLabel() }}</p>
-                  @if (selectedJobStatus.approved_at) {
-                    <p class="detail-row"><strong>Approved at:</strong> {{ selectedJobStatus.approved_at }}</p>
-                  }
-                  <mat-accordion>
+                  <mat-accordion class="assets-accordion">
                     @for (artifact of selectedJobArtifacts; track artifact.name) {
                       <mat-expansion-panel (openedChange)="$event && loadArtifactContent(artifact.name)">
                         <mat-expansion-panel-header>

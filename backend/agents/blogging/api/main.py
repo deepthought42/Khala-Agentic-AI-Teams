@@ -331,14 +331,17 @@ def _run_research_review_with_tracking(job_id: str, request: ResearchAndReviewRe
 
     if start_blog_job is not None:
         start_blog_job(job_id)
-    if update_blog_job is not None:
-        try:
-            update_blog_job(job_id, phase="research", progress=10)
-        except Exception as e:
-            logger.warning("Failed to update job %s: %s", job_id, e)
+
+    def _research_progress(status_text: str, sub_progress: float) -> None:
+        if update_blog_job is not None:
+            try:
+                progress_pct = int(10 + (50 - 10) * sub_progress)  # research phase 10–50%
+                update_blog_job(job_id, phase="research", progress=progress_pct, status_text=status_text)
+            except Exception as e:
+                logger.warning("Failed to update job %s: %s", job_id, e)
 
     try:
-        research_result = research_agent.run(brief_input)
+        research_result = research_agent.run(brief_input, progress_callback=_research_progress)
     except Exception as e:
         logger.exception("Research agent failed for job %s", job_id)
         if fail_blog_job is not None:
@@ -347,7 +350,7 @@ def _run_research_review_with_tracking(job_id: str, request: ResearchAndReviewRe
 
     if update_blog_job is not None:
         try:
-            update_blog_job(job_id, phase="review", progress=50)
+            update_blog_job(job_id, phase="review", progress=50, status_text="Generating title choices and outline...")
         except Exception as e:
             logger.warning("Failed to update job %s: %s", job_id, e)
 

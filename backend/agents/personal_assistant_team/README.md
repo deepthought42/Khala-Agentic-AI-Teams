@@ -180,7 +180,7 @@ curl "http://127.0.0.1:8015/users/user123/tasks/lists"
 | `PA_HOST` | API server host | 0.0.0.0 |
 | `PA_PORT` | API server port | 8015 |
 | `PA_CREDENTIAL_KEY` | Fernet encryption key | (required) |
-| `TAVILY_API_KEY` | Tavily web search API key | (optional) |
+| `OLLAMA_API_KEY` | Ollama API key for web search (e.g. from https://ollama.com/settings/keys) | (optional) |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID | (optional) |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | (optional) |
 
