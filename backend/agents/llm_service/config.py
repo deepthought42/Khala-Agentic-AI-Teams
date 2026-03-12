@@ -132,17 +132,17 @@ def resolve_model(agent_key: Optional[str] = None) -> str:
 
 
 def resolve_base_url() -> str:
-    """Return Ollama base URL."""
-    return _env(ENV_LLM_BASE_URL, ENV_LLM_BASE_URL_SW, "http://127.0.0.1:11434").rstrip("/")
+    """Return Ollama base URL (default https://ollama.com for Ollama Cloud)."""
+    return _env(ENV_LLM_BASE_URL, ENV_LLM_BASE_URL_SW, "https://ollama.com").rstrip("/")
 
 
 def resolve_timeout() -> float:
-    """Return timeout in seconds."""
-    raw = os.environ.get(ENV_LLM_TIMEOUT) or os.environ.get(ENV_LLM_TIMEOUT_SW) or "1800"
+    """Return timeout in seconds (default 120)."""
+    raw = os.environ.get(ENV_LLM_TIMEOUT) or os.environ.get(ENV_LLM_TIMEOUT_SW) or "120"
     try:
         return float(raw)
     except ValueError:
-        return 1800.0
+        return 120.0
 
 
 def resolve_context_size_for_model(model: str) -> Optional[int]:

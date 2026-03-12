@@ -1,6 +1,6 @@
-# Full stack: Postgres, Temporal, Ollama (optional), strands-agents (unified API), and Angular UI.
+# Full stack: Postgres, Temporal, strands-agents (unified API), and Angular UI.
 # Run from repo root: docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
-# Ports: 5432 Postgres, 7233 Temporal gRPC, 8080 Temporal UI, 4200 Angular UI, 8888 Unified API (direct), 11434 Ollama (optional)
+# Ports: 5432 Postgres, 7233 Temporal gRPC, 8080 Temporal UI, 4200 Angular UI, 8888 Unified API (direct)
 #
 # Static IPs and extra_hosts avoid reliance on Podman's embedded DNS (which can timeout resolving service names).
 
@@ -64,18 +64,6 @@ services:
       stack:
         ipv4_address: 172.28.0.4
 
-  ollama:
-    image: ollama/ollama
-    container_name: strands-stack-ollama
-    ports:
-      # Use 11435 on host to avoid conflict with host-installed Ollama (11434)
-      - "11435:11434"
-    environment:
-      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
-    networks:
-      stack:
-        ipv4_address: 172.28.0.5
-
   strands-agents:
     build:
       context: ../backend
@@ -89,9 +77,10 @@ services:
       - ./workspace:/workspace
     ports:
       - "8888:8080"
+    # All agents use central LLM; default Ollama Cloud. Set OLLAMA_API_KEY in docker/.env (https://ollama.com/settings/keys).
     environment:
       SW_LLM_PROVIDER: ${SW_LLM_PROVIDER:-ollama}
-      SW_LLM_BASE_URL: ${SW_LLM_BASE_URL:-http://ollama:11434}
+      SW_LLM_BASE_URL: ${SW_LLM_BASE_URL:-https://ollama.com}
       SW_LLM_MODEL: ${SW_LLM_MODEL:-qwen3.5:397b-cloud}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       PYTHONUNBUFFERED: "1"
@@ -102,7 +91,6 @@ services:
       ENABLE_LOG_API: ${ENABLE_LOG_API:-0}
     extra_hosts:
       - "postgres:172.28.0.2"
-      - "ollama:172.28.0.5"
     networks:
       stack:
         ipv4_address: 172.28.0.6

@@ -246,7 +246,7 @@ cd user-interface && ng test --no-watch --code-coverage
 
 - **Python:** Use pytest. Place tests in `tests/` next to the package or in `*/tests/`.
 - **Angular:** Use Jasmine/Karma. Co-locate `.spec.ts` files with components/services.
-- **Mocking:** Mock external APIs (Tavily, Ollama) in unit tests. Use `DummyLLMClient` or `SOC2_LLM_PROVIDER=dummy` where supported.
+- **Mocking:** Mock external APIs (Ollama web search, LLM) in unit tests. Use `DummyLLMClient` or `SOC2_LLM_PROVIDER=dummy` where supported.
 
 ### Test Requirements
 

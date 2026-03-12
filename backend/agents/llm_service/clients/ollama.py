@@ -87,8 +87,8 @@ class OllamaLLMClient(LLMClient):
         self,
         model: str = "llama3.1",
         *,
-        base_url: str = "http://127.0.0.1:11434",
-        timeout: float = 1800.0,
+        base_url: str = "https://ollama.com",
+        timeout: float = 120.0,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -96,8 +96,12 @@ class OllamaLLMClient(LLMClient):
         self._model_num_ctx: Optional[int] = None
 
     def _ollama_auth_headers(self) -> dict[str, str]:
-        """Return Authorization Bearer header for Ollama Cloud when API key is set."""
-        key = os.environ.get(llm_config.ENV_LLM_OLLAMA_API_KEY) or os.environ.get(llm_config.ENV_LLM_OLLAMA_API_KEY_SW) or os.environ.get("OLLAMA_API_KEY")
+        """Return Authorization Bearer header for Ollama Cloud. Uses OLLAMA_API_KEY (or LLM_* overrides)."""
+        key = (
+            os.environ.get("OLLAMA_API_KEY")
+            or os.environ.get(llm_config.ENV_LLM_OLLAMA_API_KEY)
+            or os.environ.get(llm_config.ENV_LLM_OLLAMA_API_KEY_SW)
+        )
         if not key:
             return {}
         return {"Authorization": f"Bearer {key}"}
@@ -263,15 +267,24 @@ class OllamaLLMClient(LLMClient):
         for attempt in range(max_retries + 1):
             try:
                 with sem:
+                    logger.info(
+                        "Waiting for LLM response (timeout=%ss, attempt %d/%d)...",
+                        int(self.timeout),
+                        attempt + 1,
+                        max_retries + 1,
+                    )
+                    t0 = time.monotonic()
                     with httpx.Client(timeout=self.timeout) as client:
                         response = client.post(url, json=payload, headers=headers)
-                        status = response.status_code
-                        if status == 200:
-                            try:
-                                data = response.json()
-                            except json.JSONDecodeError as e:
-                                raise LLMPermanentError(f"Malformed LLM response (invalid JSON): {e}") from e
-                            return self._parse_response_content(data)
+                    elapsed = time.monotonic() - t0
+                    status = response.status_code
+                    if status == 200:
+                        logger.info("LLM response received in %.1fs", elapsed)
+                        try:
+                            data = response.json()
+                        except json.JSONDecodeError as e:
+                            raise LLMPermanentError(f"Malformed LLM response (invalid JSON): {e}") from e
+                        return self._parse_response_content(data)
                         if status == 429:
                             last_error = LLMRateLimitError(
                                 f"LLM rate limited (429) after {attempt + 1} attempt(s)",

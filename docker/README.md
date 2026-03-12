@@ -5,8 +5,8 @@ This directory defines a **Docker Compose stack** that runs:
 - **PostgreSQL 16** – shared database with `temporal` and `strands` databases (created at first run)
 - **Temporal** – workflow engine (Postgres-backed, no Elasticsearch)
 - **Temporal UI** – Web UI for workflows
-- **Ollama** (optional) – local Ollama server for local models
-- **Strands Agents** – all agent APIs, using **Ollama Cloud** (Option A) or local Ollama
+- **Ollama** (optional) – local Ollama server if you override LLM to use it
+- **Strands Agents** – all agent APIs; **default LLM is Ollama Cloud** (https://ollama.com) when running from Docker
 
 ## Quick start
 
@@ -47,10 +47,10 @@ This directory defines a **Docker Compose stack** that runs:
 
 - **OLLAMA_API_KEY** – Create at [ollama.com/settings/keys](https://ollama.com/settings/keys). Required for Ollama Cloud (Option A). Passed into the agents container so the LLM client can call `https://ollama.com` with `Authorization: Bearer <key>`.
 
-Optional (defaults in `docker/.env.example`; copy to `docker/.env` and set as needed):
+Optional (defaults in compose / `docker/.env.example`; copy to `docker/.env` and set as needed):
 
-- **SW_LLM_BASE_URL** – `https://ollama.com` (cloud) or `http://ollama:11434` (local stack)
-- **SW_LLM_MODEL** – e.g. `qwen3.5:397b-cloud`
+- **SW_LLM_BASE_URL** – default is `https://ollama.com` (Ollama Cloud). Set to `http://ollama:11434` to use the local Ollama container instead.
+- **SW_LLM_MODEL** – default `qwen3.5:397b-cloud`
 - **POSTGRES_USER**, **POSTGRES_PASSWORD**, **POSTGRES_DB** – used for the default Postgres superuser; init scripts create `temporal` and `strands` DBs and users.
 
 Personal Assistant credential encryption uses a key generated at **Docker image build time** (stored in the image), so credentials persist across container restarts without setting any env var.
