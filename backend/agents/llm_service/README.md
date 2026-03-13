@@ -38,6 +38,20 @@ max_ctx = client.get_max_context_tokens()
 | `LLM_ENABLE_THINKING` | Enable thinking for qwen3.5 | `SW_LLM_ENABLE_THINKING` |
 | `OLLAMA_API_KEY` | **Required for Ollama Cloud.** API key from https://ollama.com/settings/keys. All LLM requests use this when set. | `LLM_OLLAMA_API_KEY`, `SW_LLM_OLLAMA_API_KEY` (overrides) |
 
+### Troubleshooting
+
+**ConnectErrors / timeouts**
+
+- **Docker:** If the app runs in Docker, the container may not resolve `ollama.com` or reach the internet. Set `LLM_BASE_URL` to a reachable host (e.g. `http://host.docker.internal:11434` for local Ollama, or ensure the container has outbound HTTPS and DNS for `https://ollama.com`).
+- **Ollama Cloud:** Ensure `OLLAMA_API_KEY` is set (from https://ollama.com/settings/keys). If you get 401, the key is missing or invalid.
+- **Firewall / proxy:** Ensure the host (or container) can open HTTPS to your `LLM_BASE_URL`.
+
+**500 Internal Server Error from Ollama Cloud**
+
+- **Thinking mode:** With `qwen3.5:397b-cloud`, the client may send `think: true`, which some endpoints reject. Set `LLM_ENABLE_THINKING=false` (or `SW_LLM_ENABLE_THINKING=false`) and retry.
+- **Quota / capacity:** Check your Ollama Cloud account and https://status.ollama.com (or Ollama’s status page) for outages or rate limits.
+- **Model / size:** Try a smaller model (e.g. `LLM_MODEL=qwen3.5:8b-cloud`) or reduce prompt size to rule out server-side overload.
+
 ### Docker and name resolution
 
 If the app runs inside Docker, the default `LLM_BASE_URL` (`https://ollama.com`) may be unreachable (e.g. "Temporary failure in name resolution") if the container has no outbound DNS or network. Set `LLM_BASE_URL` (or `SW_LLM_BASE_URL`) to a reachable endpoint:
