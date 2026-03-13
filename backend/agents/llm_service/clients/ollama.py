@@ -301,8 +301,11 @@ class OllamaLLMClient(LLMClient):
                             continue
                         raise last_error
                     if 500 <= status < 600:
+                        hint = ""
+                        if "ollama.com" in self.base_url and "qwen3.5" in self.model.lower():
+                            hint = " If using Ollama Cloud with qwen3.5, try LLM_ENABLE_THINKING=false."
                         last_error = LLMTemporaryError(
-                            f"LLM server error {status} after {attempt + 1} attempt(s): {response.text[:200]}",
+                            f"LLM server error {status} after {attempt + 1} attempt(s): {response.text[:200]}.{hint}",
                             status_code=status,
                         )
                         if attempt < max_retries:
