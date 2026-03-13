@@ -37,7 +37,7 @@ This directory defines a **Docker Compose stack** that runs:
 
    | Service        | URL                         |
    |----------------|-----------------------------|
-   | **Angular UI** | http://localhost:4200       (proxies /api to agents) |
+   | **Angular UI** | http://localhost:4201       (proxies /api to agents) |
    | Agents API     | http://localhost:8888       (direct) |
    | Temporal UI    | http://localhost:8080       |
    | Postgres       | localhost:5432 (user `postgres` / `temporal` / `strands`) |
@@ -87,7 +87,7 @@ When **ENABLE_LOG_API** is not set or is 0, the endpoint returns **404** so it i
 | 5432  | PostgreSQL     |
 | 7233  | Temporal gRPC  |
 | 8080  | Temporal UI    |
-| 4200  | Angular UI (proxies /api to agents) |
+| 4201  | Angular UI (proxies /api to agents) |
 | 8888  | Agents API (direct) |
 | 11434 | Ollama (optional) |
 
