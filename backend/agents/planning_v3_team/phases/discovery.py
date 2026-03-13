@@ -89,14 +89,15 @@ def run_discovery(
     assumptions = list(prev.get("assumptions") or [])
     assumptions.extend(data.get("assumptions", []))
 
-    updated_client = ClientContext(
+    merged = {
         **prev,
-        problem_summary=data.get("problem_summary"),
-        opportunity_statement=data.get("opportunity_statement"),
-        target_users=data.get("target_users", []),
-        success_criteria=data.get("success_criteria", []),
-        assumptions=assumptions,
-    )
+        "problem_summary": data.get("problem_summary"),
+        "opportunity_statement": data.get("opportunity_statement"),
+        "target_users": data.get("target_users", []),
+        "success_criteria": data.get("success_criteria", []),
+        "assumptions": assumptions,
+    }
+    updated_client = ClientContext(**merged)
     context_update["client_context"] = updated_client
     artifacts["discovery"] = data
     return context_update, artifacts
