@@ -1,6 +1,6 @@
 # Full stack: Postgres, Temporal, strands-agents (unified API), and Angular UI.
 # Run from repo root: docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
-# Ports: 5432 Postgres, 7233 Temporal gRPC, 8080 Temporal UI, 4200 Angular UI, 8888 Unified API (direct)
+# Ports: 5432 Postgres, 7233 Temporal gRPC, 8080 Temporal UI, 4201 Angular UI, 8888 Unified API (direct)
 #
 # Static IPs and extra_hosts avoid reliance on Podman's embedded DNS (which can timeout resolving service names).
 
@@ -114,7 +114,7 @@ services:
     image: strands-ui
     container_name: strands-ui
     ports:
-      - "4200:80"
+      - "4201:80"
     depends_on:
       strands-agents:
         condition: service_healthy
@@ -130,7 +130,6 @@ networks:
     name: strands-stack
     driver: bridge
     ipam:
-      driver: default
       config:
         - subnet: 172.28.0.0/24
 
