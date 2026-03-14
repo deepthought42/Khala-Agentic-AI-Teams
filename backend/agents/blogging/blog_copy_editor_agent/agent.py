@@ -240,6 +240,18 @@ class BlogCopyEditorAgent:
             len(summary),
             len(feedback_items),
         )
+        for i, item in enumerate(feedback_items, 1):
+            loc = f" [{item.location}]" if item.location else ""
+            sugg = f" Suggestion: {item.suggestion}" if item.suggestion else ""
+            logger.info(
+                "Feedback item %s: [%s] %s%s — %s%s",
+                i,
+                item.severity,
+                item.category,
+                loc,
+                item.issue,
+                sugg,
+            )
         output = CopyEditorOutput(approved=approved, summary=summary, feedback_items=feedback_items)
         if feedback_output_path:
             self._write_feedback_to_path(output, feedback_output_path)
