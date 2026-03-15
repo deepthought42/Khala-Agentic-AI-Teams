@@ -112,7 +112,13 @@
         </div>
 
         <div class="run-actions">
-          <button mat-stroked-button (click)="onRefreshStatus()" matTooltip="Refresh status">
+          @if (isPolling) {
+            <span class="polling-badge" matTooltip="Auto-refreshing every 8 seconds">
+              <span class="polling-dot"></span>
+              Auto-refresh
+            </span>
+          }
+          <button mat-stroked-button (click)="onRefreshStatus()" matTooltip="Refresh status now">
             <mat-icon>refresh</mat-icon>
             Refresh
           </button>

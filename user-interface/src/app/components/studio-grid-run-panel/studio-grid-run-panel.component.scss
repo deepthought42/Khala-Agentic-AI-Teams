@@ -120,6 +120,33 @@ mat-card-actions {
   cursor: default;
 }
 
+.polling-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(46, 160, 67, 0.12);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.25);
+  cursor: default;
+}
+
+.polling-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  animation: pulse-poll 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-poll {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(1.4); }
+}
+
 .run-badges {
   display: flex;
   align-items: center;
