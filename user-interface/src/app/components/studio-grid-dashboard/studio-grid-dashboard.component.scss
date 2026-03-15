@@ -1,145 +1,76 @@
-.header-row {
+// ============================================================
+// Page Header
+// ============================================================
+
+.page-header {
   margin-bottom: 1.5rem;
 }
 
-.section-card {
-  margin-bottom: 1.5rem;
-
-  mat-card-title {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  mat-card-actions {
-    display: flex;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem 1rem;
-  }
-}
-
-.full-width {
-  width: 100%;
-  margin-bottom: 1rem;
-}
-
-.field-error {
-  color: var(--mat-sys-error, #b00020);
-  font-size: 0.85rem;
-  margin-top: -0.75rem;
-  margin-bottom: 0.5rem;
-}
-
-.status-row {
+.page-title-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
-}
-
-.status-badge,
-.phase-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.65rem;
-  border-radius: 1rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.status-running { background: #e3f2fd; color: #1565c0; }
-.status-waiting_for_human { background: #fff8e1; color: #f57f17; }
-.status-done { background: #e8f5e9; color: #2e7d32; }
-.status-open { background: #fff8e1; color: #f57f17; }
-.status-chosen { background: #e8f5e9; color: #2e7d32; }
-
-.phase-badge {
-  background: #f3e5f5;
-  color: #6a1b9a;
-}
-
-// Phase progress track
-.phase-track {
-  display: flex;
+  gap: 1rem;
   flex-wrap: wrap;
-  gap: 0.25rem 0;
-  margin: 0.5rem 0;
 }
 
-.phase-step {
+.page-icon {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  min-width: 80px;
-  flex: 1;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%);
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  flex-shrink: 0;
 
-  .phase-dot {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .step-icon {
-    font-size: 1.25rem;
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .done-icon { color: #2e7d32; }
-  .active-icon { color: #1565c0; }
-  .pending-icon { color: #bdbdbd; }
-
-  .phase-label {
-    font-size: 0.7rem;
-    margin-top: 0.2rem;
-    text-align: center;
-    color: #757575;
-  }
-
-  &.active .phase-label {
-    color: #1565c0;
-    font-weight: 600;
-  }
-
-  &.done .phase-label {
-    color: #2e7d32;
+  mat-icon {
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+    color: #58a6ff;
   }
 }
 
-// Decisions
-.decision-card {
-  padding: 1rem 0;
+.page-title-text {
+  flex: 1;
+  min-width: 0;
 
-  .decision-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.5rem;
+  h1 {
+    margin: 0 0 4px;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #f0f6fc;
+    letter-spacing: -0.02em;
   }
 
-  .decision-context {
-    color: #555;
-    margin-bottom: 0.75rem;
+  p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: #8b949e;
   }
+}
 
-  .option-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
+.header-health {
+  margin-left: auto;
+}
 
-  .chosen-option {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    color: #2e7d32;
+// ============================================================
+// Tab Group
+// ============================================================
 
-    mat-icon {
-      font-size: 1rem;
-      width: 1rem;
-      height: 1rem;
-    }
-  }
+.studio-tabs {
+  // Tabs take full width
+}
+
+.tab-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.tab-content {
+  padding-top: 1.5rem;
 }
