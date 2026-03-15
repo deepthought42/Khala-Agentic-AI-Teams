@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -11,12 +11,16 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { Subject, interval } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import { StudioGridApiService } from '../../services/studio-grid-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
 import type { StartRunResponse, RunStatus, Decision } from '../../models';
 
 const PHASES = ['INTAKE', 'DISCOVERY', 'IA', 'WIREFRAMES', 'SYSTEM', 'HIFI', 'ASSETS', 'HANDOFF', 'DONE'];
+const TERMINAL_STATUSES = new Set(['DONE', 'FAILED', 'CANCELLED']);
+const POLL_INTERVAL_MS = 8000;
 
 @Component({
   selector: 'app-studio-grid-run-panel',
@@ -40,8 +44,10 @@ const PHASES = ['INTAKE', 'DISCOVERY', 'IA', 'WIREFRAMES', 'SYSTEM', 'HIFI', 'AS
   templateUrl: './studio-grid-run-panel.component.html',
   styleUrl: './studio-grid-run-panel.component.scss',
 })
-export class StudioGridRunPanelComponent {
+export class StudioGridRunPanelComponent implements OnDestroy {
   private readonly api = inject(StudioGridApiService);
+  private readonly destroy$ = new Subject<void>();
+  private readonly stopPolling$ = new Subject<void>();
 
   readonly phases = PHASES;
 
@@ -59,10 +65,18 @@ export class StudioGridRunPanelComponent {
   // Run state
   run: StartRunResponse | RunStatus | null = null;
   decisions: Decision[] = [];
+  isPolling = false;
 
   // Resolve state
   resolvingDecisionId: string | null = null;
   resolveError: string | null = null;
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+    this.stopPolling$.next();
+    this.stopPolling$.complete();
+  }
 
   get currentPhaseIndex(): number {
     if (!this.run) return -1;
@@ -84,6 +98,7 @@ export class StudioGridRunPanelComponent {
   }
 
   onStartRun(): void {
+    this.stopPolling$.next();
     this.loading = true;
     this.error = null;
     this.run = null;
@@ -101,6 +116,7 @@ export class StudioGridRunPanelComponent {
         this.run = res;
         this.loading = false;
         this.loadDecisions(res.run_id);
+        this.startPolling(res.status);
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Failed to start run';
@@ -115,6 +131,10 @@ export class StudioGridRunPanelComponent {
       next: (status) => {
         this.run = status;
         this.loadDecisions(status.run_id);
+        if (TERMINAL_STATUSES.has(status.status)) {
+          this.stopPolling$.next();
+          this.isPolling = false;
+        }
       },
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Failed to refresh status';
@@ -131,6 +151,15 @@ export class StudioGridRunPanelComponent {
         // decisions are optional — ignore errors
       },
     });
+  }
+
+  private startPolling(initialStatus: string): void {
+    if (TERMINAL_STATUSES.has(initialStatus)) return;
+    this.stopPolling$.next(); // cancel any prior poll
+    this.isPolling = true;
+    interval(POLL_INTERVAL_MS)
+      .pipe(takeUntil(this.stopPolling$), takeUntil(this.destroy$))
+      .subscribe(() => { this.onRefreshStatus(); });
   }
 
   onResolveDecision(decisionId: string, optionKey: string): void {
@@ -151,6 +180,8 @@ export class StudioGridRunPanelComponent {
   }
 
   onNewRun(): void {
+    this.stopPolling$.next();
+    this.isPolling = false;
     this.run = null;
     this.decisions = [];
     this.error = null;
