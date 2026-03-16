@@ -128,8 +128,7 @@ def run_pipeline(
         _update(BlogPhase.RESEARCH, sub_progress=sub_progress, status_text=status_text)
 
     try:
-        cache = AgentCache(cache_dir=".agent_cache")
-        research_agent = ResearchAgent(llm_client=llm_client, cache=cache)
+        research_agent = ResearchAgent(llm_client=llm_client)
         research_result = research_agent.run(brief, progress_callback=_research_progress)
     except BloggingError:
         raise
@@ -162,7 +161,7 @@ def run_pipeline(
                 llm_client,
                 research_document,
                 research_result.references,
-                topic=brief.brief[:100],
+                topic=brief.brief,
             )
             write_artifact(work_dir, "allowed_claims.json", allowed.to_dict())
             logger.info("Persisted allowed_claims.json (%s claims)", len(allowed.claims))
