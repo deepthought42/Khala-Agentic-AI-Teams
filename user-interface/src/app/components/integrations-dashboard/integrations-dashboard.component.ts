@@ -1,6 +1,7 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -8,6 +9,8 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatIconModule } from '@angular/material/icon';
 import { MatRadioModule } from '@angular/material/radio';
+import { MatDividerModule } from '@angular/material/divider';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { IntegrationsApiService } from '../../services/integrations-api.service';
 import type { SlackConfigResponse, SlackConfigUpdate, SlackMode } from '../../models/integrations.model';
 
@@ -26,48 +29,80 @@ const SLACK_WEBHOOK_PREFIX = 'https://hooks.slack.com/';
     MatSlideToggleModule,
     MatIconModule,
     MatRadioModule,
+    MatDividerModule,
+    MatProgressSpinnerModule,
   ],
   templateUrl: './integrations-dashboard.component.html',
   styleUrl: './integrations-dashboard.component.scss',
 })
 export class IntegrationsDashboardComponent implements OnInit {
   private readonly api = inject(IntegrationsApiService);
+  private readonly route = inject(ActivatedRoute);
 
   loading = false;
   saving = false;
+  connecting = false;
+  disconnecting = false;
   error: string | null = null;
   success: string | null = null;
 
+  // OAuth connection state
+  oauthConnected = false;
+  teamName: string | null = null;
+  teamId: string | null = null;
+
+  // Shared settings (shown after any connection)
   slackEnabled = false;
-  mode: SlackMode = 'webhook';
-  webhookUrl = '';
-  botToken = '';
   defaultChannel = '';
   channelDisplayName = '';
-  webhookConfigured = false;
-  botTokenConfigured = false;
   notifyOpenQuestions = true;
   notifyPaResponses = true;
 
+  // Advanced / manual mode
+  showAdvanced = false;
+  mode: SlackMode = 'webhook';
+  webhookUrl = '';
+  botToken = '';
+  webhookConfigured = false;
+  botTokenConfigured = false;
+
   ngOnInit(): void {
     this.loadSlackConfig();
+    this.handleOAuthCallback();
+  }
+
+  /** Read ?slack_connected and ?slack_error query params set by the backend after OAuth. */
+  private handleOAuthCallback(): void {
+    this.route.queryParams.subscribe((params) => {
+      if (params['slack_connected']) {
+        const team = params['team'] ? decodeURIComponent(params['team']) : null;
+        this.success = team
+          ? `Connected to "${team}" workspace successfully.`
+          : 'Slack connected successfully.';
+        this.loadSlackConfig();
+      } else if (params['slack_error']) {
+        const errCode = params['slack_error'];
+        this.error = this.friendlyOAuthError(errCode);
+      }
+    });
+  }
+
+  private friendlyOAuthError(code: string): string {
+    const map: Record<string, string> = {
+      access_denied: 'You cancelled the Slack authorization.',
+      missing_code_or_state: 'Invalid OAuth response from Slack.',
+      invalid_state: 'OAuth session expired or was tampered with. Please try again.',
+      token_exchange_failed: 'Failed to exchange the authorization code. Check server logs.',
+    };
+    return map[code] ?? `Slack OAuth error: ${code}`;
   }
 
   loadSlackConfig(): void {
     this.loading = true;
-    this.error = null;
+    this.error = this.error; // preserve OAuth callback error while reloading
     this.api.getSlackConfig().subscribe({
       next: (res: SlackConfigResponse) => {
-        this.slackEnabled = res.enabled;
-        this.mode = res.mode || 'webhook';
-        this.webhookConfigured = res.webhook_configured;
-        this.botTokenConfigured = res.bot_token_configured;
-        this.defaultChannel = res.default_channel || '';
-        this.channelDisplayName = res.channel_display_name || '';
-        this.notifyOpenQuestions = res.notify_open_questions ?? true;
-        this.notifyPaResponses = res.notify_pa_responses ?? true;
-        this.webhookUrl = '';
-        this.botToken = '';
+        this.applyConfig(res);
         this.loading = false;
       },
       error: (err) => {
@@ -76,6 +111,104 @@ export class IntegrationsDashboardComponent implements OnInit {
       },
     });
   }
+
+  private applyConfig(res: SlackConfigResponse): void {
+    this.oauthConnected = res.oauth_connected ?? false;
+    this.teamName = res.team_name ?? null;
+    this.teamId = res.team_id ?? null;
+    this.slackEnabled = res.enabled;
+    this.mode = res.mode || 'webhook';
+    this.webhookConfigured = res.webhook_configured;
+    this.botTokenConfigured = res.bot_token_configured;
+    this.defaultChannel = res.default_channel || '';
+    this.channelDisplayName = res.channel_display_name || '';
+    this.notifyOpenQuestions = res.notify_open_questions ?? true;
+    this.notifyPaResponses = res.notify_pa_responses ?? true;
+    this.webhookUrl = '';
+    this.botToken = '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // OAuth flow
+  // ---------------------------------------------------------------------------
+
+  connectWithSlack(): void {
+    this.connecting = true;
+    this.error = null;
+    this.success = null;
+    this.api.getSlackOAuthUrl().subscribe({
+      next: (res) => {
+        // Redirect the current tab to the Slack authorization page.
+        // The backend callback will redirect back to /integrations?slack_connected=1
+        window.location.href = res.url;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail || err?.message || 'Failed to start Slack OAuth.';
+        this.connecting = false;
+      },
+    });
+  }
+
+  disconnectSlack(): void {
+    this.disconnecting = true;
+    this.error = null;
+    this.success = null;
+    this.api.disconnectSlack().subscribe({
+      next: (res) => {
+        this.applyConfig(res);
+        this.success = 'Slack disconnected.';
+        this.disconnecting = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail || err?.message || 'Failed to disconnect Slack.';
+        this.disconnecting = false;
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Settings save (channel, toggles, enable/disable — after any connection)
+  // ---------------------------------------------------------------------------
+
+  saveSettings(): void {
+    const defaultChannel = this.defaultChannel.trim();
+
+    if (this.slackEnabled && this.mode === 'bot' && !defaultChannel && !this.oauthConnected) {
+      this.error = 'Default channel is required.';
+      return;
+    }
+
+    this.saving = true;
+    this.error = null;
+    this.success = null;
+
+    const body: SlackConfigUpdate = {
+      enabled: this.slackEnabled,
+      mode: this.mode,
+      webhook_url: '',          // preserve existing via store
+      bot_token: '',            // preserve existing via store
+      default_channel: defaultChannel,
+      channel_display_name: this.channelDisplayName.trim(),
+      notify_open_questions: this.notifyOpenQuestions,
+      notify_pa_responses: this.notifyPaResponses,
+    };
+
+    this.api.updateSlackConfig(body).subscribe({
+      next: (res) => {
+        this.applyConfig(res);
+        this.success = 'Settings saved.';
+        this.saving = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail || err?.message || 'Failed to save settings.';
+        this.saving = false;
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Advanced (manual) mode save
+  // ---------------------------------------------------------------------------
 
   webhookUrlInvalid(): boolean {
     const u = (this.webhookUrl || '').trim();
@@ -89,7 +222,7 @@ export class IntegrationsDashboardComponent implements OnInit {
     return !token.startsWith('xoxb-');
   }
 
-  saveSlack(): void {
+  saveAdvanced(): void {
     const webhookUrl = this.webhookUrl.trim();
     const botToken = this.botToken.trim();
     const defaultChannel = this.defaultChannel.trim();
@@ -100,7 +233,7 @@ export class IntegrationsDashboardComponent implements OnInit {
         return;
       }
       if (webhookUrl && this.webhookUrlInvalid()) {
-        this.error = 'Webhook URL must start with https://hooks.slack.com/ and be a valid URL';
+        this.error = 'Webhook URL must start with https://hooks.slack.com/ and be complete.';
         return;
       }
     }
@@ -123,6 +256,7 @@ export class IntegrationsDashboardComponent implements OnInit {
     this.saving = true;
     this.error = null;
     this.success = null;
+
     const body: SlackConfigUpdate = {
       enabled: this.slackEnabled,
       mode: this.mode,
@@ -133,23 +267,15 @@ export class IntegrationsDashboardComponent implements OnInit {
       notify_open_questions: this.notifyOpenQuestions,
       notify_pa_responses: this.notifyPaResponses,
     };
+
     this.api.updateSlackConfig(body).subscribe({
       next: (res) => {
-        this.slackEnabled = res.enabled;
-        this.mode = res.mode || 'webhook';
-        this.webhookConfigured = res.webhook_configured;
-        this.botTokenConfigured = res.bot_token_configured;
-        this.defaultChannel = res.default_channel || '';
-        this.channelDisplayName = res.channel_display_name || '';
-        this.notifyOpenQuestions = res.notify_open_questions ?? true;
-        this.notifyPaResponses = res.notify_pa_responses ?? true;
-        this.webhookUrl = '';
-        this.botToken = '';
+        this.applyConfig(res);
         this.success = 'Slack integration saved.';
         this.saving = false;
       },
       error: (err) => {
-        this.error = err?.error?.detail || err?.message || 'Failed to save Slack config';
+        this.error = err?.error?.detail || err?.message || 'Failed to save Slack config.';
         this.saving = false;
       },
     });

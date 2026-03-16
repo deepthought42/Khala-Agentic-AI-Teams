@@ -19,6 +19,12 @@ export interface SlackConfigResponse {
   channel_display_name: string;
   notify_open_questions: boolean;
   notify_pa_responses: boolean;
+  /** True when the bot token was obtained via OAuth (workspace connected). */
+  oauth_connected: boolean;
+  /** Slack workspace name, populated after OAuth. */
+  team_name: string | null;
+  /** Slack workspace/team ID. */
+  team_id: string | null;
 }
 
 /** Request body for PUT /api/integrations/slack. */
@@ -31,4 +37,10 @@ export interface SlackConfigUpdate {
   channel_display_name: string;
   notify_open_questions: boolean;
   notify_pa_responses: boolean;
+}
+
+/** Response for GET /api/integrations/slack/oauth/connect. */
+export interface SlackOAuthConnectResponse {
+  url: string;
+  client_id: string;
 }
