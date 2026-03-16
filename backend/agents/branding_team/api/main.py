@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import sqlite3
+import threading
 from dataclasses import dataclass
-from threading import Lock
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import Body, FastAPI, HTTPException
@@ -32,21 +36,22 @@ branding_store = get_default_store()
 orchestrator = BrandingTeamOrchestrator()
 conversation_store = get_conversation_store()
 
-_assistant_agent: Optional[BrandingAssistantAgent] = None
+# Public name so tests can patch 'branding_team.api.main.assistant_agent'.
+assistant_agent: Optional[BrandingAssistantAgent] = None
 
 
 def _get_assistant_agent() -> BrandingAssistantAgent:
     """Lazy-init the branding assistant so the app mounts even if llm_service is unavailable."""
-    global _assistant_agent
-    if _assistant_agent is None:
+    global assistant_agent
+    if assistant_agent is None:
         try:
-            _assistant_agent = BrandingAssistantAgent()
+            assistant_agent = BrandingAssistantAgent()
         except Exception:
             raise HTTPException(
                 status_code=503,
                 detail="Branding assistant is temporarily unavailable. LLM service may not be configured.",
             )
-    return _assistant_agent
+    return assistant_agent
 
 
 class CreateClientRequest(BaseModel):
@@ -156,25 +161,111 @@ class BrandingSession:
     latest_output: TeamOutput
 
 
+_SESSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS branding_sessions (
+    session_id   TEXT PRIMARY KEY,
+    session_json TEXT NOT NULL
+);
+"""
+
+
+def _session_to_dict(session: BrandingSession) -> dict:
+    return {
+        "mission": session.mission.model_dump(),
+        "questions": [q.model_dump() for q in session.questions],
+        "latest_output": session.latest_output.model_dump(),
+    }
+
+
+def _session_from_dict(d: dict) -> BrandingSession:
+    return BrandingSession(
+        mission=BrandingMission.model_validate(d["mission"]),
+        questions=[BrandingQuestion.model_validate(q) for q in d["questions"]],
+        latest_output=TeamOutput.model_validate(d["latest_output"]),
+    )
+
+
 class BrandingSessionStore:
-    def __init__(self) -> None:
-        self._sessions: Dict[str, BrandingSession] = {}
-        self._lock = Lock()
+    """SQLite-backed session store — survives worker restarts and is shared
+    across all worker processes via WAL-mode SQLite.
+
+    Pass ``db_path=None`` (default) for an isolated in-memory database, which
+    is useful when the class is instantiated directly in tests.
+    """
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        self._lock = threading.Lock()
+        if db_path is None:
+            self._file_path: Optional[str] = None
+            self._mem_conn: Optional[sqlite3.Connection] = sqlite3.connect(
+                ":memory:", check_same_thread=False
+            )
+            self._mem_conn.row_factory = sqlite3.Row
+            self._mem_conn.executescript(_SESSION_SCHEMA)
+            self._mem_conn.commit()
+        else:
+            self._file_path = str(db_path)
+            self._mem_conn = None
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _conn = sqlite3.connect(self._file_path, timeout=15)
+            _conn.execute("PRAGMA journal_mode=WAL")
+            _conn.executescript(_SESSION_SCHEMA)
+            _conn.commit()
+            _conn.close()
+
+    @contextlib.contextmanager
+    def _db(self) -> Iterator[sqlite3.Connection]:
+        if self._mem_conn is not None:
+            with self._lock:
+                self._mem_conn.row_factory = sqlite3.Row
+                yield self._mem_conn
+                self._mem_conn.commit()
+        else:
+            conn = sqlite3.connect(self._file_path, check_same_thread=False, timeout=15)  # type: ignore[arg-type]
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def create(self, mission: BrandingMission, latest_output: TeamOutput) -> Tuple[str, BrandingSession]:
         questions = _build_open_questions(mission)
         session_id = str(uuid4())
         session = BrandingSession(mission=mission, questions=questions, latest_output=latest_output)
-        with self._lock:
-            self._sessions[session_id] = session
+        with self._db() as conn:
+            conn.execute(
+                "INSERT INTO branding_sessions (session_id, session_json) VALUES (?, ?)",
+                (session_id, json.dumps(_session_to_dict(session))),
+            )
         return session_id, session
 
     def get(self, session_id: str) -> Optional[BrandingSession]:
-        with self._lock:
-            return self._sessions.get(session_id)
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT session_json FROM branding_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _session_from_dict(json.loads(row[0]))
+
+    def save(self, session_id: str, session: BrandingSession) -> None:
+        """Persist mutations to an existing session."""
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE branding_sessions SET session_json = ? WHERE session_id = ?",
+                (json.dumps(_session_to_dict(session)), session_id),
+            )
 
 
-session_store = BrandingSessionStore()
+from branding_team.db import get_db_path as _get_db_path
+session_store = BrandingSessionStore(db_path=_get_db_path())
 
 
 def _mission_has_minimal_required_fields(mission: BrandingMission) -> bool:
@@ -492,6 +583,7 @@ def answer_branding_question(
         feedback="Answers applied and branding artifacts refreshed.",
     )
     session.latest_output = orchestrator.run(mission=session.mission, human_review=human_review)
+    session_store.save(session_id, session)
     return _session_response(session_id, session)
 
 

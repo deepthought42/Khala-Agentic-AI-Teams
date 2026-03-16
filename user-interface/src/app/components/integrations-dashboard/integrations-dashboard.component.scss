@@ -3,16 +3,177 @@
   margin-top: 1rem;
 }
 
-.header-icon {
-  font-size: 2rem;
-  width: 2rem;
-  height: 2rem;
+// ── Loading ────────────────────────────────────────────────────────────────
+.loading-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 3rem 0;
 }
 
+// ── Card avatar: Slack logo ────────────────────────────────────────────────
+.slack-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .15);
+
+  svg {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+// ── Status banners ─────────────────────────────────────────────────────────
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+
+  mat-icon {
+    flex-shrink: 0;
+    font-size: 1.2rem;
+    width: 1.2rem;
+    height: 1.2rem;
+  }
+}
+
+.error-banner {
+  background: #fdecea;
+  color: #c62828;
+}
+
+.success-banner {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+// ── Connected state ────────────────────────────────────────────────────────
+.connected-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  background: #f0faf4;
+  border: 1px solid #a5d6a7;
+  border-radius: 8px;
+  margin-bottom: 1.25rem;
+}
+
+.connected-icon {
+  color: #2e7d32;
+  font-size: 1.6rem;
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.connected-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.connected-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1b5e20;
+}
+
+.team-name {
+  font-size: 0.85rem;
+  color: #388e3c;
+}
+
+.disconnect-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+// ── Not-connected state ────────────────────────────────────────────────────
+.connect-description {
+  color: rgba(0, 0, 0, .65);
+  margin-bottom: 1.5rem;
+  line-height: 1.6;
+}
+
+// The "Add to Slack" button matches Slack's brand button guidelines
+.slack-connect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 1.25rem;
+  height: 44px;
+  border: none;
+  border-radius: 4px;
+  background: #4a154b;   // Slack aubergine
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: #611f69;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+.btn-slack-logo {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+// ── Divider ────────────────────────────────────────────────────────────────
+.section-divider {
+  margin: 1.5rem 0;
+}
+
+// ── Advanced section ───────────────────────────────────────────────────────
+.advanced-toggle {
+  color: rgba(0, 0, 0, .55);
+  font-size: 0.875rem;
+  text-transform: none;
+  letter-spacing: 0;
+
+  mat-icon {
+    font-size: 1.1rem;
+    width: 1.1rem;
+    height: 1.1rem;
+    vertical-align: middle;
+  }
+}
+
+.advanced-section {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+}
+
+.advanced-hint {
+  font-size: 0.85rem;
+  color: rgba(0, 0, 0, .55);
+  margin-bottom: 1rem;
+}
+
+// ── Shared form rows ───────────────────────────────────────────────────────
 .form-row {
   margin-bottom: 1rem;
 
-  &.form-row:last-of-type {
+  &:last-of-type {
     margin-bottom: 0;
   }
 }
@@ -37,14 +198,4 @@ mat-radio-group {
 
 .full-width {
   width: 100%;
-}
-
-.error-message {
-  color: var(--mat-error-color, #b00020);
-  margin-bottom: 1rem;
-}
-
-.success-message {
-  color: var(--mat-primary-color, #1976d2);
-  margin-bottom: 1rem;
 }

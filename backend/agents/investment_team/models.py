@@ -216,6 +216,26 @@ class BacktestResult(BaseModel):
     profit_factor: float
 
 
+class TradeRecord(BaseModel):
+    """A single simulated trade from a backtest."""
+
+    trade_num: int
+    entry_date: str
+    exit_date: str
+    symbol: str
+    side: str  # "long" or "short"
+    entry_price: float
+    exit_price: float
+    shares: float
+    position_value: float  # entry_price × shares
+    gross_pnl: float
+    net_pnl: float  # after transaction costs & slippage
+    return_pct: float
+    hold_days: int
+    outcome: str  # "win" or "loss"
+    cumulative_pnl: float  # running total net P&L
+
+
 class BacktestRecord(BaseModel):
     backtest_id: str
     strategy_id: str
@@ -227,6 +247,7 @@ class BacktestRecord(BaseModel):
     status: str = "completed"
     result: BacktestResult
     notes: List[str] = Field(default_factory=list)
+    trades: List[TradeRecord] = Field(default_factory=list)
 
 
 class GateCheckResult(BaseModel):
@@ -368,3 +389,13 @@ class PlatformActionRunResponse(BaseModel):
 class PlatformActionArtifactsResponse(BaseModel):
     run_id: str
     artifacts: List[PlatformActionArtifact] = Field(default_factory=list)
+class StrategyLabRecord(BaseModel):
+    """Result of one strategy ideation + backtest + analysis cycle."""
+
+    lab_record_id: str
+    strategy: StrategySpec
+    backtest: BacktestRecord
+    is_winning: bool  # annualized_return_pct > 8.0
+    strategy_rationale: str  # why the agent chose this strategy
+    analysis_narrative: str  # LLM post-backtest analysis
+    created_at: str

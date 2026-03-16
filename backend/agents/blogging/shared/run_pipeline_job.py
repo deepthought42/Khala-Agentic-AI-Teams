@@ -119,6 +119,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
             run_gates=bool(request_dict.get("run_gates", True)),
             max_rewrite_iterations=int(request_dict.get("max_rewrite_iterations", 3)),
             job_updater=job_updater,
+            target_word_count=int(request_dict.get("target_word_count", 1000)),
         )
         title_choices = [
             {"title": tc.title, "probability_of_success": tc.probability_of_success}

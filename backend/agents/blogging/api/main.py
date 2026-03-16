@@ -403,6 +403,7 @@ class FullPipelineRequest(BaseModel):
     max_results: int = Field(20, ge=1, le=50, description="Maximum references.")
     run_gates: bool = Field(True, description="Run validators, fact-check, and compliance gates.")
     max_rewrite_iterations: int = Field(3, ge=1, le=10, description="Max rewrite iterations on FAIL.")
+    target_word_count: int = Field(1000, ge=100, le=10000, description="Target word count for the draft.")
 
 
 class FullPipelineResponse(BaseModel):
@@ -452,6 +453,7 @@ def full_pipeline(request: FullPipelineRequest) -> FullPipelineResponse:
             work_dir=work_dir,
             run_gates=request.run_gates,
             max_rewrite_iterations=request.max_rewrite_iterations,
+            target_word_count=request.target_word_count,
         )
     except Exception as e:
         logger.exception("Full pipeline failed")
@@ -590,6 +592,7 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
                 run_gates=request.run_gates,
                 max_rewrite_iterations=request.max_rewrite_iterations,
                 job_updater=job_updater,
+                target_word_count=request.target_word_count,
             )
 
             # Mark job as completed
