@@ -66,6 +66,7 @@ def run_pipeline(
     max_rewrite_iterations: int = MAX_REWRITE_ITERATIONS,
     run_gates: bool = True,
     job_updater: Optional[JobUpdater] = None,
+    target_word_count: int = 1000,
 ):
     """
     Run the full blog writing pipeline: research -> review -> draft -> copy-editor loop.
@@ -244,6 +245,7 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
+                    target_word_count=target_word_count,
                 )
                 draft_output_path = (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
                 draft_result = draft_agent.run(
@@ -280,6 +282,7 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     previous_feedback_items=previous_feedback_items if previous_feedback_items else None,
+                    target_word_count=target_word_count,
                 )
                 feedback_path = (Path(work_dir) / f"editor_feedback_iter_{copy_edit_num}.json") if work_dir is not None else None
                 copy_editor_result = copy_editor_agent.run(
@@ -314,6 +317,7 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
+                    target_word_count=target_word_count,
                 )
                 previous_feedback_items = copy_editor_result.feedback_items
                 draft_output_path = (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
@@ -474,6 +478,7 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
+                    target_word_count=target_word_count,
                 )
                 draft_output_path = Path(work_dir) / f"draft_rewrite_{rewrite_iter + 1}.md"
                 draft_result = draft_agent.revise(

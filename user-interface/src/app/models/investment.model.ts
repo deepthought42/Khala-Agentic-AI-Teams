@@ -411,3 +411,94 @@ export interface InvestmentHealthResponse {
   status: string;
   timestamp?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Backtest Models
+// ---------------------------------------------------------------------------
+
+export interface BacktestConfig {
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  benchmark_symbol: string;
+  rebalance_frequency: string;
+  transaction_cost_bps: number;
+  slippage_bps: number;
+}
+
+export interface BacktestResult {
+  total_return_pct: number;
+  annualized_return_pct: number;
+  volatility_pct: number;
+  sharpe_ratio: number;
+  max_drawdown_pct: number;
+  win_rate_pct: number;
+  profit_factor: number;
+}
+
+export interface TradeRecord {
+  trade_num: number;
+  entry_date: string;
+  exit_date: string;
+  symbol: string;
+  side: string;
+  entry_price: number;
+  exit_price: number;
+  shares: number;
+  position_value: number;
+  gross_pnl: number;
+  net_pnl: number;
+  return_pct: number;
+  hold_days: number;
+  outcome: 'win' | 'loss';
+  cumulative_pnl: number;
+}
+
+export interface BacktestRecord {
+  backtest_id: string;
+  strategy_id: string;
+  strategy: StrategySpec;
+  config: BacktestConfig;
+  submitted_by: string;
+  submitted_at: string;
+  completed_at: string;
+  status: string;
+  result: BacktestResult;
+  notes: string[];
+  trades: TradeRecord[];
+}
+
+// ---------------------------------------------------------------------------
+// Strategy Lab Models
+// ---------------------------------------------------------------------------
+
+export interface StrategyLabRecord {
+  lab_record_id: string;
+  strategy: StrategySpec;
+  backtest: BacktestRecord;
+  is_winning: boolean;
+  strategy_rationale: string;
+  analysis_narrative: string;
+  created_at: string;
+}
+
+export interface RunStrategyLabRequest {
+  start_date?: string;
+  end_date?: string;
+  initial_capital?: number;
+  benchmark_symbol?: string;
+  transaction_cost_bps?: number;
+  slippage_bps?: number;
+}
+
+export interface StrategyLabRunResponse {
+  record: StrategyLabRecord;
+  message: string;
+}
+
+export interface StrategyLabResultsResponse {
+  items: StrategyLabRecord[];
+  count: number;
+  winning_count: number;
+  losing_count: number;
+}

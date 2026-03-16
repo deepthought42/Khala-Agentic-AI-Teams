@@ -14,6 +14,7 @@ import { InvestmentProposalComponent } from '../investment-proposal/investment-p
 import { InvestmentStrategyComponent } from '../investment-strategy/investment-strategy.component';
 import { InvestmentPromotionComponent } from '../investment-promotion/investment-promotion.component';
 import { InvestmentWorkflowComponent } from '../investment-workflow/investment-workflow.component';
+import { StrategyLabComponent } from '../strategy-lab/strategy-lab.component';
 import {
   IPS,
   PortfolioProposal,
@@ -38,6 +39,7 @@ import {
     InvestmentStrategyComponent,
     InvestmentPromotionComponent,
     InvestmentWorkflowComponent,
+    StrategyLabComponent,
   ],
   templateUrl: './investment-dashboard.component.html',
   styleUrl: './investment-dashboard.component.scss',

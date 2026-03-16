@@ -277,6 +277,11 @@ class BlogDraftAgent:
         prompt_parts.append(
             "Before outputting, ensure: no banned phrases; 8th grade reading level; descriptive headings; concrete opening hook; one practical next step in the conclusion."
         )
+        prompt_parts.append(
+            f"TARGET LENGTH: Write approximately {draft_input.target_word_count} words. "
+            "Be complete and thorough within this limit — do not pad or repeat yourself to reach it, "
+            "and do not cut substance to stay under it. Aim for the target, not perfection."
+        )
         prompt_parts.append("")
         prompt_parts.append('Use this format: first line {"draft": 0}, then ---DRAFT---, then the full blog post in Markdown.')
         prompt = "\n".join(prompt_parts)
@@ -386,6 +391,10 @@ class BlogDraftAgent:
                 research_snippet,
             ])
         prompt_parts.extend([
+            "",
+            "---",
+            f"TARGET LENGTH: The revised draft should be approximately {revise_input.target_word_count} words. "
+            "Apply the feedback item above without significantly expanding the post beyond this target.",
             "",
             "---",
             'Use this format: first line {"draft": 0}, then ---DRAFT---, then the full revised blog post in Markdown.',

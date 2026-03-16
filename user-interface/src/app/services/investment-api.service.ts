@@ -22,6 +22,9 @@ import type {
   CreateMemoRequest,
   CreateMemoResponse,
   InvestmentHealthResponse,
+  RunStrategyLabRequest,
+  StrategyLabRunResponse,
+  StrategyLabResultsResponse,
 } from '../models';
 
 /**
@@ -141,6 +144,28 @@ export class InvestmentApiService {
     return this.http.post<CreateMemoResponse>(
       `${this.baseUrl}/memos`,
       request
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Strategy Lab
+  // ---------------------------------------------------------------------------
+
+  runStrategyLab(request?: RunStrategyLabRequest): Observable<StrategyLabRunResponse> {
+    return this.http.post<StrategyLabRunResponse>(
+      `${this.baseUrl}/strategy-lab/run`,
+      request ?? {}
+    );
+  }
+
+  getStrategyLabResults(winning?: boolean): Observable<StrategyLabResultsResponse> {
+    const params: Record<string, string> = {};
+    if (winning !== undefined) {
+      params['winning'] = String(winning);
+    }
+    return this.http.get<StrategyLabResultsResponse>(
+      `${this.baseUrl}/strategy-lab/results`,
+      { params }
     );
   }
 }

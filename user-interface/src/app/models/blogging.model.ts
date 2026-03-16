@@ -38,6 +38,7 @@ export interface FullPipelineRequest {
   max_results?: number;
   run_gates?: boolean;
   max_rewrite_iterations?: number;
+  target_word_count?: number;
 }
 
 /** Response from POST /full-pipeline. */

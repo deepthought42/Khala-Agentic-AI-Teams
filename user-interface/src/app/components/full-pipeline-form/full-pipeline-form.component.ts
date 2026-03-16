@@ -39,6 +39,7 @@ export class FullPipelineFormComponent {
       max_results: [20, [Validators.required, Validators.min(1), Validators.max(50)]],
       run_gates: [true],
       max_rewrite_iterations: [3, [Validators.required, Validators.min(1), Validators.max(10)]],
+      target_word_count: [1000, [Validators.required, Validators.min(100), Validators.max(10000)]],
     });
   }
 
@@ -53,6 +54,7 @@ export class FullPipelineFormComponent {
         max_results: v.max_results,
         run_gates: v.run_gates,
         max_rewrite_iterations: v.max_rewrite_iterations,
+        target_word_count: v.target_word_count,
       });
     }
   }

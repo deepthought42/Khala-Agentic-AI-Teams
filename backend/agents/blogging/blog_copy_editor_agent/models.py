@@ -57,6 +57,12 @@ class CopyEditorInput(BaseModel):
         None,
         description="Feedback items from the previous iteration, so the editor knows what was already addressed.",
     )
+    target_word_count: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Target word count. The editor flags drafts that significantly exceed this limit.",
+    )
 
 
 class CopyEditorOutput(BaseModel):

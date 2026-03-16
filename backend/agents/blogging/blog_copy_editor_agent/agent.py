@@ -94,7 +94,11 @@ class BlogCopyEditorAgent:
             len(style_guide_text),
         )
 
+        actual_word_count = len(draft.split())
+        target_word_count = copy_editor_input.target_word_count
+
         context_parts = []
+        context_parts.append(f"Target word count: {target_word_count} words (draft is currently {actual_word_count} words).")
         if copy_editor_input.audience:
             context_parts.append(f"Audience: {copy_editor_input.audience}")
         if copy_editor_input.tone_or_purpose:
@@ -198,6 +202,50 @@ class BlogCopyEditorAgent:
                         suggestion=suggestion,
                     )
                 )
+
+        # Inject a pre-computed length feedback item when the draft significantly exceeds the target.
+        # This runs regardless of what the LLM flagged, so length is always enforced.
+        over_ratio = actual_word_count / target_word_count if target_word_count > 0 else 1.0
+        if over_ratio > 1.3:
+            severity = "must_fix"
+            issue = (
+                f"Draft is {actual_word_count} words — {actual_word_count - target_word_count} words over "
+                f"the {target_word_count}-word target ({over_ratio:.0%} of target). "
+                "Most readers disengage after 1,000–1,200 words; a post this length will have low completion rates."
+            )
+            suggestion = (
+                f"Trim to approximately {target_word_count} words by cutting or condensing the least essential sections. "
+                "Prioritise removing redundant examples, repeated points, and over-long transitions. "
+                "Every paragraph should earn its place."
+            )
+            feedback_items.insert(0, FeedbackItem(
+                category="structure",
+                severity=severity,
+                location="entire draft",
+                issue=issue,
+                suggestion=suggestion,
+            ))
+            logger.info(
+                "Length check: draft=%d words, target=%d words, over_ratio=%.2f — injecting %s feedback",
+                actual_word_count, target_word_count, over_ratio, severity,
+            )
+        elif over_ratio > 1.1:
+            feedback_items.append(FeedbackItem(
+                category="structure",
+                severity="should_fix",
+                location="entire draft",
+                issue=(
+                    f"Draft is {actual_word_count} words, about {actual_word_count - target_word_count} words over "
+                    f"the {target_word_count}-word target. Consider tightening sections to improve readability."
+                ),
+                suggestion=(
+                    f"Look for sections with redundant examples or padded transitions and trim to reach approximately {target_word_count} words."
+                ),
+            ))
+            logger.info(
+                "Length check: draft=%d words, target=%d words, over_ratio=%.2f — injecting should_fix feedback",
+                actual_word_count, target_word_count, over_ratio,
+            )
 
         # Derive approved: true when the LLM says so and there are no blocking items.
         # Fall back to checking severity counts when the model omits the field.

@@ -45,6 +45,15 @@
         <mat-hint>1-10</mat-hint>
       </mat-form-field>
 
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Target word count</mat-label>
+        <input matInput type="number" formControlName="target_word_count" [attr.aria-label]="'Target word count for the draft'">
+        <mat-hint>100-10,000 words (default: 1,000)</mat-hint>
+        @if (form.get('target_word_count')?.invalid && form.get('target_word_count')?.touched) {
+          <mat-error>Must be between 100 and 10,000 words</mat-error>
+        }
+      </mat-form-field>
+
       <button mat-raised-button color="primary" type="submit" [disabled]="form.invalid">
         Run Full Pipeline
       </button>

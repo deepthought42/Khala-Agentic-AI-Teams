@@ -39,6 +39,12 @@ class DraftInput(BaseModel):
         None,
         description="Pre-loaded allowed_claims.json. When set, writer must use only these claims and tag as [CLAIM:id].",
     )
+    target_word_count: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Target word count for the draft. Writer will aim for approximately this length.",
+    )
 
     @model_validator(mode="after")
     def require_research_source(self) -> "DraftInput":
@@ -87,4 +93,10 @@ class ReviseDraftInput(BaseModel):
     allowed_claims: Optional[dict] = Field(
         None,
         description="Pre-loaded allowed_claims.json. When set, preserve claim tags [CLAIM:id] and do not add new factual claims.",
+    )
+    target_word_count: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Target word count for the revised draft.",
     )
