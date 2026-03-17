@@ -1,6 +1,16 @@
 """Tests for branding store (clients and brands)."""
 
-from branding_team.models import BrandingMission, BrandStatus, TeamOutput, WorkflowStatus
+from branding_team.models import (
+    BrandCodification,
+    BrandingMission,
+    BrandPhase,
+    BrandStatus,
+    CreativeRefinementPlan,
+    DesignSystemDefinition,
+    TeamOutput,
+    WorkflowStatus,
+    WritingGuidelines,
+)
 from branding_team.store import BrandingStore
 
 
@@ -29,6 +39,7 @@ def test_create_brand_and_list() -> None:
     assert brand.client_id == client.id
     assert brand.name == "Acme Brand"
     assert brand.status == BrandStatus.draft
+    assert brand.current_phase == BrandPhase.STRATEGIC_CORE
     assert brand.mission.company_name == "Acme Inc"
     brands = store.list_brands_for_client(client.id)
     assert len(brands) == 1
@@ -60,15 +71,15 @@ def test_update_brand() -> None:
     brand = store.create_brand(client.id, mission)
     assert brand is not None
     new_mission = mission.model_copy(update={"company_description": "Updated description"})
-    updated = store.update_brand(client.id, brand.id, mission=new_mission, status=BrandStatus.active)
+    updated = store.update_brand(
+        client.id, brand.id, mission=new_mission, status=BrandStatus.active
+    )
     assert updated is not None
     assert updated.mission.company_description == "Updated description"
     assert updated.status == BrandStatus.active
 
 
 def test_append_brand_version() -> None:
-    from branding_team.models import BrandCodification, CreativeRefinementPlan, DesignSystemDefinition, WritingGuidelines
-
     store = BrandingStore()
     client = store.create_client("Acme")
     mission = BrandingMission(
@@ -83,6 +94,7 @@ def test_append_brand_version() -> None:
     output = TeamOutput(
         status=WorkflowStatus.READY_FOR_ROLLOUT,
         mission_summary="Done",
+        current_phase=BrandPhase.COMPLETE,
         codification=BrandCodification(
             positioning_statement="We help everyone",
             brand_promise="Quality",
@@ -99,6 +111,47 @@ def test_append_brand_version() -> None:
     assert len(updated.history) == 1
     assert updated.latest_output is not None
     assert updated.latest_output.mission_summary == "Done"
+    assert updated.current_phase == BrandPhase.COMPLETE
+
+
+def test_append_brand_version_persists_current_phase() -> None:
+    """Verify that current_phase on the brand record is updated from the output."""
+    store = BrandingStore()
+    client = store.create_client("PhaseTest")
+    mission = BrandingMission(
+        company_name="PhaseTestCo",
+        company_description="Company for phase persistence test",
+        target_audience="testers",
+    )
+    brand = store.create_brand(client.id, mission)
+    assert brand is not None
+    assert brand.current_phase == BrandPhase.STRATEGIC_CORE
+
+    # Simulate a run that completed through governance
+    output = TeamOutput(
+        status=WorkflowStatus.READY_FOR_ROLLOUT,
+        mission_summary="Governance done",
+        current_phase=BrandPhase.GOVERNANCE,
+        codification=BrandCodification(positioning_statement="pos", brand_promise="promise"),
+        creative_refinement=CreativeRefinementPlan(),
+        writing_guidelines=WritingGuidelines(),
+        design_system=DesignSystemDefinition(),
+    )
+    store.append_brand_version(client.id, brand.id, output)
+
+    # Re-read from store — phase must match the output
+    reloaded = store.get_brand(client.id, brand.id)
+    assert reloaded is not None
+    assert reloaded.current_phase == BrandPhase.GOVERNANCE
+
+    # Run again with COMPLETE
+    output2 = output.model_copy(
+        update={"current_phase": BrandPhase.COMPLETE, "mission_summary": "All done"}
+    )
+    store.append_brand_version(client.id, brand.id, output2)
+    reloaded2 = store.get_brand(client.id, brand.id)
+    assert reloaded2 is not None
+    assert reloaded2.current_phase == BrandPhase.COMPLETE
 
 
 def test_create_brand_for_nonexistent_client_returns_none() -> None:

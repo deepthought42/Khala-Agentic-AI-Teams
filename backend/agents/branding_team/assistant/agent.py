@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from branding_team.models import BrandingMission, ColorPalette
 
@@ -53,7 +53,10 @@ def _parse_mission_and_suggestions(response: str) -> Tuple[str, Dict[str, Any], 
             pass
 
     if not reply_text:
-        reply_text = response.strip() or "I'm here to help you build your brand. Tell me a bit about your company."
+        reply_text = (
+            response.strip()
+            or "I'm here to help you build your brand. Tell me a bit about your company."
+        )
     if not suggested_questions:
         suggested_questions = [
             "What's your company or product name?",
@@ -126,6 +129,7 @@ class BrandingAssistantAgent:
     def __init__(self, llm=None):  # noqa: ANN001
         if llm is None:
             from llm_service import get_client
+
             self._llm = get_client("branding_assistant")
         else:
             self._llm = llm
@@ -149,7 +153,9 @@ class BrandingAssistantAgent:
         for role, content in messages:
             prefix = "Assistant: " if role == "assistant" else "User: "
             conversation_lines.append(f"{prefix}{content}")
-        conversation_history = "\n".join(conversation_lines) if conversation_lines else "(No prior messages)"
+        conversation_history = (
+            "\n".join(conversation_lines) if conversation_lines else "(No prior messages)"
+        )
 
         prompt = USER_TURN_TEMPLATE.format(
             company_name=current_mission.company_name or "",
@@ -160,7 +166,10 @@ class BrandingAssistantAgent:
             desired_voice=current_mission.desired_voice or "",
             existing_brand_material=current_mission.existing_brand_material or [],
             color_inspiration=current_mission.color_inspiration or [],
-            color_palettes=[p.model_dump() if hasattr(p, "model_dump") else p for p in (current_mission.color_palettes or [])],
+            color_palettes=[
+                p.model_dump() if hasattr(p, "model_dump") else p
+                for p in (current_mission.color_palettes or [])
+            ],
             selected_palette_index=current_mission.selected_palette_index,
             visual_style=current_mission.visual_style or "",
             typography_preference=current_mission.typography_preference or "",

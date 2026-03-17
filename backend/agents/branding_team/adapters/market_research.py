@@ -26,7 +26,9 @@ def request_market_research(mission: BrandingMission) -> Optional[CompetitiveSna
         f"Competitive and similar brands for {mission.company_name}: {mission.company_description}"
     )
     target_users = mission.target_audience
-    differentiators = ", ".join(mission.differentiators) if mission.differentiators else "differentiate"
+    differentiators = (
+        ", ".join(mission.differentiators) if mission.differentiators else "differentiate"
+    )
     business_goal = f"Differentiate and position brand. Key differentiators: {differentiators}"
 
     payload = {
