@@ -1,6 +1,16 @@
 """Tests for branding store (clients and brands)."""
 
-from branding_team.models import BrandingMission, BrandStatus, TeamOutput, WorkflowStatus
+from branding_team.models import (
+    BrandCodification,
+    BrandingMission,
+    BrandPhase,
+    BrandStatus,
+    CreativeRefinementPlan,
+    DesignSystemDefinition,
+    TeamOutput,
+    WorkflowStatus,
+    WritingGuidelines,
+)
 from branding_team.store import BrandingStore
 
 
@@ -29,6 +39,7 @@ def test_create_brand_and_list() -> None:
     assert brand.client_id == client.id
     assert brand.name == "Acme Brand"
     assert brand.status == BrandStatus.draft
+    assert brand.current_phase == BrandPhase.STRATEGIC_CORE
     assert brand.mission.company_name == "Acme Inc"
     brands = store.list_brands_for_client(client.id)
     assert len(brands) == 1
@@ -60,15 +71,15 @@ def test_update_brand() -> None:
     brand = store.create_brand(client.id, mission)
     assert brand is not None
     new_mission = mission.model_copy(update={"company_description": "Updated description"})
-    updated = store.update_brand(client.id, brand.id, mission=new_mission, status=BrandStatus.active)
+    updated = store.update_brand(
+        client.id, brand.id, mission=new_mission, status=BrandStatus.active
+    )
     assert updated is not None
     assert updated.mission.company_description == "Updated description"
     assert updated.status == BrandStatus.active
 
 
 def test_append_brand_version() -> None:
-    from branding_team.models import BrandCodification, CreativeRefinementPlan, DesignSystemDefinition, WritingGuidelines
-
     store = BrandingStore()
     client = store.create_client("Acme")
     mission = BrandingMission(

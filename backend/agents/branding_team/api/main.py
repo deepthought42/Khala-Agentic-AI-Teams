@@ -14,10 +14,15 @@ from uuid import uuid4
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from branding_team.assistant import get_conversation_store
+from branding_team.assistant.agent import BrandingAssistantAgent
+from branding_team.assistant.store import _default_mission
+from branding_team.db import get_db_path as _get_db_path
 from branding_team.models import (
     Brand,
     BrandCheckRequest,
     BrandingMission,
+    BrandPhase,
     Client,
     CompetitiveSnapshot,
     DesignAssetRequestResult,
@@ -27,11 +32,7 @@ from branding_team.models import (
 from branding_team.orchestrator import BrandingTeamOrchestrator
 from branding_team.store import get_default_store
 
-from branding_team.assistant import get_conversation_store
-from branding_team.assistant.agent import BrandingAssistantAgent
-from branding_team.assistant.store import _default_mission
-
-app = FastAPI(title="Branding Team API", version="1.0.0")
+app = FastAPI(title="Branding Team API", version="2.0.0")
 branding_store = get_default_store()
 orchestrator = BrandingTeamOrchestrator()
 conversation_store = get_conversation_store()
@@ -52,6 +53,11 @@ def _get_assistant_agent() -> BrandingAssistantAgent:
                 detail="Branding assistant is temporarily unavailable. LLM service may not be configured.",
             )
     return assistant_agent
+
+
+# ---------------------------------------------------------------------------
+# Request / response models
+# ---------------------------------------------------------------------------
 
 
 class CreateClientRequest(BaseModel):
@@ -91,6 +97,7 @@ class RunBrandRequest(BaseModel):
     include_market_research: bool = False
     include_design_assets: bool = False
     brand_checks: List[BrandCheckRequest] = Field(default_factory=list)
+    target_phase: Optional[str] = None
 
 
 class RunBrandingTeamRequest(BaseModel):
@@ -107,6 +114,7 @@ class RunBrandingTeamRequest(BaseModel):
     human_feedback: str = ""
     client_id: Optional[str] = None
     brand_id: Optional[str] = None
+    target_phase: Optional[str] = None
 
 
 class BrandingQuestion(BaseModel):
@@ -121,6 +129,7 @@ class BrandingQuestion(BaseModel):
 class BrandingSessionResponse(BaseModel):
     session_id: str
     status: str
+    current_phase: str = "strategic_core"
     mission: BrandingMission
     latest_output: TeamOutput
     open_questions: List[BrandingQuestion] = Field(default_factory=list)
@@ -152,6 +161,11 @@ class ConversationStateResponse(BaseModel):
     mission: BrandingMission
     latest_output: Optional[TeamOutput] = None
     suggested_questions: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Session store
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -234,7 +248,9 @@ class BrandingSessionStore:
             finally:
                 conn.close()
 
-    def create(self, mission: BrandingMission, latest_output: TeamOutput) -> Tuple[str, BrandingSession]:
+    def create(
+        self, mission: BrandingMission, latest_output: TeamOutput
+    ) -> Tuple[str, BrandingSession]:
         questions = _build_open_questions(mission)
         session_id = str(uuid4())
         session = BrandingSession(mission=mission, questions=questions, latest_output=latest_output)
@@ -264,8 +280,22 @@ class BrandingSessionStore:
             )
 
 
-from branding_team.db import get_db_path as _get_db_path
 session_store = BrandingSessionStore(db_path=_get_db_path())
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_target_phase(raw: Optional[str]) -> Optional[BrandPhase]:
+    """Parse a target_phase string into a BrandPhase enum, or None."""
+    if not raw:
+        return None
+    try:
+        return BrandPhase(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid target_phase: {raw}")
 
 
 def _mission_has_minimal_required_fields(mission: BrandingMission) -> bool:
@@ -294,7 +324,7 @@ def _build_open_questions(mission: BrandingMission) -> List[BrandingQuestion]:
             BrandingQuestion(
                 id="core-values",
                 question="What are the 3-5 core brand values we should optimize for?",
-                context="These values are used in codification, compliance checks, and writing guidelines.",
+                context="These values are the foundation of Phase 1 (Strategic Core). They define behavioral expectations and drive all downstream brand decisions.",
                 target_field="values",
             )
         )
@@ -303,7 +333,7 @@ def _build_open_questions(mission: BrandingMission) -> List[BrandingQuestion]:
             BrandingQuestion(
                 id="differentiators",
                 question="What differentiators should the team emphasize against competitors?",
-                context="Differentiators influence positioning, narrative pillars, and asset reviews.",
+                context="Differentiation pillars are critical to Phase 1 (Strategic Core). They shape positioning, narrative, and competitive strategy.",
                 target_field="differentiators",
             )
         )
@@ -311,7 +341,7 @@ def _build_open_questions(mission: BrandingMission) -> List[BrandingQuestion]:
         BrandingQuestion(
             id="voice-approval",
             question="Do you approve the proposed brand voice, or what adjustment should be made?",
-            context="Voice decisions are applied to writing guidelines and future content assets.",
+            context="Voice decisions bridge Phase 1 (Strategic Core) and Phase 2 (Narrative & Messaging). They must be locked before messaging work begins.",
             target_field="desired_voice",
         )
     )
@@ -322,9 +352,13 @@ def _session_response(session_id: str, session: BrandingSession) -> BrandingSess
     open_questions = [q for q in session.questions if q.status == "open"]
     answered_questions = [q for q in session.questions if q.status == "answered"]
     status = "awaiting_user_answers" if open_questions else "ready_for_rollout"
+    current_phase = (
+        session.latest_output.current_phase.value if session.latest_output else "strategic_core"
+    )
     return BrandingSessionResponse(
         session_id=session_id,
         status=status,
+        current_phase=current_phase,
         mission=session.mission,
         latest_output=session.latest_output,
         open_questions=open_questions,
@@ -332,7 +366,9 @@ def _session_response(session_id: str, session: BrandingSession) -> BrandingSess
     )
 
 
-def _apply_answer(mission: BrandingMission, question: BrandingQuestion, answer: str) -> BrandingMission:
+def _apply_answer(
+    mission: BrandingMission, question: BrandingQuestion, answer: str
+) -> BrandingMission:
     normalized = answer.strip()
     if question.target_field in {"values", "differentiators"}:
         entries = [item.strip() for item in normalized.split(",") if item.strip()]
@@ -342,6 +378,11 @@ def _apply_answer(mission: BrandingMission, question: BrandingQuestion, answer: 
     if question.target_field == "desired_voice":
         return mission.model_copy(update={"desired_voice": normalized})
     return mission
+
+
+# ---------------------------------------------------------------------------
+# Client endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.post("/clients", response_model=Client, status_code=201)
@@ -364,6 +405,11 @@ def get_client(client_id: str) -> Client:
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     return client
+
+
+# ---------------------------------------------------------------------------
+# Brand CRUD endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/clients/{client_id}/brands", response_model=List[Brand])
@@ -453,11 +499,42 @@ def update_brand(client_id: str, brand_id: str, payload: UpdateBrandRequest) -> 
     return updated
 
 
+# ---------------------------------------------------------------------------
+# Brand run endpoints
+# ---------------------------------------------------------------------------
+
+
 @app.post("/clients/{client_id}/brands/{brand_id}/run", response_model=TeamOutput)
 def run_brand(client_id: str, brand_id: str, payload: RunBrandRequest) -> TeamOutput:
     brand = branding_store.get_brand(client_id, brand_id)
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
+    human_review = HumanReview(approved=payload.human_approved, feedback=payload.human_feedback)
+    target_phase = _parse_target_phase(payload.target_phase)
+    return orchestrator.run(
+        mission=brand.mission,
+        human_review=human_review,
+        brand_checks=payload.brand_checks,
+        store=branding_store,
+        client_id=client_id,
+        brand_id=brand_id,
+        include_market_research=payload.include_market_research,
+        include_design_assets=payload.include_design_assets,
+        target_phase=target_phase,
+    )
+
+
+@app.post("/clients/{client_id}/brands/{brand_id}/run/{phase}", response_model=TeamOutput)
+def run_brand_phase(
+    client_id: str, brand_id: str, phase: str, payload: RunBrandRequest
+) -> TeamOutput:
+    """Run the branding pipeline up to a specific phase."""
+    brand = branding_store.get_brand(client_id, brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    target_phase = _parse_target_phase(phase)
+    if target_phase is None:
+        raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
     human_review = HumanReview(approved=payload.human_approved, feedback=payload.human_feedback)
     return orchestrator.run(
         mission=brand.mission,
@@ -468,10 +545,19 @@ def run_brand(client_id: str, brand_id: str, payload: RunBrandRequest) -> TeamOu
         brand_id=brand_id,
         include_market_research=payload.include_market_research,
         include_design_assets=payload.include_design_assets,
+        target_phase=target_phase,
     )
 
 
-@app.post("/clients/{client_id}/brands/{brand_id}/request-market-research", response_model=CompetitiveSnapshot)
+# ---------------------------------------------------------------------------
+# Integration endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/clients/{client_id}/brands/{brand_id}/request-market-research",
+    response_model=CompetitiveSnapshot,
+)
 def request_market_research_for_brand(client_id: str, brand_id: str) -> CompetitiveSnapshot:
     brand = branding_store.get_brand(client_id, brand_id)
     if not brand:
@@ -487,7 +573,10 @@ def request_market_research_for_brand(client_id: str, brand_id: str) -> Competit
     return snapshot
 
 
-@app.post("/clients/{client_id}/brands/{brand_id}/request-design-assets", response_model=DesignAssetRequestResult)
+@app.post(
+    "/clients/{client_id}/brands/{brand_id}/request-design-assets",
+    response_model=DesignAssetRequestResult,
+)
 def request_design_assets_for_brand(client_id: str, brand_id: str) -> DesignAssetRequestResult:
     brand = branding_store.get_brand(client_id, brand_id)
     if not brand:
@@ -496,6 +585,11 @@ def request_design_assets_for_brand(client_id: str, brand_id: str) -> DesignAsse
 
     codification = orchestrator.codifier.codify(brand.mission)
     return request_design_assets(codification, brand.mission.company_name)
+
+
+# ---------------------------------------------------------------------------
+# Legacy run endpoint
+# ---------------------------------------------------------------------------
 
 
 @app.post("/run", response_model=TeamOutput)
@@ -512,6 +606,7 @@ def run_branding_team(payload: RunBrandingTeamRequest) -> TeamOutput:
     )
     human_review = HumanReview(approved=payload.human_approved, feedback=payload.human_feedback)
     store = branding_store if (payload.client_id and payload.brand_id) else None
+    target_phase = _parse_target_phase(payload.target_phase)
     return orchestrator.run(
         mission=mission,
         human_review=human_review,
@@ -519,7 +614,13 @@ def run_branding_team(payload: RunBrandingTeamRequest) -> TeamOutput:
         store=store,
         client_id=payload.client_id,
         brand_id=payload.brand_id,
+        target_phase=target_phase,
     )
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.post("/sessions", response_model=BrandingSessionResponse)
@@ -534,10 +635,12 @@ def create_branding_session(payload: RunBrandingTeamRequest) -> BrandingSessionR
         existing_brand_material=payload.existing_brand_material,
         wiki_path=payload.wiki_path,
     )
+    target_phase = _parse_target_phase(payload.target_phase)
     output = orchestrator.run(
         mission=mission,
         human_review=HumanReview(approved=False, feedback="Interactive review started."),
         brand_checks=payload.brand_checks,
+        target_phase=target_phase,
     )
     session_id, session = session_store.create(mission=mission, latest_output=output)
     return _session_response(session_id, session)
@@ -559,7 +662,9 @@ def get_branding_questions(session_id: str) -> List[BrandingQuestion]:
     return [q for q in session.questions if q.status == "open"]
 
 
-@app.post("/sessions/{session_id}/questions/{question_id}/answer", response_model=BrandingSessionResponse)
+@app.post(
+    "/sessions/{session_id}/questions/{question_id}/answer", response_model=BrandingSessionResponse
+)
 def answer_branding_question(
     session_id: str,
     question_id: str,
@@ -569,7 +674,9 @@ def answer_branding_question(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    question = next((q for q in session.questions if q.id == question_id and q.status == "open"), None)
+    question = next(
+        (q for q in session.questions if q.id == question_id and q.status == "open"), None
+    )
     if not question:
         raise HTTPException(status_code=404, detail="Open question not found")
 
@@ -587,6 +694,11 @@ def answer_branding_question(
     return _session_response(session_id, session)
 
 
+# ---------------------------------------------------------------------------
+# Conversation (chat) endpoints
+# ---------------------------------------------------------------------------
+
+
 def _conversation_to_response(
     conversation_id: str,
     messages: list,
@@ -595,8 +707,7 @@ def _conversation_to_response(
     suggested_questions: List[str],
 ) -> ConversationStateResponse:
     msg_list = [
-        ConversationMessage(role=m.role, content=m.content, timestamp=m.timestamp)
-        for m in messages
+        ConversationMessage(role=m.role, content=m.content, timestamp=m.timestamp) for m in messages
     ]
     return ConversationStateResponse(
         conversation_id=conversation_id,
@@ -618,7 +729,11 @@ def create_branding_conversation(
 
     if initial_message:
         conversation_store.append_message(conversation_id, "user", initial_message)
-        messages, mission, _ = conversation_store.get(conversation_id) or ([], _default_mission(), None)
+        messages, mission, _ = conversation_store.get(conversation_id) or (
+            [],
+            _default_mission(),
+            None,
+        )
         msg_pairs = [(m.role, m.content) for m in messages]
         reply, updated_mission, suggested_questions = _get_assistant_agent().respond(
             msg_pairs[:-1], mission, initial_message
@@ -628,11 +743,15 @@ def create_branding_conversation(
         output = _run_orchestrator_if_ready(updated_mission)
         if output is not None:
             conversation_store.update_output(conversation_id, output)
-        messages, mission, latest_output = conversation_store.get(conversation_id) or ([], updated_mission, output)
+        messages, mission, latest_output = conversation_store.get(conversation_id) or (
+            [],
+            updated_mission,
+            output,
+        )
     else:
         reply = (
-            "Hi! I'm your branding lead. Let's build your brand step by step. "
-            "What's your company or product name?"
+            "Hi! I'm your branding lead. I'll guide you through our 5-phase brand development framework — "
+            "starting with your Strategic Core. Let's begin: what's your company or product name?"
         )
         conversation_store.append_message(conversation_id, "assistant", reply)
         suggested_questions = [
@@ -640,13 +759,21 @@ def create_branding_conversation(
             "Who is your target audience?",
             "What does your company do?",
         ]
-        messages, mission, latest_output = conversation_store.get(conversation_id) or ([], _default_mission(), None)
+        messages, mission, latest_output = conversation_store.get(conversation_id) or (
+            [],
+            _default_mission(),
+            None,
+        )
 
-    return _conversation_to_response(conversation_id, messages, mission, latest_output, suggested_questions)
+    return _conversation_to_response(
+        conversation_id, messages, mission, latest_output, suggested_questions
+    )
 
 
 @app.post("/conversations/{conversation_id}/messages", response_model=ConversationStateResponse)
-def send_branding_conversation_message(conversation_id: str, payload: SendMessageRequest) -> ConversationStateResponse:
+def send_branding_conversation_message(
+    conversation_id: str, payload: SendMessageRequest
+) -> ConversationStateResponse:
     state = conversation_store.get(conversation_id)
     if not state:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -662,8 +789,14 @@ def send_branding_conversation_message(conversation_id: str, payload: SendMessag
     output = _run_orchestrator_if_ready(updated_mission)
     if output is not None:
         conversation_store.update_output(conversation_id, output)
-    messages, mission, latest_output = conversation_store.get(conversation_id) or ([], updated_mission, output)
-    return _conversation_to_response(conversation_id, messages, mission, latest_output, suggested_questions)
+    messages, mission, latest_output = conversation_store.get(conversation_id) or (
+        [],
+        updated_mission,
+        output,
+    )
+    return _conversation_to_response(
+        conversation_id, messages, mission, latest_output, suggested_questions
+    )
 
 
 @app.get("/conversations/{conversation_id}", response_model=ConversationStateResponse)
@@ -672,9 +805,12 @@ def get_branding_conversation(conversation_id: str) -> ConversationStateResponse
     if not state:
         raise HTTPException(status_code=404, detail="Conversation not found")
     messages, mission, latest_output = state
-    return _conversation_to_response(
-        conversation_id, messages, mission, latest_output, []
-    )
+    return _conversation_to_response(conversation_id, messages, mission, latest_output, [])
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 
 @app.get("/health")

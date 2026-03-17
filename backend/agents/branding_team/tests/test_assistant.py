@@ -2,9 +2,11 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
-from branding_team.assistant.agent import BrandingAssistantAgent, _merge_mission_update, _parse_mission_and_suggestions
+from branding_team.assistant.agent import (
+    BrandingAssistantAgent,
+    _merge_mission_update,
+    _parse_mission_and_suggestions,
+)
 from branding_team.models import BrandingMission
 
 
