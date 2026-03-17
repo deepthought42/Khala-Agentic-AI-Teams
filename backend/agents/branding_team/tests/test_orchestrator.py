@@ -150,6 +150,28 @@ def test_run_phase_stops_at_strategic_core() -> None:
     assert result.channel_activation is None
     assert result.governance is None
     assert result.current_phase == BrandPhase.STRATEGIC_CORE
+    # Partial run must NOT signal rollout readiness even when approved
+    assert result.status == WorkflowStatus.NEEDS_HUMAN_DECISION
+
+
+def test_approved_partial_run_is_not_rollout_ready() -> None:
+    """Approved intermediate phases must not be marked READY_FOR_ROLLOUT."""
+    orchestrator = BrandingTeamOrchestrator()
+    for phase in (
+        BrandPhase.STRATEGIC_CORE,
+        BrandPhase.NARRATIVE_MESSAGING,
+        BrandPhase.VISUAL_IDENTITY,
+        BrandPhase.CHANNEL_ACTIVATION,
+    ):
+        result = orchestrator.run_phase(
+            mission=_mission(),
+            phase=phase,
+            human_review=HumanReview(approved=True),
+        )
+        assert result.status == WorkflowStatus.NEEDS_HUMAN_DECISION, (
+            f"Phase {phase.value} with approved=True should not be READY_FOR_ROLLOUT"
+        )
+        assert result.current_phase != BrandPhase.COMPLETE
 
 
 def test_run_phase_stops_at_narrative_messaging() -> None:
