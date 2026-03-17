@@ -166,7 +166,10 @@ class BrandingAssistantAgent:
             desired_voice=current_mission.desired_voice or "",
             existing_brand_material=current_mission.existing_brand_material or [],
             color_inspiration=current_mission.color_inspiration or [],
-            color_palettes=[p.model_dump() if hasattr(p, "model_dump") else p for p in (current_mission.color_palettes or [])],
+            color_palettes=[
+                p.model_dump() if hasattr(p, "model_dump") else p
+                for p in (current_mission.color_palettes or [])
+            ],
             selected_palette_index=current_mission.selected_palette_index,
             visual_style=current_mission.visual_style or "",
             typography_preference=current_mission.typography_preference or "",
