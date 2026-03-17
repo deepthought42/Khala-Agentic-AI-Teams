@@ -224,16 +224,18 @@ class BrandingTeamOrchestrator:
                 f"Phase '{phase_label}' artifacts are ready for stakeholder review. "
                 f"Approval is required before advancing to the next phase."
             )
-        else:
+        elif current_phase == BrandPhase.COMPLETE:
             status = WorkflowStatus.READY_FOR_ROLLOUT
-            if current_phase == BrandPhase.COMPLETE:
-                mission_summary = (
-                    "All five branding phases complete. The brand system is finalized and "
-                    "ready for enterprise-wide rollout."
-                )
-            else:
-                phase_label = current_phase.value.replace("_", " ").title()
-                mission_summary = f"Phase '{phase_label}' approved. Artifacts are locked and the next phase can begin."
+            mission_summary = (
+                "All five branding phases complete. The brand system is finalized and "
+                "ready for enterprise-wide rollout."
+            )
+        else:
+            # Approved but not all phases are done — signal that the current
+            # phase gate passed, but the brand is NOT ready for rollout yet.
+            status = WorkflowStatus.NEEDS_HUMAN_DECISION
+            phase_label = current_phase.value.replace("_", " ").title()
+            mission_summary = f"Phase '{phase_label}' approved. Artifacts are locked and the next phase can begin."
 
         output = TeamOutput(
             status=status,
