@@ -259,5 +259,6 @@ def get_default_store() -> BrandingStore:
     global _default_store
     if _default_store is None:
         from .db import get_db_path
+
         _default_store = BrandingStore(db_path=get_db_path())
     return _default_store

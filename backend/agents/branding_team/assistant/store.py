@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional
@@ -139,9 +139,12 @@ class BrandingConversationStore:
             return False
         ts = datetime.now(tz=timezone.utc).isoformat()
         with self._db() as conn:
-            if conn.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
-            ).fetchone() is None:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
+                ).fetchone()
+                is None
+            ):
                 return False
             conn.execute(
                 "INSERT INTO conv_messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
@@ -178,5 +181,6 @@ def get_conversation_store() -> BrandingConversationStore:
     global _default_store
     if _default_store is None:
         from branding_team.db import get_db_path
+
         _default_store = BrandingConversationStore(db_path=get_db_path())
     return _default_store
