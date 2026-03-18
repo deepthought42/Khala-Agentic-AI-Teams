@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,13 @@ def _call_agent(agent: Any | None, prompt: str, stub_response: str) -> str:
     except Exception as exc:
         logger.error("Strands agent call failed: %s", exc, exc_info=True)
         return stub_response
+
+
+def _with_insights(base_prompt: str, insights_context: Optional[str]) -> str:
+    """Prepend learned-pattern context to a prompt when available."""
+    if not insights_context or not insights_context.strip():
+        return base_prompt
+    return f"{insights_context}\n\n---\n\n{base_prompt}"
 
 
 # ---------------------------------------------------------------------------
@@ -384,15 +391,19 @@ class ProspectorAgent:
         self._agent = _build_strands_agent(_PROSPECTOR_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def prospect(self, icp_json: str, product_name: str, value_proposition: str,
-                 max_prospects: int, company_context: str) -> str:
-        prompt = (
+                 max_prospects: int, company_context: str,
+                 insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"You are prospecting for: {product_name}\n"
             f"Value proposition: {value_proposition}\n"
             f"Company context: {company_context}\n\n"
             f"Ideal Customer Profile:\n{icp_json}\n\n"
             f"Research and return up to {max_prospects} prospects that match this ICP. "
+            "Use learning context above (if any) to prioritise industries and trigger-event "
+            "types that have historically produced wins. "
             "Use web search to find real companies, recent trigger events, and likely contacts. "
-            "Return a JSON array of prospect objects."
+            "Return a JSON array of prospect objects.",
+            insights_context,
         )
         stub = json.dumps([
             {
@@ -426,15 +437,19 @@ class OutreachAgent:
         self._agent = _build_strands_agent(_OUTREACH_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def generate_sequence(self, prospect_json: str, product_name: str,
-                          value_proposition: str, case_studies: str, company_context: str) -> str:
-        prompt = (
+                          value_proposition: str, case_studies: str, company_context: str,
+                          insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Create a complete 6-touch outreach sequence for this prospect:\n{prospect_json}\n\n"
             f"Product: {product_name}\n"
             f"Value proposition: {value_proposition}\n"
             f"Company context: {company_context}\n"
             f"Customer wins to reference: {case_studies}\n\n"
             "Apply Salesfolk personalization, SNAP principles, and the Jeb Blount 6-touch cadence. "
-            "Return a JSON object with email_sequence, call_script, linkedin_message, sequence_rationale."
+            "Use the learning context above (if any) to replicate high-reply subject line angles "
+            "and avoid outreach patterns associated with low response rates. "
+            "Return a JSON object with email_sequence, call_script, linkedin_message, sequence_rationale.",
+            insights_context,
         )
         stub = json.dumps({
             "email_sequence": [
@@ -478,15 +493,19 @@ class LeadQualifierAgent:
         self._agent = _build_strands_agent(_QUALIFIER_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def qualify(self, prospect_json: str, product_name: str,
-                value_proposition: str, call_notes: str) -> str:
-        prompt = (
+                value_proposition: str, call_notes: str,
+                insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Qualify this prospect for {product_name}:\n{prospect_json}\n\n"
             f"Value proposition: {value_proposition}\n"
             f"Notes from any prior conversation: {call_notes or 'None yet'}\n\n"
             "Score BANT (0–10 each), evaluate all 6 MEDDIC signals, assign Iannarino value tier (1–4), "
             "and recommend: advance / nurture / disqualify. "
+            "Use the learning context above (if any) to calibrate scores — e.g. if the data shows "
+            "that deals with authority < 6 rarely close, weigh authority more heavily. "
             "Return a JSON object with bant, meddic, overall_score, value_creation_level, "
-            "recommended_action, disqualification_reason, qualification_notes."
+            "recommended_action, disqualification_reason, qualification_notes.",
+            insights_context,
         )
         stub = json.dumps({
             "bant": {"budget": 7, "authority": 6, "need": 9, "timeline": 6},
@@ -524,15 +543,19 @@ class NurtureAgent:
         self._agent = _build_strands_agent(_NURTURE_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def build_sequence(self, prospect_json: str, product_name: str,
-                       value_proposition: str, duration_days: int) -> str:
-        prompt = (
+                       value_proposition: str, duration_days: int,
+                       insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Build a {duration_days}-day nurture sequence for:\n{prospect_json}\n\n"
             f"Product: {product_name}\n"
             f"Value proposition: {value_proposition}\n\n"
             "Apply HubSpot content-stage mapping (Awareness → Consideration → Decision), "
             "Gong Labs cadence research, and SNAP re-engagement principles. "
+            "Use the learning context above (if any) to select content types that historically "
+            "re-engaged stalled prospects and to set re-engagement triggers that match real patterns. "
             "Return a JSON object with duration_days, touchpoints (array), "
-            "re_engagement_triggers (array), content_recommendations (array)."
+            "re_engagement_triggers (array), content_recommendations (array).",
+            insights_context,
         )
         stub = json.dumps({
             "duration_days": duration_days,
@@ -596,8 +619,9 @@ class DiscoveryAgent:
         self._agent = _build_strands_agent(_DISCOVERY_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def prepare(self, prospect_json: str, qualification_json: str,
-                product_name: str, value_proposition: str) -> str:
-        prompt = (
+                product_name: str, value_proposition: str,
+                insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Prepare a complete discovery call guide for:\nProspect: {prospect_json}\n"
             f"Qualification context: {qualification_json}\n\n"
             f"Product: {product_name}\n"
@@ -605,8 +629,11 @@ class DiscoveryAgent:
             "Write SPIN questions in all four categories, craft a Challenger Sale insight-led opener, "
             "build a tailored demo agenda (features tied to confirmed pains only), "
             "list expected objections, and define success criteria for this call. "
+            "Use the learning context above (if any) to pre-populate expected_objections with "
+            "the objections that have most commonly appeared in past deals. "
             "Return a JSON object with spin_questions {situation, problem, implication, need_payoff}, "
-            "challenger_insight, demo_agenda, expected_objections, success_criteria_for_call."
+            "challenger_insight, demo_agenda, expected_objections, success_criteria_for_call.",
+            insights_context,
         )
         stub = json.dumps({
             "spin_questions": {
@@ -669,8 +696,9 @@ class ProposalAgent:
 
     def write(self, prospect_json: str, product_name: str, value_proposition: str,
               annual_cost_usd: float, discovery_notes: str,
-              case_studies: str, company_context: str) -> str:
-        prompt = (
+              case_studies: str, company_context: str,
+              insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Write a complete sales proposal for:\nProspect: {prospect_json}\n\n"
             f"Product: {product_name}\n"
             f"Value proposition: {value_proposition}\n"
@@ -679,10 +707,14 @@ class ProposalAgent:
             f"Customer wins: {case_studies}\n"
             f"Company context: {company_context}\n\n"
             "Follow Iannarino's proposal structure. Calculate realistic ROI. "
+            "Use the learning context above (if any) to pre-emptively address the most common "
+            "objections in the risk_mitigation section, and to frame the proposal around "
+            "the value dimensions that historically correlated with wins. "
             "Return a JSON object with executive_summary, situation_analysis, proposed_solution, "
             "roi_model {annual_cost_usd, estimated_annual_benefit_usd, payback_months, roi_percentage, assumptions}, "
             "investment_table, implementation_timeline, risk_mitigation, next_steps (array), "
-            "custom_sections (array of {heading, content})."
+            "custom_sections (array of {heading, content}).",
+            insights_context,
         )
         benefit = annual_cost_usd * 2.8
         stub = json.dumps({
@@ -750,8 +782,9 @@ class CloserAgent:
         self._agent = _build_strands_agent(_CLOSER_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
     def develop_strategy(self, prospect_json: str, proposal_json: str,
-                         product_name: str, value_proposition: str) -> str:
-        prompt = (
+                         product_name: str, value_proposition: str,
+                         insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Develop a closing strategy for:\nProspect: {prospect_json}\n"
             f"Proposal context: {proposal_json}\n\n"
             f"Product: {product_name}\n"
@@ -759,9 +792,13 @@ class CloserAgent:
             "Select the most appropriate Zig Ziglar closing technique for this prospect, "
             "write the close script, prepare objection handlers (with Feel/Felt/Found), "
             "identify a legitimate urgency lever, and define walk-away criteria. "
+            "Use the learning context above (if any) to: (1) prefer the close technique with the "
+            "highest observed win rate, (2) include pre-written handlers for the most common "
+            "historically-observed objections. "
             "Return a JSON object with recommended_close_technique, close_script, "
             "objection_handlers (array of {objection, response, feel_felt_found}), "
-            "urgency_framing, walk_away_criteria, emotional_intelligence_notes."
+            "urgency_framing, walk_away_criteria, emotional_intelligence_notes.",
+            insights_context,
         )
         stub = json.dumps({
             "recommended_close_technique": "summary",
@@ -826,15 +863,19 @@ class SalesCoachAgent:
     def __post_init__(self) -> None:
         self._agent = _build_strands_agent(_COACH_SYSTEM_PROMPT, _DEFAULT_TOOLS)
 
-    def review(self, prospects_json: str, product_name: str, pipeline_context: str) -> str:
-        prompt = (
+    def review(self, prospects_json: str, product_name: str, pipeline_context: str,
+               insights_context: Optional[str] = None) -> str:
+        prompt = _with_insights(
             f"Review this sales pipeline for {product_name}:\n{prospects_json}\n\n"
             f"Additional pipeline context: {pipeline_context or 'None provided'}\n\n"
             "Identify deal risk signals (using Gong Labs framework), provide talk/listen ratio advice, "
             "velocity insights, forecast categorization, top priority deals, and specific next actions. "
+            "Use the learning context above (if any) to compare this pipeline's patterns against "
+            "historical win/loss data and flag deals that match known losing patterns. "
             "Return a JSON object with prospects_reviewed, deal_risk_signals (array of {signal, severity, recommended_action}), "
             "talk_listen_ratio_advice, velocity_insights, forecast_category, "
-            "top_priority_deals (array), recommended_next_actions (array), coaching_summary."
+            "top_priority_deals (array), recommended_next_actions (array), coaching_summary.",
+            insights_context,
         )
         stub = json.dumps({
             "prospects_reviewed": 1,

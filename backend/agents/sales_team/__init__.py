@@ -2,8 +2,10 @@
 
 from .models import (
     ClosingStrategy,
+    DealOutcome,
     DiscoveryPlan,
     IdealCustomerProfile,
+    LearningInsights,
     NurtureSequence,
     OutreachSequence,
     PipelineStage,
@@ -12,6 +14,7 @@ from .models import (
     SalesPipelineRequest,
     SalesPipelineResult,
     SalesProposal,
+    StageOutcome,
 )
 from .orchestrator import SalesPodOrchestrator
 
@@ -28,4 +31,7 @@ __all__ = [
     "DiscoveryPlan",
     "SalesProposal",
     "ClosingStrategy",
+    "StageOutcome",
+    "DealOutcome",
+    "LearningInsights",
 ]
