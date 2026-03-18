@@ -20,18 +20,32 @@ from shared_job_management import (
     start_stale_job_monitor,
 )
 
+from sales_team.learning_engine import LearningEngine
 from sales_team.models import (
     CoachingRequest,
+    DealOutcome,
+    LearningInsights,
     NurtureRequest,
     OutreachRequest,
     PipelineStage,
     ProposalRequest,
     ProspectingRequest,
     QualificationRequest,
+    RecordDealOutcomeRequest,
+    RecordStageOutcomeRequest,
     SalesPipelineRequest,
     SalesPipelineResult,
+    StageOutcome,
 )
 from sales_team.orchestrator import SalesPodOrchestrator
+from sales_team.outcome_store import (
+    load_current_insights,
+    load_deal_outcomes,
+    load_stage_outcomes,
+    outcome_counts,
+    record_deal_outcome,
+    record_stage_outcome,
+)
 
 app = FastAPI(
     title="AI Sales Team API",
@@ -392,6 +406,157 @@ def get_coaching(request: CoachingRequest) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Outcome recording endpoints
+# ---------------------------------------------------------------------------
+
+
+class RecordOutcomeResponse(BaseModel):
+    outcome_id: str
+    message: str
+
+
+@app.post("/sales/outcomes/stage", response_model=RecordOutcomeResponse, tags=["learning"])
+def record_stage_outcome_endpoint(request: RecordStageOutcomeRequest) -> RecordOutcomeResponse:
+    """Record the outcome of a single pipeline stage for a prospect.
+
+    Use this endpoint to feed real-world results back into the learning loop.
+    Examples:
+    - Outreach email got a reply → stage=outreach, outcome=converted
+    - Prospect raised a price objection → stage=negotiation, outcome=objection
+    - Lead went cold after discovery → stage=discovery, outcome=stalled
+
+    The learning engine uses these records to improve future pipeline runs.
+    """
+    outcome = StageOutcome(
+        pipeline_job_id=request.pipeline_job_id,
+        company_name=request.company_name,
+        industry=request.industry,
+        stage=request.stage,
+        outcome=request.outcome,
+        icp_match_score=request.icp_match_score,
+        qualification_score=request.qualification_score,
+        email_touch_number=request.email_touch_number,
+        subject_line_used=request.subject_line_used,
+        objection_text=request.objection_text,
+        close_technique_used=request.close_technique_used,
+        notes=request.notes,
+    )
+    saved = record_stage_outcome(outcome)
+    return RecordOutcomeResponse(
+        outcome_id=saved.outcome_id,
+        message=f"Stage outcome recorded for {request.company_name} @ {request.stage.value}.",
+    )
+
+
+@app.post("/sales/outcomes/deal", response_model=RecordOutcomeResponse, tags=["learning"])
+def record_deal_outcome_endpoint(request: RecordDealOutcomeRequest) -> RecordOutcomeResponse:
+    """Record the final outcome of a deal (won or lost).
+
+    This is the highest-signal feedback for the learning engine. Always record
+    a deal outcome when a deal closes — win or loss.
+
+    The more deal outcomes you record, the more precisely the learning engine
+    can identify winning vs. losing patterns and adapt agent behavior.
+    """
+    outcome = DealOutcome(
+        pipeline_job_id=request.pipeline_job_id,
+        company_name=request.company_name,
+        industry=request.industry,
+        deal_size_usd=request.deal_size_usd,
+        final_stage_reached=request.final_stage_reached,
+        result=request.result,
+        loss_reason=request.loss_reason,
+        win_factor=request.win_factor,
+        close_technique_used=request.close_technique_used,
+        objections_raised=request.objections_raised,
+        stages_completed=request.stages_completed,
+        icp_match_score=request.icp_match_score,
+        qualification_score=request.qualification_score,
+        sales_cycle_days=request.sales_cycle_days,
+        notes=request.notes,
+    )
+    saved = record_deal_outcome(outcome)
+    return RecordOutcomeResponse(
+        outcome_id=saved.outcome_id,
+        message=f"Deal outcome ({request.result.value}) recorded for {request.company_name}.",
+    )
+
+
+@app.get("/sales/outcomes/summary", tags=["learning"])
+def get_outcome_summary() -> Dict[str, Any]:
+    """Return a count of recorded outcomes and whether insights have been generated."""
+    return outcome_counts()
+
+
+@app.get("/sales/outcomes/stage", response_model=List[StageOutcome], tags=["learning"])
+def list_stage_outcomes(limit: int = 100) -> List[StageOutcome]:
+    """List recorded stage outcomes (newest first, up to limit)."""
+    return load_stage_outcomes(limit=min(limit, 500))
+
+
+@app.get("/sales/outcomes/deal", response_model=List[DealOutcome], tags=["learning"])
+def list_deal_outcomes(limit: int = 100) -> List[DealOutcome]:
+    """List recorded deal outcomes (newest first, up to limit)."""
+    return load_deal_outcomes(limit=min(limit, 500))
+
+
+# ---------------------------------------------------------------------------
+# Learning insights endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/sales/insights", response_model=LearningInsights, tags=["learning"])
+def get_insights() -> LearningInsights:
+    """Return the current LearningInsights snapshot.
+
+    Returns 404 if no outcomes have been recorded yet.
+    Call POST /sales/insights/refresh to generate or update insights.
+    """
+    insights = load_current_insights()
+    if not insights:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No learning insights available yet. "
+                "Record outcomes via POST /sales/outcomes/stage or /sales/outcomes/deal, "
+                "then call POST /sales/insights/refresh."
+            ),
+        )
+    return insights
+
+
+class InsightsRefreshResponse(BaseModel):
+    message: str
+    insights_version: int
+    total_outcomes_analyzed: int
+    win_rate: float
+
+
+@app.post("/sales/insights/refresh", response_model=InsightsRefreshResponse, tags=["learning"])
+def refresh_insights() -> InsightsRefreshResponse:
+    """Trigger a learning engine run to regenerate insights from all recorded outcomes.
+
+    This runs synchronously (may take a few seconds with the Strands SDK).
+    The updated insights are immediately applied to the next pipeline run.
+
+    Tip: call this endpoint after recording a batch of outcomes (e.g. end-of-week
+    pipeline review) to keep the learning loop current.
+    """
+    engine = LearningEngine()
+    insights = engine.refresh()
+    return InsightsRefreshResponse(
+        message=(
+            f"Insights refreshed to v{insights.insights_version}. "
+            f"Analyzed {insights.total_outcomes_analyzed} outcomes. "
+            "All future pipeline runs will use these updated patterns."
+        ),
+        insights_version=insights.insights_version,
+        total_outcomes_analyzed=insights.total_outcomes_analyzed,
+        win_rate=insights.win_rate,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
@@ -400,7 +565,11 @@ def get_coaching(request: CoachingRequest) -> Dict[str, Any]:
 def health() -> Dict[str, str]:
     from sales_team.agents import HAS_STRANDS
 
+    counts = outcome_counts()
     return {
         "status": "ok",
         "strands_sdk": "available" if HAS_STRANDS else "stub_mode",
+        "stage_outcomes_recorded": str(counts["stage_outcomes"]),
+        "deal_outcomes_recorded": str(counts["deal_outcomes"]),
+        "insights_available": str(counts["has_insights"]),
     }

@@ -401,6 +401,168 @@ class CoachingRequest(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Outcome tracking models
+# ---------------------------------------------------------------------------
+
+
+class OutcomeResult(str, Enum):
+    """What happened at a specific pipeline stage for a prospect."""
+
+    CONVERTED = "converted"        # Moved forward to next stage
+    STALLED = "stalled"            # No response / no movement
+    OBJECTION = "objection"        # Objection raised; outcome pending
+    DISQUALIFIED = "disqualified"  # Explicitly ruled out
+    WON = "won"                    # Deal closed won
+    LOST = "lost"                  # Deal closed lost
+
+
+class StageOutcome(BaseModel):
+    """Records what happened at a single pipeline stage for one prospect."""
+
+    outcome_id: str = Field(default="", description="UUID assigned by the store on write")
+    recorded_at: str = Field(default="", description="ISO-8601 UTC timestamp")
+    pipeline_job_id: Optional[str] = None
+    company_name: str
+    industry: Optional[str] = None
+    stage: PipelineStage
+    outcome: OutcomeResult
+    icp_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    qualification_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Stage-specific details (open to extension)
+    email_touch_number: Optional[int] = Field(
+        default=None, description="Which email touch got the reply (outreach stage)"
+    )
+    subject_line_used: Optional[str] = Field(
+        default=None, description="Subject line that drove the reply (outreach stage)"
+    )
+    objection_text: Optional[str] = Field(
+        default=None, description="Objection raised, if any"
+    )
+    close_technique_used: Optional[CloseType] = Field(
+        default=None, description="Close technique attempted (negotiation stage)"
+    )
+    notes: str = Field(default="")
+
+
+class DealOutcome(BaseModel):
+    """Full deal outcome — recorded when a deal reaches closed_won or closed_lost."""
+
+    outcome_id: str = Field(default="", description="UUID assigned by the store on write")
+    recorded_at: str = Field(default="", description="ISO-8601 UTC timestamp")
+    pipeline_job_id: Optional[str] = None
+    company_name: str
+    industry: Optional[str] = None
+    deal_size_usd: Optional[float] = Field(default=None, gt=0)
+    final_stage_reached: PipelineStage
+    result: OutcomeResult  # WON or LOST
+    loss_reason: Optional[str] = Field(
+        default=None,
+        description="Why the deal was lost (price, competitor, timing, no champion, etc.)"
+    )
+    win_factor: Optional[str] = Field(
+        default=None, description="Primary reason the deal was won"
+    )
+    close_technique_used: Optional[CloseType] = None
+    objections_raised: List[str] = Field(default_factory=list)
+    stages_completed: List[PipelineStage] = Field(default_factory=list)
+    icp_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    qualification_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    sales_cycle_days: Optional[int] = Field(
+        default=None, description="Total days from first contact to close"
+    )
+    notes: str = Field(default="")
+
+
+class LearningInsights(BaseModel):
+    """Extracted patterns from historical outcomes — injected into agent prompts."""
+
+    total_outcomes_analyzed: int = 0
+    win_rate: float = Field(default=0.0, ge=0.0, le=1.0, description="Fraction of deals won")
+    stage_conversion_rates: dict = Field(
+        default_factory=dict,
+        description="stage_name → conversion % to next stage"
+    )
+    top_performing_industries: List[str] = Field(
+        default_factory=list,
+        description="Industries with highest win rates"
+    )
+    top_icp_signals: List[str] = Field(
+        default_factory=list,
+        description="ICP traits / trigger events that correlated with wins"
+    )
+    best_outreach_angles: List[str] = Field(
+        default_factory=list,
+        description="Subject line patterns or email angles with high reply rates"
+    )
+    common_objections: List[str] = Field(
+        default_factory=list,
+        description="Objections that appear most frequently across all deals"
+    )
+    best_close_techniques: List[str] = Field(
+        default_factory=list,
+        description="Close techniques with highest observed win rates"
+    )
+    winning_patterns: List[str] = Field(
+        default_factory=list,
+        description="Behaviors / deal traits that consistently preceded wins"
+    )
+    losing_patterns: List[str] = Field(
+        default_factory=list,
+        description="Behaviors / deal traits that consistently preceded losses"
+    )
+    avg_deal_size_won_usd: Optional[float] = None
+    avg_sales_cycle_days: Optional[float] = None
+    actionable_recommendations: List[str] = Field(
+        default_factory=list,
+        description="Specific, prioritized advice to improve the current pipeline"
+    )
+    generated_at: str = Field(default="", description="ISO-8601 UTC timestamp of last refresh")
+    insights_version: int = Field(default=0, description="Increments on each refresh")
+
+
+# ---------------------------------------------------------------------------
+# Outcome ingestion request models (used by API)
+# ---------------------------------------------------------------------------
+
+
+class RecordStageOutcomeRequest(BaseModel):
+    """API payload to record the outcome of a single pipeline stage."""
+
+    company_name: str
+    stage: PipelineStage
+    outcome: OutcomeResult
+    pipeline_job_id: Optional[str] = None
+    industry: Optional[str] = None
+    icp_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    qualification_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    email_touch_number: Optional[int] = None
+    subject_line_used: Optional[str] = None
+    objection_text: Optional[str] = None
+    close_technique_used: Optional[CloseType] = None
+    notes: str = Field(default="")
+
+
+class RecordDealOutcomeRequest(BaseModel):
+    """API payload to record a final deal outcome (won or lost)."""
+
+    company_name: str
+    result: OutcomeResult  # WON or LOST
+    final_stage_reached: PipelineStage
+    pipeline_job_id: Optional[str] = None
+    industry: Optional[str] = None
+    deal_size_usd: Optional[float] = Field(default=None, gt=0)
+    loss_reason: Optional[str] = None
+    win_factor: Optional[str] = None
+    close_technique_used: Optional[CloseType] = None
+    objections_raised: List[str] = Field(default_factory=list)
+    stages_completed: List[PipelineStage] = Field(default_factory=list)
+    icp_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    qualification_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    sales_cycle_days: Optional[int] = None
+    notes: str = Field(default="")
+
+
 class SalesPipelineResult(BaseModel):
     """Full output of a sales pod pipeline run."""
 

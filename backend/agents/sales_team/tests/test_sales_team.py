@@ -1,4 +1,4 @@
-"""Tests for the AI Sales Team pod.
+"""Tests for the AI Sales Team pod — including outcome tracking and learning loop.
 
 All tests run without the strands SDK installed (agents operate in stub mode),
 making them suitable for CI environments without AWS credentials.
@@ -7,6 +7,8 @@ making them suitable for CI environments without AWS credentials.
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,18 +16,25 @@ from fastapi.testclient import TestClient
 
 from sales_team.models import (
     BANTScore,
+    CloseType,
     CoachingRequest,
+    DealOutcome,
     ForecastCategory,
     IdealCustomerProfile,
+    LearningInsights,
     MEDDICScore,
     NurtureRequest,
+    OutcomeResult,
     OutreachRequest,
     PipelineStage,
     Prospect,
     ProspectingRequest,
     QualificationRequest,
+    RecordDealOutcomeRequest,
+    RecordStageOutcomeRequest,
     SalesPipelineRequest,
     SalesPipelineResult,
+    StageOutcome,
 )
 from sales_team.orchestrator import SalesPodOrchestrator, _parse_json, _prospects_from_json
 
@@ -463,3 +472,368 @@ class TestAPI:
     def test_delete_nonexistent_job(self, api_client):
         response = api_client.delete("/sales/pipeline/job/nonexistent")
         assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Outcome store tests
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeStore:
+    """Test file-backed outcome persistence in isolation using a temp directory."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_cache(self, tmp_path, monkeypatch):
+        """Redirect all store I/O to a temporary directory."""
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+    def test_record_and_load_stage_outcome(self):
+        from sales_team.outcome_store import load_stage_outcomes, record_stage_outcome
+
+        outcome = StageOutcome(
+            company_name="TestCo",
+            stage=PipelineStage.OUTREACH,
+            outcome=OutcomeResult.CONVERTED,
+            subject_line_used="Saw your Series B — quick thought",
+            email_touch_number=2,
+        )
+        saved = record_stage_outcome(outcome)
+
+        assert saved.outcome_id != ""
+        assert saved.recorded_at != ""
+
+        loaded = load_stage_outcomes()
+        assert len(loaded) == 1
+        assert loaded[0].company_name == "TestCo"
+        assert loaded[0].outcome == OutcomeResult.CONVERTED
+        assert loaded[0].subject_line_used == "Saw your Series B — quick thought"
+
+    def test_record_and_load_deal_outcome(self):
+        from sales_team.outcome_store import load_deal_outcomes, record_deal_outcome
+
+        outcome = DealOutcome(
+            company_name="WinCo",
+            industry="SaaS",
+            deal_size_usd=48000.0,
+            final_stage_reached=PipelineStage.NEGOTIATION,
+            result=OutcomeResult.WON,
+            win_factor="Champion + EB both engaged from discovery",
+            close_technique_used=CloseType.SUMMARY,
+            stages_completed=[PipelineStage.PROSPECTING, PipelineStage.OUTREACH, PipelineStage.QUALIFICATION],
+            icp_match_score=0.88,
+            qualification_score=0.79,
+            sales_cycle_days=34,
+        )
+        saved = record_deal_outcome(outcome)
+
+        assert saved.outcome_id != ""
+        loaded = load_deal_outcomes()
+        assert len(loaded) == 1
+        assert loaded[0].result == OutcomeResult.WON
+        assert loaded[0].deal_size_usd == 48000.0
+
+    def test_multiple_outcomes_sorted_newest_first(self):
+        from sales_team.outcome_store import load_stage_outcomes, record_stage_outcome
+
+        for i in range(3):
+            record_stage_outcome(StageOutcome(
+                company_name=f"Co{i}",
+                stage=PipelineStage.QUALIFICATION,
+                outcome=OutcomeResult.STALLED,
+            ))
+        loaded = load_stage_outcomes()
+        assert len(loaded) == 3
+
+    def test_outcome_counts(self):
+        from sales_team.outcome_store import outcome_counts, record_deal_outcome, record_stage_outcome
+
+        assert outcome_counts()["stage_outcomes"] == 0
+        record_stage_outcome(StageOutcome(
+            company_name="A", stage=PipelineStage.OUTREACH, outcome=OutcomeResult.CONVERTED
+        ))
+        assert outcome_counts()["stage_outcomes"] == 1
+
+    def test_save_and_load_insights(self):
+        from sales_team.outcome_store import load_current_insights, save_insights
+
+        insights = LearningInsights(
+            total_outcomes_analyzed=10,
+            win_rate=0.4,
+            top_performing_industries=["SaaS"],
+            insights_version=1,
+        )
+        save_insights(insights)
+        loaded = load_current_insights()
+        assert loaded is not None
+        assert loaded.win_rate == 0.4
+        assert loaded.insights_version == 1
+
+
+# ---------------------------------------------------------------------------
+# Heuristic learning engine tests
+# ---------------------------------------------------------------------------
+
+
+class TestHeuristicLearning:
+    """Test heuristic insight computation without requiring Strands SDK."""
+
+    def test_empty_outcomes(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        insights = compute_heuristic_insights([], [])
+        assert insights.total_outcomes_analyzed == 0
+        assert insights.win_rate == 0.0
+        assert len(insights.actionable_recommendations) > 0
+
+    def test_win_rate_calculation(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        deals = [
+            DealOutcome(
+                company_name=f"Co{i}",
+                final_stage_reached=PipelineStage.NEGOTIATION,
+                result=OutcomeResult.WON if i < 3 else OutcomeResult.LOST,
+            )
+            for i in range(5)
+        ]
+        insights = compute_heuristic_insights([], deals)
+        assert insights.win_rate == pytest.approx(0.6)
+
+    def test_top_industries_from_wins(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        deals = [
+            DealOutcome(
+                company_name=f"SaasCo{i}",
+                industry="SaaS",
+                final_stage_reached=PipelineStage.NEGOTIATION,
+                result=OutcomeResult.WON,
+            )
+            for i in range(3)
+        ] + [
+            DealOutcome(
+                company_name="FinCo",
+                industry="FinTech",
+                final_stage_reached=PipelineStage.NEGOTIATION,
+                result=OutcomeResult.LOST,
+            )
+        ]
+        insights = compute_heuristic_insights([], deals)
+        assert "SaaS" in insights.top_performing_industries
+
+    def test_common_objections_from_stage_outcomes(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        stages = [
+            StageOutcome(
+                company_name=f"Co{i}",
+                stage=PipelineStage.NEGOTIATION,
+                outcome=OutcomeResult.OBJECTION,
+                objection_text="Price is too high",
+            )
+            for i in range(4)
+        ]
+        insights = compute_heuristic_insights(stages, [])
+        assert "Price is too high" in insights.common_objections
+
+    def test_best_close_techniques_from_wins(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        deals = [
+            DealOutcome(
+                company_name=f"Co{i}",
+                final_stage_reached=PipelineStage.NEGOTIATION,
+                result=OutcomeResult.WON,
+                close_technique_used=CloseType.SUMMARY,
+            )
+            for i in range(3)
+        ]
+        insights = compute_heuristic_insights([], deals)
+        assert "summary" in insights.best_close_techniques
+
+    def test_stage_conversion_rates(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        stages = (
+            [StageOutcome(
+                company_name=f"Co{i}", stage=PipelineStage.OUTREACH, outcome=OutcomeResult.CONVERTED
+            ) for i in range(3)]
+            + [StageOutcome(
+                company_name=f"Co{i+3}", stage=PipelineStage.OUTREACH, outcome=OutcomeResult.STALLED
+            ) for i in range(1)]
+        )
+        insights = compute_heuristic_insights(stages, [])
+        assert "outreach" in insights.stage_conversion_rates
+        assert insights.stage_conversion_rates["outreach"] == pytest.approx(0.75)
+
+    def test_insights_version_increments(self):
+        from sales_team.outcome_store import compute_heuristic_insights
+
+        i1 = compute_heuristic_insights([], [], current_version=0)
+        i2 = compute_heuristic_insights([], [], current_version=i1.insights_version)
+        assert i2.insights_version == i1.insights_version + 1
+
+
+# ---------------------------------------------------------------------------
+# LearningEngine integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestLearningEngine:
+    @pytest.fixture(autouse=True)
+    def _tmp_cache(self, tmp_path, monkeypatch):
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+    def test_refresh_empty_store(self):
+        from sales_team.learning_engine import LearningEngine
+
+        engine = LearningEngine()
+        insights = engine.refresh()
+        assert insights.total_outcomes_analyzed == 0
+        assert len(insights.actionable_recommendations) > 0
+
+    def test_refresh_with_outcomes(self):
+        from sales_team.learning_engine import LearningEngine
+        from sales_team.outcome_store import record_deal_outcome, record_stage_outcome
+
+        record_stage_outcome(StageOutcome(
+            company_name="A", stage=PipelineStage.OUTREACH, outcome=OutcomeResult.CONVERTED,
+            subject_line_used="Funding trigger hook"
+        ))
+        record_deal_outcome(DealOutcome(
+            company_name="A", industry="SaaS",
+            final_stage_reached=PipelineStage.NEGOTIATION,
+            result=OutcomeResult.WON,
+            close_technique_used=CloseType.SUMMARY,
+            sales_cycle_days=30,
+        ))
+
+        engine = LearningEngine()
+        insights = engine.refresh()
+        assert insights.total_outcomes_analyzed == 2
+        assert insights.win_rate == 1.0
+        assert insights.insights_version >= 1
+
+    def test_refresh_persists_insights(self):
+        from sales_team.learning_engine import LearningEngine
+        from sales_team.outcome_store import load_current_insights
+
+        engine = LearningEngine()
+        engine.refresh()
+        loaded = load_current_insights()
+        assert loaded is not None
+        assert loaded.insights_version >= 1
+
+    def test_format_insights_empty(self):
+        from sales_team.learning_engine import format_insights_for_prompt
+
+        assert format_insights_for_prompt(None) == ""
+        assert format_insights_for_prompt(LearningInsights()) == ""
+
+    def test_format_insights_with_data(self):
+        from sales_team.learning_engine import format_insights_for_prompt
+
+        insights = LearningInsights(
+            total_outcomes_analyzed=20,
+            win_rate=0.55,
+            winning_patterns=["Champion + EB both engaged"],
+            common_objections=["Price too high"],
+            best_close_techniques=["summary"],
+            actionable_recommendations=["Focus on SaaS"],
+            insights_version=3,
+        )
+        text = format_insights_for_prompt(insights)
+        assert "20 past outcomes" in text
+        assert "55%" in text
+        assert "Champion + EB" in text
+        assert "Price too high" in text
+        assert "summary" in text
+
+
+# ---------------------------------------------------------------------------
+# Outcome + insights API endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeAPI:
+    def test_record_stage_outcome(self, api_client, tmp_path, monkeypatch):
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+        payload = {
+            "company_name": "Acme Corp",
+            "stage": "outreach",
+            "outcome": "converted",
+            "email_touch_number": 2,
+            "subject_line_used": "Congrats on your Series B",
+        }
+        response = api_client.post("/sales/outcomes/stage", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "outcome_id" in data
+        assert data["outcome_id"] != ""
+
+    def test_record_deal_outcome_won(self, api_client, tmp_path, monkeypatch):
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+        payload = {
+            "company_name": "WinCo",
+            "result": "won",
+            "final_stage_reached": "negotiation",
+            "deal_size_usd": 48000,
+            "win_factor": "Strong champion + EB both on final call",
+            "close_technique_used": "summary",
+            "stages_completed": ["prospecting", "outreach", "qualification"],
+            "sales_cycle_days": 28,
+        }
+        response = api_client.post("/sales/outcomes/deal", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "won" in data["message"]
+
+    def test_outcome_summary(self, api_client):
+        response = api_client.get("/sales/outcomes/summary")
+        assert response.status_code == 200
+        data = response.json()
+        assert "stage_outcomes" in data
+        assert "deal_outcomes" in data
+
+    def test_insights_not_found_before_refresh(self, api_client, tmp_path, monkeypatch):
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+        response = api_client.get("/sales/insights")
+        assert response.status_code == 404
+
+    def test_refresh_insights_endpoint(self, api_client, tmp_path, monkeypatch):
+        import sales_team.outcome_store as store
+
+        monkeypatch.setattr(store, "_CACHE_ROOT", tmp_path / "outcomes")
+        monkeypatch.setattr(store, "_INSIGHTS_PATH", tmp_path / "insights" / "current.json")
+
+        response = api_client.post("/sales/insights/refresh")
+        assert response.status_code == 200
+        data = response.json()
+        assert "insights_version" in data
+        assert data["insights_version"] >= 1
+
+    def test_health_includes_learning_stats(self, api_client):
+        response = api_client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert "stage_outcomes_recorded" in data
+        assert "deal_outcomes_recorded" in data
+        assert "insights_available" in data
