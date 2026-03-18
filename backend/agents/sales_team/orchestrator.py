@@ -16,14 +16,18 @@ from .agents import (
     ProspectorAgent,
     SalesCoachAgent,
 )
+from .learning_engine import LearningEngine, format_insights_for_prompt
 from .models import (
     BANTScore,
     ClosingStrategy,
+    DealOutcome,
     DiscoveryPlan,
     IdealCustomerProfile,
+    LearningInsights,
     MEDDICScore,
     NurtureSequence,
     ObjectionHandler,
+    OutcomeResult,
     OutreachSequence,
     PipelineCoachingReport,
     PipelineStage,
@@ -35,7 +39,9 @@ from .models import (
     SalesPipelineResult,
     SalesProposal,
     SPINQuestions,
+    StageOutcome,
 )
+from .outcome_store import load_current_insights, record_deal_outcome, record_stage_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +295,10 @@ class SalesPodOrchestrator:
 
     Stages run sequentially from the requested entry point. Each stage's
     output is passed as context to the next stage.
+
+    On each run, current LearningInsights are loaded from the outcome store
+    and injected into every agent prompt so the pod continuously improves
+    based on historical win/loss data.
     """
 
     def __init__(self) -> None:
@@ -300,6 +310,7 @@ class SalesPodOrchestrator:
         self.proposal = ProposalAgent()
         self.closer = CloserAgent()
         self.coach = SalesCoachAgent()
+        self.learning_engine = LearningEngine()
 
     def _should_run(self, stage: PipelineStage, entry: PipelineStage) -> bool:
         try:
@@ -324,6 +335,19 @@ class SalesPodOrchestrator:
         cases = "\n".join(request.case_study_snippets) if request.case_study_snippets else ""
         entry = request.entry_stage
 
+        # Load current learning insights and format them for prompt injection
+        current_insights: Optional[LearningInsights] = load_current_insights()
+        insights_ctx: Optional[str] = format_insights_for_prompt(current_insights)
+        if current_insights and current_insights.total_outcomes_analyzed > 0:
+            logger.info(
+                "Sales pod [%s]: injecting learning insights v%d "
+                "(%d outcomes, win_rate=%.0f%%)",
+                job_id,
+                current_insights.insights_version,
+                current_insights.total_outcomes_analyzed,
+                current_insights.win_rate * 100,
+            )
+
         result = SalesPipelineResult(job_id=job_id, entry_stage=entry, product_name=product)
 
         # ------------------------------------------------------------------
@@ -335,7 +359,7 @@ class SalesPodOrchestrator:
             if request.existing_prospects:
                 prospects = request.existing_prospects
             else:
-                raw = self.prospector.prospect(icp_json, product, vp, request.max_prospects, ctx)
+                raw = self.prospector.prospect(icp_json, product, vp, request.max_prospects, ctx, insights_ctx)
                 prospects = _prospects_from_json(raw)
             result.prospects = prospects
             update("prospecting", 15)
@@ -357,7 +381,7 @@ class SalesPodOrchestrator:
             sequences: List[OutreachSequence] = []
             for p in prospects:
                 raw = self.outreach.generate_sequence(
-                    p.model_dump_json(indent=2), product, vp, cases, ctx
+                    p.model_dump_json(indent=2), product, vp, cases, ctx, insights_ctx
                 )
                 seq = _outreach_from_json(raw, p)
                 if seq:
@@ -373,7 +397,7 @@ class SalesPodOrchestrator:
             update("qualification", 40)
             logger.info("Sales pod [%s]: qualification stage", job_id)
             for p in prospects:
-                raw = self.qualifier.qualify(p.model_dump_json(indent=2), product, vp, "")
+                raw = self.qualifier.qualify(p.model_dump_json(indent=2), product, vp, "", insights_ctx)
                 score = _qual_from_json(raw, p)
                 if score:
                     qualified.append(score)
@@ -403,7 +427,7 @@ class SalesPodOrchestrator:
             logger.info("Sales pod [%s]: nurturing %d prospects", job_id, len(nurture_prospects))
             nurture_seqs: List[NurtureSequence] = []
             for p in nurture_prospects:
-                raw = self.nurture.build_sequence(p.model_dump_json(indent=2), product, vp, 90)
+                raw = self.nurture.build_sequence(p.model_dump_json(indent=2), product, vp, 90, insights_ctx)
                 seq = _nurture_from_json(raw, p, 90)
                 if seq:
                     nurture_seqs.append(seq)
@@ -423,7 +447,7 @@ class SalesPodOrchestrator:
                     if q.prospect.company_name == p.company_name:
                         qual_json = q.model_dump_json(indent=2)
                         break
-                raw = self.discovery.prepare(p.model_dump_json(indent=2), qual_json, product, vp)
+                raw = self.discovery.prepare(p.model_dump_json(indent=2), qual_json, product, vp, insights_ctx)
                 plan = _discovery_from_json(raw, p)
                 if plan:
                     plans.append(plan)
@@ -440,7 +464,7 @@ class SalesPodOrchestrator:
             annual_cost = 25000.0  # Default; real requests should supply per-prospect pricing
             for p in qualified_prospects:
                 raw = self.proposal.write(
-                    p.model_dump_json(indent=2), product, vp, annual_cost, "", cases, ctx
+                    p.model_dump_json(indent=2), product, vp, annual_cost, "", cases, ctx, insights_ctx
                 )
                 prop = _proposal_from_json(raw, p, annual_cost)
                 if prop:
@@ -462,7 +486,7 @@ class SalesPodOrchestrator:
                         prop_json = prop.model_dump_json(indent=2)
                         break
                 raw = self.closer.develop_strategy(
-                    p.model_dump_json(indent=2), prop_json, product, vp
+                    p.model_dump_json(indent=2), prop_json, product, vp, insights_ctx
                 )
                 strat = _closing_from_json(raw, p)
                 if strat:
@@ -476,13 +500,21 @@ class SalesPodOrchestrator:
         update("coaching", 97)
         logger.info("Sales pod [%s]: generating coaching report", job_id)
         prospects_json = json.dumps([p.model_dump() for p in prospects], indent=2)
-        raw = self.coach.review(prospects_json, product, "")
+        raw = self.coach.review(prospects_json, product, "", insights_ctx)
         coaching = _coaching_from_json(raw, len(prospects))
         result.coaching_report = coaching
 
+        # Auto-record prospecting outcomes so the ICP accuracy learns over time
+        self._record_prospecting_outcomes(result.prospects, job_id)
+
         # Summary
+        insights_note = (
+            f" (learning insights v{current_insights.insights_version} applied)"
+            if current_insights and current_insights.total_outcomes_analyzed > 0
+            else " (no learning history yet — record outcomes to improve future runs)"
+        )
         result.summary = (
-            f"Sales pod completed pipeline from '{entry.value}' stage. "
+            f"Sales pod completed pipeline from '{entry.value}' stage{insights_note}. "
             f"Prospects identified: {len(result.prospects)}. "
             f"Outreach sequences generated: {len(result.outreach_sequences)}. "
             f"Leads qualified: {len(result.qualified_leads)}. "
@@ -496,9 +528,32 @@ class SalesPodOrchestrator:
         logger.info("Sales pod [%s]: pipeline complete — %s", job_id, result.summary)
         return result
 
+    def _record_prospecting_outcomes(self, prospects: List[Prospect], job_id: str) -> None:
+        """Auto-record each identified prospect as a PROSPECTING / CONVERTED stage outcome.
+
+        This seeds the outcome store so the learning engine has data even before
+        the user manually records deal-level outcomes.
+        """
+        for p in prospects:
+            try:
+                record_stage_outcome(StageOutcome(
+                    pipeline_job_id=job_id,
+                    company_name=p.company_name,
+                    industry=p.industry,
+                    stage=PipelineStage.PROSPECTING,
+                    outcome=OutcomeResult.CONVERTED,
+                    icp_match_score=p.icp_match_score,
+                ))
+            except Exception as exc:
+                logger.debug("Could not auto-record prospecting outcome: %s", exc)
+
     # ------------------------------------------------------------------
     # Convenience single-stage methods (used by standalone API endpoints)
     # ------------------------------------------------------------------
+
+    def _load_insights_ctx(self) -> Optional[str]:
+        """Load current insights and format for prompt injection."""
+        return format_insights_for_prompt(load_current_insights())
 
     def prospect_only(
         self,
@@ -508,8 +563,9 @@ class SalesPodOrchestrator:
         max_prospects: int,
         company_context: str,
     ) -> List[Prospect]:
+        ctx = self._load_insights_ctx()
         raw = self.prospector.prospect(
-            icp.model_dump_json(indent=2), product_name, value_proposition, max_prospects, company_context
+            icp.model_dump_json(indent=2), product_name, value_proposition, max_prospects, company_context, ctx
         )
         return _prospects_from_json(raw)
 
@@ -521,11 +577,12 @@ class SalesPodOrchestrator:
         case_study_snippets: List[str],
         company_context: str,
     ) -> List[OutreachSequence]:
+        ctx = self._load_insights_ctx()
         cases = "\n".join(case_study_snippets)
         sequences = []
         for p in prospects:
             raw = self.outreach.generate_sequence(
-                p.model_dump_json(indent=2), product_name, value_proposition, cases, company_context
+                p.model_dump_json(indent=2), product_name, value_proposition, cases, company_context, ctx
             )
             seq = _outreach_from_json(raw, p)
             if seq:
@@ -535,8 +592,9 @@ class SalesPodOrchestrator:
     def qualify_only(
         self, prospect: Prospect, product_name: str, value_proposition: str, call_notes: str
     ) -> Optional[QualificationScore]:
+        ctx = self._load_insights_ctx()
         raw = self.qualifier.qualify(
-            prospect.model_dump_json(indent=2), product_name, value_proposition, call_notes
+            prospect.model_dump_json(indent=2), product_name, value_proposition, call_notes, ctx
         )
         return _qual_from_json(raw, prospect)
 
@@ -547,10 +605,11 @@ class SalesPodOrchestrator:
         value_proposition: str,
         duration_days: int,
     ) -> List[NurtureSequence]:
+        ctx = self._load_insights_ctx()
         sequences = []
         for p in prospects:
             raw = self.nurture.build_sequence(
-                p.model_dump_json(indent=2), product_name, value_proposition, duration_days
+                p.model_dump_json(indent=2), product_name, value_proposition, duration_days, ctx
             )
             seq = _nurture_from_json(raw, p, duration_days)
             if seq:
@@ -558,6 +617,7 @@ class SalesPodOrchestrator:
         return sequences
 
     def propose_only(self, req: ProposalRequest) -> Optional[SalesProposal]:
+        ctx = self._load_insights_ctx()
         cases = "\n".join(req.case_study_snippets)
         raw = self.proposal.write(
             req.prospect.model_dump_json(indent=2),
@@ -567,12 +627,14 @@ class SalesPodOrchestrator:
             req.discovery_notes,
             cases,
             req.company_context,
+            ctx,
         )
         return _proposal_from_json(raw, req.prospect, req.annual_cost_usd)
 
     def coach_only(
         self, prospects: List[Prospect], product_name: str, pipeline_context: str
     ) -> Optional[PipelineCoachingReport]:
+        ctx = self._load_insights_ctx()
         prospects_json = json.dumps([p.model_dump() for p in prospects], indent=2)
-        raw = self.coach.review(prospects_json, product_name, pipeline_context)
+        raw = self.coach.review(prospects_json, product_name, pipeline_context, ctx)
         return _coaching_from_json(raw, len(prospects))
