@@ -131,6 +131,15 @@ TEAM_CONFIGS: Dict[str, TeamConfig] = {
         ),
         tags=["sales", "crm", "pipeline", "outreach"],
     ),
+    "agent_builder": TeamConfig(
+        name="Agent Builder",
+        prefix="/api/agent-builder",
+        description=(
+            "Meta-team that builds other agent teams: guides users through process definition, "
+            "flowchart creation, agent planning, code generation, and delivery"
+        ),
+        tags=["meta", "agents", "builder", "flowchart"],
+    ),
 }
 
 

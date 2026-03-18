@@ -113,6 +113,7 @@ SHUTDOWN_HOOKS: Dict[str, tuple] = {
     "nutrition_meal_planning": ("nutrition_meal_planning_team.shared.job_store", "mark_all_running_jobs_failed"),
     "planning_v3": ("planning_v3_team.shared.job_store", "mark_all_running_jobs_failed"),
     "sales_team": ("sales_team.api.main", "mark_all_running_jobs_failed"),
+    "agent_builder": ("agent_builder_team.shared.job_store", "mark_all_running_jobs_failed"),
 }
 
 
@@ -365,6 +366,20 @@ def _try_mount_sales_team(app: FastAPI) -> bool:
         return False
 
 
+def _try_mount_agent_builder(app: FastAPI) -> bool:
+    """Mount Agent Builder Team API."""
+    try:
+        from agent_builder_team.api.main import app as agent_builder_app
+
+        config = TEAM_CONFIGS["agent_builder"]
+        app.mount(config.prefix, agent_builder_app)
+        logger.info("Mounted %s at %s", config.name, config.prefix)
+        return True
+    except ImportError as e:
+        logger.warning("Could not mount Agent Builder API: %s", e)
+        return False
+
+
 def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
     """Mount all enabled team APIs and return mount status."""
     mount_functions = {
@@ -384,6 +399,7 @@ def mount_all_teams(app: FastAPI) -> Dict[str, bool]:
         "coding_team": _try_mount_coding_team,
         "studio_grid": _try_mount_studio_grid,
         "sales_team": _try_mount_sales_team,
+        "agent_builder": _try_mount_agent_builder,
     }
 
     results = {}
