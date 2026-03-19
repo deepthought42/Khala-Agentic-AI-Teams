@@ -8,7 +8,6 @@ import type {
   IntegrationListItem,
   MediumConfigResponse,
   MediumConfigUpdate,
-  MediumGoogleOAuthConnectResponse,
   MediumSessionImportBody,
   SlackConfigResponse,
   SlackConfigUpdate,
@@ -63,16 +62,6 @@ export class IntegrationsApiService {
   /** PUT /api/integrations/medium */
   updateMediumConfig(body: MediumConfigUpdate): Observable<MediumConfigResponse> {
     return this.http.put<MediumConfigResponse>(`${this.baseUrl}/medium`, body);
-  }
-
-  /** GET /api/integrations/medium/oauth/google/connect */
-  getMediumGoogleOAuthUrl(): Observable<MediumGoogleOAuthConnectResponse> {
-    return this.http.get<MediumGoogleOAuthConnectResponse>(`${this.baseUrl}/medium/oauth/google/connect`);
-  }
-
-  /** DELETE /api/integrations/medium/oauth/google */
-  disconnectMediumGoogle(): Observable<MediumConfigResponse> {
-    return this.http.delete<MediumConfigResponse>(`${this.baseUrl}/medium/oauth/google`);
   }
 
   /** POST /api/integrations/medium/session */

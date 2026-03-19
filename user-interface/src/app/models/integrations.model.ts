@@ -70,11 +70,6 @@ export interface MediumConfigUpdate {
   google_client_secret: string;
 }
 
-/** Response for GET /api/integrations/medium/oauth/google/connect. */
-export interface MediumGoogleOAuthConnectResponse {
-  url: string;
-}
-
 /** POST /api/integrations/medium/session */
 export interface MediumSessionImportBody {
   storage_state: Record<string, unknown>;

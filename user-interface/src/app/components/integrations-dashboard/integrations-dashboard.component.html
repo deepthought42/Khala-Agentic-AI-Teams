@@ -353,10 +353,9 @@
         <div mat-card-avatar class="medium-avatar" aria-hidden="true">M</div>
         <mat-card-title>Medium</mat-card-title>
         <mat-card-subtitle>
-          Blogging <strong>Medium statistics</strong> use a Playwright <code>storage_state</code> on disk. Enter the
-          Google account you use for Medium below — it is <strong>encrypted</strong> (Postgres when
-          <code>POSTGRES_HOST</code> is set, otherwise encrypted SQLite). Optional platform OAuth app is only for
-          “Link Google account”.
+          Blogging <strong>Medium statistics</strong> use a Playwright <code>storage_state</code> on disk. With
+          <strong>Google</strong> as your Medium provider, use the shared Google credentials at the top of this page
+          and capture a browser session below.
         </mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
@@ -419,7 +418,10 @@
         @if (mediumProvider !== 'google') {
           <div class="status-banner">
             <mat-icon>info</mat-icon>
-            <span>{{ mediumProviderLabel }} selected. Google linking is skipped for this provider.</span>
+            <span>
+              {{ mediumProviderLabel }} selected. Browser automation for Medium is oriented around Google sign-in; pick
+              Google if you use “Continue with Google” on Medium.
+            </span>
           </div>
         }
 
@@ -437,9 +439,7 @@
               color="primary"
               type="button"
               (click)="runMediumBrowserLogin()"
-              [disabled]="
-                mediumBrowserLoginRunning || mediumSaving || mediumConnecting || !googleBrowserLoginConfigured
-              "
+              [disabled]="mediumBrowserLoginRunning || mediumSaving || !googleBrowserLoginConfigured"
             >
               @if (mediumBrowserLoginRunning) {
                 Signing in via browser…
@@ -447,62 +447,6 @@
                 Capture Medium session (browser)
               }
             </button>
-          </div>
-        }
-
-        @if (mediumProvider === 'google') {
-          <p class="connect-description">
-            Optional: create a <strong>Web application</strong> OAuth client in Google Cloud Console only if you
-            use <strong>Link Google account</strong> below. Automated browser login does not use these fields.
-            Redirect URL:
-            <code>…/api/integrations/medium/oauth/google/callback</code> (or <code>MEDIUM_GOOGLE_REDIRECT_URI</code>).
-          </p>
-          <div class="form-row">
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Google OAuth Client ID</mat-label>
-              <input matInput [(ngModel)]="mediumGoogleClientId" autocomplete="off" />
-              @if (mediumGoogleClientConfigured && !mediumGoogleClientId) {
-                <mat-hint align="end">Saved ✓</mat-hint>
-              }
-            </mat-form-field>
-          </div>
-          <div class="form-row">
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Google OAuth Client Secret</mat-label>
-              <input matInput [(ngModel)]="mediumGoogleClientSecret" type="password" autocomplete="new-password" />
-            </mat-form-field>
-          </div>
-          <div class="form-row medium-google-row">
-            @if (mediumOauthIdentityConnected) {
-              <div class="connected-badge medium-google-badge">
-                <mat-icon class="connected-icon">verified</mat-icon>
-                <div class="connected-text">
-                  <span class="connected-label">Google linked</span>
-                  @if (mediumLinkedEmail) {
-                    <span class="team-name">{{ mediumLinkedEmail }}</span>
-                  }
-                </div>
-                <button
-                  mat-stroked-button
-                  color="warn"
-                  type="button"
-                  (click)="disconnectMediumGoogle()"
-                  [disabled]="mediumDisconnectingGoogle || mediumSaving"
-                >
-                  @if (mediumDisconnectingGoogle) { Unlinking… } @else { Unlink Google }
-                </button>
-              </div>
-            } @else {
-              <button
-                mat-raised-button
-                color="primary"
-                type="button"
-                (click)="connectMediumGoogle()"
-                [disabled]="mediumConnecting || mediumSaving"
-              >
-                @if (mediumConnecting) { Redirecting… } @else { Link Google account }
-              </button>
-            }
           </div>
         }
 

@@ -209,25 +209,16 @@ export class IntegrationsDashboardComponent implements OnInit {
 
   mediumLoading = false;
   mediumSaving = false;
-  mediumConnecting = false;
-  mediumDisconnectingGoogle = false;
   mediumError: string | null = null;
   mediumSuccess: string | null = null;
 
   mediumEnabled = false;
   mediumProvider: MediumOAuthProvider = 'google';
-  mediumGoogleClientId = '';
-  mediumGoogleClientSecret = '';
-  mediumGoogleClientConfigured = false;
-  mediumOauthIdentityConnected = false;
   mediumSessionConfigured = false;
-  mediumLinkedEmail: string | null = null;
-  mediumLinkedName: string | null = null;
 
   get mediumIdentityReady(): boolean {
     return (
       this.mediumProvider !== 'google' ||
-      this.mediumOauthIdentityConnected ||
       this.mediumSessionConfigured ||
       this.googleBrowserLoginConfigured
     );
@@ -270,13 +261,7 @@ export class IntegrationsDashboardComponent implements OnInit {
   private applyMediumConfig(res: MediumConfigResponse): void {
     this.mediumEnabled = res.enabled;
     this.mediumProvider = res.oauth_provider;
-    this.mediumGoogleClientConfigured = res.google_client_configured;
-    this.mediumOauthIdentityConnected = res.oauth_identity_connected;
     this.mediumSessionConfigured = res.session_configured;
-    this.mediumLinkedEmail = res.linked_email ?? null;
-    this.mediumLinkedName = res.linked_name ?? null;
-    this.mediumGoogleClientId = '';
-    this.mediumGoogleClientSecret = '';
   }
 
   saveMediumSettings(): void {
@@ -286,8 +271,8 @@ export class IntegrationsDashboardComponent implements OnInit {
     const body: MediumConfigUpdate = {
       enabled: this.mediumEnabled,
       oauth_provider: this.mediumProvider,
-      google_client_id: this.mediumGoogleClientId.trim(),
-      google_client_secret: this.mediumGoogleClientSecret.trim(),
+      google_client_id: '',
+      google_client_secret: '',
     };
     this.api.updateMediumConfig(body).subscribe({
       next: (res) => {
@@ -300,48 +285,6 @@ export class IntegrationsDashboardComponent implements OnInit {
         this.mediumSaving = false;
       },
     });
-  }
-
-  connectMediumGoogle(): void {
-    this.mediumConnecting = true;
-    this.mediumError = null;
-    this.mediumSuccess = null;
-
-    const cid = this.mediumGoogleClientId.trim();
-    const csec = this.mediumGoogleClientSecret.trim();
-
-    const redirect = () => {
-      this.api.getMediumGoogleOAuthUrl().subscribe({
-        next: (r) => {
-          window.location.href = r.url;
-        },
-        error: (err) => {
-          this.mediumError = err?.error?.detail || err?.message || 'Failed to start Google OAuth.';
-          this.mediumConnecting = false;
-        },
-      });
-    };
-
-    if (cid || csec) {
-      const body: MediumConfigUpdate = {
-        enabled: this.mediumEnabled,
-        oauth_provider: 'google',
-        google_client_id: cid,
-        google_client_secret: csec,
-      };
-      this.api.updateMediumConfig(body).subscribe({
-        next: (res) => {
-          this.applyMediumConfig(res);
-          redirect();
-        },
-        error: (err) => {
-          this.mediumError = err?.error?.detail || err?.message || 'Failed to save Google credentials.';
-          this.mediumConnecting = false;
-        },
-      });
-    } else {
-      redirect();
-    }
   }
 
   runMediumBrowserLogin(): void {
@@ -359,23 +302,6 @@ export class IntegrationsDashboardComponent implements OnInit {
         this.mediumError =
           err?.error?.detail || err?.message || 'Automated Medium browser login failed.';
         this.mediumBrowserLoginRunning = false;
-      },
-    });
-  }
-
-  disconnectMediumGoogle(): void {
-    this.mediumDisconnectingGoogle = true;
-    this.mediumError = null;
-    this.mediumSuccess = null;
-    this.api.disconnectMediumGoogle().subscribe({
-      next: (res) => {
-        this.applyMediumConfig(res);
-        this.mediumSuccess = 'Google account unlinked.';
-        this.mediumDisconnectingGoogle = false;
-      },
-      error: (err) => {
-        this.mediumError = err?.error?.detail || err?.message || 'Failed to unlink Google.';
-        this.mediumDisconnectingGoogle = false;
       },
     });
   }
