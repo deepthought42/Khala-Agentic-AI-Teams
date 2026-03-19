@@ -12,7 +12,14 @@ import { MatRadioModule } from '@angular/material/radio';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { IntegrationsApiService } from '../../services/integrations-api.service';
-import type { SlackConfigResponse, SlackConfigUpdate, SlackMode } from '../../models/integrations.model';
+import type {
+  MediumConfigResponse,
+  MediumConfigUpdate,
+  MediumOAuthProvider,
+  SlackConfigResponse,
+  SlackConfigUpdate,
+  SlackMode,
+} from '../../models/integrations.model';
 
 const SLACK_WEBHOOK_PREFIX = 'https://hooks.slack.com/';
 
@@ -39,7 +46,7 @@ export class IntegrationsDashboardComponent implements OnInit {
   private readonly api = inject(IntegrationsApiService);
   private readonly route = inject(ActivatedRoute);
 
-  loading = false;
+  loadingSlack = false;
   saving = false;
   connecting = false;
   disconnecting = false;
@@ -73,10 +80,11 @@ export class IntegrationsDashboardComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadSlackConfig();
+    this.loadMediumConfig();
     this.handleOAuthCallback();
   }
 
-  /** Read ?slack_connected and ?slack_error query params set by the backend after OAuth. */
+  /** Read OAuth return query params from Slack and Medium Google flows. */
   private handleOAuthCallback(): void {
     this.route.queryParams.subscribe((params) => {
       if (params['slack_connected']) {
@@ -87,12 +95,19 @@ export class IntegrationsDashboardComponent implements OnInit {
         this.loadSlackConfig();
       } else if (params['slack_error']) {
         const errCode = params['slack_error'];
-        this.error = this.friendlyOAuthError(errCode);
+        this.error = this.friendlySlackOAuthError(errCode);
+      }
+      if (params['medium_google_connected']) {
+        this.mediumSuccess = 'Google account linked for Medium workflow.';
+        this.loadMediumConfig();
+      }
+      if (params['medium_error']) {
+        this.mediumError = this.friendlyMediumOAuthError(String(params['medium_error']));
       }
     });
   }
 
-  private friendlyOAuthError(code: string): string {
+  private friendlySlackOAuthError(code: string): string {
     const map: Record<string, string> = {
       access_denied: 'You cancelled the Slack authorization.',
       missing_code_or_state: 'Invalid OAuth response from Slack.',
@@ -103,16 +118,206 @@ export class IntegrationsDashboardComponent implements OnInit {
     return map[code] ?? `Slack OAuth error: ${code}`;
   }
 
+  private friendlyMediumOAuthError(code: string): string {
+    const map: Record<string, string> = {
+      access_denied: 'You cancelled the Google authorization.',
+      missing_code_or_state: 'Invalid OAuth response from Google.',
+      invalid_state: 'OAuth session expired or was tampered with. Please try again.',
+      token_exchange_failed: 'Failed to exchange the authorization code. Check server logs.',
+      missing_credentials: 'Google OAuth app credentials were not found. Save Client ID and Secret first.',
+    };
+    return map[code] ?? `Medium Google link error: ${code}`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Medium.com
+  // ---------------------------------------------------------------------------
+
+  mediumLoading = false;
+  mediumSaving = false;
+  mediumConnecting = false;
+  mediumDisconnectingGoogle = false;
+  mediumImportingSession = false;
+  mediumClearingSession = false;
+  mediumError: string | null = null;
+  mediumSuccess: string | null = null;
+
+  mediumEnabled = false;
+  mediumProvider: MediumOAuthProvider = 'google';
+  mediumGoogleClientId = '';
+  mediumGoogleClientSecret = '';
+  mediumGoogleClientConfigured = false;
+  mediumOauthIdentityConnected = false;
+  mediumSessionConfigured = false;
+  mediumLinkedEmail: string | null = null;
+  mediumLinkedName: string | null = null;
+  mediumSessionJson = '';
+
+  loadMediumConfig(): void {
+    this.mediumLoading = true;
+    this.api.getMediumConfig().subscribe({
+      next: (res: MediumConfigResponse) => {
+        this.applyMediumConfig(res);
+        this.mediumLoading = false;
+      },
+      error: (err) => {
+        this.mediumError = err?.error?.detail || err?.message || 'Failed to load Medium config';
+        this.mediumLoading = false;
+      },
+    });
+  }
+
+  private applyMediumConfig(res: MediumConfigResponse): void {
+    this.mediumEnabled = res.enabled;
+    this.mediumProvider = res.oauth_provider;
+    this.mediumGoogleClientConfigured = res.google_client_configured;
+    this.mediumOauthIdentityConnected = res.oauth_identity_connected;
+    this.mediumSessionConfigured = res.session_configured;
+    this.mediumLinkedEmail = res.linked_email ?? null;
+    this.mediumLinkedName = res.linked_name ?? null;
+    this.mediumGoogleClientId = '';
+    this.mediumGoogleClientSecret = '';
+  }
+
+  saveMediumSettings(): void {
+    this.mediumSaving = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+    const body: MediumConfigUpdate = {
+      enabled: this.mediumEnabled,
+      oauth_provider: this.mediumProvider,
+      google_client_id: this.mediumGoogleClientId.trim(),
+      google_client_secret: this.mediumGoogleClientSecret.trim(),
+    };
+    this.api.updateMediumConfig(body).subscribe({
+      next: (res) => {
+        this.applyMediumConfig(res);
+        this.mediumSuccess = 'Medium integration saved.';
+        this.mediumSaving = false;
+      },
+      error: (err) => {
+        this.mediumError = err?.error?.detail || err?.message || 'Failed to save Medium settings.';
+        this.mediumSaving = false;
+      },
+    });
+  }
+
+  connectMediumGoogle(): void {
+    this.mediumConnecting = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+
+    const cid = this.mediumGoogleClientId.trim();
+    const csec = this.mediumGoogleClientSecret.trim();
+
+    const redirect = () => {
+      this.api.getMediumGoogleOAuthUrl().subscribe({
+        next: (r) => {
+          window.location.href = r.url;
+        },
+        error: (err) => {
+          this.mediumError = err?.error?.detail || err?.message || 'Failed to start Google OAuth.';
+          this.mediumConnecting = false;
+        },
+      });
+    };
+
+    if (cid || csec) {
+      const body: MediumConfigUpdate = {
+        enabled: this.mediumEnabled,
+        oauth_provider: 'google',
+        google_client_id: cid,
+        google_client_secret: csec,
+      };
+      this.api.updateMediumConfig(body).subscribe({
+        next: (res) => {
+          this.applyMediumConfig(res);
+          redirect();
+        },
+        error: (err) => {
+          this.mediumError = err?.error?.detail || err?.message || 'Failed to save Google credentials.';
+          this.mediumConnecting = false;
+        },
+      });
+    } else {
+      redirect();
+    }
+  }
+
+  disconnectMediumGoogle(): void {
+    this.mediumDisconnectingGoogle = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+    this.api.disconnectMediumGoogle().subscribe({
+      next: (res) => {
+        this.applyMediumConfig(res);
+        this.mediumSuccess = 'Google account unlinked.';
+        this.mediumDisconnectingGoogle = false;
+      },
+      error: (err) => {
+        this.mediumError = err?.error?.detail || err?.message || 'Failed to unlink Google.';
+        this.mediumDisconnectingGoogle = false;
+      },
+    });
+  }
+
+  importMediumSession(): void {
+    const raw = this.mediumSessionJson.trim();
+    if (!raw) {
+      this.mediumError = 'Paste Playwright storage_state JSON first.';
+      return;
+    }
+    let storage_state: Record<string, unknown>;
+    try {
+      storage_state = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      this.mediumError = 'Invalid JSON.';
+      return;
+    }
+    this.mediumImportingSession = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+    this.api.importMediumSession({ storage_state }).subscribe({
+      next: (res) => {
+        this.applyMediumConfig(res);
+        this.mediumSessionJson = '';
+        this.mediumSuccess = 'Medium browser session stored.';
+        this.mediumImportingSession = false;
+      },
+      error: (err) => {
+        this.mediumError = err?.error?.detail || err?.message || 'Failed to import session.';
+        this.mediumImportingSession = false;
+      },
+    });
+  }
+
+  clearMediumSession(): void {
+    this.mediumClearingSession = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+    this.api.clearMediumSession().subscribe({
+      next: (res) => {
+        this.applyMediumConfig(res);
+        this.mediumSuccess = 'Medium browser session removed.';
+        this.mediumClearingSession = false;
+      },
+      error: (err) => {
+        this.mediumError = err?.error?.detail || err?.message || 'Failed to clear session.';
+        this.mediumClearingSession = false;
+      },
+    });
+  }
+
   loadSlackConfig(): void {
-    this.loading = true;
+    this.loadingSlack = true;
     this.api.getSlackConfig().subscribe({
       next: (res: SlackConfigResponse) => {
         this.applyConfig(res);
-        this.loading = false;
+        this.loadingSlack = false;
       },
       error: (err) => {
         this.error = err?.error?.detail || err?.message || 'Failed to load Slack config';
-        this.loading = false;
+        this.loadingSlack = false;
       },
     });
   }

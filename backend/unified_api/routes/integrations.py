@@ -17,7 +17,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -25,11 +25,19 @@ from pydantic import BaseModel, Field
 
 from unified_api.integrations_store import (
     clear_slack_oauth,
+    generate_medium_google_oauth_state,
     generate_oauth_state,
     get_integrations_list,
+    get_medium_config,
     get_slack_config,
+    set_medium_config,
+    set_medium_google_oauth_identity,
+    set_medium_session_storage_state_json,
+    clear_medium_google_oauth_identity,
+    clear_medium_session_storage,
     set_slack_config,
     set_slack_oauth_token,
+    verify_and_clear_medium_google_oauth_state,
     verify_and_clear_oauth_state,
 )
 
@@ -45,6 +53,11 @@ _SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
 # Minimum scopes: post messages (chat:write) + post to public channels without
 # needing to join them first (chat:write.public) + list channels (channels:read)
 _SLACK_SCOPES = "chat:write,chat:write.public,channels:read"
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+_GOOGLE_SCOPES = "openid email profile"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +116,45 @@ class IntegrationListItem(BaseModel):
     type: str
     enabled: bool
     channel: Optional[str] = None
+
+
+MediumOAuthProvider = Literal["google", "apple", "facebook", "twitter"]
+
+
+class MediumConfigUpdate(BaseModel):
+    """Request body for PUT /api/integrations/medium."""
+
+    enabled: bool = Field(False, description="Enable Medium.com integration (blogging stats agent).")
+    oauth_provider: MediumOAuthProvider = Field(
+        "google",
+        description="Identity provider you use on Medium (Google OAuth is supported for platform sign-in).",
+    )
+    google_client_id: str = Field("", description="Google OAuth client ID (Web application).")
+    google_client_secret: str = Field("", description="Google OAuth client secret.")
+
+
+class MediumConfigResponse(BaseModel):
+    """Response for GET /api/integrations/medium."""
+
+    enabled: bool
+    oauth_provider: MediumOAuthProvider = "google"
+    oauth_identity_connected: bool = Field(False, description="True after Google OAuth completes.")
+    google_client_configured: bool = False
+    session_configured: bool = Field(False, description="True when Playwright storage_state is stored.")
+    linked_email: Optional[str] = None
+    linked_name: Optional[str] = None
+
+
+class MediumGoogleOAuthConnectResponse(BaseModel):
+    """Authorization URL for Google (identity link for Medium workflow)."""
+
+    url: str
+
+
+class MediumSessionImportBody(BaseModel):
+    """POST /api/integrations/medium/session — Playwright storage_state object."""
+
+    storage_state: Dict[str, Any] = Field(..., description="Full object from Playwright context.storage_state()")
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +227,57 @@ def _exchange_code(code: str, redirect_uri: str, client_id: str, client_secret: 
         data=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _build_medium_config_response(cfg: dict) -> MediumConfigResponse:
+    prov = cfg.get("oauth_provider", "google")
+    if prov not in ("google", "apple", "facebook", "twitter"):
+        prov = "google"
+    return MediumConfigResponse(
+        enabled=cfg["enabled"],
+        oauth_provider=prov,
+        oauth_identity_connected=bool(cfg.get("oauth_identity_connected")),
+        google_client_configured=bool(cfg.get("google_client_id")),
+        session_configured=bool(cfg.get("session_configured")),
+        linked_email=cfg.get("linked_email") or None,
+        linked_name=cfg.get("linked_name") or None,
+    )
+
+
+def _get_medium_google_redirect_uri(request: Request) -> str:
+    env_uri = os.getenv("MEDIUM_GOOGLE_REDIRECT_URI", "").strip()
+    if env_uri:
+        return env_uri
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/integrations/medium/oauth/google/callback"
+
+
+def _exchange_google_oauth_code(code: str, redirect_uri: str, client_id: str, client_secret: str) -> dict:
+    body = urllib.parse.urlencode({
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }).encode()
+    req = urllib.request.Request(
+        _GOOGLE_TOKEN_URL,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _google_userinfo(access_token: str) -> dict:
+    req = urllib.request.Request(
+        _GOOGLE_USERINFO_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode())
@@ -363,3 +466,157 @@ async def slack_oauth_disconnect() -> SlackConfigResponse:
     """
     clear_slack_oauth()
     return _build_slack_config_response(get_slack_config())
+
+
+# ---------------------------------------------------------------------------
+# Medium.com integration (OAuth identity + Playwright session for stats agent)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/medium", response_model=MediumConfigResponse)
+async def get_medium() -> MediumConfigResponse:
+    """Return Medium integration status (no secrets)."""
+    return _build_medium_config_response(get_medium_config())
+
+
+@router.put("/medium", response_model=MediumConfigResponse)
+async def update_medium(body: MediumConfigUpdate) -> MediumConfigResponse:
+    """
+    Save Medium integration: enabled flag, OAuth provider, and optional Google OAuth app credentials.
+    """
+    if body.enabled and body.oauth_provider == "google":
+        existing = get_medium_config()
+        if not (body.google_client_id.strip() or existing.get("google_client_id")):
+            raise HTTPException(
+                status_code=400,
+                detail="google_client_id is required when enabling Medium with Google as the identity provider.",
+            )
+        if not (body.google_client_secret.strip() or existing.get("google_client_secret")):
+            raise HTTPException(
+                status_code=400,
+                detail="google_client_secret is required when enabling Medium with Google as the identity provider.",
+            )
+
+    set_medium_config(
+        enabled=body.enabled,
+        oauth_provider=body.oauth_provider,
+        google_client_id=(body.google_client_id or "").strip(),
+        google_client_secret=(body.google_client_secret or "").strip(),
+    )
+    return _build_medium_config_response(get_medium_config())
+
+
+@router.get("/medium/oauth/google/connect", response_model=MediumGoogleOAuthConnectResponse)
+async def medium_google_oauth_connect(request: Request) -> MediumGoogleOAuthConnectResponse:
+    """
+    Start Google OAuth (OpenID) to link the Google account used for Medium.
+
+    Configure redirect URI in Google Cloud Console to match MEDIUM_GOOGLE_REDIRECT_URI
+    or {API}/api/integrations/medium/oauth/google/callback.
+    """
+    cfg = get_medium_config()
+    if cfg.get("oauth_provider") != "google":
+        raise HTTPException(
+            status_code=400,
+            detail="Set OAuth provider to Google in Medium integration settings to use this flow.",
+        )
+    client_id = cfg.get("google_client_id", "").strip()
+    client_secret = cfg.get("google_client_secret", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth Client ID and Client Secret must be saved first (PUT /api/integrations/medium).",
+        )
+    state = generate_medium_google_oauth_state()
+    redirect_uri = _get_medium_google_redirect_uri(request)
+    params = urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": _GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    url = f"{_GOOGLE_AUTH_URL}?{params}"
+    return MediumGoogleOAuthConnectResponse(url=url)
+
+
+@router.get("/medium/oauth/google/callback")
+async def medium_google_oauth_callback(
+    request: Request,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+) -> RedirectResponse:
+    """Google redirects here after user consents; we store refresh token and profile email."""
+    ui_base = _get_ui_base_url()
+    integrations_ui = f"{ui_base}/integrations"
+
+    if error:
+        logger.warning("Medium Google OAuth error: %s", error)
+        return RedirectResponse(url=f"{integrations_ui}?medium_error={urllib.parse.quote(error)}")
+
+    if not code or not state:
+        return RedirectResponse(url=f"{integrations_ui}?medium_error=missing_code_or_state")
+
+    if not verify_and_clear_medium_google_oauth_state(state):
+        logger.warning("Medium Google OAuth state mismatch or expired")
+        return RedirectResponse(url=f"{integrations_ui}?medium_error=invalid_state")
+
+    cfg = get_medium_config()
+    client_id = cfg.get("google_client_id", "").strip()
+    client_secret = cfg.get("google_client_secret", "").strip()
+    if not client_id or not client_secret:
+        return RedirectResponse(url=f"{integrations_ui}?medium_error=missing_credentials")
+
+    redirect_uri = _get_medium_google_redirect_uri(request)
+    try:
+        token_payload = _exchange_google_oauth_code(code, redirect_uri, client_id, client_secret)
+    except Exception as exc:
+        logger.error("Medium Google token exchange failed: %s", exc)
+        return RedirectResponse(url=f"{integrations_ui}?medium_error=token_exchange_failed")
+
+    refresh_token = str(token_payload.get("refresh_token") or "")
+    access_token = str(token_payload.get("access_token") or "")
+    email, name = "", ""
+    if access_token:
+        try:
+            info = _google_userinfo(access_token)
+            email = str(info.get("email") or "")
+            name = str(info.get("name") or "")
+        except Exception as exc:
+            logger.warning("Medium Google userinfo failed: %s", exc)
+
+    set_medium_google_oauth_identity(refresh_token=refresh_token, linked_email=email, linked_name=name)
+    logger.info("Medium Google OAuth linked: email=%s", email or "(unknown)")
+    return RedirectResponse(url=f"{integrations_ui}?medium_google_connected=1")
+
+
+@router.delete("/medium/oauth/google", response_model=MediumConfigResponse)
+async def medium_google_oauth_disconnect() -> MediumConfigResponse:
+    """Remove stored Google identity tokens and linked email (keeps Medium browser session if any)."""
+    clear_medium_google_oauth_identity()
+    return _build_medium_config_response(get_medium_config())
+
+
+@router.post("/medium/session", response_model=MediumConfigResponse)
+async def medium_import_session(body: MediumSessionImportBody) -> MediumConfigResponse:
+    """
+    Store Playwright storage_state for medium.com (from context.storage_state() after signing in).
+
+    Required for the blogging Medium stats agent to run.
+    """
+    try:
+        raw = json.dumps(body.storage_state, separators=(",", ":"))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid storage_state: {e}") from e
+    set_medium_session_storage_state_json(raw)
+    return _build_medium_config_response(get_medium_config())
+
+
+@router.delete("/medium/session", response_model=MediumConfigResponse)
+async def medium_clear_session() -> MediumConfigResponse:
+    """Remove stored Medium browser session."""
+    clear_medium_session_storage()
+    return _build_medium_config_response(get_medium_config())

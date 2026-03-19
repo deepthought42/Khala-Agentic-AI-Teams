@@ -39,9 +39,12 @@ class MediumStatsRunConfig(BaseModel):
     headless: bool = True
     timeout_ms: int = Field(90_000, ge=5_000, le=600_000)
     max_posts: Optional[int] = Field(None, ge=1, description="Cap rows returned after dedupe")
-    storage_state_path: Optional[str] = Field(
-        None,
-        description="Playwright storage_state JSON; overrides MEDIUM_STORAGE_STATE_PATH when set",
+    # Test-only: bypass integration store when set
+    storage_state_override: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="If set, use this Playwright storage_state instead of the platform integration.",
     )
-    email: Optional[str] = Field(None, description="Overrides MEDIUM_EMAIL")
-    password: Optional[str] = Field(None, description="Overrides MEDIUM_PASSWORD")
+    account_hint_override: str = Field(
+        "",
+        description="With storage_state_override, optional hint for the report.",
+    )

@@ -71,14 +71,12 @@ def _patch_job_store(cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_medium_stats_sync_returns_400_without_auth(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing auth yields RuntimeError -> HTTP 400."""
-    monkeypatch.delenv("MEDIUM_STORAGE_STATE_PATH", raising=False)
-    monkeypatch.delenv("MEDIUM_EMAIL", raising=False)
-    monkeypatch.delenv("MEDIUM_PASSWORD", raising=False)
+def test_medium_stats_sync_returns_503_without_integration(client: TestClient) -> None:
+    """Medium stats requires the Medium.com integration to be enabled and configured."""
     r = client.post("/medium-stats", json={"headless": True})
-    assert r.status_code == 400
-    assert "MEDIUM" in r.json().get("detail", "")
+    assert r.status_code == 503
+    detail = str(r.json().get("detail", "")).lower()
+    assert "medium" in detail or "integration" in detail
 
 
 def test_medium_stats_async_writes_artifact(
@@ -103,6 +101,7 @@ def test_medium_stats_async_writes_artifact(
             )
 
     monkeypatch.setattr(_api_main, "BlogMediumStatsAgent", FakeBlogMediumStatsAgent)
+    monkeypatch.setattr(_api_main, "medium_stats_integration_eligible", lambda: (True, ""))
     _patch_job_store(cache_dir, monkeypatch)
 
     r = client.post("/medium-stats-async", json={"headless": True})
@@ -146,6 +145,7 @@ def test_jobs_list_includes_job_type_for_medium_stats(
             return MediumStatsReport(posts=[])
 
     monkeypatch.setattr(_api_main, "BlogMediumStatsAgent", FakeBlogMediumStatsAgent)
+    monkeypatch.setattr(_api_main, "medium_stats_integration_eligible", lambda: (True, ""))
     _patch_job_store(cache_dir, monkeypatch)
 
     r = client.post("/medium-stats-async", json={})

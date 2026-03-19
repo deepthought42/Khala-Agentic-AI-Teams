@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
+from shared.medium_integration_access import resolve_medium_stats_storage_state
+
 from .models import MediumPostStats, MediumStatsReport, MediumStatsRunConfig
-from .selectors import EMAIL_INPUT, ME_STATS_URL, PASSWORD_INPUT, SIGNIN_URL
+from .selectors import ME_STATS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -127,103 +127,35 @@ def extract_posts_from_html(html: str, base_url: str = "https://medium.com") -> 
     return list(posts.values())
 
 
-def _account_hint_from_email(email: str) -> str:
-    if "@" in email:
-        return email.split("@", 1)[1].strip()
-    return ""
-
-
-def _resolve_auth(config: MediumStatsRunConfig) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    storage = (config.storage_state_path or os.environ.get("MEDIUM_STORAGE_STATE_PATH") or "").strip() or None
-    email = (config.email or os.environ.get("MEDIUM_EMAIL") or "").strip() or None
-    password = config.password or os.environ.get("MEDIUM_PASSWORD")
-    if password is not None:
-        password = str(password)
-    if password == "":
-        password = None
-    return storage, email, password
-
-
-def _login_email_password(page: Any, email: str, password: str, warnings: List[str]) -> None:
-    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-
-    page.goto(SIGNIN_URL, wait_until="domcontentloaded")
-    # Optional: open email tab
-    try:
-        email_btn = page.get_by_role("button", name=re.compile(r"email", re.I))
-        if email_btn.count() > 0:
-            email_btn.first.click(timeout=5000)
-    except PlaywrightTimeoutError:
-        warnings.append("Could not click email sign-in button; continuing with visible form.")
-
-    try:
-        page.locator(EMAIL_INPUT).first.fill(email, timeout=20_000)
-    except PlaywrightTimeoutError as e:
-        raise RuntimeError("Medium login: email field not found.") from e
-
-    for label in ("Continue", "Next"):
-        try:
-            btn = page.get_by_role("button", name=label)
-            if btn.count() > 0:
-                btn.first.click(timeout=5000)
-                break
-        except PlaywrightTimeoutError:
-            continue
-
-    try:
-        page.locator(PASSWORD_INPUT).first.fill(password, timeout=25_000)
-    except PlaywrightTimeoutError as e:
-        raise RuntimeError("Medium login: password field not found (magic link / OAuth only?).") from e
-
-    try:
-        sign = page.get_by_role("button", name=re.compile(r"sign\s*in|log\s*in", re.I))
-        sign.first.click(timeout=15_000)
-    except PlaywrightTimeoutError:
-        page.keyboard.press("Enter")
-
-    # networkidle often never settles on Medium; wait for navigation then DOM.
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=45_000)
-    except PlaywrightTimeoutError:
-        warnings.append("Login navigation did not settle within timeout; continuing.")
-
-
 def collect_medium_stats(config: MediumStatsRunConfig) -> MediumStatsReport:
     """
-    Launch Chromium, authenticate, open /me/stats, extract post rows.
+    Launch Chromium with the platform-stored Medium session, open /me/stats, extract rows.
 
-    Raises RuntimeError on missing auth configuration or obvious login failure.
+    Raises RuntimeError when the Medium integration is not configured or Playwright is missing.
     """
     warnings: List[str] = []
-    storage_path, email, password = _resolve_auth(config)
-    if not storage_path and not (email and password):
-        raise RuntimeError(
-            "Medium stats: set MEDIUM_STORAGE_STATE_PATH or both MEDIUM_EMAIL and MEDIUM_PASSWORD "
-            "(or pass storage_state_path / email / password in the request).",
-        )
-    if storage_path and not Path(storage_path).is_file():
-        raise RuntimeError(f"Medium stats: storage state file not found: {storage_path}")
+
+    if config.storage_state_override is not None:
+        storage_state = config.storage_state_override
+        account_hint = config.account_hint_override or ""
+    else:
+        storage_state, account_hint, err = resolve_medium_stats_storage_state()
+        if err:
+            raise RuntimeError(err)
+        if not storage_state:
+            raise RuntimeError("Medium integration session is empty.")
 
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
         raise RuntimeError("playwright is not installed. pip install playwright && playwright install chromium") from e
 
-    account_hint = _account_hint_from_email(email) if email else ""
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=config.headless)
         try:
-            if storage_path:
-                context = browser.new_context(storage_state=storage_path)
-            else:
-                context = browser.new_context()
+            context = browser.new_context(storage_state=storage_state)
             page = context.new_page()
             page.set_default_timeout(config.timeout_ms)
-            if not storage_path:
-                assert email and password
-                _login_email_password(page, email, password, warnings)
-                account_hint = _account_hint_from_email(email)
 
             page.goto(ME_STATS_URL, wait_until="domcontentloaded")
             page.wait_for_timeout(2500)

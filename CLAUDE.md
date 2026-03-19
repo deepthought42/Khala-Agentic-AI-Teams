@@ -135,9 +135,10 @@ Environment variables for LLM: `SW_LLM_PROVIDER`, `SW_LLM_BASE_URL`, `SW_LLM_MOD
 | `TEMPORAL_TASK_QUEUE` | Temporal task queue name |
 | `SECURITY_GATEWAY_ENABLED` | Security gateway toggle (default: true) |
 | `ENABLE_LOG_API` | Exposes HTTP log endpoint |
-| `MEDIUM_STORAGE_STATE_PATH` | Playwright storage state JSON for Medium (OAuth-friendly); preferred over password login |
-| `MEDIUM_EMAIL` / `MEDIUM_PASSWORD` | Email/password sign-in for Medium stats scraper (fragile; many accounts use OAuth only) |
 | `BLOGGING_MEDIUM_STATS_ROOT` | Optional base dir for Medium stats job `work_dir` (default: `{AGENT_CACHE}/blogging_team/medium_stats_runs`) |
+| `MEDIUM_GOOGLE_REDIRECT_URI` | Optional; fixed OAuth redirect for Medium’s Google identity link (`…/api/integrations/medium/oauth/google/callback`) when the API is behind a proxy |
+
+**Medium.com integration:** The blogging **Medium statistics** agent only runs when the **Medium** integration is **enabled** and **configured** in the UI (`/integrations`) or via `GET/PUT /api/integrations/medium`. Users choose which identity provider they use on Medium (Google, Apple, Facebook, X). **Google** is supported for platform OAuth (link Google account); all providers require importing a **Playwright `storage_state`** JSON for the signed-in `medium.com` session (see Integrations UI). Credentials and session data are stored in the encrypted integration DB / `integrations.json` under `AGENT_CACHE`, not via `MEDIUM_*` env vars.
 
 ## Testing
 

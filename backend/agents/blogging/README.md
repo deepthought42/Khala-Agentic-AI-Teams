@@ -11,7 +11,7 @@ This package provides the **blogging agent suite**: research, review, draft, cop
 | **Draft** | Research document + outline + style guide → draft; supports revise-from-feedback (e.g. from Copy Editor) |
 | **Copy Editor** | Draft → feedback items and summary (for Draft revision loop) |
 | **Publication** | Submit draft → pending; human approve → write to `blog_posts`, generate Medium/dev.to/Substack versions; reject → optional revision loop with Draft + Copy Editor |
-| **Medium stats** | Playwright automation: sign in (saved session or email/password) → scrape [medium.com/me/stats](https://medium.com/me/stats) → `medium_stats_report.json` artifact |
+| **Medium stats** | Playwright automation using the **Medium.com platform integration** (stored browser session) → scrape [medium.com/me/stats](https://medium.com/me/stats) → `medium_stats_report.json` artifact |
 
 ### Medium statistics agent (use at your own risk)
 
@@ -24,14 +24,11 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-**Auth (pick one):**
+**Auth:** The agent runs only when the **Medium** integration is **enabled** and **fully configured** in the Unified API (`GET/PUT /api/integrations/medium`) or the Angular **Integrations** page. There is no email/password path: you record which identity provider you use on Medium (Google, Apple, Facebook, X), optionally link Google via platform OAuth, and **import** a Playwright `storage_state` JSON after signing in to `medium.com` in Chromium.
 
-1. **Recommended:** Export a Playwright storage state after a one-time manual login (headed browser). Set `MEDIUM_STORAGE_STATE_PATH` to that JSON file path on the server.
-2. **Email/password:** Set `MEDIUM_EMAIL` and `MEDIUM_PASSWORD` if your Medium account supports password sign-in (not OAuth-only).
+**API:** `POST /medium-stats` (sync) and `POST /medium-stats-async` (job + poll `GET /job/{id}`). Without a valid integration, these return **503**. Results are written to `medium_stats_report.json` in the job’s `work_dir` and appear in the blogging dashboard artifact list.
 
-**API:** `POST /medium-stats` (sync) and `POST /medium-stats-async` (job + poll `GET /job/{id}`). Results are written to `medium_stats_report.json` in the job’s `work_dir` and appear in the blogging dashboard artifact list.
-
-Env vars: see root `CLAUDE.md` (`MEDIUM_*`, `BLOGGING_MEDIUM_STATS_ROOT`).
+Optional env: `BLOGGING_MEDIUM_STATS_ROOT` (job work dir base); Google redirect override `MEDIUM_GOOGLE_REDIRECT_URI` — see root `CLAUDE.md`.
 
 ## Full pipeline
 

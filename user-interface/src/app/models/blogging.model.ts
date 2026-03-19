@@ -77,9 +77,6 @@ export interface MediumStatsRequest {
   headless?: boolean;
   timeout_ms?: number;
   max_posts?: number;
-  storage_state_path?: string;
-  medium_email?: string;
-  medium_password?: string;
 }
 
 /** Summary item for GET /jobs (blog pipeline job list). */

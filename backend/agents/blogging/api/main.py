@@ -32,6 +32,7 @@ from blog_research_agent.models import ResearchBriefInput
 from blog_review_agent import BlogReviewAgent, BlogReviewInput
 from shared.content_profile import ContentProfile, SeriesContext, resolve_length_policy
 from shared.medium_stats_api import MediumStatsRequest
+from shared.medium_integration_access import medium_stats_integration_eligible
 
 from blog_medium_stats_agent.agent import BlogMediumStatsAgent
 from blog_medium_stats_agent.models import MediumStatsReport, MediumStatsRunConfig
@@ -587,17 +588,23 @@ class StartPipelineResponse(BaseModel):
     message: str = "Pipeline started"
 
 
+def _require_medium_integration() -> None:
+    ok, msg = medium_stats_integration_eligible()
+    if not ok:
+        raise HTTPException(status_code=503, detail=msg)
+
+
 def _run_medium_stats_async_job(job_id: str, payload: MediumStatsRequest) -> None:
     """Background worker: scrape Medium stats and write medium_stats_report.json."""
     cfg = MediumStatsRunConfig(
         headless=payload.headless,
         timeout_ms=payload.timeout_ms,
         max_posts=payload.max_posts,
-        storage_state_path=payload.storage_state_path,
-        email=payload.medium_email,
-        password=payload.medium_password,
     )
     try:
+        ok, msg = medium_stats_integration_eligible()
+        if not ok:
+            raise RuntimeError(msg)
         if start_blog_job is not None:
             start_blog_job(job_id)
         if get_blog_job is None:
@@ -809,23 +816,22 @@ def start_research_review_async(request: ResearchAndReviewRequest) -> StartPipel
     summary="Collect Medium post statistics (sync)",
     description=(
         "Runs Playwright against medium.com/me/stats. "
-        "Authenticate with MEDIUM_STORAGE_STATE_PATH or MEDIUM_EMAIL/MEDIUM_PASSWORD, or request fields."
+        "Requires the Medium.com integration: enabled and configured under /api/integrations/medium "
+        "(Google OAuth identity when using Google, plus an imported Playwright browser session)."
     ),
 )
 def medium_stats_sync(payload: MediumStatsRequest) -> MediumStatsReport:
     """Synchronous Medium statistics scrape."""
+    _require_medium_integration()
     cfg = MediumStatsRunConfig(
         headless=payload.headless,
         timeout_ms=payload.timeout_ms,
         max_posts=payload.max_posts,
-        storage_state_path=payload.storage_state_path,
-        email=payload.medium_email,
-        password=payload.medium_password,
     )
     try:
         return BlogMediumStatsAgent().collect(cfg)
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         logger.exception("Medium stats sync failed")
         raise HTTPException(status_code=500, detail=f"Medium stats failed: {e}") from e
@@ -847,6 +853,7 @@ def medium_stats_async(payload: MediumStatsRequest) -> StartPipelineResponse:
             status_code=501,
             detail="Job store not available for async Medium stats",
         )
+    _require_medium_integration()
     job_id = str(uuid.uuid4())[:8]
     work_dir = str(medium_stats_run_dir(job_id))
     create_blog_job(

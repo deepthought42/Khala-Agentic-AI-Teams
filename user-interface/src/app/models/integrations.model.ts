@@ -47,3 +47,35 @@ export interface SlackOAuthConnectResponse {
   url: string;
   client_id: string;
 }
+
+/** Identity provider used on Medium.com (for UX; stats agent uses stored browser session). */
+export type MediumOAuthProvider = 'google' | 'apple' | 'facebook' | 'twitter';
+
+/** Medium config response (GET /api/integrations/medium). */
+export interface MediumConfigResponse {
+  enabled: boolean;
+  oauth_provider: MediumOAuthProvider;
+  oauth_identity_connected: boolean;
+  google_client_configured: boolean;
+  session_configured: boolean;
+  linked_email: string | null;
+  linked_name: string | null;
+}
+
+/** Request body for PUT /api/integrations/medium. */
+export interface MediumConfigUpdate {
+  enabled: boolean;
+  oauth_provider: MediumOAuthProvider;
+  google_client_id: string;
+  google_client_secret: string;
+}
+
+/** Response for GET /api/integrations/medium/oauth/google/connect. */
+export interface MediumGoogleOAuthConnectResponse {
+  url: string;
+}
+
+/** POST /api/integrations/medium/session */
+export interface MediumSessionImportBody {
+  storage_state: Record<string, unknown>;
+}

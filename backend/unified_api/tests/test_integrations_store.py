@@ -115,18 +115,21 @@ def test_clear_slack_oauth_preserves_credentials(tmp_path: Path, monkeypatch: py
 
 
 def test_get_integrations_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """get_integrations_list returns Slack entry without sensitive credentials."""
+    """get_integrations_list returns Slack and Medium entries without sensitive credentials."""
     store, _ = _reload_modules(tmp_path, monkeypatch)
     store.set_slack_config(True, "https://hooks.slack.com/services/T/B/X", channel_display_name="#eng")
     items = store.get_integrations_list()
-    assert len(items) == 1
-    assert items[0]["id"] == "slack"
-    assert items[0]["type"] == "slack"
-    assert items[0]["enabled"] is True
-    assert items[0]["channel"] == "#eng"
-    assert "webhook_url" not in items[0]
-    assert "client_id" not in items[0]
-    assert "client_secret" not in items[0]
+    assert len(items) == 2
+    slack = next(i for i in items if i["id"] == "slack")
+    assert slack["type"] == "slack"
+    assert slack["enabled"] is True
+    assert slack["channel"] == "#eng"
+    assert "webhook_url" not in slack
+    assert "client_id" not in slack
+    assert "client_secret" not in slack
+    medium = next(i for i in items if i["id"] == "medium")
+    assert medium["type"] == "medium"
+    assert medium["enabled"] is False
 
 
 def test_get_slack_config_invalid_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

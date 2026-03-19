@@ -4,6 +4,10 @@ import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import type {
   IntegrationListItem,
+  MediumConfigResponse,
+  MediumConfigUpdate,
+  MediumGoogleOAuthConnectResponse,
+  MediumSessionImportBody,
   SlackConfigResponse,
   SlackConfigUpdate,
   SlackOAuthConnectResponse,
@@ -47,5 +51,35 @@ export class IntegrationsApiService {
    */
   disconnectSlack(): Observable<SlackConfigResponse> {
     return this.http.delete<SlackConfigResponse>(`${this.baseUrl}/slack/oauth`);
+  }
+
+  /** GET /api/integrations/medium */
+  getMediumConfig(): Observable<MediumConfigResponse> {
+    return this.http.get<MediumConfigResponse>(`${this.baseUrl}/medium`);
+  }
+
+  /** PUT /api/integrations/medium */
+  updateMediumConfig(body: MediumConfigUpdate): Observable<MediumConfigResponse> {
+    return this.http.put<MediumConfigResponse>(`${this.baseUrl}/medium`, body);
+  }
+
+  /** GET /api/integrations/medium/oauth/google/connect */
+  getMediumGoogleOAuthUrl(): Observable<MediumGoogleOAuthConnectResponse> {
+    return this.http.get<MediumGoogleOAuthConnectResponse>(`${this.baseUrl}/medium/oauth/google/connect`);
+  }
+
+  /** DELETE /api/integrations/medium/oauth/google */
+  disconnectMediumGoogle(): Observable<MediumConfigResponse> {
+    return this.http.delete<MediumConfigResponse>(`${this.baseUrl}/medium/oauth/google`);
+  }
+
+  /** POST /api/integrations/medium/session */
+  importMediumSession(body: MediumSessionImportBody): Observable<MediumConfigResponse> {
+    return this.http.post<MediumConfigResponse>(`${this.baseUrl}/medium/session`, body);
+  }
+
+  /** DELETE /api/integrations/medium/session */
+  clearMediumSession(): Observable<MediumConfigResponse> {
+    return this.http.delete<MediumConfigResponse>(`${this.baseUrl}/medium/session`);
   }
 }

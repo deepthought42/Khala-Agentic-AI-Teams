@@ -9,6 +9,13 @@ SQLite database via integration_credentials.py — never in the JSON file.
 
 JSON structure (integrations.json):
 {
+  "medium": {
+    "enabled": false,
+    "oauth_provider": "google",
+    "oauth_identity_connected": false,
+    "linked_email": "",
+    "linked_name": ""
+  },
   "slack": {
     "enabled": false,
     "mode": "webhook",        // "webhook" | "bot"
@@ -57,6 +64,7 @@ _LOCK = threading.Lock()
 _OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
 
 _SLACK_SERVICE = "slack"
+_MEDIUM_SERVICE = "medium"
 
 
 def _get_integrations_path() -> Path:
@@ -274,6 +282,143 @@ def verify_and_clear_oauth_state(state: str) -> bool:
     return True
 
 
+def get_medium_config() -> Dict[str, Any]:
+    """
+    Medium.com integration: blogging stats agent and OAuth identity (Google).
+    Session cookies for medium.com are stored encrypted as session_storage_state.
+    """
+    with _LOCK:
+        data = _read_raw()
+    medium = data.get("medium") or {}
+    session_raw = get_credential(_MEDIUM_SERVICE, "session_storage_state")
+    return {
+        "enabled": bool(medium.get("enabled", False)),
+        "oauth_provider": str(medium.get("oauth_provider", "google")).strip() or "google",
+        "oauth_identity_connected": bool(medium.get("oauth_identity_connected", False)),
+        "linked_email": str(medium.get("linked_email", "")).strip(),
+        "linked_name": str(medium.get("linked_name", "")).strip(),
+        "google_client_id": get_credential(_MEDIUM_SERVICE, "google_client_id"),
+        "google_client_secret": get_credential(_MEDIUM_SERVICE, "google_client_secret"),
+        "session_configured": bool(session_raw.strip()) if session_raw else False,
+    }
+
+
+def set_medium_config(
+    *,
+    enabled: bool,
+    oauth_provider: str = "google",
+    google_client_id: str = "",
+    google_client_secret: str = "",
+) -> None:
+    """Persist Medium integration flags and provider. OAuth app creds go to encrypted DB when non-empty."""
+    oauth_provider = (oauth_provider or "google").strip().lower()
+    if oauth_provider not in ("google", "apple", "facebook", "twitter"):
+        oauth_provider = "google"
+
+    if google_client_id.strip():
+        set_credential(_MEDIUM_SERVICE, "google_client_id", google_client_id.strip())
+    if google_client_secret.strip():
+        set_credential(_MEDIUM_SERVICE, "google_client_secret", google_client_secret.strip())
+
+    with _LOCK:
+        data = _read_raw()
+        existing = data.get("medium") or {}
+        data["medium"] = {
+            "enabled": enabled,
+            "oauth_provider": oauth_provider,
+            "oauth_identity_connected": bool(existing.get("oauth_identity_connected", False)),
+            "linked_email": str(existing.get("linked_email", "")).strip(),
+            "linked_name": str(existing.get("linked_name", "")).strip(),
+        }
+        _write_raw(data)
+
+
+def set_medium_google_oauth_identity(
+    *,
+    refresh_token: str,
+    linked_email: str,
+    linked_name: str = "",
+) -> None:
+    """Store Google OAuth refresh token and linked profile (after successful OAuth)."""
+    if refresh_token.strip():
+        set_credential(_MEDIUM_SERVICE, "google_refresh_token", refresh_token.strip())
+    with _LOCK:
+        data = _read_raw()
+        existing = data.get("medium") or {}
+        data["medium"] = {
+            "enabled": bool(existing.get("enabled", True)),
+            "oauth_provider": str(existing.get("oauth_provider", "google")).strip() or "google",
+            "oauth_identity_connected": True,
+            "linked_email": linked_email.strip(),
+            "linked_name": (linked_name or "").strip(),
+        }
+        data.pop("medium_google_oauth_state", None)
+        _write_raw(data)
+
+
+def set_medium_session_storage_state_json(session_json: str) -> None:
+    """Encrypt and store Playwright storage_state JSON for medium.com (required for the stats agent)."""
+    session_json = (session_json or "").strip()
+    if not session_json:
+        delete_credential(_MEDIUM_SERVICE, "session_storage_state")
+        return
+    set_credential(_MEDIUM_SERVICE, "session_storage_state", session_json)
+
+
+def clear_medium_google_oauth_identity() -> None:
+    """Remove Google tokens and linked identity; keeps session and OAuth app credentials."""
+    delete_credential(_MEDIUM_SERVICE, "google_refresh_token")
+    with _LOCK:
+        data = _read_raw()
+        existing = data.get("medium") or {}
+        data["medium"] = {
+            "enabled": bool(existing.get("enabled", False)),
+            "oauth_provider": str(existing.get("oauth_provider", "google")).strip() or "google",
+            "oauth_identity_connected": False,
+            "linked_email": "",
+            "linked_name": "",
+        }
+        data.pop("medium_google_oauth_state", None)
+        _write_raw(data)
+
+
+def clear_medium_session_storage() -> None:
+    """Remove stored Playwright session for Medium."""
+    delete_credential(_MEDIUM_SERVICE, "session_storage_state")
+
+
+def generate_medium_google_oauth_state() -> str:
+    """CSRF state for Medium's Google identity OAuth."""
+    state = secrets.token_urlsafe(32)
+    now = datetime.now(tz=timezone.utc).isoformat()
+    with _LOCK:
+        data = _read_raw()
+        data["medium_google_oauth_state"] = {"value": state, "created_at": now}
+        _write_raw(data)
+    return state
+
+
+def verify_and_clear_medium_google_oauth_state(state: str) -> bool:
+    """Validate Medium Google OAuth state token and expiry; clear stored state."""
+    with _LOCK:
+        data = _read_raw()
+        stored = data.pop("medium_google_oauth_state", None)
+        _write_raw(data)
+
+    if not stored or not state:
+        return False
+    if stored.get("value") != state:
+        return False
+    try:
+        created = datetime.fromisoformat(stored["created_at"])
+        age = datetime.now(tz=timezone.utc) - created
+        if age > timedelta(seconds=_OAUTH_STATE_TTL_SECONDS):
+            return False
+    except (KeyError, ValueError):
+        return False
+    return True
+
+
 def get_integrations_list() -> List[Dict[str, Any]]:
     """
     Return list of integration entries for GET /api/integrations.
@@ -282,11 +427,18 @@ def get_integrations_list() -> List[Dict[str, Any]]:
     with _LOCK:
         data = _read_raw()
     slack = data.get("slack") or {}
+    medium = data.get("medium") or {}
     return [
         {
             "id": "slack",
             "type": "slack",
             "enabled": bool(slack.get("enabled", False)),
             "channel": str(slack.get("channel_display_name", "")).strip() or None,
-        }
+        },
+        {
+            "id": "medium",
+            "type": "medium",
+            "enabled": bool(medium.get("enabled", False)),
+            "channel": str(medium.get("linked_email", "")).strip() or str(medium.get("oauth_provider", "")).strip() or None,
+        },
     ]

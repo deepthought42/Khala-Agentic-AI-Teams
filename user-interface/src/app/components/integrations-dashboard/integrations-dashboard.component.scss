@@ -1,6 +1,44 @@
-.slack-card {
+.slack-card,
+.medium-card {
   max-width: 680px;
   margin-top: 1rem;
+}
+
+.medium-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #000;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.medium-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.session-ok {
+  display: inline-block;
+  margin-left: 0.35rem;
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.medium-google-row {
+  margin-top: 0.5rem;
+}
+
+.medium-google-badge {
+  width: 100%;
+  margin-bottom: 0;
 }
 
 // ── Loading ────────────────────────────────────────────────────────────────
