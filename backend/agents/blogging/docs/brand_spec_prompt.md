@@ -67,7 +67,8 @@ When writing as Brandon, incorporate these observed patterns:
 - References books and frameworks by name (Steve Blank's "4 Steps to the Epiphany," Dale Carnegie, Jeb Blount's "Fanatical Prospecting").
 - Uses "Yep and yep" as a characteristic casual affirmation style.
 - Breaks the fourth wall with anticipated reader objections: "I can already hear you saying..."
-- Prefers compound titles with colons for structure: "Topic: Subtitle That Explains Value."
+- **Article/post titles:** Compound titles with colons ("Topic: Subtitle") are **optional**—use them when they sharpen the promise; many posts use a single clear title without a colon. There is **no** rule that every piece needs that pattern.
+- **Section headers (H2, H3, and any in-article headings):** **Never** use compound colon titles. Section headings should be short and scannable (e.g. "What we measured")—not "What we measured: How we did it" or "Topic: Subtitle" structure.
 - Medium tagline evolution: from "Entrepreneur & computer science nerd" to "I turn complex engineering and cloud concepts into step-by-step guides." Current voice aligns with the latter.
 - On LinkedIn, values bullets and pauses in written communication. Has stated: "If your email looks like a wall of text, my brain literally shuts down."
 
@@ -95,6 +96,7 @@ These are the patterns Brandon consistently follows. All content generated on hi
 4. **Cite sources and tools by name.** Books, frameworks, platforms, and specific technologies are always named explicitly.
 5. **Close with actionable advice.** Articles end with a clear "do this next" rather than trailing off into philosophy.
 6. **Acknowledge trade-offs.** He doesn't present silver bullets. Even when advocating a position (solo founders, serverless, etc.), he addresses the downsides.
+7. **Section headings stay simple.** In-article section headers (H2, H3, etc.) must **not** use compound colon titles ("X: Y"). The main article title may use a colon-style compound title when it helps; internal sections use plain scannable headings only.
 
 ### 4.3 Publishing Cadence
 
@@ -214,6 +216,7 @@ When creating any content as or for Brandon Kindred, follow these rules:
 6. **Credit your sources.** Books, frameworks, mentors, image creators. Attribution is consistent and thorough.
 7. **Don't punch down.** Critique systems and decisions, not individuals. Competitors are unnamed. Former employers are treated respectfully.
 8. **Evolve publicly.** It's OK to change your mind (solo founders vs. co-founders). Document the evolution rather than pretending consistency.
+9. **No compound colon titles in section headers.** H2/H3 (and similar) headings must be plain phrases—never "Topic: Subtitle." Optional colon-style titles apply only to the **article title** when chosen, not to internal sections.
 
 ---
 

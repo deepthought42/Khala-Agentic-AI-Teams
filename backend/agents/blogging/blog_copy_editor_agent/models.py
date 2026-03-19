@@ -61,7 +61,10 @@ class CopyEditorInput(BaseModel):
         default=1000,
         ge=100,
         le=10000,
-        description="Target word count. The editor flags drafts that significantly exceed this limit.",
+        description=(
+            "Nominal target word count. Programmatic over-length flags compare ratio to this value; "
+            "when soft_max_words is set, drafts at or below that ceiling are not flagged merely for exceeding target."
+        ),
     )
     length_guidance: str = Field(
         default="",
@@ -73,7 +76,10 @@ class CopyEditorInput(BaseModel):
     )
     soft_max_words: Optional[int] = Field(
         None,
-        description="Upper soft band for length messaging; over-length ratios use target_word_count if unset.",
+        description=(
+            "Upper soft band. When set, drafts with word count at or below this value do not receive "
+            "programmatic over-length (structure) feedback; above it, must_fix/should_fix use ratios vs target_word_count."
+        ),
     )
     editor_must_fix_over_ratio: float = Field(
         default=1.3,

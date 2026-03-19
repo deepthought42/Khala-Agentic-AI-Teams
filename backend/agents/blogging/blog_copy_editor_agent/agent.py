@@ -220,11 +220,15 @@ class BlogCopyEditorAgent:
                     )
                 )
 
-        # Inject pre-computed length feedback when the draft is far outside the intended band.
-        # Ratios are profile-tunable (e.g. looser for short listicles, tighter for deep dives).
+        # Inject pre-computed length feedback when the draft is outside the intended band.
+        # When soft_max is set, anything at or below that ceiling is acceptable — do not flag for being
+        # merely above the nominal target (e.g. 1134 words vs ~1000 target is fine when soft_max is 1300).
+        # Above soft_max, use profile-tunable ratios vs target for must_fix / should_fix.
         over_ratio = actual_word_count / target_word_count if target_word_count > 0 else 1.0
         cap_label = soft_max if soft_max is not None else target_word_count
-        if over_ratio > must_ratio:
+        past_soft_ceiling = soft_max is None or actual_word_count > soft_max
+
+        if past_soft_ceiling and over_ratio > must_ratio:
             severity = "must_fix"
             issue = (
                 f"Draft is {actual_word_count} words — well over the intended length (~{target_word_count} words"
@@ -247,7 +251,7 @@ class BlogCopyEditorAgent:
                 "Length check: draft=%d words, target=%d words, over_ratio=%.2f — injecting %s feedback",
                 actual_word_count, target_word_count, over_ratio, severity,
             )
-        elif over_ratio > should_ratio:
+        elif past_soft_ceiling and over_ratio > should_ratio:
             feedback_items.append(FeedbackItem(
                 category="structure",
                 severity="should_fix",

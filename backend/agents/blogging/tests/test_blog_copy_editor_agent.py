@@ -13,6 +13,83 @@ from llm_service import DummyLLMClient
 _TEST_STYLE_GUIDE = "Use short sentences. No em dashes."
 
 
+def _draft_n_words(n: int) -> str:
+    """Whitespace-separated tokens so len(draft.split()) == n."""
+    return " ".join(["word"] * n)
+
+
+def _structure_length_items(feedback_items: list) -> list:
+    return [
+        item
+        for item in feedback_items
+        if item.category == "structure"
+        and item.location == "entire draft"
+        and item.issue
+        and "words" in item.issue.lower()
+    ]
+
+
+def test_length_injection_skips_when_within_soft_ceiling() -> None:
+    """1134 words vs ~1000 target must not inject should_fix when soft_max allows it (e.g. 1300)."""
+    llm = DummyLLMClient()
+    agent = BlogCopyEditorAgent(
+        llm_client=llm,
+        writing_style_guide_content=_TEST_STYLE_GUIDE,
+        brand_spec_content="",
+    )
+    result = agent.run(
+        CopyEditorInput(
+            draft=_draft_n_words(1134),
+            target_word_count=1000,
+            soft_min_words=750,
+            soft_max_words=1300,
+        )
+    )
+    assert _structure_length_items(result.feedback_items) == []
+
+
+def test_length_injection_must_fix_past_soft_ceiling() -> None:
+    """Above soft_max, ratio vs target still triggers programmatic length feedback."""
+    llm = DummyLLMClient()
+    agent = BlogCopyEditorAgent(
+        llm_client=llm,
+        writing_style_guide_content=_TEST_STYLE_GUIDE,
+        brand_spec_content="",
+    )
+    result = agent.run(
+        CopyEditorInput(
+            draft=_draft_n_words(1400),
+            target_word_count=1000,
+            soft_min_words=750,
+            soft_max_words=1300,
+        )
+    )
+    length_items = _structure_length_items(result.feedback_items)
+    assert len(length_items) >= 1
+    assert length_items[0].severity == "must_fix"
+
+
+def test_length_injection_soft_max_none_uses_ratio_only() -> None:
+    """Without soft_max, modest overrun vs target still gets should_fix (legacy behavior)."""
+    llm = DummyLLMClient()
+    agent = BlogCopyEditorAgent(
+        llm_client=llm,
+        writing_style_guide_content=_TEST_STYLE_GUIDE,
+        brand_spec_content="",
+    )
+    result = agent.run(
+        CopyEditorInput(
+            draft=_draft_n_words(1111),
+            target_word_count=1000,
+            soft_min_words=None,
+            soft_max_words=None,
+        )
+    )
+    length_items = _structure_length_items(result.feedback_items)
+    assert len(length_items) == 1
+    assert length_items[0].severity == "should_fix"
+
+
 def test_blog_copy_editor_agent_run() -> None:
     """BlogCopyEditorAgent returns summary and feedback_items."""
     llm = DummyLLMClient()
