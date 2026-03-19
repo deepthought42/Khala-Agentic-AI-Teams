@@ -56,6 +56,20 @@ def _manager(cache_dir: str | Path = DEFAULT_CACHE_DIR) -> CentralJobManager:
     return CentralJobManager(team="blogging_team", cache_dir=cache_dir)
 
 
+def medium_stats_run_dir(job_id: str, cache_dir: str | Path = DEFAULT_CACHE_DIR) -> Path:
+    """Resolved directory for Medium stats job artifacts (creates parents and the job folder)."""
+    cache_path = Path(cache_dir).resolve()
+    custom = os.environ.get("BLOGGING_MEDIUM_STATS_ROOT")
+    if custom:
+        base = Path(custom).expanduser().resolve()
+    else:
+        base = cache_path / "blogging_team" / "medium_stats_runs"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = base / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
 def create_blog_job(
     job_id: str,
     brief: str,
@@ -63,6 +77,7 @@ def create_blog_job(
     audience: Optional[str] = None,
     tone_or_purpose: Optional[str] = None,
     work_dir: Optional[str] = None,
+    job_type: Optional[str] = None,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
 ) -> None:
     """Create a new blog job with pending status and persist to cache."""
@@ -73,6 +88,7 @@ def create_blog_job(
         "audience": audience,
         "tone_or_purpose": tone_or_purpose,
         "work_dir": work_dir,
+        "job_type": job_type,
         "status": JOB_STATUS_PENDING,
         "phase": None,
         "progress": 0,
@@ -121,6 +137,7 @@ def list_blog_jobs(
             "phase": data.get("phase"),
             "progress": data.get("progress", 0),
             "created_at": data.get("created_at"),
+            "job_type": data.get("job_type"),
         })
     return result
 

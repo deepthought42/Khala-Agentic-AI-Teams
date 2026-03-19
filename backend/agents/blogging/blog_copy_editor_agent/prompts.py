@@ -13,6 +13,8 @@ If previous feedback is provided, do not re-raise issues that have already been 
 
 You will be given an evaluation instruction below: either a style guide to evaluate against, or a statement that no guidelines were provided. Follow that instruction.
 
+When **CONTENT PROFILE / LENGTH GUIDANCE** appears, treat it as the author's intent for depth and length. A draft can be excellent but wrong for the profile (e.g. a 2,500-word piece when the brief asked for a short listicle, or a shallow post when a deep dive was requested). Factor that into structure and completeness feedback.
+
 ---
 
 **MANDATORY QUALITY DIMENSIONS**

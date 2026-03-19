@@ -79,6 +79,10 @@ class BlogReviewAgent:
             context.append(f"Audience: {review_input.audience}\n")
         if review_input.tone_or_purpose:
             context.append(f"Tone/Purpose: {review_input.tone_or_purpose}\n")
+        if review_input.outline_length_context and review_input.outline_length_context.strip():
+            context.append("LENGTH AND FORMAT (shape the outline to match this — section count and depth):")
+            context.append(review_input.outline_length_context.strip())
+            context.append("")
         context.append("SOURCES (summaries and key points):")
         context.append(refs_text)
 

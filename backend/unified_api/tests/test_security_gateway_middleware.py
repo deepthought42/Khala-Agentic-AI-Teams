@@ -46,6 +46,16 @@ def test_middleware_pass_through_safe_body():
     assert response.status_code != 403
 
 
+def test_middleware_pass_through_medium_stats_safe_body():
+    """POST /api/blogging/medium-stats with neutral JSON is not blocked by security gateway."""
+    response = client.post(
+        "/api/blogging/medium-stats",
+        content=b'{"headless": true, "timeout_ms": 60000}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code != 403
+
+
 def test_skip_non_team_path():
     """GET /health proceeds without security scan (no false 403)."""
     response = client.get("/health")

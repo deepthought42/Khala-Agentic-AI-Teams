@@ -96,9 +96,26 @@ class BlogCopyEditorAgent:
 
         actual_word_count = len(draft.split())
         target_word_count = copy_editor_input.target_word_count
+        soft_min = copy_editor_input.soft_min_words
+        soft_max = copy_editor_input.soft_max_words
+        must_ratio = copy_editor_input.editor_must_fix_over_ratio
+        should_ratio = copy_editor_input.editor_should_fix_over_ratio
 
         context_parts = []
-        context_parts.append(f"Target word count: {target_word_count} words (draft is currently {actual_word_count} words).")
+        band = f"{soft_min}–{soft_max}" if soft_min is not None and soft_max is not None else None
+        if band:
+            context_parts.append(
+                f"Length intent: target ~{target_word_count} words, soft band ~{band} words "
+                f"(draft is currently {actual_word_count} words)."
+            )
+        else:
+            context_parts.append(
+                f"Target word count: {target_word_count} words (draft is currently {actual_word_count} words)."
+            )
+        if (copy_editor_input.length_guidance or "").strip():
+            context_parts.append("")
+            context_parts.append("CONTENT PROFILE / LENGTH GUIDANCE (use when judging depth vs. length):")
+            context_parts.append(copy_editor_input.length_guidance.strip())
         if copy_editor_input.audience:
             context_parts.append(f"Audience: {copy_editor_input.audience}")
         if copy_editor_input.tone_or_purpose:
@@ -203,20 +220,21 @@ class BlogCopyEditorAgent:
                     )
                 )
 
-        # Inject a pre-computed length feedback item when the draft significantly exceeds the target.
-        # This runs regardless of what the LLM flagged, so length is always enforced.
+        # Inject pre-computed length feedback when the draft is far outside the intended band.
+        # Ratios are profile-tunable (e.g. looser for short listicles, tighter for deep dives).
         over_ratio = actual_word_count / target_word_count if target_word_count > 0 else 1.0
-        if over_ratio > 1.3:
+        cap_label = soft_max if soft_max is not None else target_word_count
+        if over_ratio > must_ratio:
             severity = "must_fix"
             issue = (
-                f"Draft is {actual_word_count} words — {actual_word_count - target_word_count} words over "
-                f"the {target_word_count}-word target ({over_ratio:.0%} of target). "
-                "Most readers disengage after 1,000–1,200 words; a post this length will have low completion rates."
+                f"Draft is {actual_word_count} words — well over the intended length (~{target_word_count} words"
+                + (f", soft ceiling ~{soft_max}" if soft_max is not None else "")
+                + f") at {over_ratio:.0%} of target. Trim to fit the content profile."
             )
             suggestion = (
-                f"Trim to approximately {target_word_count} words by cutting or condensing the least essential sections. "
-                "Prioritise removing redundant examples, repeated points, and over-long transitions. "
-                "Every paragraph should earn its place."
+                f"Cut or condense the least essential sections to land near ~{target_word_count} words"
+                + (f" (stay under ~{soft_max} if possible)" if soft_max is not None else "")
+                + ". Remove redundant examples, repeated points, and padded transitions."
             )
             feedback_items.insert(0, FeedbackItem(
                 category="structure",
@@ -229,22 +247,45 @@ class BlogCopyEditorAgent:
                 "Length check: draft=%d words, target=%d words, over_ratio=%.2f — injecting %s feedback",
                 actual_word_count, target_word_count, over_ratio, severity,
             )
-        elif over_ratio > 1.1:
+        elif over_ratio > should_ratio:
             feedback_items.append(FeedbackItem(
                 category="structure",
                 severity="should_fix",
                 location="entire draft",
                 issue=(
-                    f"Draft is {actual_word_count} words, about {actual_word_count - target_word_count} words over "
-                    f"the {target_word_count}-word target. Consider tightening sections to improve readability."
+                    f"Draft is {actual_word_count} words, somewhat over the ~{target_word_count}-word target "
+                    f"({over_ratio:.0%} of target). Consider tightening for readability."
                 ),
                 suggestion=(
-                    f"Look for sections with redundant examples or padded transitions and trim to reach approximately {target_word_count} words."
+                    f"Look for redundant examples or long transitions; aim for approximately {target_word_count} words"
+                    + (f" (soft ceiling ~{cap_label})" if soft_max is not None else "")
+                    + "."
                 ),
             ))
             logger.info(
                 "Length check: draft=%d words, target=%d words, over_ratio=%.2f — injecting should_fix feedback",
                 actual_word_count, target_word_count, over_ratio,
+            )
+
+        if (
+            copy_editor_input.content_profile == "technical_deep_dive"
+            and soft_min is not None
+            and actual_word_count < int(soft_min * 0.88)
+        ):
+            feedback_items.append(
+                FeedbackItem(
+                    category="structure",
+                    severity="consider",
+                    location="entire draft",
+                    issue=(
+                        f"Draft is {actual_word_count} words — for a technical deep dive, it may be thin relative "
+                        f"to the ~{soft_min}–{target_word_count}+ word intent. Check whether key mechanisms, "
+                        "trade-offs, or examples are under-explained."
+                    ),
+                    suggestion=(
+                        "Add substantive detail where it helps the reader (steps, edge cases, rationale) without padding."
+                    ),
+                )
             )
 
         # Derive approved: true when the LLM says so and there are no blocking items.

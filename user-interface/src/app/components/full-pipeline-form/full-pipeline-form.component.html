@@ -20,6 +20,42 @@
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Writing format</mat-label>
+        <mat-select formControlName="content_profile" [attr.aria-label]="'Writing format and length intent'">
+          @for (opt of profileOptions; track opt.value) {
+            <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+          }
+        </mat-select>
+        <mat-hint>{{ selectedProfileHint }}</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Length / scope notes (optional)</mat-label>
+        <textarea matInput formControlName="length_notes" rows="2" [attr.aria-label]="'Optional length notes'"></textarea>
+        <mat-hint>Anything the team should know about depth, sections, or what to skip</mat-hint>
+      </mat-form-field>
+
+      <p class="section-label">Series (optional)</p>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Series title</mat-label>
+        <input matInput formControlName="series_title" [attr.aria-label]="'Series title'">
+      </mat-form-field>
+      <div class="row-2">
+        <mat-form-field appearance="outline" class="half">
+          <mat-label>Part number</mat-label>
+          <input matInput type="number" formControlName="part_number" [attr.aria-label]="'Series part number'">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="half">
+          <mat-label>Planned parts (optional)</mat-label>
+          <input matInput type="number" formControlName="planned_parts" [attr.aria-label]="'Planned number of posts'">
+        </mat-form-field>
+      </div>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>This instalment covers</mat-label>
+        <input matInput formControlName="instalment_scope" [attr.aria-label]="'Scope of this instalment'">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
         <mat-label>Audience</mat-label>
         <input matInput formControlName="audience" [attr.aria-label]="'Target audience'">
       </mat-form-field>
@@ -45,14 +81,20 @@
         <mat-hint>1-10</mat-hint>
       </mat-form-field>
 
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Target word count</mat-label>
-        <input matInput type="number" formControlName="target_word_count" [attr.aria-label]="'Target word count for the draft'">
-        <mat-hint>100-10,000 words (default: 1,000)</mat-hint>
-        @if (form.get('target_word_count')?.invalid && form.get('target_word_count')?.touched) {
-          <mat-error>Must be between 100 and 10,000 words</mat-error>
-        }
-      </mat-form-field>
+      <mat-slide-toggle formControlName="use_custom_word_count" [attr.aria-label]="'Use custom word count'">
+        Advanced: set exact target word count (overrides profile default)
+      </mat-slide-toggle>
+
+      @if (form.get('use_custom_word_count')?.value) {
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Target word count</mat-label>
+          <input matInput type="number" formControlName="target_word_count" [attr.aria-label]="'Target word count for the draft'">
+          <mat-hint>100-10,000 words</mat-hint>
+          @if (form.get('target_word_count')?.invalid && form.get('target_word_count')?.touched) {
+            <mat-error>Must be between 100 and 10,000 words</mat-error>
+          }
+        </mat-form-field>
+      }
 
       <button mat-raised-button color="primary" type="submit" [disabled]="form.invalid">
         Run Full Pipeline

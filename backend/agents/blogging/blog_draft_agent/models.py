@@ -45,6 +45,10 @@ class DraftInput(BaseModel):
         le=10000,
         description="Target word count for the draft. Writer will aim for approximately this length.",
     )
+    length_guidance: str = Field(
+        default="",
+        description="Qualitative length/format instructions (content profile). Appended to target length in prompts.",
+    )
 
     @model_validator(mode="after")
     def require_research_source(self) -> "DraftInput":
@@ -99,4 +103,8 @@ class ReviseDraftInput(BaseModel):
         ge=100,
         le=10000,
         description="Target word count for the revised draft.",
+    )
+    length_guidance: str = Field(
+        default="",
+        description="Qualitative length/format instructions; same as initial draft when revising.",
     )

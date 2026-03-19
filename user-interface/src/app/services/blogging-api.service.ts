@@ -13,6 +13,7 @@ import type {
   BlogJobArtifactsResponse,
   BlogJobArtifactContentResponse,
   StartJobResponse,
+  MediumStatsRequest,
 } from '../models';
 
 /**
@@ -68,6 +69,20 @@ export class BloggingApiService {
       `${this.baseUrl}/research-and-review-async`,
       request
     );
+  }
+
+  /**
+   * POST /medium-stats-async — background Medium statistics job.
+   */
+  startMediumStatsAsync(request: MediumStatsRequest): Observable<StartJobResponse> {
+    return this.http.post<StartJobResponse>(`${this.baseUrl}/medium-stats-async`, request);
+  }
+
+  /**
+   * POST /medium-stats — synchronous scrape (can take minutes).
+   */
+  mediumStatsSync(request: MediumStatsRequest): Observable<unknown> {
+    return this.http.post(`${this.baseUrl}/medium-stats`, request);
   }
 
   /**

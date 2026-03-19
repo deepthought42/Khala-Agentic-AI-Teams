@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -26,9 +27,14 @@ from pydantic import BaseModel, Field
 
 from blog_research_agent.agent import ResearchAgent
 from blog_research_agent.agent_cache import AgentCache
-from llm_service import get_client
+from llm_service import OllamaLLMClient
 from blog_research_agent.models import ResearchBriefInput
 from blog_review_agent import BlogReviewAgent, BlogReviewInput
+from shared.content_profile import ContentProfile, SeriesContext, resolve_length_policy
+from shared.medium_stats_api import MediumStatsRequest
+
+from blog_medium_stats_agent.agent import BlogMediumStatsAgent
+from blog_medium_stats_agent.models import MediumStatsReport, MediumStatsRunConfig
 
 try:
     from shared.artifacts import ARTIFACT_NAMES, ARTIFACT_PRODUCER, read_artifact, write_artifact
@@ -50,6 +56,7 @@ try:
         fail_blog_job,
         approve_blog_job,
         unapprove_blog_job,
+        medium_stats_run_dir,
         JOB_STATUS_COMPLETED,
         JOB_STATUS_NEEDS_REVIEW,
     )
@@ -65,6 +72,7 @@ except ImportError:
     fail_blog_job = None
     approve_blog_job = None
     unapprove_blog_job = None
+    medium_stats_run_dir = None
     JOB_STATUS_COMPLETED = "completed"
     JOB_STATUS_NEEDS_REVIEW = "needs_human_review"
     BloggingError = Exception
@@ -403,7 +411,31 @@ class FullPipelineRequest(BaseModel):
     max_results: int = Field(20, ge=1, le=50, description="Maximum references.")
     run_gates: bool = Field(True, description="Run validators, fact-check, and compliance gates.")
     max_rewrite_iterations: int = Field(3, ge=1, le=10, description="Max rewrite iterations on FAIL.")
-    target_word_count: int = Field(1000, ge=100, le=10000, description="Target word count for the draft.")
+    content_profile: Optional[ContentProfile] = Field(
+        None,
+        description=(
+            "Writing format (listicle, standard article, deep dive, series instalment). "
+            "Drives length guidance when target_word_count is omitted; default is standard (~1000 words)."
+        ),
+    )
+    series_context: Optional[SeriesContext] = Field(
+        None,
+        description="When this post is part of a series — scopes outline and draft to this instalment.",
+    )
+    length_notes: Optional[str] = Field(
+        None,
+        max_length=4000,
+        description="Optional author notes merged into length/format guidance.",
+    )
+    target_word_count: Optional[int] = Field(
+        None,
+        ge=100,
+        le=10000,
+        description=(
+            "Numeric word target override. When set, this wins for target length; soft bands scale from it. "
+            "When omitted, length comes from content_profile (default standard_article ~1000)."
+        ),
+    )
 
 
 class FullPipelineResponse(BaseModel):
@@ -447,13 +479,19 @@ def full_pipeline(request: FullPipelineRequest) -> FullPipelineResponse:
         max_results=request.max_results,
     )
 
+    length_policy = resolve_length_policy(
+        content_profile=request.content_profile,
+        explicit_target_word_count=request.target_word_count,
+        length_notes=request.length_notes,
+        series_context=request.series_context,
+    )
     try:
         research_result, review_result, draft_result, status = run_pipeline(
             brief_input,
             work_dir=work_dir,
             run_gates=request.run_gates,
             max_rewrite_iterations=request.max_rewrite_iterations,
-            target_word_count=request.target_word_count,
+            length_policy=length_policy,
         )
     except Exception as e:
         logger.exception("Full pipeline failed")
@@ -504,6 +542,7 @@ class BlogJobStatusResponse(BaseModel):
     completed_at: Optional[str] = Field(None, description="Job completion timestamp")
     approved_at: Optional[str] = Field(None, description="When the job was approved (ISO timestamp)")
     approved_by: Optional[str] = Field(None, description="Who approved the job (optional)")
+    job_type: Optional[str] = Field(None, description="Job category, e.g. medium_stats")
 
 
 class BlogJobListItem(BaseModel):
@@ -515,6 +554,7 @@ class BlogJobListItem(BaseModel):
     phase: Optional[str] = None
     progress: int = 0
     created_at: Optional[str] = None
+    job_type: Optional[str] = None
 
 
 class ArtifactMeta(BaseModel):
@@ -545,6 +585,52 @@ class StartPipelineResponse(BaseModel):
 
     job_id: str
     message: str = "Pipeline started"
+
+
+def _run_medium_stats_async_job(job_id: str, payload: MediumStatsRequest) -> None:
+    """Background worker: scrape Medium stats and write medium_stats_report.json."""
+    cfg = MediumStatsRunConfig(
+        headless=payload.headless,
+        timeout_ms=payload.timeout_ms,
+        max_posts=payload.max_posts,
+        storage_state_path=payload.storage_state_path,
+        email=payload.medium_email,
+        password=payload.medium_password,
+    )
+    try:
+        if start_blog_job is not None:
+            start_blog_job(job_id)
+        if get_blog_job is None:
+            raise RuntimeError("Job store unavailable")
+        job = get_blog_job(job_id)
+        work_dir_str = job.get("work_dir") if job else None
+        if not work_dir_str:
+            raise RuntimeError("Medium stats job missing work_dir")
+        if update_blog_job is not None:
+            update_blog_job(
+                job_id,
+                status_text="Collecting Medium statistics…",
+                progress=15,
+                phase="medium_stats",
+            )
+        report = BlogMediumStatsAgent().collect(cfg)
+        if write_artifact is None:
+            raise RuntimeError("Artifact persistence not available")
+        write_artifact(work_dir_str, "medium_stats_report.json", report.model_dump(mode="json"))
+        if update_blog_job is not None:
+            update_blog_job(
+                job_id,
+                status=JOB_STATUS_COMPLETED,
+                phase="medium_stats",
+                progress=100,
+                status_text=f"Collected statistics for {len(report.posts)} posts",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        logger.info("Completed Medium stats job %s (%s posts)", job_id, len(report.posts))
+    except Exception as e:
+        logger.exception("Medium stats failed for job %s", job_id)
+        if fail_blog_job is not None:
+            fail_blog_job(job_id, error=str(e), failed_phase="medium_stats")
 
 
 def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> None:
@@ -585,6 +671,12 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
             start_blog_job(job_id)
         job_updater(work_dir=str(work_dir))
 
+        length_policy = resolve_length_policy(
+            content_profile=request.content_profile,
+            explicit_target_word_count=request.target_word_count,
+            length_notes=request.length_notes,
+            series_context=request.series_context,
+        )
         try:
             research_result, review_result, draft_result, status = run_pipeline(
                 brief_input,
@@ -592,7 +684,7 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
                 run_gates=request.run_gates,
                 max_rewrite_iterations=request.max_rewrite_iterations,
                 job_updater=job_updater,
-                target_word_count=request.target_word_count,
+                length_policy=length_policy,
             )
 
             # Mark job as completed
@@ -711,6 +803,68 @@ def start_research_review_async(request: ResearchAndReviewRequest) -> StartPipel
     return StartPipelineResponse(job_id=job_id, message="Research and review started")
 
 
+@app.post(
+    "/medium-stats",
+    response_model=MediumStatsReport,
+    summary="Collect Medium post statistics (sync)",
+    description=(
+        "Runs Playwright against medium.com/me/stats. "
+        "Authenticate with MEDIUM_STORAGE_STATE_PATH or MEDIUM_EMAIL/MEDIUM_PASSWORD, or request fields."
+    ),
+)
+def medium_stats_sync(payload: MediumStatsRequest) -> MediumStatsReport:
+    """Synchronous Medium statistics scrape."""
+    cfg = MediumStatsRunConfig(
+        headless=payload.headless,
+        timeout_ms=payload.timeout_ms,
+        max_posts=payload.max_posts,
+        storage_state_path=payload.storage_state_path,
+        email=payload.medium_email,
+        password=payload.medium_password,
+    )
+    try:
+        return BlogMediumStatsAgent().collect(cfg)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Medium stats sync failed")
+        raise HTTPException(status_code=500, detail=f"Medium stats failed: {e}") from e
+
+
+@app.post(
+    "/medium-stats-async",
+    response_model=StartPipelineResponse,
+    summary="Start Medium statistics collection asynchronously",
+    description=(
+        "Creates a job with job_type medium_stats and work_dir under medium_stats_runs. "
+        "Poll GET /job/{job_id}; artifact medium_stats_report.json when status is completed."
+    ),
+)
+def medium_stats_async(payload: MediumStatsRequest) -> StartPipelineResponse:
+    """Start Medium stats job in a background thread."""
+    if create_blog_job is None or medium_stats_run_dir is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Job store not available for async Medium stats",
+        )
+    job_id = str(uuid.uuid4())[:8]
+    work_dir = str(medium_stats_run_dir(job_id))
+    create_blog_job(
+        job_id,
+        brief="Medium post statistics",
+        work_dir=work_dir,
+        job_type="medium_stats",
+    )
+    thread = threading.Thread(
+        target=_run_medium_stats_async_job,
+        args=(job_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    logger.info("Started async Medium stats job %s", job_id)
+    return StartPipelineResponse(job_id=job_id, message="Medium statistics job started")
+
+
 @app.get(
     "/job/{job_id}",
     response_model=BlogJobStatusResponse,
@@ -758,6 +912,7 @@ def get_job_status(job_id: str) -> BlogJobStatusResponse:
         completed_at=job.get("completed_at"),
         approved_at=job.get("approved_at"),
         approved_by=job.get("approved_by"),
+        job_type=job.get("job_type"),
     )
 
 
@@ -873,6 +1028,7 @@ def approve_job(job_id: str) -> BlogJobStatusResponse:
         completed_at=updated.get("completed_at"),
         approved_at=updated.get("approved_at"),
         approved_by=updated.get("approved_by"),
+        job_type=updated.get("job_type"),
     )
 
 
@@ -923,6 +1079,7 @@ def unapprove_job(job_id: str) -> BlogJobStatusResponse:
         completed_at=updated.get("completed_at"),
         approved_at=updated.get("approved_at"),
         approved_by=updated.get("approved_by"),
+        job_type=updated.get("job_type"),
     )
 
 
@@ -1033,6 +1190,32 @@ def list_jobs(running_only: bool = False) -> List[BlogJobListItem]:
             phase=job.get("phase"),
             progress=job.get("progress", 0),
             created_at=job.get("created_at"),
+            job_type=job.get("job_type"),
         )
         for job in jobs
     ]
+
+
+def _rebuild_api_models() -> None:
+    """Resolve PEP 563 annotations for Pydantic (e.g. dynamic import in tests)."""
+    _ns: Dict[str, Any] = {**globals()}
+    for _cls in (
+        AudienceDetails,
+        ResearchAndReviewRequest,
+        TitleChoiceResponse,
+        ResearchAndReviewResponse,
+        FullPipelineRequest,
+        FullPipelineResponse,
+        BlogJobStatusResponse,
+        BlogJobListItem,
+        ArtifactMeta,
+        ArtifactListResponse,
+        ArtifactContentResponse,
+        StartPipelineResponse,
+        CancelJobResponse,
+        DeleteJobResponse,
+    ):
+        _cls.model_rebuild(_types_namespace=_ns)
+
+
+_rebuild_api_models()

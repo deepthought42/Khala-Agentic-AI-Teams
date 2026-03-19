@@ -12,7 +12,19 @@
 <div class="dashboard-layout">
   <div class="main-content">
     @if (selectedBlogJob && selectedJobStatus) {
-      <app-blog-pipeline-flow [status]="selectedJobStatus" />
+      @if (selectedJobStatus.job_type === 'medium_stats') {
+        <mat-card class="medium-stats-job-banner">
+          <mat-card-content>
+            <p class="mat-body-2 banner-title">
+              <strong>Medium statistics job</strong>
+              — {{ selectedJobStatus.status_text || selectedJobStatus.status }}
+            </p>
+            <mat-progress-bar mode="determinate" [value]="selectedJobStatus.progress" />
+          </mat-card-content>
+        </mat-card>
+      } @else {
+        <app-blog-pipeline-flow [status]="selectedJobStatus" />
+      }
     }
     <mat-tab-group [(selectedIndex)]="activeTabIndex">
       <mat-tab label="Research and Review">
@@ -29,6 +41,11 @@
           @if (fullPipelineResult) {
             <app-full-pipeline-results [data]="fullPipelineResult" />
           }
+        </div>
+      </mat-tab>
+      <mat-tab label="Medium stats">
+        <div class="tab-content">
+          <app-medium-stats-form (submitRequest)="onMediumStatsSubmit($event)" />
         </div>
       </mat-tab>
       <mat-tab label="Assets">
@@ -117,6 +134,9 @@
                     (click)="selectJob(job)"
                   >
                     <span class="job-brief">{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
+                    @if (job.job_type === 'medium_stats') {
+                      <span class="job-type-tag">Medium stats</span>
+                    }
                     <span class="job-id">{{ job.job_id }}</span>
                     <span class="job-status-pill" [class]="'status-' + job.status">{{ job.status }}</span>
                   </button>
@@ -134,6 +154,9 @@
                     (click)="selectJob(job)"
                   >
                     <span class="job-brief">{{ job.brief ? (job.brief | slice:0:50) + (job.brief.length > 50 ? '…' : '') : 'Pipeline' }}</span>
+                    @if (job.job_type === 'medium_stats') {
+                      <span class="job-type-tag">Medium stats</span>
+                    }
                     <span class="job-id">{{ job.job_id }}{{ job.created_at ? ' · ' + (job.created_at | slice:0:10) : '' }}</span>
                     <span class="job-status-pill" [class]="'status-' + job.status">{{ job.status }}</span>
                   </button>
@@ -194,6 +217,9 @@
               </div>
               <h3 class="detail-section-title">Job details</h3>
               <div class="detail-grid">
+                @if (selectedJobStatus.job_type) {
+                  <p class="detail-row"><strong>Job type</strong> {{ selectedJobStatus.job_type }}</p>
+                }
                 <p class="detail-row"><strong>Phase</strong> {{ selectedJobStatus.phase ?? '—' }}</p>
                 <p class="detail-row"><strong>Progress</strong> {{ selectedJobStatus.progress }}%</p>
                 <p class="detail-row"><strong>Approved</strong> {{ jobApprovedLabel() }}</p>

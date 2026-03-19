@@ -80,6 +80,7 @@ export function fromBlogJobListItem(s: BlogJobListItem): UnifiedJobSummary {
     createdAt: s.created_at,
     progress: s.progress,
     phase: s.phase,
+    jobType: s.job_type ?? undefined,
   };
 }
 

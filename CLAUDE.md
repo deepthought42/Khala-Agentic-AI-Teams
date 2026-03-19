@@ -135,6 +135,9 @@ Environment variables for LLM: `SW_LLM_PROVIDER`, `SW_LLM_BASE_URL`, `SW_LLM_MOD
 | `TEMPORAL_TASK_QUEUE` | Temporal task queue name |
 | `SECURITY_GATEWAY_ENABLED` | Security gateway toggle (default: true) |
 | `ENABLE_LOG_API` | Exposes HTTP log endpoint |
+| `MEDIUM_STORAGE_STATE_PATH` | Playwright storage state JSON for Medium (OAuth-friendly); preferred over password login |
+| `MEDIUM_EMAIL` / `MEDIUM_PASSWORD` | Email/password sign-in for Medium stats scraper (fragile; many accounts use OAuth only) |
+| `BLOGGING_MEDIUM_STATS_ROOT` | Optional base dir for Medium stats job `work_dir` (default: `{AGENT_CACHE}/blogging_team/medium_stats_runs`) |
 
 ## Testing
 

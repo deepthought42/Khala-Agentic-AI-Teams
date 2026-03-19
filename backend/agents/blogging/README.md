@@ -11,6 +11,27 @@ This package provides the **blogging agent suite**: research, review, draft, cop
 | **Draft** | Research document + outline + style guide → draft; supports revise-from-feedback (e.g. from Copy Editor) |
 | **Copy Editor** | Draft → feedback items and summary (for Draft revision loop) |
 | **Publication** | Submit draft → pending; human approve → write to `blog_posts`, generate Medium/dev.to/Substack versions; reject → optional revision loop with Draft + Copy Editor |
+| **Medium stats** | Playwright automation: sign in (saved session or email/password) → scrape [medium.com/me/stats](https://medium.com/me/stats) → `medium_stats_report.json` artifact |
+
+### Medium statistics agent (use at your own risk)
+
+Automating a logged-in Medium session may conflict with Medium’s terms of service. Intended for **internal** use only. The UI changes often; selectors may need updates.
+
+**Install browser binaries** (once per environment):
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+**Auth (pick one):**
+
+1. **Recommended:** Export a Playwright storage state after a one-time manual login (headed browser). Set `MEDIUM_STORAGE_STATE_PATH` to that JSON file path on the server.
+2. **Email/password:** Set `MEDIUM_EMAIL` and `MEDIUM_PASSWORD` if your Medium account supports password sign-in (not OAuth-only).
+
+**API:** `POST /medium-stats` (sync) and `POST /medium-stats-async` (job + poll `GET /job/{id}`). Results are written to `medium_stats_report.json` in the job’s `work_dir` and appear in the blogging dashboard artifact list.
+
+Env vars: see root `CLAUDE.md` (`MEDIUM_*`, `BLOGGING_MEDIUM_STATS_ROOT`).
 
 ## Full pipeline
 
@@ -53,6 +74,23 @@ When `work_dir` is provided, the pipeline persists all outputs as versioned arti
 **Closed-loop rewrite**: On any FAIL, the pipeline passes `required_fixes` to the Draft agent and re-runs gates until PASS or max iterations (default 3). Then status is `NEEDS_HUMAN_REVIEW`.
 
 **API**: `POST /full-pipeline` runs the full pipeline with gates. `POST /research-and-review` accepts optional `work_dir` or `run_id` to persist artifacts.
+
+### Content profiles (guideline-based length)
+
+Full-pipeline requests can set a **`content_profile`** instead of guessing a word count:
+
+| Profile | Typical target | Use case |
+|---------|----------------|----------|
+| `short_listicle` | ~750 words | Scannable listicle / high-level explainer |
+| `standard_article` | ~1000 words | Default balanced article |
+| `technical_deep_dive` | ~2200 words | Substantive technical detail |
+| `series_instalment` | ~1400 words | One post in a multi-part series |
+
+Optional **`series_context`** scopes outlines and drafts to a single instalment. **`length_notes`** adds author-specific scope hints.
+
+**Precedence:** If **`target_word_count`** is sent, it overrides the numeric target (still clamped 100–10_000); soft bands scale from it. The profile still influences editor strictness (e.g. tighter over-length checks for deep dives, looser for listicles). If both profile and target are omitted, behavior matches the legacy default (`standard_article`, ~1000 words).
+
+Resolution lives in [`shared/content_profile.py`](shared/content_profile.py).
 
 ## Features
 
@@ -189,6 +227,7 @@ blogging/
 ├── blog_compliance_agent/   # Brand/style enforcer (veto on FAIL)
 ├── blog_fact_check_agent/   # Claims and risk officer
 ├── blog_publication_agent/  # Submit, approve/reject, platform versions
+├── blog_medium_stats_agent/ # Medium dashboard stats (Playwright)
 ├── shared/                  # Artifacts, brand_spec_prompt loader
 ├── validators/              # Deterministic checks (banned phrases, reading level, etc.)
 ├── agent_implementations/

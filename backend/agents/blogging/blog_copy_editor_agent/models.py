@@ -63,6 +63,34 @@ class CopyEditorInput(BaseModel):
         le=10000,
         description="Target word count. The editor flags drafts that significantly exceed this limit.",
     )
+    length_guidance: str = Field(
+        default="",
+        description="Content profile / qualitative length expectations for evaluation context.",
+    )
+    soft_min_words: Optional[int] = Field(
+        None,
+        description="Lower soft band; optional under-length hint for deep profiles.",
+    )
+    soft_max_words: Optional[int] = Field(
+        None,
+        description="Upper soft band for length messaging; over-length ratios use target_word_count if unset.",
+    )
+    editor_must_fix_over_ratio: float = Field(
+        default=1.3,
+        ge=1.0,
+        le=3.0,
+        description="actual/target above this ratio triggers must_fix length feedback.",
+    )
+    editor_should_fix_over_ratio: float = Field(
+        default=1.1,
+        ge=1.0,
+        le=2.0,
+        description="actual/target above this ratio triggers should_fix length feedback.",
+    )
+    content_profile: Optional[str] = Field(
+        None,
+        description="Resolved profile id (e.g. technical_deep_dive) for under-length hints.",
+    )
 
 
 class CopyEditorOutput(BaseModel):

@@ -42,6 +42,15 @@ from .blog_job_store import (
     delete_blog_job,
 )
 from .style_loader import load_style_file
+from .content_profile import (
+    ContentProfile,
+    LengthPolicy,
+    SeriesContext,
+    build_draft_length_instruction,
+    build_review_length_context,
+    resolve_length_policy,
+    resolve_length_policy_from_request_dict,
+)
 from .models import (
     BlogPhase,
     PHASE_PROGRESS_RANGES,
@@ -89,4 +98,11 @@ __all__ = [
     "load_style_file",
     "read_artifact",
     "write_artifact",
+    "ContentProfile",
+    "LengthPolicy",
+    "SeriesContext",
+    "build_draft_length_instruction",
+    "build_review_length_context",
+    "resolve_length_policy",
+    "resolve_length_policy_from_request_dict",
 ]

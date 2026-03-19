@@ -36,6 +36,10 @@ class BlogReviewInput(BaseModel):
         None,
         description="Desired tone or purpose, e.g. 'educational', 'technical deep-dive'.",
     )
+    outline_length_context: Optional[str] = Field(
+        None,
+        description="Content profile and length guidance for outline depth (from shared.content_profile).",
+    )
     references: List[ResearchReference] = Field(
         ...,
         description="List of researched sources (summaries and key points) to use for titles and outline.",

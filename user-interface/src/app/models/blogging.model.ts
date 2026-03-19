@@ -29,6 +29,24 @@ export interface ResearchAndReviewResponse {
   notes?: string;
 }
 
+/**
+ * Semantic writing format for POST /full-pipeline (matches backend `ContentProfile`).
+ * Drives length guidance when `target_word_count` is omitted.
+ */
+export type BlogContentProfile =
+  | 'short_listicle'
+  | 'standard_article'
+  | 'technical_deep_dive'
+  | 'series_instalment';
+
+/** Optional scope when the post is one instalment of a series (matches backend `SeriesContext`). */
+export interface BlogSeriesContext {
+  series_title?: string;
+  part_number?: number;
+  planned_parts?: number;
+  instalment_scope?: string;
+}
+
 /** Request for POST /full-pipeline. */
 export interface FullPipelineRequest {
   brief: string;
@@ -38,7 +56,11 @@ export interface FullPipelineRequest {
   max_results?: number;
   run_gates?: boolean;
   max_rewrite_iterations?: number;
+  /** Overrides numeric target when set; otherwise length comes from `content_profile`. */
   target_word_count?: number;
+  content_profile?: BlogContentProfile;
+  series_context?: BlogSeriesContext;
+  length_notes?: string;
 }
 
 /** Response from POST /full-pipeline. */
@@ -50,6 +72,16 @@ export interface FullPipelineResponse {
   draft_preview?: string;
 }
 
+/** Request for POST /medium-stats and /medium-stats-async. */
+export interface MediumStatsRequest {
+  headless?: boolean;
+  timeout_ms?: number;
+  max_posts?: number;
+  storage_state_path?: string;
+  medium_email?: string;
+  medium_password?: string;
+}
+
 /** Summary item for GET /jobs (blog pipeline job list). */
 export interface BlogJobListItem {
   job_id: string;
@@ -58,6 +90,8 @@ export interface BlogJobListItem {
   phase?: string;
   progress: number;
   created_at?: string;
+  /** Set to `medium_stats` for Medium statistics jobs. */
+  job_type?: string | null;
 }
 
 /** Full status for GET /job/{job_id} (blog pipeline job polling). */
@@ -81,6 +115,7 @@ export interface BlogJobStatusResponse {
   completed_at?: string;
   approved_at?: string;
   approved_by?: string;
+  job_type?: string | null;
 }
 
 /** Metadata for a single artifact (from GET /job/{id}/artifacts). */

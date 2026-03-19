@@ -1,0 +1,47 @@
+<mat-card class="medium-stats-card">
+  <mat-card-header>
+    <mat-card-title>Medium post statistics</mat-card-title>
+    <mat-card-subtitle>
+      Starts a background job that signs in to Medium (via saved session or credentials) and scrapes
+      <strong>medium.com/me/stats</strong>. Results are stored as
+      <code>medium_stats_report.json</code> on the job. For production, prefer server environment variables
+      (<code>MEDIUM_STORAGE_STATE_PATH</code> or <code>MEDIUM_EMAIL</code> / <code>MEDIUM_PASSWORD</code>).
+    </mat-card-subtitle>
+  </mat-card-header>
+  <mat-card-content>
+    <form [formGroup]="form" (ngSubmit)="onSubmit()" class="medium-stats-form">
+      <mat-slide-toggle formControlName="headless">Headless browser</mat-slide-toggle>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Timeout (ms)</mat-label>
+        <input matInput type="number" formControlName="timeout_ms" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Max posts (optional)</mat-label>
+        <input matInput type="number" formControlName="max_posts" min="1" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Storage state file path (optional)</mat-label>
+        <input matInput formControlName="storage_state_path" autocomplete="off" />
+        <mat-hint>Playwright JSON; overrides MEDIUM_STORAGE_STATE_PATH</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Medium email (optional)</mat-label>
+        <input matInput type="email" formControlName="medium_email" autocomplete="username" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Medium password (optional)</mat-label>
+        <input matInput type="password" formControlName="medium_password" autocomplete="current-password" />
+        <mat-hint>Sent once per request; cleared from the form after submit</mat-hint>
+      </mat-form-field>
+
+      <button mat-flat-button color="primary" type="submit" [disabled]="form.invalid">
+        Start async job
+      </button>
+    </form>
+  </mat-card-content>
+</mat-card>

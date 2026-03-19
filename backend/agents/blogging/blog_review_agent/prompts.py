@@ -28,6 +28,7 @@ Write a detailed outline for the blog post that:
 - Includes section headings and subheadings.
 - Under each section, add brief notes and details (facts, quotes, examples, or angles from the sources) that would be useful for writing the first draft.
 - Ensures the outline is actionable: a writer could draft from it without re-reading all sources.
+- If a LENGTH AND FORMAT block appears in the input, obey it: match outline depth, breadth, and instalment scope (e.g. series = one part only, listicle = scannable sections, deep dive = room for technical detail).
 
 Return a single JSON object with exactly these keys:
 - "title_choices": list of exactly 5 objects, each with "title" (string) and "probability_of_success" (float 0–1).

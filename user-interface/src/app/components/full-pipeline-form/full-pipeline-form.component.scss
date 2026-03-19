@@ -7,3 +7,21 @@ form {
   flex-direction: column;
   gap: 0.5rem;
 }
+
+.section-label {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.row-2 {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.half {
+  flex: 1 1 140px;
+  min-width: 140px;
+}

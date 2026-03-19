@@ -2,6 +2,10 @@
 
 Use these rules for every piece of content. Treat them as mandatory unless a specific instruction says otherwise. This document merges the brand and writing style guide with the structured brand spec so writers and AI agents can produce content that feels like Brandon wrote it.
 
+### Pipeline: content profiles (length intent)
+
+The blogging full pipeline can receive a **content profile** (short listicle, standard article, technical deep dive, series instalment) so targets are guideline-based rather than only a raw word count. The draft and copy editor prompts include that intent; an optional **target word count** still overrides the numeric target when needed. See the blogging README for field names and precedence.
+
 ---
 
 ## 1. Brand snapshot

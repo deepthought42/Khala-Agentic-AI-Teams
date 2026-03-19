@@ -28,6 +28,14 @@ from blog_publication_agent.models import PublishingPack
 from blog_review_agent import BlogReviewAgent, BlogReviewInput
 from shared.artifacts import read_artifact, write_artifact
 from shared.brand_spec import load_brand_spec_prompt
+from shared.content_profile import (
+    ContentProfile,
+    LengthPolicy,
+    SeriesContext,
+    build_draft_length_instruction,
+    build_review_length_context,
+    resolve_length_policy,
+)
 from shared.style_loader import load_style_file
 from shared.errors import (
     BloggingError,
@@ -66,7 +74,11 @@ def run_pipeline(
     max_rewrite_iterations: int = MAX_REWRITE_ITERATIONS,
     run_gates: bool = True,
     job_updater: Optional[JobUpdater] = None,
-    target_word_count: int = 1000,
+    length_policy: Optional[LengthPolicy] = None,
+    content_profile: Optional[ContentProfile] = None,
+    series_context: Optional[SeriesContext] = None,
+    length_notes: Optional[str] = None,
+    target_word_count: Optional[int] = None,
 ):
     """
     Run the full blog writing pipeline: research -> review -> draft -> copy-editor loop.
@@ -84,6 +96,12 @@ def run_pipeline(
         run_gates: Whether to run validators/compliance gates.
         job_updater: Optional callback for UI phase tracking updates.
             Called with (phase, progress, status_text, **kwargs).
+        length_policy: Pre-resolved length/format policy. When omitted, built from
+            content_profile, series_context, length_notes, and optional target_word_count.
+        content_profile: Semantic writing format (used if length_policy not passed).
+        series_context: Optional series instalment scope.
+        length_notes: Optional author notes merged into length guidance.
+        target_word_count: Optional override for numeric target (100–10_000).
 
     Returns:
         Tuple of (research_result, review_result, draft_result, status).
@@ -118,6 +136,14 @@ def run_pipeline(
     
     if llm_client is None:
         llm_client = get_client("blog")
+
+    if length_policy is None:
+        length_policy = resolve_length_policy(
+            content_profile=content_profile,
+            explicit_target_word_count=target_word_count,
+            length_notes=length_notes,
+            series_context=series_context,
+        )
 
     if work_dir is not None:
         work_path = Path(work_dir).resolve()
@@ -180,6 +206,7 @@ def run_pipeline(
             brief=brief.brief,
             audience=brief.audience,
             tone_or_purpose=brief.tone_or_purpose,
+            outline_length_context=build_review_length_context(length_policy),
             references=research_result.references,
         )
         review_result = review_agent.run(
@@ -245,7 +272,8 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
-                    target_word_count=target_word_count,
+                    target_word_count=length_policy.target_word_count,
+                    length_guidance=build_draft_length_instruction(length_policy),
                 )
                 draft_output_path = (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
                 draft_result = draft_agent.run(
@@ -282,7 +310,13 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     previous_feedback_items=previous_feedback_items if previous_feedback_items else None,
-                    target_word_count=target_word_count,
+                    target_word_count=length_policy.target_word_count,
+                    length_guidance=length_policy.length_guidance,
+                    soft_min_words=length_policy.soft_min_words,
+                    soft_max_words=length_policy.soft_max_words,
+                    editor_must_fix_over_ratio=length_policy.editor_must_fix_over_ratio,
+                    editor_should_fix_over_ratio=length_policy.editor_should_fix_over_ratio,
+                    content_profile=length_policy.content_profile.value,
                 )
                 feedback_path = (Path(work_dir) / f"editor_feedback_iter_{copy_edit_num}.json") if work_dir is not None else None
                 copy_editor_result = copy_editor_agent.run(
@@ -317,7 +351,8 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
-                    target_word_count=target_word_count,
+                    target_word_count=length_policy.target_word_count,
+                    length_guidance=build_draft_length_instruction(length_policy),
                 )
                 previous_feedback_items = copy_editor_result.feedback_items
                 draft_output_path = (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
@@ -478,7 +513,8 @@ def run_pipeline(
                     audience=brief.audience,
                     tone_or_purpose=brief.tone_or_purpose,
                     allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
-                    target_word_count=target_word_count,
+                    target_word_count=length_policy.target_word_count,
+                    length_guidance=build_draft_length_instruction(length_policy),
                 )
                 draft_output_path = Path(work_dir) / f"draft_rewrite_{rewrite_iter + 1}.md"
                 draft_result = draft_agent.revise(

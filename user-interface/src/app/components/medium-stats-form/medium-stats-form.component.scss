@@ -1,0 +1,18 @@
+.medium-stats-card {
+  max-width: 640px;
+}
+
+.medium-stats-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.full-width {
+  width: 100%;
+}
+
+mat-slide-toggle {
+  margin-bottom: 0.25rem;
+}

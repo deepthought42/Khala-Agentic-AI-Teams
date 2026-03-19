@@ -42,15 +42,18 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
     """
     Run the full blog pipeline and update the job store. Used by API and Temporal activity.
     request_dict: brief, title_concept (optional), audience (str or dict), tone_or_purpose,
-                  max_results, run_gates, max_rewrite_iterations.
+                  max_results, run_gates, max_rewrite_iterations,
+                  content_profile, series_context, length_notes, target_word_count (all optional).
     """
     try:
         from blog_research_agent.models import ResearchBriefInput
         from agent_implementations.blog_writing_process_v2 import run_pipeline
+        from shared.content_profile import resolve_length_policy_from_request_dict
     except ImportError:
         try:
             from blog_research_agent.models import ResearchBriefInput
             from blogging.agent_implementations.blog_writing_process_v2 import run_pipeline
+            from blogging.shared.content_profile import resolve_length_policy_from_request_dict
         except ImportError as e:
             logger.exception("Import failed for pipeline job %s", job_id)
             _fail_job(job_id, str(e))
@@ -134,13 +137,14 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
         hb_thread.start()
 
     try:
+        length_policy = resolve_length_policy_from_request_dict(request_dict)
         research_result, review_result, draft_result, status = run_pipeline(
             brief_input,
             work_dir=work_dir,
             run_gates=bool(request_dict.get("run_gates", True)),
             max_rewrite_iterations=int(request_dict.get("max_rewrite_iterations", 3)),
             job_updater=job_updater,
-            target_word_count=int(request_dict.get("target_word_count", 1000)),
+            length_policy=length_policy,
         )
         title_choices = [
             {"title": tc.title, "probability_of_success": tc.probability_of_success}

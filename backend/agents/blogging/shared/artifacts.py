@@ -29,6 +29,7 @@ ARTIFACT_NAMES = (
     "validator_report.json",
     "publishing_pack.json",
     "editor_feedback.json",
+    "medium_stats_report.json",
 )
 
 # Static metadata: which pipeline phase/agent produces each artifact (for API list response)
@@ -46,6 +47,7 @@ ARTIFACT_PRODUCER: dict[str, dict[str, str]] = {
     "validator_report.json": {"producer_phase": "compliance", "producer_agent": "Validators"},
     "publishing_pack.json": {"producer_phase": "finalize", "producer_agent": "Pipeline"},
     "editor_feedback.json": {"producer_phase": "copy_edit", "producer_agent": "BlogCopyEditorAgent"},
+    "medium_stats_report.json": {"producer_phase": "medium_stats", "producer_agent": "BlogMediumStatsAgent"},
 }
 
 
