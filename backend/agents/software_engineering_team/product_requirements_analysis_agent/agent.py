@@ -30,13 +30,14 @@ from .prompts import (
     CONSOLIDATE_QUESTIONS_PROMPT,
     CONTEXT_CONSTRAINTS_QUESTIONS_PROMPT,
     GENERATE_QUESTION_RECOMMENDATIONS_PROMPT,
+    PRD_COMPLETENESS_REPAIR_PROMPT,
+    PRD_PROMPT,
     REVIEW_QUESTIONS_ALIGNMENT_PROMPT,
     SPEC_CLEANUP_CHUNK_PROMPT,
     SPEC_CLEANUP_PROMPT,
     SPEC_CONSISTENCY_CLARIFICATION_PROMPT,
     SPEC_REVIEW_PROMPT,
     SPEC_UPDATE_PROMPT,
-    PRD_PROMPT,
 )
 from planning_v2_team.tool_agents.json_utils import (
     parse_json_with_recovery,
@@ -65,6 +66,19 @@ MAX_CONSISTENCY_LOOPS = 3
 
 # Subdirectory under repo where PRA writes all artifacts (validated_spec, PRD, updated_spec*, qa_history).
 PRODUCT_ANALYSIS_SUBDIR = "plan/product_analysis"
+
+PRD_REQUIRED_SECTIONS = [
+    "Executive Summary",
+    "Problem Statement",
+    "Goals and Non-Goals",
+    "Personas and Target Users",
+    "User Stories and Use Cases",
+    "Requirements",
+    "Scope",
+    "Risks, Assumptions, Dependencies",
+    "Rollout Plan",
+    "Acceptance Criteria",
+]
 
 
 def _section_title_from_chunk(chunk: str, max_len: int = 55) -> str:
@@ -2191,7 +2205,69 @@ Previously Answered Questions:
             )
             return cleaned_spec
 
+        missing_sections = self._find_missing_prd_sections(prd_content)
+        if not missing_sections:
+            return prd_content
+
+        logger.warning(
+            "Product Requirements Analysis: PRD missing required sections: %s",
+            ", ".join(missing_sections),
+        )
+
+        repaired_prd = self._repair_prd_completeness(
+            cleaned_spec=cleaned_spec_snippet,
+            answered_questions_summary=answered_summary_snippet,
+            initial_prd=prd_content,
+            missing_sections=missing_sections,
+        )
+
+        if repaired_prd:
+            repaired_missing = self._find_missing_prd_sections(repaired_prd)
+            if not repaired_missing:
+                return repaired_prd
+            logger.warning(
+                "Product Requirements Analysis: PRD still missing sections after repair: %s",
+                ", ".join(repaired_missing),
+            )
+
         return prd_content
+
+    def _repair_prd_completeness(
+        self,
+        cleaned_spec: str,
+        answered_questions_summary: str,
+        initial_prd: str,
+        missing_sections: List[str],
+    ) -> str:
+        """Attempt one LLM pass to repair missing PRD sections."""
+        prompt = PRD_COMPLETENESS_REPAIR_PROMPT.format(
+            cleaned_spec=cleaned_spec,
+            answered_questions_summary=answered_questions_summary,
+            initial_prd=initial_prd[:20000],
+            missing_sections="\n".join(f"- {section}" for section in missing_sections),
+        )
+        try:
+            repaired_prd = self.llm.complete_text(prompt)
+        except Exception as exc:
+            logger.error("Failed to repair PRD completeness: %s", exc)
+            return ""
+
+        if not isinstance(repaired_prd, str) or not repaired_prd.strip():
+            return ""
+        return repaired_prd
+
+    def _find_missing_prd_sections(self, prd_content: str) -> List[str]:
+        """Return required sections that are absent from PRD markdown headings."""
+        headings = {
+            match.group(1).strip().lower()
+            for match in re.finditer(r"^#{1,6}\s+(.+)$", prd_content, flags=re.MULTILINE)
+        }
+
+        missing: List[str] = []
+        for section in PRD_REQUIRED_SECTIONS:
+            if section.lower() not in headings:
+                missing.append(section)
+        return missing
 
     def _update_spec_from_duplicates(
         self,

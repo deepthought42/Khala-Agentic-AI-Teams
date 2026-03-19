@@ -977,3 +977,52 @@ def test_run_workflow_with_context_discovery_injects_into_spec(tmp_path: Path) -
     assert "Where to deploy?" in content
     assert "Cloud" in content
     assert "Iteration 0" in content
+
+
+def test_find_missing_prd_sections_detects_expected_gaps() -> None:
+    """Missing required PRD sections should be reported."""
+    llm = MagicMock()
+    agent = ProductRequirementsAnalysisAgent(llm)
+
+    prd = """
+# Problem Statement
+
+## Requirements
+
+## Risks, Assumptions, Dependencies
+"""
+    missing = agent._find_missing_prd_sections(prd)
+
+    assert "Executive Summary" in missing
+    assert "Personas and Target Users" in missing
+    assert "Rollout Plan" in missing
+    assert "Problem Statement" not in missing
+
+
+def test_generate_prd_repairs_missing_sections_with_second_pass() -> None:
+    """When first PRD draft is incomplete, agent should run repair prompt and return repaired output."""
+    llm = MagicMock()
+    llm.complete_text.side_effect = [
+        "# Problem Statement\n\n## Requirements\n",  # missing most required sections
+        """
+# Executive Summary
+## Problem Statement
+## Goals and Non-Goals
+## Personas and Target Users
+## User Stories and Use Cases
+## Requirements
+## Scope
+## Risks, Assumptions, Dependencies
+## Rollout Plan
+## Acceptance Criteria
+""",
+    ]
+    agent = ProductRequirementsAnalysisAgent(llm)
+
+    prd = agent._generate_prd_document(
+        cleaned_spec="# Cleaned spec",
+        answered_questions=[],
+    )
+
+    assert "## Rollout Plan" in prd
+    assert llm.complete_text.call_count == 2

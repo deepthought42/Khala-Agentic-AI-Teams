@@ -627,6 +627,55 @@ Specialist collaboration recommendations (agents/tooling):
 - Keep IDs stable and explicit where applicable (FR-###, Q-###).
 """
 
+PRD_COMPLETENESS_REPAIR_PROMPT = """You are a senior Product Manager improving a draft PRD.
+
+You are given:
+1) A cleaned product specification
+2) Answered clarification questions
+3) An initial PRD draft
+4) A list of missing required PRD sections
+
+Task:
+- Return a revised PRD in Markdown that preserves the original valid content,
+  and adds the missing sections so it is complete.
+- Do not invent unsupported requirements. If a section lacks source detail, explicitly
+  state that details are currently unspecified and should be confirmed.
+
+Required section checklist:
+- Executive Summary
+- Problem Statement
+- Goals and Non-Goals
+- Personas and Target Users
+- User Stories and Use Cases
+- Requirements
+- Scope
+- Risks, Assumptions, Dependencies
+- Rollout Plan
+- Acceptance Criteria
+
+Cleaned specification:
+---
+{cleaned_spec}
+---
+
+Answered questions:
+---
+{answered_questions_summary}
+---
+
+Initial PRD draft:
+---
+{initial_prd}
+---
+
+Missing sections:
+---
+{missing_sections}
+---
+
+Respond with only the revised PRD in Markdown.
+"""
+
 QUESTION_GENERATION_PROMPT = """Based on the following gap or issue identified in the specification, generate a structured question with answer options.
 
 Gap/Issue: {issue}
