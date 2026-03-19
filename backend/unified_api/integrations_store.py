@@ -428,30 +428,12 @@ def set_medium_session_storage_state_json(session_json: str) -> None:
             logger.warning("Failed to remove Medium session file %s: %s", path, e)
         return
     _write_text_atomic(path, session_json)
-    # Backward-compat cleanup: remove legacy DB copy when writing new file.
-    delete_credential(_MEDIUM_SERVICE, "session_storage_state")
 
 
 def get_medium_session_storage_state_json() -> str:
-    """
-    Return Medium storage_state JSON from disk.
-    If missing, migrate legacy encrypted DB value (one-time) into the file path.
-    """
+    """Return Medium storage_state JSON from disk."""
     path = _medium_storage_state_path()
-    raw = _read_text_if_exists(path).strip()
-    if raw:
-        return raw
-
-    legacy_raw = get_credential(_MEDIUM_SERVICE, "session_storage_state").strip()
-    if legacy_raw:
-        try:
-            _write_text_atomic(path, legacy_raw)
-            delete_credential(_MEDIUM_SERVICE, "session_storage_state")
-        except OSError as e:
-            logger.warning("Failed to migrate Medium session to %s: %s", path, e)
-            return legacy_raw
-        return legacy_raw
-    return ""
+    return _read_text_if_exists(path).strip()
 
 
 def clear_medium_google_oauth_identity() -> None:
@@ -479,8 +461,6 @@ def clear_medium_session_storage() -> None:
             path.unlink()
     except OSError as e:
         logger.warning("Failed to remove Medium session file %s: %s", path, e)
-    # Backward-compat cleanup
-    delete_credential(_MEDIUM_SERVICE, "session_storage_state")
 
 
 def generate_medium_google_oauth_state() -> str:

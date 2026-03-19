@@ -137,8 +137,6 @@ export class IntegrationsDashboardComponent implements OnInit {
   mediumSaving = false;
   mediumConnecting = false;
   mediumDisconnectingGoogle = false;
-  mediumImportingSession = false;
-  mediumClearingSession = false;
   mediumError: string | null = null;
   mediumSuccess: string | null = null;
 
@@ -151,7 +149,24 @@ export class IntegrationsDashboardComponent implements OnInit {
   mediumSessionConfigured = false;
   mediumLinkedEmail: string | null = null;
   mediumLinkedName: string | null = null;
-  mediumSessionJson = '';
+
+  get mediumIdentityReady(): boolean {
+    return this.mediumProvider !== 'google' || this.mediumOauthIdentityConnected;
+  }
+
+  get mediumReadyForStats(): boolean {
+    return this.mediumEnabled && this.mediumIdentityReady && this.mediumSessionConfigured;
+  }
+
+  get mediumProviderLabel(): string {
+    const labels: Record<MediumOAuthProvider, string> = {
+      google: 'Google',
+      apple: 'Apple',
+      facebook: 'Facebook',
+      twitter: 'X (Twitter)',
+    };
+    return labels[this.mediumProvider] ?? this.mediumProvider;
+  }
 
   loadMediumConfig(): void {
     this.mediumLoading = true;
@@ -257,53 +272,6 @@ export class IntegrationsDashboardComponent implements OnInit {
       error: (err) => {
         this.mediumError = err?.error?.detail || err?.message || 'Failed to unlink Google.';
         this.mediumDisconnectingGoogle = false;
-      },
-    });
-  }
-
-  importMediumSession(): void {
-    const raw = this.mediumSessionJson.trim();
-    if (!raw) {
-      this.mediumError = 'Paste Playwright storage_state JSON first.';
-      return;
-    }
-    let storage_state: Record<string, unknown>;
-    try {
-      storage_state = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      this.mediumError = 'Invalid JSON.';
-      return;
-    }
-    this.mediumImportingSession = true;
-    this.mediumError = null;
-    this.mediumSuccess = null;
-    this.api.importMediumSession({ storage_state }).subscribe({
-      next: (res) => {
-        this.applyMediumConfig(res);
-        this.mediumSessionJson = '';
-        this.mediumSuccess = 'Medium browser session stored.';
-        this.mediumImportingSession = false;
-      },
-      error: (err) => {
-        this.mediumError = err?.error?.detail || err?.message || 'Failed to import session.';
-        this.mediumImportingSession = false;
-      },
-    });
-  }
-
-  clearMediumSession(): void {
-    this.mediumClearingSession = true;
-    this.mediumError = null;
-    this.mediumSuccess = null;
-    this.api.clearMediumSession().subscribe({
-      next: (res) => {
-        this.applyMediumConfig(res);
-        this.mediumSuccess = 'Medium browser session removed.';
-        this.mediumClearingSession = false;
-      },
-      error: (err) => {
-        this.mediumError = err?.error?.detail || err?.message || 'Failed to clear session.';
-        this.mediumClearingSession = false;
       },
     });
   }

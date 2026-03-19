@@ -270,9 +270,8 @@
         <div mat-card-avatar class="medium-avatar" aria-hidden="true">M</div>
         <mat-card-title>Medium</mat-card-title>
         <mat-card-subtitle>
-          Configure the Medium.com integration for the blogging <strong>Medium statistics</strong> agent.
-          Sign in via your provider in a local Playwright session, export <code>storage_state</code>, and paste it here.
-          If you use Google on Medium, you can also link your Google account for platform identity.
+          Configure Medium for the blogging <strong>Medium statistics</strong> workflow with provider identity
+          and a Playwright <code>storage_state</code> session.
         </mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
@@ -295,8 +294,29 @@
           </mat-slide-toggle>
         </div>
 
+        <div class="medium-readiness-grid">
+          <div class="readiness-item">
+            <span class="readiness-label">Identity</span>
+            <span class="readiness-value" [class.ready]="mediumIdentityReady">
+              @if (mediumIdentityReady) { Ready } @else { Pending }
+            </span>
+          </div>
+          <div class="readiness-item">
+            <span class="readiness-label">Browser session</span>
+            <span class="readiness-value" [class.ready]="mediumSessionConfigured">
+              @if (mediumSessionConfigured) { Imported } @else { Missing }
+            </span>
+          </div>
+          <div class="readiness-item">
+            <span class="readiness-label">Stats run readiness</span>
+            <span class="readiness-value" [class.ready]="mediumReadyForStats">
+              @if (mediumReadyForStats) { Ready } @else { Not ready }
+            </span>
+          </div>
+        </div>
+
         <div class="form-row">
-          <label class="mode-label">How you sign in on Medium</label>
+          <label class="mode-label">Identity provider you use on Medium</label>
           <mat-radio-group [(ngModel)]="mediumProvider" aria-label="Medium OAuth provider">
             <mat-radio-button value="google">Google</mat-radio-button>
             <mat-radio-button value="apple">Apple</mat-radio-button>
@@ -305,9 +325,16 @@
           </mat-radio-group>
         </div>
 
+        @if (mediumProvider !== 'google') {
+          <div class="status-banner">
+            <mat-icon>info</mat-icon>
+            <span>{{ mediumProviderLabel }} selected. Google linking is skipped for this provider.</span>
+          </div>
+        }
+
         @if (mediumProvider === 'google') {
           <p class="connect-description">
-            Create a <strong>Web application</strong> OAuth client in Google Cloud Console. Add the redirect URL
+            Create a <strong>Web application</strong> OAuth client in Google Cloud Console and add redirect URL
             <code>…/api/integrations/medium/oauth/google/callback</code> (or set <code>MEDIUM_GOOGLE_REDIRECT_URI</code> on the API).
           </p>
           <div class="form-row">
@@ -358,43 +385,6 @@
             }
           </div>
         }
-
-        <mat-divider class="section-divider"></mat-divider>
-
-        <p class="section-label">Browser session (required for stats)</p>
-        <p class="connect-description">
-          After signing in to <strong>medium.com</strong> in Chromium (e.g. <code>playwright codegen</code> or a short script),
-          call <code>context.storage_state()</code> and paste the JSON below.
-          @if (mediumSessionConfigured) {
-            <span class="session-ok">Session on file.</span>
-          }
-        </p>
-        <div class="form-row">
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>storage_state JSON</mat-label>
-            <textarea matInput rows="5" [(ngModel)]="mediumSessionJson" placeholder="{ &quot;cookies&quot;: … }"></textarea>
-          </mat-form-field>
-        </div>
-        <div class="form-row medium-session-actions">
-          <button
-            mat-raised-button
-            color="primary"
-            type="button"
-            (click)="importMediumSession()"
-            [disabled]="mediumImportingSession"
-          >
-            @if (mediumImportingSession) { Importing… } @else { Import session }
-          </button>
-          <button
-            mat-stroked-button
-            color="warn"
-            type="button"
-            (click)="clearMediumSession()"
-            [disabled]="mediumClearingSession || !mediumSessionConfigured"
-          >
-            @if (mediumClearingSession) { Clearing… } @else { Clear session }
-          </button>
-        </div>
 
         <mat-divider class="section-divider"></mat-divider>
 
