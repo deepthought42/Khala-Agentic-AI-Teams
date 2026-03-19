@@ -1,0 +1,205 @@
+<h1>Nutritionist Team</h1>
+<p class="subtitle">
+  Progressive nutrition workflow: first profile intake, then nutrition plan, then meal recommendations,
+  then feedback and learning history.
+</p>
+
+<div class="health-row">
+  <span class="health-chip" [class]="healthStatus">
+    @if (healthStatus === 'healthy') { API Online }
+    @if (healthStatus === 'checking') { Checking API... }
+    @if (healthStatus === 'unhealthy') { API Offline }
+  </span>
+</div>
+
+@if (error) {
+  <mat-card class="status-card error">
+    <mat-card-content>{{ error }}</mat-card-content>
+  </mat-card>
+}
+@if (success) {
+  <mat-card class="status-card success">
+    <mat-card-content>{{ success }}</mat-card-content>
+  </mat-card>
+}
+
+<mat-card class="flow-card">
+  <mat-card-header>
+    <mat-card-title>Step 1: Client ID + Profile Intake</mat-card-title>
+    <mat-card-subtitle>Enter a client ID, load an existing profile, or save a new profile.</mat-card-subtitle>
+  </mat-card-header>
+  <mat-card-content>
+    <div class="row">
+      <mat-form-field appearance="outline" class="client-id">
+        <mat-label>Client ID</mat-label>
+        <input matInput [(ngModel)]="clientId" placeholder="e.g. user-123" />
+      </mat-form-field>
+      <button mat-stroked-button (click)="loadProfile()" [disabled]="!clientId.trim() || loading">Load profile</button>
+      <button mat-flat-button color="primary" (click)="saveProfile()" [disabled]="!clientId.trim() || loading || profileForm.invalid">
+        Save profile
+      </button>
+    </div>
+
+    <form [formGroup]="profileForm" class="profile-grid">
+      <mat-form-field appearance="outline">
+        <mat-label>Household size</mat-label>
+        <input matInput type="number" formControlName="number_of_people" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Household description</mat-label>
+        <input matInput formControlName="household_description" placeholder="solo, couple, family of 4" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Ages (comma-separated)</mat-label>
+        <input matInput formControlName="ages_if_relevant_csv" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Dietary needs (comma-separated)</mat-label>
+        <input matInput formControlName="dietary_needs_csv" placeholder="vegetarian, low-sodium" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Allergies/intolerances</mat-label>
+        <input matInput formControlName="allergies_csv" placeholder="nuts, gluten" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Max cooking time (minutes)</mat-label>
+        <input matInput type="number" formControlName="max_cooking_time_minutes" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Lunch context</mat-label>
+        <input matInput formControlName="lunch_context" placeholder="office or remote" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Equipment constraints</mat-label>
+        <input matInput formControlName="equipment_constraints_csv" placeholder="no oven, limited equipment" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Cuisines liked</mat-label>
+        <input matInput formControlName="cuisines_liked_csv" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Cuisines disliked</mat-label>
+        <input matInput formControlName="cuisines_disliked_csv" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Ingredients disliked</mat-label>
+        <input matInput formControlName="ingredients_disliked_csv" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Goal type</mat-label>
+        <input matInput formControlName="goal_type" placeholder="maintain, lose_weight, muscle" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-row">
+        <mat-label>Preference notes</mat-label>
+        <textarea matInput rows="2" formControlName="preferences_free_text"></textarea>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-row">
+        <mat-label>Goal notes</mat-label>
+        <textarea matInput rows="2" formControlName="goal_notes"></textarea>
+      </mat-form-field>
+    </form>
+  </mat-card-content>
+</mat-card>
+
+@if (nutritionUnlocked) {
+  <mat-card class="flow-card">
+    <mat-card-header>
+      <mat-card-title>Step 2: Generate Nutrition Plan</mat-card-title>
+      <mat-card-subtitle>This unlocks meal planning.</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <button mat-flat-button color="primary" (click)="generateNutritionPlan()" [disabled]="loading">
+        Generate nutrition plan
+      </button>
+      @if (nutritionPlan) {
+        <div class="plan-block">
+          <h3>Daily Targets</h3>
+          <div class="chips">
+            @if (nutritionPlan.plan.daily_targets.calories_kcal) { <mat-chip>Calories: {{ nutritionPlan.plan.daily_targets.calories_kcal }}</mat-chip> }
+            @if (nutritionPlan.plan.daily_targets.protein_g) { <mat-chip>Protein: {{ nutritionPlan.plan.daily_targets.protein_g }}g</mat-chip> }
+            @if (nutritionPlan.plan.daily_targets.carbs_g) { <mat-chip>Carbs: {{ nutritionPlan.plan.daily_targets.carbs_g }}g</mat-chip> }
+            @if (nutritionPlan.plan.daily_targets.fat_g) { <mat-chip>Fat: {{ nutritionPlan.plan.daily_targets.fat_g }}g</mat-chip> }
+          </div>
+          @if (nutritionPlan.plan.balance_guidelines.length > 0) {
+            <h3>Balance Guidelines</h3>
+            <ul>
+              @for (g of nutritionPlan.plan.balance_guidelines; track g) { <li>{{ g }}</li> }
+            </ul>
+          }
+        </div>
+      }
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (mealsUnlocked) {
+  <mat-card class="flow-card">
+    <mat-card-header>
+      <mat-card-title>Step 3: Generate Meal Recommendations</mat-card-title>
+      <mat-card-subtitle>Create recommendations based on profile + nutrition targets.</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <form [formGroup]="mealPlanForm" class="row">
+        <mat-form-field appearance="outline">
+          <mat-label>Period days</mat-label>
+          <input matInput type="number" formControlName="period_days" />
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="meal-types">
+          <mat-label>Meal types (comma-separated)</mat-label>
+          <input matInput formControlName="meal_types_csv" placeholder="breakfast,lunch,dinner" />
+        </mat-form-field>
+        <button mat-flat-button color="primary" (click)="generateMealPlan()" [disabled]="loading || mealPlanForm.invalid">
+          Generate meals
+        </button>
+      </form>
+
+      @if (mealRecommendations.length > 0) {
+        <mat-divider></mat-divider>
+        <div class="recommendations">
+          @for (meal of mealRecommendations; track meal.recommendation_id) {
+            <mat-card class="meal-card">
+              <mat-card-title>{{ meal.name }}</mat-card-title>
+              <mat-card-subtitle>{{ meal.meal_type }} · {{ meal.recommendation_id }}</mat-card-subtitle>
+              <mat-card-content>
+                <p>{{ meal.rationale }}</p>
+              </mat-card-content>
+            </mat-card>
+          }
+        </div>
+      }
+    </mat-card-content>
+  </mat-card>
+}
+
+@if (feedbackUnlocked) {
+  <mat-card class="flow-card">
+    <mat-card-header>
+      <mat-card-title>Step 4: Feedback + Learning History</mat-card-title>
+      <mat-card-subtitle>Submitting feedback improves future recommendations.</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="row">
+        <mat-form-field appearance="outline" class="client-id">
+          <mat-label>Recommendation ID</mat-label>
+          <input matInput [(ngModel)]="feedbackRecommendationId" />
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Rating (1-5)</mat-label>
+          <input matInput type="number" min="1" max="5" [(ngModel)]="feedbackRating" />
+        </mat-form-field>
+        <mat-slide-toggle [(ngModel)]="feedbackWouldMakeAgain">Would make again</mat-slide-toggle>
+      </div>
+      <mat-form-field appearance="outline" class="full-row">
+        <mat-label>Feedback notes</mat-label>
+        <textarea matInput rows="2" [(ngModel)]="feedbackNotes"></textarea>
+      </mat-form-field>
+      <div class="row">
+        <button mat-flat-button color="primary" (click)="submitFeedback()" [disabled]="loading || !feedbackRecommendationId.trim()">
+          Submit feedback
+        </button>
+        <button mat-stroked-button (click)="loadHistory()" [disabled]="loading">Refresh history</button>
+        <mat-chip>History entries: {{ historyCount }}</mat-chip>
+      </div>
+    </mat-card-content>
+  </mat-card>
+}

@@ -17,6 +17,7 @@ export const environment = {
   agentProvisioningApiUrl: `${apiBase}/api/agent-provisioning`,
   aiSystemsApiUrl: `${apiBase}/api/ai-systems`,
   investmentApiUrl: `${apiBase}/api/investment`,
+  nutritionApiUrl: `${apiBase}/api/nutrition-meal-planning`,
   integrationsApiUrl: `${apiBase}/api/integrations`,
   /** StudioGrid design-system workflow API */
   studioGridApiUrl: `${apiBase}/api/studio-grid`,

@@ -1,0 +1,41 @@
+<section class="workspace-header">
+  <div class="title-block">
+    <div class="icon-wrap">
+      <mat-icon>rocket_launch</mat-icon>
+    </div>
+    <div>
+      <h1>Startup Advisor Workspace</h1>
+      <p>Strategic guidance from intake to execution with a structured founder workflow.</p>
+    </div>
+  </div>
+</section>
+
+<mat-card class="workflow-nav-card">
+  <nav class="workflow-nav" aria-label="Startup advisor workflow steps">
+    <a routerLink="intake" routerLinkActive="active" class="step-link">
+      <span class="step-count">1</span>
+      <div>
+        <span class="step-title">Intake</span>
+        <span class="step-caption">Founder context and goals</span>
+      </div>
+    </a>
+    <a routerLink="recommendations" routerLinkActive="active" class="step-link">
+      <span class="step-count">2</span>
+      <div>
+        <span class="step-title">Recommendations</span>
+        <span class="step-caption">Advisor fit and rationale</span>
+      </div>
+    </a>
+    <a routerLink="execution" routerLinkActive="active" class="step-link">
+      <span class="step-count">3</span>
+      <div>
+        <span class="step-title">Execution</span>
+        <span class="step-caption">Milestones and owner plan</span>
+      </div>
+    </a>
+  </nav>
+</mat-card>
+
+<div class="workspace-content">
+  <router-outlet />
+</div>

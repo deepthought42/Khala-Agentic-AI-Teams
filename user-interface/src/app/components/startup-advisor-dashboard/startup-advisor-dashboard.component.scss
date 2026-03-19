@@ -1,0 +1,102 @@
+.workspace-header {
+  margin-bottom: 1rem;
+}
+
+.title-block {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+
+  h1 {
+    margin: 0;
+    font-size: 1.6rem;
+    letter-spacing: -0.02em;
+  }
+
+  p {
+    margin: 0.25rem 0 0;
+    color: #8b949e;
+    font-size: 0.92rem;
+  }
+}
+
+.icon-wrap {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  background: linear-gradient(145deg, rgba(59, 130, 246, 0.24), rgba(20, 184, 166, 0.24));
+
+  mat-icon {
+    color: #7dc6ff;
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+  }
+}
+
+.workflow-nav-card {
+  border-radius: 12px;
+}
+
+.workflow-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.step-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  padding: 0.8rem;
+  transition: border-color 150ms ease, background-color 150ms ease;
+
+  &:hover {
+    border-color: rgba(125, 198, 255, 0.55);
+    background: rgba(148, 163, 184, 0.08);
+  }
+
+  &.active {
+    border-color: rgba(125, 198, 255, 0.7);
+    background: rgba(88, 166, 255, 0.14);
+  }
+}
+
+.step-count {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  background: rgba(88, 166, 255, 0.22);
+  color: #b9e0ff;
+}
+
+.step-title {
+  display: block;
+  font-weight: 600;
+}
+
+.step-caption {
+  display: block;
+  color: #8b949e;
+  font-size: 0.8rem;
+}
+
+.workspace-content {
+  margin-top: 1rem;
+}
+
+@media (max-width: 900px) {
+  .workflow-nav {
+    grid-template-columns: 1fr;
+  }
+}

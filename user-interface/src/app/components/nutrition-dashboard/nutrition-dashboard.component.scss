@@ -1,0 +1,98 @@
+.subtitle {
+  color: rgba(255, 255, 255, 0.72);
+  margin-bottom: 1rem;
+}
+
+.health-row {
+  margin-bottom: 1rem;
+}
+
+.health-chip {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid transparent;
+}
+
+.health-chip.healthy {
+  color: #1b5e20;
+  background: #e8f5e9;
+  border-color: #81c784;
+}
+
+.health-chip.checking {
+  color: #6a1b9a;
+  background: #f3e5f5;
+  border-color: #ce93d8;
+}
+
+.health-chip.unhealthy {
+  color: #b71c1c;
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+
+.status-card {
+  margin-bottom: 1rem;
+}
+
+.status-card.error {
+  border-left: 4px solid #e53935;
+}
+
+.status-card.success {
+  border-left: 4px solid #43a047;
+}
+
+.flow-card {
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.client-id {
+  min-width: 220px;
+}
+
+.meal-types {
+  min-width: 260px;
+}
+
+.profile-grid {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.full-row {
+  width: 100%;
+}
+
+.plan-block {
+  margin-top: 0.9rem;
+}
+
+.chips {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.recommendations {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+}
+
+.meal-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
