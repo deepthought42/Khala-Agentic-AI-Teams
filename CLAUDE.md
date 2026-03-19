@@ -138,7 +138,9 @@ Environment variables for LLM: `SW_LLM_PROVIDER`, `SW_LLM_BASE_URL`, `SW_LLM_MOD
 | `BLOGGING_MEDIUM_STATS_ROOT` | Optional base dir for Medium stats job `work_dir` (default: `{AGENT_CACHE}/blogging_team/medium_stats_runs`) |
 | `MEDIUM_GOOGLE_REDIRECT_URI` | Optional; fixed OAuth redirect for Medium’s Google identity link (`…/api/integrations/medium/oauth/google/callback`) when the API is behind a proxy |
 
-**Medium.com integration:** The blogging **Medium statistics** agent only runs when the **Medium** integration is **enabled** and **configured** in the UI (`/integrations`) or via `GET/PUT /api/integrations/medium`. Users choose which identity provider they use on Medium (Google, Apple, Facebook, X). **Google** is supported for platform OAuth (link Google account); all providers require importing a **Playwright `storage_state`** JSON for the signed-in `medium.com` session (see Integrations UI). Credentials and session data are stored in the encrypted integration DB / `integrations.json` under `AGENT_CACHE`, not via `MEDIUM_*` env vars.
+**Google browser login (shared):** **`GET/PUT/DELETE /api/integrations/google-browser-login`** stores one Fernet-encrypted Gmail/Google email+password for **any** integration that signs in with Google via Playwright (Postgres `encrypted_integration_credentials` when `POSTGRES_HOST` is set, else encrypted SQLite). Code: `unified_api/google_browser_login_credentials.py` — reuse for new integrations when the site uses “Sign in with Google”.
+
+**Medium.com integration:** **Medium statistics** need **`storage_state`** on disk (`INTEGRATIONS_BROWSER_SESSION_ROOT`). With provider **Google**, Playwright uses the **shared** credentials above; **`POST /api/integrations/medium/session/browser-login`** captures the session; the stats resolver **auto-logs in** if the session file is missing. Optional **Google OAuth client** in the UI is only for `GET /api/integrations/medium/oauth/google/connect`.
 
 ## Testing
 

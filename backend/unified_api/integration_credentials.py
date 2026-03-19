@@ -77,6 +77,11 @@ def _get_fernet() -> Fernet:
     return Fernet(_load_or_create_key())
 
 
+def get_integration_fernet() -> Fernet:
+    """Public accessor for the same Fernet key used by the SQLite credential store."""
+    return _get_fernet()
+
+
 # ---------------------------------------------------------------------------
 # Database path and connection
 # ---------------------------------------------------------------------------

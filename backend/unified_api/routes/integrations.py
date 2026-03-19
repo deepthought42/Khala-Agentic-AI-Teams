@@ -8,6 +8,8 @@ Endpoints:
 - GET    /api/integrations/slack/oauth/connect   -> return Slack OAuth authorization URL
 - GET    /api/integrations/slack/oauth/callback  -> handle Slack OAuth redirect, store token
 - DELETE /api/integrations/slack/oauth   -> disconnect Slack OAuth (clear token)
+- GET/PUT/DELETE /api/integrations/google-browser-login -> shared encrypted Gmail/Google credentials (Playwright)
+- POST   /api/integrations/medium/session/browser-login -> Playwright Medium+Google (uses shared Google credentials)
 """
 
 from __future__ import annotations
@@ -39,6 +41,12 @@ from unified_api.integrations_store import (
     set_slack_oauth_token,
     verify_and_clear_medium_google_oauth_state,
     verify_and_clear_oauth_state,
+)
+from unified_api.google_browser_login_credentials import (
+    clear_google_browser_login_credentials,
+    get_google_browser_login_credentials,
+    google_browser_login_credentials_configured,
+    set_google_browser_login_credentials,
 )
 
 import os
@@ -155,6 +163,19 @@ class MediumSessionImportBody(BaseModel):
     """POST /api/integrations/medium/session — Playwright storage_state object."""
 
     storage_state: Dict[str, Any] = Field(..., description="Full object from Playwright context.storage_state()")
+
+
+class GoogleBrowserLoginCredentialsBody(BaseModel):
+    """PUT /api/integrations/google-browser-login — shared encrypted Gmail/Google credentials."""
+
+    email: str = Field(..., description="Google account email (e.g. Gmail) for browser-based sign-in flows.")
+    password: str = Field(..., description="Account password (never returned by GET).")
+
+
+class GoogleBrowserLoginStatusResponse(BaseModel):
+    """GET /api/integrations/google-browser-login — whether shared credentials are stored."""
+
+    configured: bool = Field(False, description="True when encrypted email+password are stored for Playwright.")
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +490,37 @@ async def slack_oauth_disconnect() -> SlackConfigResponse:
 
 
 # ---------------------------------------------------------------------------
+# Shared Google / Gmail credentials for Playwright (any integration using “Sign in with Google”)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/google-browser-login", response_model=GoogleBrowserLoginStatusResponse)
+async def get_google_browser_login_status() -> GoogleBrowserLoginStatusResponse:
+    """Return whether encrypted shared Google browser-login credentials are stored (no secrets)."""
+    return GoogleBrowserLoginStatusResponse(configured=google_browser_login_credentials_configured())
+
+
+@router.put("/google-browser-login", response_model=GoogleBrowserLoginStatusResponse)
+async def put_google_browser_login_credentials(body: GoogleBrowserLoginCredentialsBody) -> GoogleBrowserLoginStatusResponse:
+    """Encrypt and store shared Gmail/Google email+password for browser automation across integrations."""
+    try:
+        set_google_browser_login_credentials(body.email, body.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    logger.info("Shared Google browser-login credentials stored (encrypted).")
+    return GoogleBrowserLoginStatusResponse(configured=True)
+
+
+@router.delete("/google-browser-login", response_model=GoogleBrowserLoginStatusResponse)
+async def delete_google_browser_login_credentials() -> GoogleBrowserLoginStatusResponse:
+    """Remove shared Google browser-login credentials."""
+    clear_google_browser_login_credentials()
+    return GoogleBrowserLoginStatusResponse(configured=False)
+
+
+# ---------------------------------------------------------------------------
 # Medium.com integration (OAuth identity + Playwright session for stats agent)
 # ---------------------------------------------------------------------------
 
@@ -484,18 +536,8 @@ async def update_medium(body: MediumConfigUpdate) -> MediumConfigResponse:
     """
     Save Medium integration: enabled flag, OAuth provider, and optional Google OAuth app credentials.
     """
-    if body.enabled and body.oauth_provider == "google":
-        existing = get_medium_config()
-        if not (body.google_client_id.strip() or existing.get("google_client_id")):
-            raise HTTPException(
-                status_code=400,
-                detail="google_client_id is required when enabling Medium with Google as the identity provider.",
-            )
-        if not (body.google_client_secret.strip() or existing.get("google_client_secret")):
-            raise HTTPException(
-                status_code=400,
-                detail="google_client_secret is required when enabling Medium with Google as the identity provider.",
-            )
+    # Google OAuth client ID/secret are optional: only needed for GET .../medium/oauth/google/connect.
+    # Medium browser session: PUT .../google-browser-login + POST .../medium/session/browser-login, or import session.
 
     set_medium_config(
         enabled=body.enabled,
@@ -597,6 +639,54 @@ async def medium_google_oauth_callback(
 async def medium_google_oauth_disconnect() -> MediumConfigResponse:
     """Remove stored Google identity tokens and linked email (keeps Medium browser session if any)."""
     clear_medium_google_oauth_identity()
+    return _build_medium_config_response(get_medium_config())
+
+
+@router.post("/medium/session/browser-login", response_model=MediumConfigResponse)
+async def medium_browser_login_session() -> MediumConfigResponse:
+    """
+    Run Playwright on the server: open medium.com sign-in, sign in with Google using
+    shared encrypted credentials from PUT .../google-browser-login, then persist storage_state to disk.
+    """
+    import asyncio
+
+    from unified_api.medium_browser_login import perform_medium_google_browser_login
+
+    cfg = get_medium_config()
+    if not cfg.get("enabled"):
+        raise HTTPException(
+            status_code=400,
+            detail="Enable the Medium integration first (PUT /api/integrations/medium).",
+        )
+    if str(cfg.get("oauth_provider", "google")).strip().lower() != "google":
+        raise HTTPException(
+            status_code=400,
+            detail="Automated browser login supports Google as the Medium identity provider only.",
+        )
+
+    email, password = get_google_browser_login_credentials()
+    if not email or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Save shared Google sign-in credentials first (PUT /api/integrations/google-browser-login).",
+        )
+
+    loop = asyncio.get_running_loop()
+
+    def _run() -> None:
+        state = perform_medium_google_browser_login(email, password)
+        raw = json.dumps(state, separators=(",", ":"))
+        set_medium_session_storage_state_json(raw)
+
+    try:
+        await loop.run_in_executor(None, _run)
+    except RuntimeError as e:
+        msg = str(e)
+        if "playwright is not installed" in msg.lower():
+            raise HTTPException(status_code=400, detail=msg) from e
+        raise HTTPException(status_code=500, detail=msg) from e
+
+    logger.info("Medium browser-login session saved from automated Google sign-in.")
     return _build_medium_config_response(get_medium_config())
 
 

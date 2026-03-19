@@ -39,6 +39,7 @@ def resolve_medium_stats_storage_state() -> Tuple[Optional[Dict[str, Any]], str,
         from unified_api.integrations_store import (
             get_medium_config,
             get_medium_session_storage_state_json,
+            set_medium_session_storage_state_json,
         )
     except ImportError as e:
         logger.warning("Medium integration modules unavailable: %s", e)
@@ -51,22 +52,32 @@ def resolve_medium_stats_storage_state() -> Tuple[Optional[Dict[str, Any]], str,
     if not cfg.get("enabled"):
         return None, "", "Medium.com integration is disabled. Enable it under Integrations."
 
-    provider = str(cfg.get("oauth_provider", "google")).strip().lower()
-    if provider == "google" and not cfg.get("oauth_identity_connected"):
-        return (
-            None,
-            "",
-            "Complete Google sign-in for the Medium integration (Integrations → Medium → Connect with Google), "
-            "then import a browser session.",
-        )
-
     raw = get_medium_session_storage_state_json()
     if not (raw and raw.strip()):
-        return (
-            None,
-            "",
-            "No Medium browser session is configured. Import Playwright storage_state under Integrations → Medium.",
-        )
+        from unified_api.google_browser_login_credentials import get_google_browser_login_credentials
+        from unified_api.medium_browser_login import perform_medium_google_browser_login
+
+        em, pw = get_google_browser_login_credentials()
+        if em and pw:
+            try:
+                state = perform_medium_google_browser_login(em, pw)
+                set_medium_session_storage_state_json(json.dumps(state, separators=(",", ":")))
+                raw = get_medium_session_storage_state_json()
+            except Exception as e:
+                logger.warning("Medium auto browser login failed: %s", e)
+                return (
+                    None,
+                    "",
+                    f"No Medium browser session and automated login failed: {e}. "
+                    "Save credentials under Integrations or POST /api/integrations/medium/session/browser-login.",
+                )
+        else:
+            return (
+                None,
+                "",
+                "No Medium browser session. Save shared Google sign-in credentials "
+                "(PUT /api/integrations/google-browser-login), then run session capture or Medium stats.",
+            )
 
     try:
         data = json.loads(raw)

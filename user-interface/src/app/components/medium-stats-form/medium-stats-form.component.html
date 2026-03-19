@@ -4,9 +4,9 @@
     <mat-card-subtitle>
       Starts a background job that uses the configured Medium.com integration to open a signed-in browser session
       and scrape <strong>medium.com/me/stats</strong>. Results are stored as <code>medium_stats_report.json</code> on the job.
-      Enable the integration and import a Playwright <code>storage_state</code> under
-      <a routerLink="/integrations">Integrations</a>. The session file location is controlled by backend environment
-      settings and is not configurable in the UI.
+      Under <a routerLink="/integrations">Integrations</a>, save encrypted Google credentials for Medium and/or
+      capture a browser session; the stats job will open <strong>medium.com/me/stats</strong> using the stored session
+      (or sign in automatically if credentials are saved and the session file is missing).
     </mat-card-subtitle>
   </mat-card-header>
   <mat-card-content>

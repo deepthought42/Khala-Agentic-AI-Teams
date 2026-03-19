@@ -3,6 +3,8 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import type {
+  GoogleBrowserLoginCredentialsBody,
+  GoogleBrowserLoginStatusResponse,
   IntegrationListItem,
   MediumConfigResponse,
   MediumConfigUpdate,
@@ -76,6 +78,28 @@ export class IntegrationsApiService {
   /** POST /api/integrations/medium/session */
   importMediumSession(body: MediumSessionImportBody): Observable<MediumConfigResponse> {
     return this.http.post<MediumConfigResponse>(`${this.baseUrl}/medium/session`, body);
+  }
+
+  /** GET /api/integrations/google-browser-login */
+  getGoogleBrowserLoginStatus(): Observable<GoogleBrowserLoginStatusResponse> {
+    return this.http.get<GoogleBrowserLoginStatusResponse>(`${this.baseUrl}/google-browser-login`);
+  }
+
+  /** PUT /api/integrations/google-browser-login */
+  putGoogleBrowserLoginCredentials(
+    body: GoogleBrowserLoginCredentialsBody,
+  ): Observable<GoogleBrowserLoginStatusResponse> {
+    return this.http.put<GoogleBrowserLoginStatusResponse>(`${this.baseUrl}/google-browser-login`, body);
+  }
+
+  /** DELETE /api/integrations/google-browser-login */
+  deleteGoogleBrowserLoginCredentials(): Observable<GoogleBrowserLoginStatusResponse> {
+    return this.http.delete<GoogleBrowserLoginStatusResponse>(`${this.baseUrl}/google-browser-login`);
+  }
+
+  /** POST /api/integrations/medium/session/browser-login — uses stored encrypted credentials. */
+  mediumBrowserLoginSession(): Observable<MediumConfigResponse> {
+    return this.http.post<MediumConfigResponse>(`${this.baseUrl}/medium/session/browser-login`, {});
   }
 
   /** DELETE /api/integrations/medium/session */

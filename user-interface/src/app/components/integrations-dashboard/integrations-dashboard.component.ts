@@ -13,6 +13,7 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { IntegrationsApiService } from '../../services/integrations-api.service';
 import type {
+  GoogleBrowserLoginCredentialsBody,
   MediumConfigResponse,
   MediumConfigUpdate,
   MediumOAuthProvider,
@@ -79,6 +80,7 @@ export class IntegrationsDashboardComponent implements OnInit {
   botTokenConfigured = false;
 
   ngOnInit(): void {
+    this.loadGoogleBrowserLoginStatus();
     this.loadSlackConfig();
     this.loadMediumConfig();
     this.handleOAuthCallback();
@@ -130,6 +132,78 @@ export class IntegrationsDashboardComponent implements OnInit {
   }
 
   // ---------------------------------------------------------------------------
+  // Shared Google / Gmail (Playwright — any integration with “Sign in with Google”)
+  // ---------------------------------------------------------------------------
+
+  googleBrowserLoading = false;
+  googleBrowserError: string | null = null;
+  googleBrowserSuccess: string | null = null;
+  googleBrowserLoginConfigured = false;
+  googleAccountEmail = '';
+  googleAccountPassword = '';
+  savingGoogleBrowserCredentials = false;
+  clearingGoogleBrowserCredentials = false;
+
+  loadGoogleBrowserLoginStatus(): void {
+    this.googleBrowserLoading = true;
+    this.googleBrowserError = null;
+    this.api.getGoogleBrowserLoginStatus().subscribe({
+      next: (r) => {
+        this.googleBrowserLoginConfigured = r.configured;
+        this.googleBrowserLoading = false;
+      },
+      error: (err: { error?: { detail?: string }; message?: string }) => {
+        this.googleBrowserError =
+          err?.error?.detail || err?.message || 'Failed to load Google browser-login status.';
+        this.googleBrowserLoading = false;
+      },
+    });
+  }
+
+  saveGoogleBrowserLoginCredentials(): void {
+    this.savingGoogleBrowserCredentials = true;
+    this.googleBrowserError = null;
+    this.googleBrowserSuccess = null;
+    const body: GoogleBrowserLoginCredentialsBody = {
+      email: this.googleAccountEmail.trim(),
+      password: this.googleAccountPassword,
+    };
+    this.api.putGoogleBrowserLoginCredentials(body).subscribe({
+      next: (r) => {
+        this.googleBrowserLoginConfigured = r.configured;
+        this.googleAccountPassword = '';
+        this.googleBrowserSuccess = 'Gmail / Google credentials saved (encrypted on the server).';
+        this.savingGoogleBrowserCredentials = false;
+      },
+      error: (err: { error?: { detail?: string }; message?: string }) => {
+        this.googleBrowserError =
+          err?.error?.detail || err?.message || 'Failed to save Google credentials.';
+        this.savingGoogleBrowserCredentials = false;
+      },
+    });
+  }
+
+  clearGoogleBrowserLoginCredentials(): void {
+    this.clearingGoogleBrowserCredentials = true;
+    this.googleBrowserError = null;
+    this.googleBrowserSuccess = null;
+    this.api.deleteGoogleBrowserLoginCredentials().subscribe({
+      next: (r) => {
+        this.googleBrowserLoginConfigured = r.configured;
+        this.googleAccountEmail = '';
+        this.googleAccountPassword = '';
+        this.googleBrowserSuccess = 'Shared Google credentials removed.';
+        this.clearingGoogleBrowserCredentials = false;
+      },
+      error: (err: { error?: { detail?: string }; message?: string }) => {
+        this.googleBrowserError =
+          err?.error?.detail || err?.message || 'Failed to clear Google credentials.';
+        this.clearingGoogleBrowserCredentials = false;
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Medium.com
   // ---------------------------------------------------------------------------
 
@@ -151,11 +225,22 @@ export class IntegrationsDashboardComponent implements OnInit {
   mediumLinkedName: string | null = null;
 
   get mediumIdentityReady(): boolean {
-    return this.mediumProvider !== 'google' || this.mediumOauthIdentityConnected;
+    return (
+      this.mediumProvider !== 'google' ||
+      this.mediumOauthIdentityConnected ||
+      this.mediumSessionConfigured ||
+      this.googleBrowserLoginConfigured
+    );
   }
 
+  mediumBrowserLoginRunning = false;
+
   get mediumReadyForStats(): boolean {
-    return this.mediumEnabled && this.mediumIdentityReady && this.mediumSessionConfigured;
+    return (
+      this.mediumEnabled &&
+      this.mediumIdentityReady &&
+      (this.mediumSessionConfigured || this.googleBrowserLoginConfigured)
+    );
   }
 
   get mediumProviderLabel(): string {
@@ -257,6 +342,25 @@ export class IntegrationsDashboardComponent implements OnInit {
     } else {
       redirect();
     }
+  }
+
+  runMediumBrowserLogin(): void {
+    this.mediumBrowserLoginRunning = true;
+    this.mediumError = null;
+    this.mediumSuccess = null;
+    this.api.mediumBrowserLoginSession().subscribe({
+      next: (res: MediumConfigResponse) => {
+        this.applyMediumConfig(res);
+        this.mediumSuccess =
+          'Medium browser session saved using shared Google credentials from Integrations.';
+        this.mediumBrowserLoginRunning = false;
+      },
+      error: (err: { error?: { detail?: string }; message?: string }) => {
+        this.mediumError =
+          err?.error?.detail || err?.message || 'Automated Medium browser login failed.';
+        this.mediumBrowserLoginRunning = false;
+      },
+    });
   }
 
   disconnectMediumGoogle(): void {

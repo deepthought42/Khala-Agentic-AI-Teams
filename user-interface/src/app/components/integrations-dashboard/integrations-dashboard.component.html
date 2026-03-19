@@ -1,6 +1,89 @@
 <h1>Integrations</h1>
 <p>Connect external services to receive agent notifications and updates.</p>
 
+  <mat-card class="google-browser-card">
+    @if (googleBrowserLoading) {
+      <mat-card-content>
+        <div class="loading-wrap">
+          <mat-spinner diameter="36"></mat-spinner>
+        </div>
+      </mat-card-content>
+    } @else {
+      <mat-card-header>
+        <div mat-card-avatar class="google-browser-avatar" aria-hidden="true">
+          <mat-icon>account_circle</mat-icon>
+        </div>
+        <mat-card-title>Google account (browser sign-in)</mat-card-title>
+        <mat-card-subtitle>
+          One encrypted Gmail / Google login for <strong>every</strong> integration that uses
+          <strong>Sign in with Google</strong> in a real browser (e.g. Medium). Stored with Fernet; uses Postgres when
+          the API has <code>POSTGRES_HOST</code>, otherwise encrypted SQLite.
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        @if (googleBrowserError) {
+          <div class="status-banner error-banner">
+            <mat-icon>error_outline</mat-icon>
+            <span>{{ googleBrowserError }}</span>
+          </div>
+        }
+        @if (googleBrowserSuccess) {
+          <div class="status-banner success-banner">
+            <mat-icon>check_circle_outline</mat-icon>
+            <span>{{ googleBrowserSuccess }}</span>
+          </div>
+        }
+        <div class="readiness-item inline-readiness">
+          <span class="readiness-label">Status</span>
+          <span class="readiness-value" [class.ready]="googleBrowserLoginConfigured">
+            @if (googleBrowserLoginConfigured) { Credentials saved } @else { Not configured }
+          </span>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Google email</mat-label>
+            <input matInput type="email" [(ngModel)]="googleAccountEmail" autocomplete="username" />
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Google password</mat-label>
+            <input
+              matInput
+              type="password"
+              [(ngModel)]="googleAccountPassword"
+              autocomplete="new-password"
+            />
+          </mat-form-field>
+        </div>
+        <div class="form-row medium-browser-cred-actions">
+          <button
+            mat-raised-button
+            color="primary"
+            type="button"
+            (click)="saveGoogleBrowserLoginCredentials()"
+            [disabled]="
+              savingGoogleBrowserCredentials ||
+              !googleAccountEmail.trim() ||
+              !googleAccountPassword
+            "
+          >
+            @if (savingGoogleBrowserCredentials) { Saving… } @else { Save encrypted credentials }
+          </button>
+          <button
+            mat-stroked-button
+            color="warn"
+            type="button"
+            (click)="clearGoogleBrowserLoginCredentials()"
+            [disabled]="clearingGoogleBrowserCredentials || !googleBrowserLoginConfigured"
+          >
+            @if (clearingGoogleBrowserCredentials) { Clearing… } @else { Clear credentials }
+          </button>
+        </div>
+      </mat-card-content>
+    }
+  </mat-card>
+
   <mat-card class="slack-card">
     @if (loadingSlack) {
       <mat-card-content>
@@ -270,8 +353,10 @@
         <div mat-card-avatar class="medium-avatar" aria-hidden="true">M</div>
         <mat-card-title>Medium</mat-card-title>
         <mat-card-subtitle>
-          Configure Medium for the blogging <strong>Medium statistics</strong> workflow with provider identity
-          and a Playwright <code>storage_state</code> session.
+          Blogging <strong>Medium statistics</strong> use a Playwright <code>storage_state</code> on disk. Enter the
+          Google account you use for Medium below — it is <strong>encrypted</strong> (Postgres when
+          <code>POSTGRES_HOST</code> is set, otherwise encrypted SQLite). Optional platform OAuth app is only for
+          “Link Google account”.
         </mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
@@ -302,9 +387,15 @@
             </span>
           </div>
           <div class="readiness-item">
+            <span class="readiness-label">Shared Google login</span>
+            <span class="readiness-value" [class.ready]="googleBrowserLoginConfigured">
+              @if (googleBrowserLoginConfigured) { Saved } @else { None }
+            </span>
+          </div>
+          <div class="readiness-item">
             <span class="readiness-label">Browser session</span>
             <span class="readiness-value" [class.ready]="mediumSessionConfigured">
-              @if (mediumSessionConfigured) { Imported } @else { Missing }
+              @if (mediumSessionConfigured) { Ready } @else { Missing }
             </span>
           </div>
           <div class="readiness-item">
@@ -332,10 +423,39 @@
           </div>
         }
 
+        @if (mediumEnabled && mediumProvider === 'google') {
+          <mat-divider class="section-divider"></mat-divider>
+          <h3 class="medium-section-title">Medium session (Playwright)</h3>
+          <p class="connect-description">
+            Uses the <strong>shared Google credentials</strong> at the top of this page. Run
+            <code>playwright install chromium</code> on the API host. Capture once to write
+            <code>storage_state</code>; stats can also auto-sign-in if the session file is missing.
+          </p>
+          <div class="form-row medium-browser-cred-actions">
+            <button
+              mat-stroked-button
+              color="primary"
+              type="button"
+              (click)="runMediumBrowserLogin()"
+              [disabled]="
+                mediumBrowserLoginRunning || mediumSaving || mediumConnecting || !googleBrowserLoginConfigured
+              "
+            >
+              @if (mediumBrowserLoginRunning) {
+                Signing in via browser…
+              } @else {
+                Capture Medium session (browser)
+              }
+            </button>
+          </div>
+        }
+
         @if (mediumProvider === 'google') {
           <p class="connect-description">
-            Create a <strong>Web application</strong> OAuth client in Google Cloud Console and add redirect URL
-            <code>…/api/integrations/medium/oauth/google/callback</code> (or set <code>MEDIUM_GOOGLE_REDIRECT_URI</code> on the API).
+            Optional: create a <strong>Web application</strong> OAuth client in Google Cloud Console only if you
+            use <strong>Link Google account</strong> below. Automated browser login does not use these fields.
+            Redirect URL:
+            <code>…/api/integrations/medium/oauth/google/callback</code> (or <code>MEDIUM_GOOGLE_REDIRECT_URI</code>).
           </p>
           <div class="form-row">
             <mat-form-field appearance="outline" class="full-width">

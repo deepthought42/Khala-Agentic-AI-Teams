@@ -79,3 +79,14 @@ export interface MediumGoogleOAuthConnectResponse {
 export interface MediumSessionImportBody {
   storage_state: Record<string, unknown>;
 }
+
+/** GET /api/integrations/google-browser-login */
+export interface GoogleBrowserLoginStatusResponse {
+  configured: boolean;
+}
+
+/** PUT /api/integrations/google-browser-login */
+export interface GoogleBrowserLoginCredentialsBody {
+  email: string;
+  password: string;
+}

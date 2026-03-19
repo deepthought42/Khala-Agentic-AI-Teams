@@ -1,7 +1,33 @@
+.google-browser-card,
 .slack-card,
 .medium-card {
   max-width: 680px;
   margin-top: 1rem;
+}
+
+.google-browser-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: rgba(66, 133, 244, 0.2);
+  color: #8ab4f8;
+
+  mat-icon {
+    font-size: 26px;
+    width: 26px;
+    height: 26px;
+  }
+}
+
+.inline-readiness {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .medium-avatar {
@@ -16,6 +42,19 @@
   font-weight: 700;
   font-size: 1.1rem;
   letter-spacing: -0.02em;
+}
+
+.medium-section-title {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.medium-browser-cred-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .medium-readiness-grid {
