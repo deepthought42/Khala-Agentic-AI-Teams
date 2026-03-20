@@ -18,6 +18,8 @@ Write like a knowledgeable person explaining this topic to a smart colleague —
 - Every paragraph must have a clear arc: introduce an idea, develop it, close it. Do not write a paragraph that is just a collection of related sentences pointing in roughly the same direction.
 - Every sentence must follow logically from the one before it. Before writing a new sentence, ask: does this grow naturally out of what I just said? If not, add a bridging phrase or reorder.
 - Vary sentence length and rhythm deliberately. Mix short, punchy sentences with longer explanatory ones. Walls of same-length sentences are exhausting to read.
+- **No staccato / telegraphic prose:** Most sentences should express a **full thought** in natural, human-length lines—not chains of two- to five-word sentences that read like marketing slogans. If the style guide values brevity, interpret it as clarity and no bloat, not fragment spam.
+- **Heuristic:** Avoid three or more consecutive sentences under about **7–8 words** unless you are deliberately landing emphasis (e.g. a punchline). When related ideas are split into micro-sentences, combine them with commas, conjunctions, or one clearer sentence while staying at the target reading level.
 - Connect paragraphs with real transitions — transitions that reference what just happened, not mechanical connectors. Wrong: "Additionally, X is important." Right: "That fragility is exactly what makes X so valuable in practice."
 - Address the reader as "you" at least a few times. A post that never speaks to the reader feels cold and academic.
 - Ground abstract ideas in concrete, specific scenarios. Don't say "a company might want to improve performance." Say what kind of company, what they were doing, what changed.
@@ -56,6 +58,7 @@ MANDATORY — APPLY EVERY FEEDBACK ITEM:
 - Preserve the draft's structure and substance aligned with the content plan. Only change what the feedback targets. Do not remove content unless the feedback explicitly asks for it.
 
 WHEN FIXING FLOW, COHERENCE, OR VOICE ISSUES:
+- To fix **telegraphic / staccato** prose: merge related micro-sentences, add connective tissue, and restore full-thought sentences. Keep the 8th-grade target via plain words and simple structure—not via two-word sentence chains.
 - To fix a choppy section: rewrite it so each sentence grows from the one before it. Add a specific bridging phrase or restructure the argument so the logic is audible on the page.
 - To fix AI writing patterns: delete the banned phrase entirely and rewrite the sentence to say the thing directly. Never replace "It's worth noting that X" with another hollow framing — just say X.
 - To fix a generic example: replace it with a specific, concrete scenario. Name the situation, the people involved (as a type), and what changed.
@@ -68,7 +71,7 @@ BANNED PATTERNS — never write these in the revised draft, even when not direct
 - "This is a game-changer", "This is incredibly important", "Harnessing the power of", "Leveraging X to unlock Y"
 - "Furthermore,", "Moreover,", "Additionally,", "In conclusion,", "To summarize," as paragraph openers with no real connective meaning
 
-You MUST also comply with the style guide in the revised draft (headings descriptive, 8th grade reading level, concrete hook, one practical next step in the conclusion, technical accuracy).
+You MUST also comply with the style guide in the revised draft (headings descriptive, 8th grade reading level through vocabulary and straightforward syntax—not choppy fragments, concrete hook, one practical next step in the conclusion, technical accuracy).
 
 CRITICAL RULES:
 - You MUST output the ENTIRE blog post from start to finish. Never output a partial draft.
@@ -83,13 +86,14 @@ To avoid JSON escaping errors, use this format exactly:
 REVISE_SINGLE_ITEM_PROMPT = """You are a world-class expert blog writer. Your task is to revise the draft to address exactly ONE copy editor feedback item while keeping the draft fully compliant with the brand and writing guide.
 
 You will be given:
-1. A brand and writing style guide. The revised draft must follow it (voice, 8th grade level, no banned phrases, no em dashes, descriptive headings, concrete hook, one practical next step).
+1. A brand and writing style guide. The revised draft must follow it (voice, 8th grade level without telegraphic sentence chains, no banned phrases, no em dashes, descriptive headings, concrete hook, one practical next step).
 2. One feedback item: severity, category, location, issue description, and optionally a concrete Suggestion.
 3. The current draft (Markdown).
 
 Apply only this single feedback item. Use the Suggestion when provided. Preserve the rest of the draft; change only what is needed to fix this item. Do not re-evaluate or address other feedback.
 
 WHEN FIXING FLOW OR VOICE ISSUES:
+- Telegraphic / staccato prose: merge slogans into full thoughts; add connective words; keep reading level plain without fragment spam.
 - Choppy prose: rewrite so each sentence grows naturally from the one before it. Add bridging phrases or restructure so the logic is visible.
 - AI writing patterns: delete the hollow phrase and say the thing directly. Never swap one filler phrase for another.
 - Generic examples: replace with a specific, concrete scenario — name the situation and what changed.

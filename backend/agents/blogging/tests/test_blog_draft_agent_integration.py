@@ -93,7 +93,10 @@ def test_draft_agent_with_ollama_produces_real_content() -> None:
 
     agent = BlogDraftAgent(
         llm_client=client,
-        writing_style_guide_content="Use short sentences. No em dashes. Define terms on first use.",
+        writing_style_guide_content=(
+            "Clear, conversational prose: full thoughts in natural-length sentences (~8th grade). "
+            "No em dashes. Define terms on first use."
+        ),
         brand_spec_content="",
     )
     plan = ContentPlan(

@@ -1,36 +1,76 @@
-.subtitle {
-  color: rgba(255, 255, 255, 0.72);
-  margin-bottom: 1rem;
+.nutrition-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-bottom: 2.5rem;
+}
+
+.welcome-hero {
+  margin-bottom: 1.5rem;
+
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    opacity: 0.65;
+    margin: 0 0 0.35rem;
+  }
+
+  h1 {
+    font-size: 1.85rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+    line-height: 1.2;
+  }
+
+  .lead {
+    margin: 0 0 1rem;
+    line-height: 1.55;
+    opacity: 0.88;
+    max-width: 52rem;
+
+    strong {
+      font-weight: 600;
+      opacity: 1;
+    }
+  }
 }
 
 .health-row {
-  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.health-hint {
+  font-size: 0.85rem;
+  opacity: 0.7;
 }
 
 .health-chip {
   display: inline-block;
-  padding: 0.25rem 0.6rem;
+  padding: 0.25rem 0.65rem;
   border-radius: 999px;
   font-size: 0.8rem;
   border: 1px solid transparent;
 }
 
 .health-chip.healthy {
-  color: #1b5e20;
-  background: #e8f5e9;
-  border-color: #81c784;
+  color: #a5d6a7;
+  background: rgba(76, 175, 80, 0.12);
+  border-color: rgba(129, 199, 132, 0.45);
 }
 
 .health-chip.checking {
-  color: #6a1b9a;
-  background: #f3e5f5;
-  border-color: #ce93d8;
+  color: #ce93d8;
+  background: rgba(156, 39, 176, 0.12);
+  border-color: rgba(206, 147, 216, 0.4);
 }
 
 .health-chip.unhealthy {
-  color: #b71c1c;
-  background: #ffebee;
-  border-color: #ef9a9a;
+  color: #ef9a9a;
+  background: rgba(244, 67, 54, 0.1);
+  border-color: rgba(239, 154, 154, 0.45);
 }
 
 .status-card {
@@ -38,22 +78,51 @@
 }
 
 .status-card.error {
-  border-left: 4px solid #e53935;
+  border-left: 4px solid #e57373;
 }
 
 .status-card.success {
-  border-left: 4px solid #43a047;
+  border-left: 4px solid #81c784;
 }
 
-.flow-card {
-  margin-bottom: 1rem;
+.nutrition-stepper {
+  background: transparent;
+}
+
+.step-card {
+  margin: 0.75rem 0 1.5rem;
+}
+
+.section-title {
+  margin: 1.25rem 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.section-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.88rem;
+  opacity: 0.72;
+}
+
+.client-row {
+  margin-bottom: 0.5rem;
 }
 
 .row {
   display: flex;
   gap: 0.75rem;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
+}
+
+.row.wrap {
+  align-items: center;
+}
+
+.grow {
+  flex: 1 1 220px;
+  min-width: 180px;
 }
 
 .client-id {
@@ -64,19 +133,88 @@
   min-width: 260px;
 }
 
+.members-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.member-card {
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.member-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.member-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.65rem;
+}
+
 .profile-grid {
-  margin-top: 0.75rem;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 0.75rem;
 }
 
-.full-row {
+.full-row,
+.full-width {
+  grid-column: 1 / -1;
   width: 100%;
 }
 
+.step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.action-hint {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.blocked-msg {
+  opacity: 0.8;
+  margin: 0.5rem 0 0;
+}
+
+.meal-form {
+  align-items: flex-end;
+  margin-bottom: 0.5rem;
+}
+
 .plan-block {
-  margin-top: 0.9rem;
+  margin-top: 1rem;
+}
+
+.plan-block h3 {
+  font-size: 0.95rem;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.plan-notes {
+  margin-top: 0.75rem;
+  line-height: 1.5;
+  opacity: 0.85;
 }
 
 .chips {
@@ -86,13 +224,74 @@
   margin-bottom: 0.5rem;
 }
 
+.chips.warn mat-chip {
+  opacity: 0.95;
+}
+
+.day-section {
+  margin-top: 1.25rem;
+}
+
+.day-heading {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
 .recommendations {
-  margin-top: 1rem;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 0.75rem;
 }
 
 .meal-card {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.meal-card:hover,
+.meal-card:focus-visible {
+  border-color: rgba(129, 199, 132, 0.45);
+  outline: none;
+}
+
+.meal-card--selected {
+  border-color: rgba(129, 199, 132, 0.75);
+  background: rgba(76, 175, 80, 0.06);
+}
+
+.rationale {
+  line-height: 1.45;
+  margin-bottom: 0.5rem;
+}
+
+.ingredients-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.65;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.ingredients {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.88rem;
+  opacity: 0.88;
+}
+
+.meta {
+  font-size: 0.82rem;
+  opacity: 0.7;
+  margin-top: 0.5rem;
+}
+
+.history-chip {
+  align-self: center;
+}
+
+::ng-deep .nutrition-stepper .mat-step-header .mat-step-label {
+  font-weight: 500;
 }

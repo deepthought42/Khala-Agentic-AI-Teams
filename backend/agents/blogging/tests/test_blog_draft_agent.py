@@ -108,7 +108,7 @@ def test_blog_draft_agent_with_style_guide() -> None:
     llm = DummyLLMClient()
     agent = BlogDraftAgent(
         llm_client=llm,
-        writing_style_guide_content="Write like a mentor. Short sentences. No em dashes.",
+        writing_style_guide_content="Write like a mentor. Clear, natural-length sentences. No em dashes.",
         brand_spec_content="",
     )
 

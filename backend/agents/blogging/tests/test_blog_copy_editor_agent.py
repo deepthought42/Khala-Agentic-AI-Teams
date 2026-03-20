@@ -10,7 +10,7 @@ from llm_service import DummyLLMClient
 
 
 # Inline style guide passed at agent init so tests do not load the default file.
-_TEST_STYLE_GUIDE = "Use short sentences. No em dashes."
+_TEST_STYLE_GUIDE = "Clear, conversational prose at ~8th grade. No em dashes."
 
 
 def _draft_n_words(n: int) -> str:

@@ -3,12 +3,22 @@ export interface NutritionHealthResponse {
   team?: string;
 }
 
+export interface NutritionHouseholdMember {
+  name: string;
+  age_or_role: string;
+  dietary_needs: string[];
+  allergies: string[];
+  notes: string;
+}
+
 export interface ClientProfile {
   client_id: string;
   household: {
     number_of_people: number;
     description: string;
     ages_if_relevant: string[];
+    /** Per-person rows when returned by API (may be absent on older payloads). */
+    members?: NutritionHouseholdMember[];
   };
   dietary_needs: string[];
   allergies_and_intolerances: string[];
@@ -36,6 +46,7 @@ export interface NutritionProfileUpdateRequest {
     number_of_people: number;
     description: string;
     ages_if_relevant: string[];
+    members?: NutritionHouseholdMember[];
   };
   dietary_needs?: string[];
   allergies_and_intolerances?: string[];

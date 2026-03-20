@@ -28,6 +28,8 @@ Read each paragraph sentence by sentence. Every sentence must follow logically a
 - Paragraphs where the sentences feel like a list of loosely related facts rather than a connected, building thought
 For each issue, quote the specific sentences that break the flow and explain the logical gap.
 
+**Staccato / telegraphic prose:** Flag as `should_fix` when **many consecutive ultra-short sentences** (roughly **7 words or fewer** each) make the piece read like bullet slogans or ad copy instead of a person explaining ideas. Use `must_fix` when the pattern dominates a section or the whole post. In the suggestion, ask the writer to **merge related lines**, add **connective tissue**, and express **full thoughts** while keeping vocabulary plain and the target reading level. This is a coherence and voice issue, not a ban on occasional short punchy lines.
+
 **2. Paragraph-to-paragraph flow**
 The ideas in the post must build across paragraphs. Each section should set up what follows. Flag as `should_fix`:
 - Paragraphs that could be reordered without any loss of meaning (a structural warning sign)

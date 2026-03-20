@@ -6,16 +6,48 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
+from llm_service import LLMClient, LLMError, LLMJsonParseError
+
 from ...models import ClientProfile, ProfileUpdateRequest
-from llm_service import LLMClient, LLMJsonParseError
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_profile_structural(
+    client_id: str,
+    current: Optional[ClientProfile],
+    update: Optional[ProfileUpdateRequest],
+) -> ClientProfile:
+    """Apply update onto current without LLM (fallback when the model is unavailable)."""
+    data: Dict[str, Any] = (
+        current.model_dump() if current else ClientProfile(client_id=client_id).model_dump()
+    )
+    if not update:
+        data["client_id"] = client_id
+        return ClientProfile.model_validate(data)
+    patch = update.model_dump(exclude_none=True)
+    for key in ("dietary_needs", "allergies_and_intolerances"):
+        if key in patch:
+            data[key] = patch[key]
+    for key in ("household", "lifestyle", "preferences", "goals"):
+        if key not in patch:
+            continue
+        sub = patch[key]
+        if sub is None:
+            continue
+        existing = data.get(key) or {}
+        if isinstance(existing, dict) and isinstance(sub, dict):
+            data[key] = {**existing, **sub}
+        else:
+            data[key] = sub
+    data["client_id"] = client_id
+    return ClientProfile.model_validate(data)
 
 SYSTEM_PROMPT = """You are an expert intake specialist for a personal nutrition and meal planning service.
 Your job is to take partial or full client information and produce a complete, consistent client profile as JSON.
 
 The profile must include:
-- household: number_of_people (int), description (e.g. "solo", "couple", "family of 4"), ages_if_relevant (list of strings)
+- household: number_of_people (int), description (e.g. "solo", "couple", "family of 4"), ages_if_relevant (list of strings), members (optional list of {name, age_or_role, dietary_needs, allergies, notes} per person)
 - dietary_needs: list of strings (e.g. vegetarian, vegan, keto, low-sodium, diabetic-friendly)
 - allergies_and_intolerances: list of strings (e.g. nuts, shellfish, gluten)
 - lifestyle: max_cooking_time_minutes (int or null), lunch_context ("office" or "remote"), equipment_constraints (list), other_constraints (string)
@@ -65,9 +97,10 @@ class IntakeProfileAgent:
             )
         except LLMJsonParseError as e:
             logger.warning("Intake profile JSON extraction failed: %s", e)
-            if current_profile:
-                return current_profile
-            return ClientProfile(client_id=client_id)
+            return _merge_profile_structural(client_id, current_profile, update)
+        except LLMError as e:
+            logger.warning("Intake profile LLM call failed, using structural merge: %s", e)
+            return _merge_profile_structural(client_id, current_profile, update)
 
         data["client_id"] = client_id
         return ClientProfile.model_validate(data)

@@ -93,7 +93,13 @@ A reader should leave feeling:
 ### Target level
 - **Target reading level:** 8th grade.
 - **Maximum:** 10th grade.
-Use plain words and short sentences. Keep vocabulary so that a broad audience can follow without a dictionary.
+Hit that level with **plain vocabulary** and **straightforward sentence structure**, not by chopping every thought into tiny fragments. A broad audience should follow without a dictionary.
+
+### Sentence length and rhythm (readability without staccato)
+- **Default:** Most sentences should carry **one complete thought** in connected prose. Many sentences will land around **10–22 words**; that is normal and good.
+- **Occasional short sentences** are fine for emphasis (e.g. “That’s the catch.”). Do **not** string together many **2–6 word** sentences; that reads like ad copy, not a person explaining something.
+- When two or three micro-sentences say related things, **combine** them with commas, conjunctions, or one slightly longer sentence—still simple words, still one idea per sentence when possible.
+- **Brevity** means no bloat and no rambling—not telegraphic **fragment spam**.
 
 ### Explain terms on first use
 If a technical term appears, define it immediately in simple language.
@@ -192,7 +198,7 @@ Do not say “just do X” if X is the hard part. Either explain how, or admit i
 ## 9. Style patterns to copy
 
 ### Sentence style
-- Short sentences.
+- **Full thoughts in natural length:** strong verbs, minimal fluff, and sentences long enough to sound human—not a drumbeat of two-word lines.
 - Strong verbs.
 - Minimal adjectives.
 
@@ -288,7 +294,7 @@ When relevant, reference Brandon’s work without being pushy: Look-see.com as a
 
 ## 15. Quick summary for a writer
 
-Write like a human mentor. Teach like the reader is smart but new. Use short sentences. Show real examples. Keep it practical. No em dashes. No hype.
+Write like a human mentor. Teach like the reader is smart but new. Use **clear, conversational sentences** that express full ideas (avoid staccato marketing chop). Show real examples. Keep it practical. No em dashes. No hype.
 
 ---
 
@@ -300,7 +306,7 @@ Write like a human mentor. Teach like the reader is smart but new. Use short sen
 - Is the confidence earned by examples?
 
 ### Clarity check
-- Are paragraphs short?
+- Are paragraphs short (2–5 sentences) but sentences **substantial** (not chains of 2–5 word fragments)?
 - Are terms defined?
 - Are there concrete steps?
 
@@ -323,9 +329,9 @@ Before considering a draft finished, check:
 - [ ] Clear thesis in the intro
 - [ ] Each section has a clear purpose
 - [ ] No banned phrases
-- [ ] Reading level within grade 8–10
+- [ ] Reading level within grade 8–10 (plain words and clear structure—not telegraphic fragments)
 - [ ] No em dashes or en dashes
-- [ ] Paragraphs are 2–5 sentences
+- [ ] Paragraphs are 2–5 sentences; prose reads like connected thoughts, not slogan lists
 - [ ] Lists used intentionally, not every section as bullets
 - [ ] Code is runnable when included
 - [ ] Security caveats included when relevant

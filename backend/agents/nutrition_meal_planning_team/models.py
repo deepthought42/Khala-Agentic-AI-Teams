@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-
 # --- Client profile (what a dietician would need) ---
+
+
+class HouseholdMember(BaseModel):
+    """One person in the household (for tailored planning)."""
+
+    name: str = ""
+    age_or_role: str = ""  # e.g. "adult", "child 8", "teen"
+    dietary_needs: List[str] = Field(default_factory=list)
+    allergies: List[str] = Field(default_factory=list)
+    notes: str = ""
 
 
 class HouseholdInfo(BaseModel):
@@ -17,6 +25,7 @@ class HouseholdInfo(BaseModel):
     number_of_people: int = 1
     description: str = ""  # e.g. "solo", "couple", "family of 4"
     ages_if_relevant: List[str] = Field(default_factory=list)  # e.g. ["adult", "child 8"]
+    members: List[HouseholdMember] = Field(default_factory=list)
 
 
 class LifestyleInfo(BaseModel):

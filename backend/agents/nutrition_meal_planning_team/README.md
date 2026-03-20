@@ -22,7 +22,7 @@ All routes are under the unified API prefix **`/api/nutrition-meal-planning`**.
 
 Stored per client and used by all agents:
 
-- **household**: `number_of_people`, `description` (e.g. solo, couple, family of 4), `ages_if_relevant`
+- **household**: `number_of_people`, `description` (e.g. solo, couple, family of 4), `ages_if_relevant`, `members` (optional list per person: `name`, `age_or_role`, `dietary_needs`, `allergies`, `notes`)
 - **dietary_needs**: e.g. vegetarian, vegan, keto, low-sodium, diabetic-friendly
 - **allergies_and_intolerances**: e.g. nuts, shellfish, gluten
 - **lifestyle**: `max_cooking_time_minutes`, `lunch_context` (`"office"` or `"remote"`), `equipment_constraints`, `other_constraints`
@@ -39,7 +39,7 @@ Data is stored under `.agent_cache/nutrition_meal_planning_team/` (or `AGENT_CAC
 
 ## Agents
 
-- **Intake / profile agent**: Validates and completes client profile from partial updates (LLM-backed).
+- **Intake / profile agent**: Validates and completes client profile from partial updates (LLM-backed). If the LLM is unavailable, updates are merged structurally so `PUT /profile/{id}` still persists the payload.
 - **Nutritionist agent**: Produces a **nutrition plan** (daily targets, balance guidelines, foods to emphasize/avoid) from profile; no recipes.
 - **Meal planning agent**: Produces recipe/meal suggestions from profile, nutrition plan, and meal history (with feedback summary) so recommendations improve over time.
 
