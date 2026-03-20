@@ -55,6 +55,7 @@ from shared.errors import (
     ResearchError,
 )
 from shared.models import BlogPhase, get_phase_progress
+from shared.planning_config import planning_model_override
 from validators.runner import run_validators_from_work_dir
 
 logger = logging.getLogger(__name__)
