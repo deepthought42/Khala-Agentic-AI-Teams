@@ -73,3 +73,11 @@ def test_ollama_complete_json_404_raises_permanent(monkeypatch: pytest.MonkeyPat
         with pytest.raises(LLMPermanentError) as exc_info:
             client.complete_json("hello", temperature=0)
         assert exc_info.value.status_code == 404
+
+
+def test_extract_json_tolerates_replacement_char_noise() -> None:
+    client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+    noisy = '{\n  "approved": false,\n�  "summary": "ok",\n  "feedback_items": []\n}'
+    parsed = client._extract_json(noisy)
+    assert parsed["approved"] is False
+    assert parsed["summary"] == "ok"

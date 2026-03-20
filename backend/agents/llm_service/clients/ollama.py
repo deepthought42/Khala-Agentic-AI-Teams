@@ -47,6 +47,7 @@ _EXPECTED_KEYS = frozenset({
     "tasks", "execution_order",
     "bugs_found", "integration_tests", "unit_tests", "readme_content",
 })
+_JSON_NOISE_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\uFFFD]")
 
 
 def _parse_retry_config() -> tuple[int, float, float]:
@@ -206,8 +207,16 @@ class OllamaLLMClient(LLMClient):
         s = re.sub(r",\s*([}\]])", r"\1", s)
         return s
 
+    def _strip_json_noise(self, s: str) -> str:
+        """Drop transport artifacts (BOM/replacement chars/control bytes) from JSON-ish text."""
+        if not s:
+            return s
+        s = s.replace("\ufeff", "")
+        return _JSON_NOISE_RE.sub("", s)
+
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """Extract a single JSON object from model output. Raises LLMJsonParseError on failure."""
+        text = self._strip_json_noise(text)
         if "---DRAFT---" in text:
             parts = text.split("---DRAFT---", 1)
             if len(parts) == 2 and parts[1].strip():
