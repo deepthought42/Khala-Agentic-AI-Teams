@@ -21,6 +21,7 @@ from .prompts import (
     ALLOWED_CLAIMS_INSTRUCTION,
     DRAFT_SYSTEM_REMINDER,
     EXTRACT_NOTES_PROMPT,
+    REVISE_DRAFT_PROMPT,
     REVISE_SINGLE_ITEM_PROMPT,
 )
 
@@ -413,6 +414,101 @@ class BlogDraftAgent:
         ])
         return "\n".join(prompt_parts)
 
+    def _format_feedback_item_line(self, item: Any, index: int) -> str:
+        """One numbered feedback line (+ optional suggestion) for batch revise prompts."""
+        loc = f" [{item.location}]" if getattr(item, "location", None) else ""
+        line = f"{index}. [{item.severity}] {item.category}{loc}: {item.issue}"
+        if getattr(item, "suggestion", None):
+            line += f"\n   Suggestion: {item.suggestion}"
+        return line
+
+    def _build_revise_all_items_prompt(
+        self,
+        draft: str,
+        feedback_items: list[Any],
+        style_guide_text: str,
+        revise_input: ReviseDraftInput,
+    ) -> str:
+        """Build one revision prompt that applies every copy-editor feedback item."""
+        brand_section = (
+            self._brand_spec_prompt
+            if self._brand_spec_prompt
+            else "No brand specification was provided. Follow the style guide below."
+        )
+        feedback_lines = [
+            self._format_feedback_item_line(item, i) for i, item in enumerate(feedback_items, start=1)
+        ]
+        feedback_block = "\n\n".join(feedback_lines)
+
+        prompt_parts = [
+            REVISE_DRAFT_PROMPT,
+            "",
+            "---",
+            "BRAND AND STYLE (mandatory for every sentence):",
+            "---",
+            brand_section,
+            "",
+            "---",
+            "STYLE GUIDE (follow in the revised draft):",
+            "---",
+            style_guide_text,
+            "",
+            "---",
+            "COPY EDITOR FEEDBACK (apply every numbered item below):",
+            "---",
+            feedback_block,
+            "",
+            "---",
+            "CURRENT DRAFT:",
+            "---",
+            draft,
+        ]
+        if revise_input.audience:
+            prompt_parts.insert(0, f"Audience: {revise_input.audience}\n")
+        if revise_input.tone_or_purpose:
+            prompt_parts.insert(0, f"Tone/Purpose: {revise_input.tone_or_purpose}\n")
+        if revise_input.allowed_claims and revise_input.allowed_claims.get("claims"):
+            claims_list = revise_input.allowed_claims["claims"]
+            claims_text = "\n".join(
+                f"- [CLAIM:{c.get('id','')}] {c.get('text','')}"
+                for c in claims_list
+            )
+            block = "\n".join([
+                "",
+                "---",
+                "ALLOWED CLAIMS (preserve [CLAIM:id] tags; do not add new factual claims):",
+                "---",
+                claims_text,
+            ])
+            prompt_parts.insert(len(prompt_parts) - 5, block)
+        if revise_input.research_document:
+            research = revise_input.research_document.strip()
+            research_snippet = research[:3000] + ("..." if len(research) > 3000 else "")
+            prompt_parts.extend([
+                "",
+                "---",
+                "RESEARCH (for context; preserve facts):",
+                "---",
+                research_snippet,
+            ])
+        length_block = (
+            revise_input.length_guidance.strip()
+            if (revise_input.length_guidance or "").strip()
+            else (
+                f"TARGET LENGTH: The revised draft should be approximately {revise_input.target_word_count} words. "
+                "Apply all feedback above without significantly expanding the post beyond this target."
+            )
+        )
+        prompt_parts.extend([
+            "",
+            "---",
+            length_block,
+            "",
+            "---",
+            'Use this format: first line {"draft": 0}, then ---DRAFT---, then the full revised blog post in Markdown.',
+        ])
+        return "\n".join(prompt_parts)
+
     def revise(
         self,
         revise_input: ReviseDraftInput,
@@ -421,12 +517,11 @@ class BlogDraftAgent:
         draft_output_path: Optional[Union[str, Path]] = None,
     ) -> DraftOutput:
         """
-        Revise a draft by addressing each copy editor feedback item individually.
+        Revise a draft by addressing all copy editor feedback in a single LLM pass.
 
-        For each of the N feedback items, the agent revises the draft once (addressing
-        only that item), then passes the updated draft to the next item. No self-review
-        or compliance check is performed; the full revised draft is returned after all
-        items have been addressed. The pipeline sends the result back to the editor.
+        One prompt lists every feedback item; the model must apply all must_fix /
+        should_fix items (and consider items where appropriate). No self-review or
+        compliance check is performed here; the pipeline sends the result back to the editor.
 
         When draft_output_path is set, writes the final revised draft to that path and logs the path.
 
@@ -444,68 +539,65 @@ class BlogDraftAgent:
             return DraftOutput(draft=draft)
 
         style_guide_text = self._style_prompt
-
-        current_draft = draft
         revise_max_tokens = 32768
         num_items = len(revise_input.feedback_items)
 
-        for item_index, item in enumerate(revise_input.feedback_items, 1):
-            logger.info("Revising for feedback item %s/%s", item_index, num_items)
-            if on_llm_request:
-                on_llm_request(f"Addressing feedback item {item_index}/{num_items}...")
+        logger.info("Revising draft for %s feedback items in a single pass", num_items)
+        if on_llm_request:
+            on_llm_request(f"Addressing all copy editor feedback ({num_items} items)...")
 
-            prompt = self._build_revise_single_item_prompt(
-                current_draft, item, item_index, style_guide_text, revise_input
-            )
+        prompt = self._build_revise_all_items_prompt(
+            draft, list(revise_input.feedback_items), style_guide_text, revise_input
+        )
 
-            revised: Optional[str] = None
-            for attempt in range(3):
-                try:
-                    raw_response = self.llm.complete(
-                        prompt,
-                        temperature=0.2,
-                        max_tokens=revise_max_tokens,
-                        system_prompt=REVISE_SINGLE_ITEM_PROMPT,
+        revised: Optional[str] = None
+        for attempt in range(3):
+            try:
+                raw_response = self.llm.complete(
+                    prompt,
+                    temperature=0.2,
+                    max_tokens=revise_max_tokens,
+                    system_prompt=REVISE_DRAFT_PROMPT,
+                )
+                revised = _extract_draft_after_marker(raw_response)
+                if revised and revised.strip():
+                    break
+            except LLMTemporaryError:
+                if attempt < 2:
+                    logger.warning(
+                        "Revise (batch): empty/transient LLM response (attempt %s/3); retrying.",
+                        attempt + 1,
                     )
-                    revised = _extract_draft_after_marker(raw_response)
-                    if revised and revised.strip():
-                        break
-                except LLMTemporaryError as e:
-                    if attempt < 2:
-                        logger.warning(
-                            "Revise for item %s: empty/transient LLM response (attempt %s/3); retrying.",
-                            item_index,
-                            attempt + 1,
-                        )
-                        time.sleep(2.0 + attempt)
-                    else:
-                        logger.warning(
-                            "Revise for item %s: empty/transient after 3 attempts; keeping previous draft.",
-                            item_index,
-                        )
-                        break
-                except (LLMJsonParseError, LLMTruncatedError) as e:
-                    if attempt == 0:
-                        logger.warning("Revise for item %s failed: %s; retrying with complete_json.", item_index, e)
-                    else:
-                        logger.warning("Revise for item %s failed after retry; keeping previous draft.", item_index)
-                        break
-            if not revised or not revised.strip():
-                try:
-                    data = self.llm.complete_json(prompt, temperature=0.2, max_tokens=revise_max_tokens)
-                    raw_draft = data.get("draft") if data else None
-                    if isinstance(raw_draft, str) and raw_draft.strip():
-                        revised = raw_draft.strip()
-                except (LLMJsonParseError, LLMTruncatedError):
-                    pass
+                    time.sleep(2.0 + attempt)
+                else:
+                    logger.warning(
+                        "Revise (batch): empty/transient after 3 attempts; keeping original draft.",
+                    )
+                    break
+            except (LLMJsonParseError, LLMTruncatedError) as e:
+                if attempt == 0:
+                    logger.warning("Revise (batch) complete() failed: %s; retrying.", e)
+                else:
+                    logger.warning("Revise (batch) failed after retry; trying complete_json fallback.")
+                    break
 
-            if revised and revised.strip():
-                current_draft = revised.strip()
-                logger.info("Draft revised for item %s/%s: length=%s", item_index, num_items, len(current_draft))
-            else:
-                logger.warning("Revise for item %s/%s produced no content; keeping previous draft.", item_index, num_items)
+        if not revised or not revised.strip():
+            try:
+                data = self.llm.complete_json(prompt, temperature=0.2, max_tokens=revise_max_tokens)
+                raw_draft = data.get("draft") if data else None
+                if isinstance(raw_draft, str) and raw_draft.strip():
+                    revised = raw_draft.strip()
+            except (LLMJsonParseError, LLMTruncatedError):
+                pass
 
-        logger.info("Final revised draft: length=%s (%s items addressed)", len(current_draft), num_items)
+        current_draft = draft
+        if revised and revised.strip():
+            current_draft = revised.strip()
+            logger.info("Draft revised in one pass: length=%s", len(current_draft))
+        else:
+            logger.warning("Revise (batch) produced no content; keeping original draft.")
+
+        logger.info("Final revised draft: length=%s (%s feedback items in prompt)", len(current_draft), num_items)
         if draft_output_path:
             _write_draft_to_path(current_draft, draft_output_path)
         return DraftOutput(draft=current_draft)
