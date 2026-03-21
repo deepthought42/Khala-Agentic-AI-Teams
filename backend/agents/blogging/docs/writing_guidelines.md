@@ -152,6 +152,11 @@ Use headings often. Make them descriptive. Avoid clever headings that hide the m
 - “Turns out the thing everyone calls overkill is the thing that saves you later.”
 - “I learned this the hard way so you don’t have to.”
 
+### Required: at least one personal failure or admission
+Every post must include at least one moment where Brandon admits a mistake, a wrong assumption, or something he learned by getting it wrong. This is what makes the teaching credible and the brand authentic. It does not have to be the hook — it can appear anywhere — but it must be there.
+
+Examples: “I did it the slow way for six months before I figured this out.” / “The first time I tried this, I broke prod.” / “Please don’t do what I did first.”
+
 ### Wrap-ups that match Brandon’s brand
 - A quick recap
 - One practical next step
@@ -165,6 +170,9 @@ Use headings often. Make them descriptive. Avoid clever headings that hide the m
 - When you make factual claims, they should be citable or clearly framed as experience/opinion.
 - If you cite numbers, be conservative. If you’re unsure, phrase it as an observation, not a fact.
 - Credibility comes from: real examples, step-by-step implementation, clear caveats and tradeoffs.
+
+### Cite real named sources
+When referencing established frameworks, methodologies, or concepts, name the actual book, tool, or author. "Steve Blank's 4 Steps to the Epiphany" is how Brandon writes, not "a popular startup framework." Named citations signal that Brandon has actually read and used these sources.
 
 ### Disclaimers
 If the content touches **medical**, **legal**, or **financial** advice, include an appropriate disclaimer.
@@ -183,6 +191,17 @@ If the content touches **medical**, **legal**, or **financial** advice, include 
 - Provide code that is runnable and testable
 - Use clear variable names
 - Include error handling when it matters
+
+### Concept explanation arc (required for technical concepts)
+Never introduce a technical concept as a definition. Introduce it as the answer to a problem the reader has just felt.
+
+1. **The pain**: What breaks, fails, or costs money without this concept?
+2. **The naive approach**: What do most people try first, and why does it fall short?
+3. **The actual solution**: Introduce the concept as the answer to the pain.
+4. **Demonstrate it**: Concrete code, config, or step-by-step example.
+5. **The gotcha**: What can still go wrong, or what trade-off should the reader know about?
+
+If the research doesn't provide steps 1–2, use Brandon's experience as a stand-in. "I used to do X. Here's what that cost me" is a valid setup.
 
 ### Design-by-contract bias
 When writing about systems, Brandon likes explicit rules: preconditions, postconditions, invariants; clear boundaries and interfaces; make breaking changes explicit.
@@ -208,8 +227,12 @@ Do not say “just do X” if X is the hard part. Either explain how, or admit i
 - “This sounds obvious, but it’s not.”
 - “Ask me how I know.”
 
-### Use of contrast
-Brandon often teaches by comparing: what people think vs. what is true; small scale vs. real scale; quick hacks vs. durable engineering.
+### Contrast as a teaching tool (use in technical posts)
+Teach by setting up what the reader probably believes, then showing what's actually true. This is one of Brandon's most effective techniques.
+
+Pattern: "Most people think X. Here's what actually happens at scale." / "At small scale Y works fine. At real scale, it will hurt you."
+
+The contrast should feel like a reveal, not a correction. The reader should think "I did not know that" — not "I was stupid for thinking otherwise."
 
 ---
 
@@ -302,8 +325,18 @@ Write like a human mentor. Teach like the reader is smart but new. Use **clear, 
 
 ### Voice check
 - Does it sound like a helpful mentor, not a lecturer?
-- Is there at least one human moment or story beat?
+- Does the post open with a first-person story or admission?
+- Is there at least one transparent-failure or "learned it the hard way" moment?
+- Are specific numbers used where possible (dollar figures, percentages, durations)?
 - Is the confidence earned by examples?
+
+### Narrative arc check
+- Does the intro establish a thesis or argument (not just a topic)?
+- Does each section open with a transition that references the prior section?
+- Does each major section advance the thesis, or does it just add more information?
+- Are technical concepts introduced through the pain they solve?
+- Does the conclusion feel earned — could it only be reached after reading the post?
+- Are trade-offs acknowledged for every recommendation?
 
 ### Clarity check
 - Are paragraphs short (2–5 sentences) but sentences **substantial** (not chains of 2–5 word fragments)?

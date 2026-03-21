@@ -276,7 +276,7 @@ class BlogDraftAgent:
         prompt_parts.append("")
         prompt_parts.append("---")
         prompt_parts.append(
-            "Before outputting, ensure: no banned phrases; 8th grade reading level; descriptive headings; concrete opening hook; one practical next step in the conclusion."
+            "Before outputting, ensure: no banned phrases; 8th grade reading level; descriptive headings; first-person opening hook from personal experience; at least one transparent-failure or 'learned the hard way' moment; at least one specific number (dollar figure, percentage, or duration) if the topic supports it; trade-offs acknowledged; technical concepts introduced through the pain they solve (not as definitions); one practical next step in the conclusion."
         )
         if (draft_input.length_guidance or "").strip():
             prompt_parts.append("")
