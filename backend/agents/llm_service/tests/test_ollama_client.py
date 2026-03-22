@@ -98,6 +98,73 @@ def test_ollama_complete_json_404_raises_permanent(monkeypatch: pytest.MonkeyPat
         assert exc_info.value.status_code == 404
 
 
+def test_thinking_enabled_for_all_models() -> None:
+    """_should_enable_thinking() returns True for any model unless explicitly disabled."""
+    client = OllamaLLMClient(model="llama3", base_url="http://localhost:9999", timeout=5)
+    assert client._should_enable_thinking() is True
+
+    client_qwen = OllamaLLMClient(model="qwen3.5:397b-cloud", base_url="http://localhost:9999", timeout=5)
+    assert client_qwen._should_enable_thinking() is True
+
+
+def test_thinking_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_ENABLE_THINKING", "false")
+    client = OllamaLLMClient(model="qwen3.5:397b-cloud", base_url="http://localhost:9999", timeout=5)
+    assert client._should_enable_thinking() is False
+
+
+def test_ollama_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Streaming tool_calls deltas are accumulated and returned as __tool_calls__."""
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    sse_lines = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \\"NYC\\"}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    ]
+    tools = [{"type": "function", "function": {"name": "get_weather", "description": "Get weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+    mock_client, _ = _make_streaming_mock(200, sse_lines)
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value = mock_client
+        client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+        result = client.complete_json("What's the weather?", tools=tools)
+    assert "__tool_calls__" in result
+    tc = result["__tool_calls__"][0]
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["function"]["arguments"] == {"city": "NYC"}
+
+
+def test_ollama_complete_json_includes_tools_in_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When tools are passed, payload contains 'tools' and omits 'response_format'."""
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    sse_lines = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"fn","arguments":"{}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    ]
+    tools = [{"type": "function", "function": {"name": "fn"}}]
+    mock_client, mock_response = _make_streaming_mock(200, sse_lines)
+    captured_payloads: list[dict] = []
+
+    original_stream = mock_client.__enter__.return_value.stream
+
+    def capturing_stream(method, url, json=None, headers=None):
+        if json is not None:
+            captured_payloads.append(json)
+        return original_stream(method, url, json=json, headers=headers)
+
+    mock_client.__enter__.return_value.stream = capturing_stream
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value = mock_client
+        client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+        client.complete_json("call fn", tools=tools)
+    assert captured_payloads, "No payload captured"
+    payload = captured_payloads[0]
+    assert "tools" in payload
+    assert "response_format" not in payload
+
+
 def test_extract_json_tolerates_replacement_char_noise() -> None:
     client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
     noisy = '{\n  "approved": false,\n�  "summary": "ok",\n  "feedback_items": []\n}'

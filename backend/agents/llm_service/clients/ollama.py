@@ -375,18 +375,21 @@ class OllamaLLMClient(LLMClient):
         )
 
     def _should_enable_thinking(self) -> bool:
-        """Enable thinking mode for qwen3.5 models by default; overridable via env."""
+        """Enable thinking mode for all models by default; disable via LLM_ENABLE_THINKING=false."""
         env_val = (
             os.environ.get(llm_config.ENV_LLM_ENABLE_THINKING)
             or os.environ.get(llm_config.ENV_LLM_ENABLE_THINKING_SW)
             or ""
         ).lower()
-        if env_val == "false":
-            return False
-        return "qwen3.5" in self.model.lower()
+        return env_val != "false"
 
     def _parse_response_content(self, data: dict) -> str:
-        """Extract content from OpenAI-compatible response. Raises LLMTruncatedError if finish_reason=length."""
+        """Extract content or tool_calls from OpenAI-compatible response.
+
+        Returns content string for normal replies, or a JSON-serialized
+        ``{"__tool_calls__": [...]}`` dict string when the model invokes tools.
+        Raises LLMTruncatedError if finish_reason=length.
+        """
         choices = data.get("choices")
         if not choices or not isinstance(choices, list):
             raise LLMPermanentError(
@@ -396,9 +399,22 @@ class OllamaLLMClient(LLMClient):
         if not isinstance(first, dict):
             raise LLMPermanentError("Unexpected response format from LLM: invalid choice object")
         finish_reason = first.get("finish_reason", "")
+        msg = first.get("message")
+        if not msg or not isinstance(msg, dict):
+            raise LLMPermanentError(
+                "Unexpected response format from LLM: missing or invalid 'message'"
+            )
+        # Tool calls take priority — model is invoking a function rather than replying with text.
+        tool_calls = msg.get("tool_calls")
+        if tool_calls or finish_reason == "tool_calls":
+            if not tool_calls:
+                raise LLMPermanentError(
+                    "LLM returned finish_reason=tool_calls but no tool_calls in message"
+                )
+            logger.info("LLM returned %d tool call(s)", len(tool_calls))
+            return json.dumps({"__tool_calls__": tool_calls})
         if finish_reason == "length":
-            msg = first.get("message", {})
-            partial_content = msg.get("content", "") if isinstance(msg, dict) else ""
+            partial_content = msg.get("content", "")
             partial_content = str(partial_content) if partial_content else ""
             if not partial_content.strip():
                 logger.warning(
@@ -415,11 +431,6 @@ class OllamaLLMClient(LLMClient):
                 "Response truncated due to token limit (finish_reason=length)",
                 partial_content=partial_content,
                 finish_reason=finish_reason,
-            )
-        msg = first.get("message")
-        if not msg or not isinstance(msg, dict):
-            raise LLMPermanentError(
-                "Unexpected response format from LLM: missing or invalid 'message'"
             )
         content = msg.get("content")
         if content is None:
@@ -465,6 +476,7 @@ class OllamaLLMClient(LLMClient):
                             if status == 200:
                                 content_parts: list[str] = []
                                 finish_reason: Optional[str] = None
+                                tool_call_buffers: dict[int, dict] = {}
                                 for line in response.iter_lines():
                                     if not line or not line.startswith("data: "):
                                         continue
@@ -481,14 +493,47 @@ class OllamaLLMClient(LLMClient):
                                         piece = delta.get("content")
                                         if piece:
                                             content_parts.append(piece)
+                                        for tc in delta.get("tool_calls") or []:
+                                            idx = tc.get("index", 0)
+                                            if idx not in tool_call_buffers:
+                                                tool_call_buffers[idx] = {
+                                                    "id": "",
+                                                    "type": "function",
+                                                    "function": {"name": "", "arguments": ""},
+                                                }
+                                            buf = tool_call_buffers[idx]
+                                            if tc.get("id"):
+                                                buf["id"] = tc["id"]
+                                            if tc.get("type"):
+                                                buf["type"] = tc["type"]
+                                            fn = tc.get("function") or {}
+                                            if fn.get("name"):
+                                                buf["function"]["name"] = fn["name"]
+                                            if fn.get("arguments"):
+                                                buf["function"]["arguments"] += fn["arguments"]
                                         fr = choices[0].get("finish_reason")
                                         if fr:
                                             finish_reason = fr
                                 elapsed = time.monotonic() - t0
                                 logger.info("LLM streaming response complete in %.1fs", elapsed)
+                                tool_calls = None
+                                if tool_call_buffers:
+                                    tool_calls = []
+                                    for idx in sorted(tool_call_buffers.keys()):
+                                        buf = tool_call_buffers[idx]
+                                        try:
+                                            buf["function"]["arguments"] = json.loads(
+                                                buf["function"]["arguments"]
+                                            )
+                                        except (json.JSONDecodeError, ValueError):
+                                            pass
+                                        tool_calls.append(buf)
                                 synthetic = {
                                     "choices": [{
-                                        "message": {"content": "".join(content_parts)},
+                                        "message": {
+                                            "content": "".join(content_parts),
+                                            "tool_calls": tool_calls,
+                                        },
                                         "finish_reason": finish_reason or "stop",
                                     }]
                                 }
@@ -702,17 +747,21 @@ class OllamaLLMClient(LLMClient):
             else:
                 max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
         max_tokens = min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
-        payload = {
+        tools = kwargs.pop("tools", None)
+        payload: dict = {
             "model": self.model,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
             ],
             "think": self._should_enable_thinking(),
         }
+        if tools:
+            payload["tools"] = tools
+        else:
+            payload["response_format"] = {"type": "json_object"}
         try:
             content = self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
             # Defensive: retry on empty content (e.g. thinking model or API quirk)
@@ -850,8 +899,9 @@ class OllamaLLMClient(LLMClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
+        tools: Optional[list] = None,
     ) -> str:
-        """Return raw text from the model (no JSON mode)."""
+        """Return raw text from the model (no JSON mode). Pass tools for function/tool calling."""
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
         logger.info(
@@ -869,7 +919,7 @@ class OllamaLLMClient(LLMClient):
             else:
                 max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
         max_tokens = min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
-        payload = {
+        payload: dict = {
             "model": self.model,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -881,6 +931,8 @@ class OllamaLLMClient(LLMClient):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ]
+        if tools:
+            payload["tools"] = tools
         try:
             return self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
         except LLMTruncatedError as e:
