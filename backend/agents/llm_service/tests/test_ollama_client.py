@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from llm_service.clients.ollama import OllamaLLMClient
-from llm_service.interface import LLMPermanentError, LLMRateLimitError
+from llm_service.interface import LLMPermanentError, LLMRateLimitError, LLMTemporaryError
 
 
 def test_ollama_get_max_context_tokens_known_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,6 +72,23 @@ def test_ollama_streams_and_accumulates_chunks(monkeypatch: pytest.MonkeyPatch) 
         client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
         result = client.complete_json("test", temperature=0)
     assert result == {"key": "value"}
+
+
+def test_ollama_sse_malformed_chunk_raises_temporary_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-JSON SSE chunk must raise LLMTemporaryError (retriable) instead of being silently dropped."""
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+    sse_lines = [
+        'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}',
+        "data: <not json at all>",
+        "data: [DONE]",
+    ]
+    mock_client, _ = _make_streaming_mock(200, sse_lines)
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value = mock_client
+        client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
+        with pytest.raises(LLMTemporaryError, match="Malformed SSE chunk"):
+            client.complete_json("test", temperature=0)
 
 
 def test_ollama_sse_no_space_after_colon(monkeypatch: pytest.MonkeyPatch) -> None:

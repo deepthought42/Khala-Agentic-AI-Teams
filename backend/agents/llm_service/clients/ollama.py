@@ -485,8 +485,10 @@ class OllamaLLMClient(LLMClient):
                                         break
                                     try:
                                         chunk = json.loads(chunk_data)
-                                    except json.JSONDecodeError:
-                                        continue
+                                    except json.JSONDecodeError as e:
+                                        raise LLMTemporaryError(
+                                            f"Malformed SSE chunk (JSON decode failed): {chunk_data[:200]!r}"
+                                        ) from e
                                     choices = chunk.get("choices") or []
                                     if choices:
                                         delta = choices[0].get("delta", {})
