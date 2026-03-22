@@ -36,6 +36,7 @@ def test_backend_persist_qa_artifacts_writes_test_files(tmp_path: Path) -> None:
     _run_git(tmp_path, ["git", "init"])
     _run_git(tmp_path, ["git", "config", "user.email", "test@test.com"])
     _run_git(tmp_path, ["git", "config", "user.name", "Test"])
+    _run_git(tmp_path, ["git", "config", "commit.gpgsign", "false"])
     (tmp_path / "tests").mkdir(exist_ok=True)
     (tmp_path / "tests" / "__init__.py").write_text("")
     _run_git(tmp_path, ["git", "add", "-A"])

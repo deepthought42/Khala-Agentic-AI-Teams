@@ -221,26 +221,20 @@ class TestFrontendRunExecutionWithReviewGates:
         planning_result = PlanningResult(microtasks=[mt], language="typescript")
 
         mock_llm = MagicMock()
-        mock_llm.complete_text.side_effect = [
-            """
-## FILES ##
---- src/app.ts ---
-export const app = () => console.log('Hello');
----
+        _call_count = [0]
 
-## SUMMARY ##
-Created app module.
-""",
-            """
-## REVIEW_STATUS ##
-passed
+        def _side_effect(prompt: str) -> str:
+            _call_count[0] += 1
+            if _call_count[0] == 1:
+                # First call: execution (file generation)
+                return (
+                    "\n## FILES ##\n--- src/app.ts ---\n"
+                    "export const app = () => console.log('Hello');\n---\n\n## SUMMARY ##\nCreated app module.\n"
+                )
+            # All subsequent calls: reviews and documentation self-review
+            return "\n## REVIEW_STATUS ##\npassed\n\n## ISSUES ##\n\n## SUMMARY ##\nAll good.\n"
 
-## ISSUES ##
-
-## SUMMARY ##
-All good.
-""",
-        ]
+        mock_llm.complete_text.side_effect = _side_effect
 
         config = MicrotaskReviewConfig(max_retries=1)
         deps = ReviewDependencies()

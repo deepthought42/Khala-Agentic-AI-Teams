@@ -192,7 +192,7 @@ class TestDevOpsPipelineDebugPatchLoop:
         from devops_team.models import DevOpsTaskSpec
         spec = DevOpsTaskSpec(
             task_id="t1", title="Test", goal={"summary": "test"},
-            platform_scope={"environments": ["dev"]},
+            platform_scope={"cloud": "on-premises", "environments": ["dev"]},
             acceptance_criteria=["IaC validates"],
             constraints={"secrets": {"source": "env"}},
         )
@@ -251,7 +251,7 @@ class TestDevOpsPipelineDebugPatchLoop:
         from devops_team.models import DevOpsTaskSpec
         spec = DevOpsTaskSpec(
             task_id="t1", title="Test", goal={"summary": "test"},
-            platform_scope={"environments": ["dev"]},
+            platform_scope={"cloud": "on-premises", "environments": ["dev"]},
             acceptance_criteria=["IaC validates"],
             constraints={"secrets": {"source": "env"}},
         )

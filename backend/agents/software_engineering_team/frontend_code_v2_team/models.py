@@ -293,7 +293,7 @@ class MicrotaskReviewConfig(BaseModel):
     """Configuration for per-microtask review gates."""
 
     max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max problem-solving attempts per microtask before marking as failed",
     )
     on_failure: Literal["stop", "skip_continue"] = Field(

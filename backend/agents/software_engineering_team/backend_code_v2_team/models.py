@@ -295,23 +295,23 @@ class MicrotaskReviewConfig(BaseModel):
     """Configuration for per-microtask review gates with per-phase retry limits."""
 
     max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max problem-solving attempts per microtask before marking as failed (legacy, used if per-phase not set)",
     )
     code_review_max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max fix attempts for code review phase (build + lint + code review)",
     )
     qa_max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max fix attempts for QA testing phase",
     )
     security_max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max fix attempts for security testing phase",
     )
     documentation_max_retries: int = Field(
-        default=100,
+        default=3,
         description="Max fix attempts for documentation phase",
     )
     on_failure: Literal["stop", "skip_continue"] = Field(

@@ -637,6 +637,9 @@ class TestDevOpsTeamLeadAgentIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             subprocess.run(["git", "init"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=path, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=path,
                 task_description="Add backend deployment automation",
@@ -755,6 +758,9 @@ class TestDevOpsTeamLeadAgentIntegration:
         agent = DevOpsTeamLeadAgent(mock_llm)
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=Path(tmp),
                 task_description="Deploy",
@@ -777,6 +783,9 @@ class TestBackwardCompatibility:
         agent = DevOpsTeamLeadAgent(mock_llm)
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=Path(tmp),
                 task_description="Add CI/CD",

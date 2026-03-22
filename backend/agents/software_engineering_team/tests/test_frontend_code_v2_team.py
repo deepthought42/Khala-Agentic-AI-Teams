@@ -159,6 +159,7 @@ class TestToolAgents:
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, capture_output=True, check=True)
         subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, capture_output=True, check=True)
         (tmp_path / "f").write_text("x")
         subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)

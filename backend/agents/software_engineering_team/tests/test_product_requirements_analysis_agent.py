@@ -113,7 +113,8 @@ def test_run_spec_review_invokes_llm_once(tmp_path: Path) -> None:
     """_run_spec_review performs a single LLM call (whole-spec review, no chunking)."""
     (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
     llm = MagicMock()
-    llm.complete_json_with_continuation.return_value = {
+    llm.get_max_context_tokens.return_value = 16384
+    llm.complete_json.return_value = {
         "issues": [],
         "gaps": [],
         "open_questions": [],
@@ -126,7 +127,7 @@ def test_run_spec_review_invokes_llm_once(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=None,
     )
-    assert llm.complete_json_with_continuation.call_count == 1
+    assert llm.complete_json.call_count == 1
     assert result.summary == "Done"
     assert updated_spec == "# My Spec\n\n## Section\nContent"
 
@@ -135,7 +136,8 @@ def test_run_spec_review_includes_qa_in_prompt(tmp_path: Path) -> None:
     """When answered_questions is non-empty, the prompt passed to the LLM contains Q&A text."""
     (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
     llm = MagicMock()
-    llm.complete_json_with_continuation.return_value = {
+    llm.get_max_context_tokens.return_value = 16384
+    llm.complete_json.return_value = {
         "issues": [],
         "gaps": [],
         "open_questions": [],
@@ -155,7 +157,7 @@ def test_run_spec_review_includes_qa_in_prompt(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=answered,
     )
-    call_args = llm.complete_json_with_continuation.call_args
+    call_args = llm.complete_json.call_args
     prompt = call_args[0][0]
     assert "Where to deploy?" in prompt
     assert "Kubernetes" in prompt
@@ -170,7 +172,8 @@ def test_run_spec_review_includes_qa_file_in_prompt(tmp_path: Path) -> None:
         "# Q&A History\n\n## Iteration 1\n\n### OAuth provider?\n**Answer:** GitHub\n\n"
     )
     llm = MagicMock()
-    llm.complete_json_with_continuation.return_value = {
+    llm.get_max_context_tokens.return_value = 16384
+    llm.complete_json.return_value = {
         "issues": [],
         "gaps": [],
         "open_questions": [],
@@ -183,7 +186,7 @@ def test_run_spec_review_includes_qa_file_in_prompt(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=None,
     )
-    call_args = llm.complete_json_with_continuation.call_args
+    call_args = llm.complete_json.call_args
     prompt = call_args[0][0]
     assert "OAuth provider?" in prompt
     assert "GitHub" in prompt
@@ -263,12 +266,17 @@ def test_run_workflow_uses_next_version_after_existing_v6(tmp_path: Path) -> Non
             AnsweredQuestion(question_id="q1", question_text="Which framework?", selected_answer="React")
         ]
         with patch.object(agent, "_run_spec_review", side_effect=run_spec_review):
-            result = agent.run_workflow(
-                spec_content="# Spec",
-                repo_path=tmp_path,
-                job_id="test-job",
-                job_updater=lambda **kw: None,
-            )
+            with patch.object(agent, "_run_context_constraints_discovery", return_value=[]):
+                with patch.object(agent, "_run_spec_cleanup", return_value=SpecCleanupResult(
+                    is_valid=True, validation_issues=[], cleaned_spec="# Cleaned", summary="Done"
+                )):
+                    with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
+                        result = agent.run_workflow(
+                            spec_content="# Spec",
+                            repo_path=tmp_path,
+                            job_id="test-job",
+                            job_updater=lambda **kw: None,
+                        )
 
     assert result.success
     assert len(update_spec_calls) >= 1, "_update_spec should be called with version"
@@ -376,13 +384,18 @@ def test_run_workflow_renames_validated_spec_when_needs_more_detail(tmp_path: Pa
             AnsweredQuestion(question_id="q1", question_text="Which framework?", selected_answer="React")
         ]
         with patch.object(agent, "_run_spec_review", side_effect=run_spec_review):
-            result = agent.run_workflow(
-                spec_content="# Validated content",
-                repo_path=tmp_path,
-                job_id="test-job",
-                job_updater=lambda **kw: None,
-                initial_spec_path=validated,
-            )
+            with patch.object(agent, "_run_context_constraints_discovery", return_value=[]):
+                with patch.object(agent, "_run_spec_cleanup", return_value=SpecCleanupResult(
+                    is_valid=True, validation_issues=[], cleaned_spec="# Cleaned", summary="Done"
+                )):
+                    with patch.object(agent, "_generate_prd_document", return_value="# PRD"):
+                        result = agent.run_workflow(
+                            spec_content="# Validated content",
+                            repo_path=tmp_path,
+                            job_id="test-job",
+                            job_updater=lambda **kw: None,
+                            initial_spec_path=validated,
+                        )
 
     assert result.success
     v1 = tmp_path / "plan" / "product_analysis" / "updated_spec_v1.md"
@@ -533,8 +546,8 @@ def test_convert_to_pending_questions_appends_recommendation_when_set() -> None:
         )
     ]
     pending = agent._convert_to_pending_questions(open_questions)
-    assert "Recommendation:" in pending[0]["context"]
-    assert "We recommend OAuth with a single provider" in pending[0]["context"]
+    assert pending[0]["recommendation"] is not None
+    assert "We recommend OAuth with a single provider" in pending[0]["recommendation"]
 
 
 def test_review_question_answer_alignment_returns_empty_when_no_questions() -> None:
@@ -732,7 +745,7 @@ def test_filter_organizational_questions_removes_org_keeps_technical() -> None:
     opt = QuestionOption(id="o1", label="Option", is_default=True, rationale="", confidence=0.8)
     q_org = OpenQuestion(
         id="org1",
-        question_text="What is the process for making a decision?",
+        question_text="What is the approval process for this feature?",
         options=[opt],
     )
     q_tech = OpenQuestion(

@@ -365,6 +365,7 @@ def test_frontend_agent_includes_problem_solving_header_when_issues_present() ->
         FrontendInput(
             task_description="Fix ng build",
             requirements="",
+            framework_target="angular",
             code_review_issues=[
                 {"severity": "critical", "category": "build", "description": "NG8002 formGroup", "suggestion": "Add ReactiveFormsModule", "file_path": "x.component.ts"},
             ],

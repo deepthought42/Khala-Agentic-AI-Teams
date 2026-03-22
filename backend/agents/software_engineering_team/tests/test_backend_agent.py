@@ -424,6 +424,7 @@ def test_run_workflow_exits_at_five_same_build_failures_and_notifies_tech_lead(
         check=True,
         capture_output=True,
     )
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
@@ -511,6 +512,7 @@ def test_run_workflow_invokes_build_fix_specialist_when_same_build_fails_twice(
         check=True,
         capture_output=True,
     )
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text(
         "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/health')\ndef h(): return {}",
@@ -597,6 +599,7 @@ def test_run_workflow_skips_specialist_when_none(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("print('hi')", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
@@ -713,6 +716,7 @@ def test_run_workflow_uses_problem_solver_agent_on_build_failure(tmp_path: Path)
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)

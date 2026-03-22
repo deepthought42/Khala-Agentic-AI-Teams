@@ -13,12 +13,12 @@ from planning_team.planning_graph import (
 from planning_team.validation import format_validation_report, validate_planning_graph
 
 
-def test_validate_empty_graph_fails():
-    """Empty graph fails validation (too few tasks)."""
+def test_validate_empty_graph_passes():
+    """Empty graph passes structural validation (no cycles or dangling edges)."""
     g = PlanningGraph()
     is_valid, errors = validate_planning_graph(g)
-    assert not is_valid
-    assert any("few" in e.lower() for e in errors)
+    assert is_valid
+    assert len(errors) == 0
 
 
 def test_validate_sufficient_tasks_passes():

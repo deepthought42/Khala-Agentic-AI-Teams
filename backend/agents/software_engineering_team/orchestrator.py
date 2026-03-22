@@ -1228,6 +1228,10 @@ def _backend_code_v2_worker(
                 failed[task_id] = reason
                 update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=reason)
                 logger.warning("[%s] backend task failed: %s", task_id, reason)
+        except LLMRateLimitError as exc:
+            failed[task_id] = OLLAMA_WEEKLY_LIMIT_MESSAGE
+            update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=OLLAMA_WEEKLY_LIMIT_MESSAGE)
+            logger.warning("[%s] LLM rate limit exceeded in backend worker: %s", task_id, exc)
         except Exception as exc:
             failed[task_id] = f"backend exception: {exc}"
             update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=str(exc))
@@ -1423,6 +1427,7 @@ def _run_backend_frontend_workers(
                 )
                 elapsed = time.monotonic() - task_start_time
                 failure_reason = workflow_result.failure_reason or "Backend workflow failed"
+                _refine_contract = False
                 with state_lock:
                     if workflow_result.success:
                         completed.add(task_id)
@@ -1439,11 +1444,48 @@ def _run_backend_frontend_workers(
                             description=getattr(task, "description", "") or "",
                         )
                     else:
-                        failed[task_id] = failure_reason
+                        _contract_refineable = (
+                            failure_reason.startswith("Task contract is incomplete.")
+                            and agents.get("project_planning") is not None
+                            and task_id not in repaired_tasks
+                        )
+                        if _contract_refineable:
+                            _refine_contract = True
+                            logger.info("%s[%s] Task contract incomplete – attempting refinement", log_prefix, task_id)
+                        else:
+                            failed[task_id] = failure_reason
+                            update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=failure_reason)
+                            execution_tracker.observe_loop(task_id, 1)
+                            execution_tracker.finish_task(task_id, blocked=True)
+                            logger.warning("%s[%s] Backend FAILED after %.1fs: %s", log_prefix, task_id, elapsed, failed[task_id])
+                if _refine_contract:
+                    try:
+                        project_planning_agent = agents.get("project_planning")
+                        planning_output = project_planning_agent.run(spec_content=spec_content)
+                        nf_reqs = []
+                        if hasattr(planning_output, "overview") and hasattr(planning_output.overview, "non_functional_requirements"):
+                            nf_reqs = planning_output.overview.non_functional_requirements or []
+                        refined = tech_lead.refine_task(task=task, clarification_requests=[], spec_content=spec_content)
+                        contract_metadata = {
+                            "goal": getattr(refined, "description", None) or getattr(task, "description", ""),
+                            "scope": getattr(refined, "description", None) or getattr(task, "description", ""),
+                            "constraints": nf_reqs,
+                            "non_functional_requirements": nf_reqs,
+                            "inputs_outputs": getattr(refined, "requirements", None) or getattr(task, "requirements", "") or "",
+                        }
+                        existing_metadata = getattr(refined, "metadata", None) or {}
+                        updated_task = refined.model_copy(update={"metadata": {**existing_metadata, **contract_metadata}})
+                        with state_lock:
+                            all_tasks[task_id] = updated_task
+                            repaired_tasks.add(task_id)
+                            backend_queue.append(task_id)
+                        update_job(job_id, status=JOB_STATUS_RUNNING, error=None)
+                        logger.info("%s[%s] Task contract refined. Re-queuing task.", log_prefix, task_id)
+                    except Exception as refine_err:
+                        logger.warning("%s[%s] Contract refinement failed: %s", log_prefix, task_id, refine_err)
                         update_task_state(job_id, task_id, status="failed", finished_at=_iso_now(), error=failure_reason)
-                        execution_tracker.observe_loop(task_id, 1)
-                        execution_tracker.finish_task(task_id, blocked=True)
-                        logger.warning("%s[%s] Backend FAILED after %.1fs: %s", log_prefix, task_id, elapsed, failed[task_id])
+                        with state_lock:
+                            failed[task_id] = failure_reason
             except (LLMError, httpx.HTTPError) as e:
                 err_msg = (
                     OLLAMA_WEEKLY_LIMIT_MESSAGE if isinstance(e, LLMRateLimitError)
