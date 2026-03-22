@@ -1,6 +1,6 @@
-import { Component, Input, Output, EventEmitter, inject } from '@angular/core';
+import { Component, Input, Output, EventEmitter, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, FormArray, Validators } from '@angular/forms';
+import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
@@ -18,8 +18,6 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { InvestmentApiService } from '../../services/investment-api.service';
 import {
   StrategySpec,
-  ValidationReport,
-  ValidationCheck,
   CreateStrategyRequest,
   ValidateStrategyResponse,
 } from '../../models';
@@ -48,7 +46,7 @@ import {
   templateUrl: './investment-strategy.component.html',
   styleUrl: './investment-strategy.component.scss',
 })
-export class InvestmentStrategyComponent {
+export class InvestmentStrategyComponent implements OnInit {
   @Input() existingStrategy: StrategySpec | null = null;
   @Output() strategyCreated = new EventEmitter<StrategySpec>();
   @Output() validationCompleted = new EventEmitter<ValidateStrategyResponse>();

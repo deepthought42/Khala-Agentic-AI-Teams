@@ -450,7 +450,7 @@
 
 @if (viewArtifactModal !== null || viewArtifactLoading || viewArtifactError) {
   <div class="artifact-view-overlay" (click)="closeViewModal()" role="button" tabindex="0" (keydown.escape)="closeViewModal()">
-    <div class="artifact-view-modal" (click)="$event.stopPropagation()" role="dialog" aria-label="View artifact">
+    <div class="artifact-view-modal" tabindex="0" (click)="$event.stopPropagation()" (keydown.enter)="$event.stopPropagation()" role="dialog" aria-label="View artifact">
       <div class="artifact-view-header">
         <h2>{{ viewArtifactModal ? artifactLabel(viewArtifactModal.name) : 'Artifact' }}</h2>
         <button mat-icon-button (click)="closeViewModal()" aria-label="Close">

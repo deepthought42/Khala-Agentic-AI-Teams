@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { JsonPipe } from '@angular/common';
 import { timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
@@ -13,9 +13,9 @@ import { SoftwareEngineeringApiService } from '../../services/software-engineeri
   styleUrl: './execution-tasks.component.scss',
 })
 export class ExecutionTasksComponent implements OnInit {
-  data: Record<string, unknown> | null = null;
+  private readonly api = inject(SoftwareEngineeringApiService);
 
-  constructor(private readonly api: SoftwareEngineeringApiService) {}
+  data: Record<string, unknown> | null = null;
 
   ngOnInit(): void {
     timer(0, 60000)

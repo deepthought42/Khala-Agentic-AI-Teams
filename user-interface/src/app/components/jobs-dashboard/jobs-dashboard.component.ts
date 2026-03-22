@@ -180,7 +180,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   }
 
   /** Enrich rows that have seSummary with detail from SE APIs; return rows with seDetail set for SE. */
-  private enrichSERows(rows: Array<DashboardRow & { seSummary?: RunningJobSummary }>) {
+  private enrichSERows(rows: (DashboardRow & { seSummary?: RunningJobSummary })[]) {
     const toRow = (r: (typeof rows)[0], detail: SEDetail | null): DashboardRow => ({
       unified: r.unified,
       seDetail: detail ?? undefined,

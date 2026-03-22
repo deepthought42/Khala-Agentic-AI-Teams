@@ -294,7 +294,7 @@
               </div>
 
               <div class="form-row">
-                <label class="mode-label">Delivery mode</label>
+                <span class="mode-label">Delivery mode</span>
                 <mat-radio-group [(ngModel)]="mode" aria-label="Slack mode">
                   <mat-radio-button value="webhook">Incoming Webhook</mat-radio-button>
                   <mat-radio-button value="bot">Bot token (chat.postMessage)</mat-radio-button>
@@ -429,7 +429,7 @@
         </div>
 
         <div class="form-row">
-          <label class="mode-label">Identity provider you use on Medium</label>
+          <span class="mode-label">Identity provider you use on Medium</span>
           <mat-radio-group [(ngModel)]="mediumProvider" aria-label="Medium OAuth provider">
             <mat-radio-button value="google">Google</mat-radio-button>
             <mat-radio-button value="apple">Apple</mat-radio-button>

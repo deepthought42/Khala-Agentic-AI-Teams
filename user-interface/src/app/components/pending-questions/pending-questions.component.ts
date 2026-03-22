@@ -62,15 +62,15 @@ export class PendingQuestionsComponent implements OnChanges {
   @Input() submitEndpoint: SubmitEndpointType = 'run-team';
   @Output() answersSubmitted = new EventEmitter<JobStatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse>();
 
-  answers: Map<string, QuestionAnswer> = new Map();
+  answers = new Map<string, QuestionAnswer>();
   submitting = false;
   error: string | null = null;
 
   /** Track which questions are currently being auto-answered. */
-  autoAnsweringQuestions: Set<string> = new Set();
+  autoAnsweringQuestions = new Set<string>();
 
   /** Store auto-answer results for display. */
-  autoAnswerResults: Map<string, AutoAnswerResponse> = new Map();
+  autoAnswerResults = new Map<string, AutoAnswerResponse>();
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['questions']) {

@@ -30,6 +30,9 @@ import type { FocusArea, StartupAdvisorIntake, StartupStage } from '../../models
   styleUrl: './startup-advisor-intake.component.scss',
 })
 export class StartupAdvisorIntakeComponent implements OnInit {
+  private readonly router = inject(Router);
+  private readonly facade = inject(StartupAdvisorFacadeService);
+
   private readonly fb = inject(FormBuilder);
 
   protected readonly stageOptions: { value: StartupStage; label: string }[] = [
@@ -60,11 +63,6 @@ export class StartupAdvisorIntakeComponent implements OnInit {
     budgetBand: ['<$10k / month', Validators.required],
     focusAreas: [[] as FocusArea[], Validators.required],
   });
-
-  constructor(
-    private readonly router: Router,
-    private readonly facade: StartupAdvisorFacadeService,
-  ) {}
 
   ngOnInit(): void {
     const intake = this.facade.intakeSnapshot;

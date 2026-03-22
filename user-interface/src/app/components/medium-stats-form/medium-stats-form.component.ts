@@ -1,4 +1,4 @@
-import { Component, output } from '@angular/core';
+import { Component, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -27,11 +27,13 @@ import type { MediumStatsRequest } from '../../models';
   styleUrl: './medium-stats-form.component.scss',
 })
 export class MediumStatsFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<MediumStatsRequest>();
 
   readonly form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       headless: [true],
       timeout_ms: [90_000, [Validators.required, Validators.min(5000), Validators.max(600_000)]],

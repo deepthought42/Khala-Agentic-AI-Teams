@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { JsonPipe } from '@angular/common';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 
@@ -10,14 +10,15 @@ import { SoftwareEngineeringApiService } from '../../services/software-engineeri
   styleUrl: './execution-stream.component.scss',
 })
 export class ExecutionStreamComponent implements OnInit, OnDestroy {
+  private readonly api = inject(SoftwareEngineeringApiService);
+
   events: Record<string, unknown>[] = [];
   private sub: { unsubscribe: () => void } | null = null;
-
-  constructor(private readonly api: SoftwareEngineeringApiService) {}
 
   ngOnInit(): void {
     this.sub = this.api.getExecutionStream().subscribe({
       next: (e) => this.events.push(e),
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       error: () => {},
     }) as { unsubscribe: () => void };
   }

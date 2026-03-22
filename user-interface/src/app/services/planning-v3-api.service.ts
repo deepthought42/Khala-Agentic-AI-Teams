@@ -41,7 +41,7 @@ export class PlanningV3ApiService {
   }
 
   /** POST /{job_id}/answers - submit answers to open questions */
-  submitAnswers(jobId: string, answers: Array<{ question_id: string; selected_option_id?: string; selected_option_ids?: string[]; other_text?: string | null }>): Observable<PlanningV3StatusResponse> {
+  submitAnswers(jobId: string, answers: { question_id: string; selected_option_id?: string; selected_option_ids?: string[]; other_text?: string | null }[]): Observable<PlanningV3StatusResponse> {
     return this.http.post<PlanningV3StatusResponse>(`${this.baseUrl}/${jobId}/answers`, { answers });
   }
 

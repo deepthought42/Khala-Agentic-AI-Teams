@@ -279,7 +279,7 @@ export interface ArchitectDesignResponse {
   architecture_document: string;
   components: ArchitectComponent[];
   diagrams: Record<string, string>;
-  decisions: Array<Record<string, unknown>>;
+  decisions: Record<string, unknown>[];
   tenancy_model: string;
   reliability_model: string;
   summary: string;

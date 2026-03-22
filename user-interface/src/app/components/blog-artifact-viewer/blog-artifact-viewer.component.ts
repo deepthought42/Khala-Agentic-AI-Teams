@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, OnDestroy } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
@@ -24,7 +24,7 @@ import { artifactLabel } from '../blogging-dashboard/blogging-dashboard.componen
   templateUrl: './blog-artifact-viewer.component.html',
   styleUrl: './blog-artifact-viewer.component.scss',
 })
-export class BlogArtifactViewerComponent implements OnInit, OnDestroy {
+export class BlogArtifactViewerComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(BloggingApiService);
   private readonly sanitizer = inject(DomSanitizer);
@@ -58,8 +58,6 @@ export class BlogArtifactViewerComponent implements OnInit, OnDestroy {
       this.loading = false;
     }
   }
-
-  ngOnDestroy(): void {}
 
   private updateTitle(): void {
     const label = this.artifactName ? this.artifactLabel(this.artifactName) : 'Artifact';

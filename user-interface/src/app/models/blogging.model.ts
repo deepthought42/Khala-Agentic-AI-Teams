@@ -123,7 +123,7 @@ export interface BlogPendingQuestion {
   id: string;
   question_text: string;
   context?: string;
-  options?: Array<{ id: string; label: string; description?: string }>;
+  options?: { id: string; label: string; description?: string }[];
   required?: boolean;
   allow_multiple?: boolean;
 }

@@ -10,19 +10,19 @@
   <mat-card-content>
     <!-- Summary Stats -->
     <div class="summary-stats">
-      <div class="stat-card critical" (click)="severityFilter = ['Critical']; applyFilters()">
+      <div class="stat-card critical" tabindex="0" (click)="severityFilter = ['Critical']; applyFilters()" (keydown.enter)="severityFilter = ['Critical']; applyFilters()">
         <span class="stat-value">{{ bySeverity['Critical'] || 0 }}</span>
         <span class="stat-label">Critical</span>
       </div>
-      <div class="stat-card high" (click)="severityFilter = ['High']; applyFilters()">
+      <div class="stat-card high" tabindex="0" (click)="severityFilter = ['High']; applyFilters()" (keydown.enter)="severityFilter = ['High']; applyFilters()">
         <span class="stat-value">{{ bySeverity['High'] || 0 }}</span>
         <span class="stat-label">High</span>
       </div>
-      <div class="stat-card medium" (click)="severityFilter = ['Medium']; applyFilters()">
+      <div class="stat-card medium" tabindex="0" (click)="severityFilter = ['Medium']; applyFilters()" (keydown.enter)="severityFilter = ['Medium']; applyFilters()">
         <span class="stat-value">{{ bySeverity['Medium'] || 0 }}</span>
         <span class="stat-label">Medium</span>
       </div>
-      <div class="stat-card low" (click)="severityFilter = ['Low']; applyFilters()">
+      <div class="stat-card low" tabindex="0" (click)="severityFilter = ['Low']; applyFilters()" (keydown.enter)="severityFilter = ['Low']; applyFilters()">
         <span class="stat-value">{{ bySeverity['Low'] || 0 }}</span>
         <span class="stat-label">Low</span>
       </div>

@@ -194,6 +194,7 @@ export class BrandingDashboardComponent implements OnInit, OnDestroy {
       next: (brand) => {
         if (this.activeConversationId) {
           this.api.attachConversationToBrand(this.activeConversationId, brand.id).subscribe({
+            // eslint-disable-next-line @typescript-eslint/no-empty-function
             next: () => {},
           });
         }

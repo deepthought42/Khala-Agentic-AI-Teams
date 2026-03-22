@@ -20,7 +20,6 @@ import {
   StrategySpec,
   PromotionDecision,
   PromotionDecisionRequest,
-  GateCheckResult,
   PromotionStage,
 } from '../../models';
 

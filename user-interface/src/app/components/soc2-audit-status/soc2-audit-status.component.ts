@@ -1,4 +1,4 @@
-import { Component, Input, OnDestroy, OnInit } from '@angular/core';
+import { Component, Input, OnDestroy, OnInit, inject } from '@angular/core';
 import { timer, Subscription, switchMap } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -17,13 +17,13 @@ import type { AuditStatusResponse } from '../../models';
   styleUrl: './soc2-audit-status.component.scss',
 })
 export class Soc2AuditStatusComponent implements OnInit, OnDestroy {
+  private readonly api = inject(Soc2ComplianceApiService);
+
   @Input() jobId: string | null = null;
 
   status: AuditStatusResponse | null = null;
   loading = true;
   private sub: Subscription | null = null;
-
-  constructor(private readonly api: Soc2ComplianceApiService) {}
 
   ngOnInit(): void {
     if (this.jobId) {

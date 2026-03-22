@@ -224,7 +224,7 @@ export class NutritionDashboardComponent implements OnInit {
     this.success = null;
 
     const raw = this.profileForm.getRawValue();
-    const membersPayload = this.buildMembersPayload(raw);
+    const membersPayload = this.buildMembersPayload();
     const headcount =
       membersPayload.length > 0 ? membersPayload.length : Math.max(1, raw.number_of_people);
     let description = raw.household_description.trim();
@@ -402,7 +402,7 @@ export class NutritionDashboardComponent implements OnInit {
     });
   }
 
-  private buildMembersPayload(raw: Record<string, unknown>): NutritionHouseholdMember[] {
+  private buildMembersPayload(): NutritionHouseholdMember[] {
     const arr = this.members.controls.map((ctrl) => {
       const g = ctrl.getRawValue() as {
         name: string;

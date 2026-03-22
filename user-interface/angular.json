@@ -99,9 +99,20 @@
           "configurations": {
             "ci": {
               "coverage": true,
-              "coverageReporters": ["html", "text-summary"],
-              "coverageInclude": ["src/app/**/*.ts"],
-              "coverageExclude": ["**/*.spec.ts", "**/*.model.ts", "**/environments/*.ts", "**/index.ts", "**/*.module.ts"],
+              "coverageReporters": [
+                "html",
+                "text-summary"
+              ],
+              "coverageInclude": [
+                "src/app/**/*.ts"
+              ],
+              "coverageExclude": [
+                "**/*.spec.ts",
+                "**/*.model.ts",
+                "**/environments/*.ts",
+                "**/index.ts",
+                "**/*.module.ts"
+              ],
               "coverageThreshold": {
                 "global": {
                   "lines": 85
@@ -109,11 +120,23 @@
               }
             }
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "src/**/*.ts",
+              "src/**/*.html"
+            ]
+          }
         }
       }
     }
   },
   "cli": {
-    "analytics": false
+    "analytics": false,
+    "schematicCollections": [
+      "angular-eslint"
+    ]
   }
 }

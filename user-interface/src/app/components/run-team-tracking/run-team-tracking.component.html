@@ -94,7 +94,7 @@
               <div class="team-subprocess-card">
                 <div class="team-subprocess-header">
                   <span class="team-subprocess-name">{{ team.label }}</span>
-                  @if (team.progress.progress != null) {
+                  @if (team.progress.progress !== null) {
                     <span class="team-subprocess-pct">{{ team.progress.progress }}%</span>
                   }
                 </div>
@@ -114,7 +114,7 @@
                     <mat-icon>code</mat-icon>
                     <span class="microtask-label">Microtask:</span>
                     <span>{{ team.progress.current_microtask }}</span>
-                    @if (team.progress.current_microtask_index != null && team.progress.microtasks_total != null) {
+                    @if (team.progress.current_microtask_index !== null && team.progress.microtasks_total !== null) {
                       <span class="microtask-count">
                         ({{ team.progress.current_microtask_index }}/{{ team.progress.microtasks_total }})
                       </span>
@@ -195,7 +195,7 @@
       }
 
       <!-- Progress bar -->
-      @if (status.progress != null) {
+      @if (status.progress !== null) {
         <div class="progress-section">
           <mat-progress-bar
             mode="determinate"
@@ -244,7 +244,7 @@
                 @if (status.team_progress?.[teamId]?.current_phase) {
                   <span class="team-phase">{{ phaseLabel(status.team_progress?.[teamId]?.current_phase ?? '') }}</span>
                 }
-                @if (status.team_progress?.[teamId]?.progress != null) {
+                @if (status.team_progress?.[teamId]?.progress !== null) {
                   <span class="team-pct">{{ status.team_progress?.[teamId]?.progress }}%</span>
                 }
               </div>

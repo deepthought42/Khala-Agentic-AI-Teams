@@ -7,7 +7,6 @@ import type {
   SalesPipelineRunResponse,
   SalesPipelineStatusResponse,
   SalesPipelineJobListItem,
-  SalesPipelineResult,
   RecordStageOutcomeRequest,
   RecordDealOutcomeRequest,
   RecordOutcomeResponse,

@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -25,14 +25,12 @@ import type { StartupAdvisorRecommendation } from '../../models';
   styleUrl: './startup-advisor-recommendations.component.scss',
 })
 export class StartupAdvisorRecommendationsComponent implements OnInit {
+  private readonly facade = inject(StartupAdvisorFacadeService);
+  private readonly router = inject(Router);
+
   protected recommendations: StartupAdvisorRecommendation[] = [];
   protected loading = false;
   protected error: string | null = null;
-
-  constructor(
-    private readonly facade: StartupAdvisorFacadeService,
-    private readonly router: Router,
-  ) {}
 
   ngOnInit(): void {
     const intake = this.facade.intakeSnapshot;

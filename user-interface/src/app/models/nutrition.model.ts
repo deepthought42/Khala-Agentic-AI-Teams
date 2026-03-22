@@ -112,7 +112,7 @@ export interface FeedbackResponse {
 
 export interface MealHistoryResponse {
   client_id: string;
-  entries: Array<{
+  entries: {
     recommendation_id: string;
     client_id: string;
     meal_snapshot: Record<string, unknown>;
@@ -124,5 +124,5 @@ export interface MealHistoryResponse {
       notes: string;
       submitted_at?: string | null;
     } | null;
-  }>;
+  }[];
 }

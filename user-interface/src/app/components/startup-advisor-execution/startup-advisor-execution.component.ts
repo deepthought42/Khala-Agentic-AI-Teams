@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -21,9 +21,9 @@ import type { StartupExecutionPlan } from '../../models';
   styleUrl: './startup-advisor-execution.component.scss',
 })
 export class StartupAdvisorExecutionComponent implements OnInit {
-  protected plan: StartupExecutionPlan | null = null;
+  private readonly facade = inject(StartupAdvisorFacadeService);
 
-  constructor(private readonly facade: StartupAdvisorFacadeService) {}
+  protected plan: StartupExecutionPlan | null = null;
 
   ngOnInit(): void {
     this.plan = this.facade.buildExecutionPlan();
