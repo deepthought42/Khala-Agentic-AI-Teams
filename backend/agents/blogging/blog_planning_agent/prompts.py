@@ -31,7 +31,11 @@ Return a single JSON object matching this shape (all required fields):
 }
 
 Rules:
-- Every section must state what MUST be covered; use research_support_note to tie to sources or set gap_flag true if research is thin.
+- overarching_topic must be the single argument, insight, or conclusion the post is building toward — a stance or takeaway, not just a topic label. Example: "Remote Terraform state isn't optional for teams — here's why local state always breaks and what to do instead" rather than "Remote Terraform state." The reader should be able to read this field and know exactly what the post is trying to convince them of.
+- narrative_flow must describe the single through-line argument the reader will follow from opening to conclusion. Not a list of headings — a sentence or two describing the intellectual journey: what the reader believes at the start, what shifts for them along the way, and what they understand by the end.
+- For each section's coverage_description, state: (1) what argument, understanding, or belief shift this section creates in the reader; and (2) what insight from the previous section it builds on. Do not write "explain X" or "cover X and Y" — write "show the reader why X is necessary given what they just learned about Y." The first section may reference the hook or pain established in the intro.
+- Every section must build on the prior one. If a section could be moved or skipped without loss of meaning, coverage_description is too topic-focused — rewrite it as a step in the argument.
+- use research_support_note to tie sections to sources, or set gap_flag true if research is thin.
 - requirements_analysis.research_gaps must list topics the plan asks for that the research digest does not support.
 - Be honest: plan_acceptable and scope_feasible must be false if the plan is too broad for the word target or profile.
 - title_candidates: 3–5 items with probabilities summing to ~1.0–2.0 total (rough guidance).
