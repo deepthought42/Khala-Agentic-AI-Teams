@@ -421,13 +421,12 @@ class BlogDraftAgent:
             ])
         if revise_input.research_document:
             research = revise_input.research_document.strip()
-            research_snippet = research[:3000] + ("..." if len(research) > 3000 else "")
             prompt_parts.extend([
                 "",
                 "---",
                 "RESEARCH (for context; preserve facts):",
                 "---",
-                research_snippet,
+                research,
             ])
         length_block = (
             revise_input.length_guidance.strip()
@@ -536,13 +535,12 @@ class BlogDraftAgent:
             ])
         if revise_input.research_document:
             research = revise_input.research_document.strip()
-            research_snippet = research[:3000] + ("..." if len(research) > 3000 else "")
             prompt_parts.extend([
                 "",
                 "---",
                 "RESEARCH (for context; preserve facts):",
                 "---",
-                research_snippet,
+                research,
             ])
         length_block = (
             revise_input.length_guidance.strip()

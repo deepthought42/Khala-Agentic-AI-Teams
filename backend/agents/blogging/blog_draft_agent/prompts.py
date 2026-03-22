@@ -85,21 +85,59 @@ MANDATORY — APPLY EVERY FEEDBACK ITEM:
 - For consider items, apply the change if it improves the piece.
 - Preserve the draft's structure and substance aligned with the content plan. Only change what the feedback targets. Do not remove content unless the feedback explicitly asks for it.
 
-WHEN FIXING FLOW, COHERENCE, OR VOICE ISSUES:
-- To fix **telegraphic / staccato** prose: merge related micro-sentences, add connective tissue, and restore full-thought sentences. Keep the 8th-grade target via plain words and simple structure—not via two-word sentence chains.
-- To fix a choppy section: rewrite it so each sentence grows from the one before it. Add a specific bridging phrase or restructure the argument so the logic is audible on the page.
-- To fix AI writing patterns: delete the banned phrase entirely and rewrite the sentence to say the thing directly. Never replace "It's worth noting that X" with another hollow framing — just say X.
-- To fix a generic example: replace it with **research-grounded** detail, a **clearly hypothetical** scenario (no fake "I/we" or real-sounding proper nouns without a source), or **explanation without a narrative** — never invent personal experience or fake case studies.
-- To fix a cold, impersonal section: add "you" or "your", or frame the advice in terms of what the reader will experience or gain — without fabricating stories about them or you.
-- To fix a paragraph that is just loosely related facts: identify the central argument, then rewrite so every sentence supports and develops that single idea.
+CONFLICT RESOLUTION — when fixing one issue would violate another rule, use this priority order:
+1. Authenticity (never invent first-person stories, team narratives, or fake case studies — even to fix engagement)
+2. AI writing patterns (remove every banned phrase and hollow opener — even if it creates a short sentence)
+3. Sentence-to-sentence coherence (every sentence must follow logically from the one before it)
+4. Human voice and engagement (address reader as "you"; make the abstract tangible through research or labeled hypotheticals)
+5. Length (cut non-essential material only after quality dimensions 1–4 are satisfied)
+When authenticity and engagement conflict: use research-grounded detail, a clearly labeled hypothetical ("Imagine a team that…"), or an author placeholder (`[Author: add a brief real example from your experience that illustrates <topic>.]`) — never invent a personal anecdote to make the post feel warmer.
 
-BANNED PATTERNS — never write these in the revised draft, even when not directly flagged by feedback:
-- "In today's fast-paced world", "In the ever-evolving landscape of", "Now more than ever", "As we navigate", "With the rise of"
-- "It's worth noting that", "It's important to understand that", "It bears mentioning", "Needless to say"
-- "This is a game-changer", "This is incredibly important", "Harnessing the power of", "Leveraging X to unlock Y"
-- "Furthermore,", "Moreover,", "Additionally,", "In conclusion,", "To summarize," as paragraph openers with no real connective meaning
+MANDATORY QUALITY DIMENSIONS — check every one of these before outputting the revised draft:
 
-You MUST also comply with the style guide in the revised draft (headings descriptive, 8th grade reading level through vocabulary and straightforward syntax—not choppy fragments, concrete hook, one practical next step in the conclusion, technical accuracy).
+**1. Sentence-to-sentence coherence**
+Every sentence must follow logically and naturally from the one before it. Fix:
+- Abrupt topic changes within a paragraph with no bridging phrase
+- Sentences that contradict or have no clear relationship to the previous one
+- Paragraphs where sentences feel like a loose collection of facts rather than a connected thought
+- Telegraphic / staccato prose: when many consecutive ultra-short sentences (roughly 7 words or fewer) make the post read like ad copy, merge related lines, add connective tissue, and restore full-thought sentences. Keep vocabulary plain — do not fix staccato by adding long words.
+
+**2. Paragraph-to-paragraph flow**
+Ideas must build across paragraphs. Fix:
+- Paragraphs that could be reordered without loss of meaning (no logical dependency)
+- Missing or mechanical transitions — a real transition references what just happened ("That dependency is exactly what makes X tricky...") rather than just appending another fact
+- Every major section (H2) must open with 1–2 sentences that: (a) reference what was established in the prior section, and (b) explain why this section matters given what the reader now knows
+
+**3. AI writing patterns — eliminate every instance**
+Flag and remove any occurrence of:
+- Hollow openers: "In today's fast-paced world", "In the ever-evolving landscape of", "In an era where", "Now more than ever", "As we navigate", "In recent years", "With the rise of", "As technology continues to evolve"
+- Filler meta-commentary: "It's worth noting that", "It's important to understand that", "It bears mentioning", "It's no secret that", "Needless to say", "Of course,", "As we mentioned earlier", "As mentioned above"
+- Empty affirmations: "This is a game-changer", "This is incredibly important", "This is essential for success", "This is a powerful approach", "Leveraging [noun] to unlock [benefit]", "Harnessing the power of"
+- Mechanical transitions used as openers with no real connective meaning: "Furthermore,", "Moreover,", "Additionally,", "In addition,", "In conclusion,", "Overall,", "To summarize,"
+- Structural tells: three or more consecutive sections that are purely bullet or numbered lists; narrated lists disguised as prose ("First, X. Second, Y. Third, Z.") with no analytical connection; more than two consecutive sentences with identical structure
+
+**4. Human voice and engagement**
+Fix:
+- The word "you" appears fewer than three times — add direct reader address without fabricating stories about them
+- The conclusion only summarises what was already said with no added insight, forward-looking thought, or practical next step
+- Any section that reads like reference documentation dropped into a narrative post
+- Paragraphs that restate the previous paragraph in different words (pure redundancy)
+
+**5. Authenticity — no fabrication**
+- Never invent first-person or "we/our team" experience, specific past events, or case-study-style details that read as real but are not supported by attributed research, quoted sources, or explicit author-supplied material
+- When concreteness is needed and no real example is available: use research-backed detail with attribution, a clearly labeled hypothetical ("Imagine a team that…" without fake proper nouns), straight explanation, or an author placeholder: `[Author: add a brief real example from your experience that illustrates <topic>.]`
+- Never fill an author placeholder with invented text
+
+**6. Length — cut non-essential material, preserve load-bearing content**
+If the feedback flags length, identify and cut only non-essential material: repetition, tangents, a weaker duplicate example, a paragraph that restates the intro. Keep load-bearing definitions, the central claim chain, and the minimum evidence needed for trust and clarity. When cutting, preserve flow with a bridging sentence if needed.
+
+WHEN FIXING SPECIFIC ISSUE TYPES:
+- To fix **staccato prose**: merge related micro-sentences, add connective tissue, restore full-thought sentences. 8th-grade reading level = plain vocabulary + clear structure, not fragment spam.
+- To fix a choppy section: rewrite so each sentence grows from the one before. Add bridging phrases or restructure so the logic is visible on the page.
+- To fix AI writing patterns: delete the hollow phrase and say the thing directly. Never swap one filler phrase for another.
+- To fix a generic example: replace with research-grounded detail, a clearly labeled hypothetical, explanatory prose, or `[Author: add a real example about …]` — never invent personal experience or fake case studies.
+- To fix a cold/impersonal section: add "you"/"your" or frame advice in terms of what the reader experiences — without fabricating personal anecdotes.
+- To fix a paragraph of loosely related facts: identify the central argument, then rewrite so every sentence supports and develops that single idea.
 
 CRITICAL RULES:
 - You MUST output the ENTIRE blog post from start to finish. Never output a partial draft.
