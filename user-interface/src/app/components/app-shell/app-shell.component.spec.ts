@@ -1,5 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { Router } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { AppShellComponent } from './app-shell.component';
 
@@ -12,7 +12,7 @@ describe('AppShellComponent', () => {
     routerSpy = { url: '/dashboard' };
     await TestBed.configureTestingModule({
       imports: [AppShellComponent, NoopAnimationsModule],
-      providers: [{ provide: Router, useValue: routerSpy }],
+      providers: [provideRouter([]), { provide: Router, useValue: routerSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(AppShellComponent);

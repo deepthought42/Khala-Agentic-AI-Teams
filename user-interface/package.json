@@ -6,8 +6,8 @@
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test",
-    "test:coverage": "ng test --configuration=ci --no-watch",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "ng lint"
   },
   "private": true,
@@ -38,14 +38,16 @@
     "zone.js": "~0.15.0"
   },
   "devDependencies": {
+    "@analogjs/vite-plugin-angular": "^2.3.1",
     "@angular-devkit/build-angular": "^19.2.18",
     "@angular/cli": "^19.2.18",
     "@angular/compiler-cli": "^19.2.18",
+    "@vitest/coverage-v8": "^3.2.4",
     "angular-eslint": "21.0.1",
     "eslint": "^9.39.1",
     "jsdom": "^26.0.0",
     "typescript": "~5.7.2",
     "typescript-eslint": "8.46.4",
-    "vitest": "^2.1.0"
+    "vitest": "^3.2.4"
   }
 }

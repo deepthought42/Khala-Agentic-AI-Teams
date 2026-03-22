@@ -9,7 +9,7 @@ describe('FrontendCodeV2JobStatusComponent', () => {
   let fixture: ComponentFixture<FrontendCodeV2JobStatusComponent>;
 
   beforeEach(async () => {
-    const apiSpy = { getFrontendCodeV2Status: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'running' })) };
+    const apiSpy = { getFrontendCodeV2Status: vi.fn().mockReturnValue(of({ job_id: 'j1', status: 'running', completed_phases: [], current_phase: null })) };
     await TestBed.configureTestingModule({
       imports: [FrontendCodeV2JobStatusComponent],
       providers: [{ provide: SoftwareEngineeringApiService, useValue: apiSpy }],

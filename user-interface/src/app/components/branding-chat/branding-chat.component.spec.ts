@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
+import { vi } from 'vitest';
 import { BrandingChatComponent } from './branding-chat.component';
 import { BrandingApiService } from '../../services/branding-api.service';
 import type { ConversationStateResponse } from '../../models';
@@ -7,7 +8,12 @@ import type { ConversationStateResponse } from '../../models';
 describe('BrandingChatComponent', () => {
   let component: BrandingChatComponent;
   let fixture: ComponentFixture<BrandingChatComponent>;
-  let apiSpy: jasmine.SpyObj<BrandingApiService>;
+  let apiSpy: {
+    createConversation: ReturnType<typeof vi.fn>;
+    createConversationForBrand: ReturnType<typeof vi.fn>;
+    getConversation: ReturnType<typeof vi.fn>;
+    sendConversationMessage: ReturnType<typeof vi.fn>;
+  };
 
   const mockResponse: ConversationStateResponse = {
     conversation_id: 'conv-1',
@@ -24,16 +30,12 @@ describe('BrandingChatComponent', () => {
   };
 
   beforeEach(async () => {
-    apiSpy = jasmine.createSpyObj('BrandingApiService', [
-      'createConversation',
-      'createConversationForBrand',
-      'getConversation',
-      'sendConversationMessage',
-    ]);
-    apiSpy.createConversation.and.returnValue(of(mockResponse));
-    apiSpy.createConversationForBrand.and.returnValue(of(mockResponse));
-    apiSpy.getConversation.and.returnValue(of(mockResponse));
-    apiSpy.sendConversationMessage.and.returnValue(of(mockResponse));
+    apiSpy = {
+      createConversation: vi.fn().mockReturnValue(of(mockResponse)),
+      createConversationForBrand: vi.fn().mockReturnValue(of(mockResponse)),
+      getConversation: vi.fn().mockReturnValue(of(mockResponse)),
+      sendConversationMessage: vi.fn().mockReturnValue(of(mockResponse)),
+    };
 
     await TestBed.configureTestingModule({
       imports: [BrandingChatComponent],

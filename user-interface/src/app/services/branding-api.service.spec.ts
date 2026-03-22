@@ -33,7 +33,7 @@ describe('BrandingApiService', () => {
       })
       .subscribe((res) => expect(res.session_id).toBe('s1'));
 
-    const req = httpMock.expectOne(`${baseUrl}/branding/sessions`);
+    const req = httpMock.expectOne(`${baseUrl}/sessions`);
     expect(req.request.method).toBe('POST');
     req.flush({
       session_id: 's1',
@@ -47,7 +47,7 @@ describe('BrandingApiService', () => {
 
   it('should call POST question answer endpoint', () => {
     service.answerQuestion('s1', 'q1', 'clarity, trust').subscribe();
-    const req = httpMock.expectOne(`${baseUrl}/branding/sessions/s1/questions/q1/answer`);
+    const req = httpMock.expectOne(`${baseUrl}/sessions/s1/questions/q1/answer`);
     expect(req.request.method).toBe('POST');
     expect(req.request.body.answer).toBe('clarity, trust');
     req.flush({

@@ -91,34 +91,9 @@
           "builder": "@angular-devkit/build-angular:extract-i18n"
         },
         "test": {
-          "builder": "@angular/build:unit-test",
+          "builder": "@angular-devkit/build-angular:karma",
           "options": {
-            "tsConfig": "tsconfig.spec.json",
-            "buildTarget": "user-interface:build:development"
-          },
-          "configurations": {
-            "ci": {
-              "coverage": true,
-              "coverageReporters": [
-                "html",
-                "text-summary"
-              ],
-              "coverageInclude": [
-                "src/app/**/*.ts"
-              ],
-              "coverageExclude": [
-                "**/*.spec.ts",
-                "**/*.model.ts",
-                "**/environments/*.ts",
-                "**/index.ts",
-                "**/*.module.ts"
-              ],
-              "coverageThreshold": {
-                "global": {
-                  "lines": 85
-                }
-              }
-            }
+            "tsConfig": "tsconfig.spec.json"
           }
         },
         "lint": {

@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
+import { provideRouter } from '@angular/router';
 import { BloggingApiService } from '../../services/blogging-api.service';
 import { BloggingDashboardComponent } from './blogging-dashboard.component';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
@@ -30,7 +31,7 @@ describe('BloggingDashboardComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [BloggingDashboardComponent, NoopAnimationsModule],
-      providers: [{ provide: BloggingApiService, useValue: apiSpy }],
+      providers: [provideRouter([]), { provide: BloggingApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(BloggingDashboardComponent);
