@@ -3,9 +3,9 @@ name: CI/CD
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main, development]
+    branches: [master, main, development]
   push:
-    branches: [main, development]
+    branches: [master, main, development]
 
 jobs:
   # ── Lint ────────────────────────────────────────────────────────────────────
