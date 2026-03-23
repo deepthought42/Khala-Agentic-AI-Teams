@@ -282,8 +282,9 @@ def apply_patch(
     merge_fields: dict[str, Any] | None = None,
     merge_nested: dict[str, Any] | None = None,
     append_to: dict[str, list[Any]] | None = None,
+    increment: dict[str, int] | None = None,
 ) -> None:
-    """Atomic read-modify-write: merge fields, merge into nested dicts, append to lists."""
+    """Atomic read-modify-write: merge fields, merge into nested dicts, append to lists, increment counters."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT data, status FROM jobs WHERE team = %s AND job_id = %s FOR UPDATE",
@@ -325,6 +326,14 @@ def apply_patch(
                     existing_list = []
                 existing_list.extend(items)
                 data[field] = existing_list
+
+        # 4. Increment integer fields
+        if increment:
+            for field, delta in increment.items():
+                current = data.get(field, 0)
+                if not isinstance(current, (int, float)):
+                    current = 0
+                data[field] = current + delta
 
         now = _now_iso()
         cur.execute(

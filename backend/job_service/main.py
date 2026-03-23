@@ -142,6 +142,7 @@ def apply_patch(team: str, job_id: str, req: ApplyPatchRequest):
         merge_fields=req.merge_fields,
         merge_nested=req.merge_nested,
         append_to=req.append_to,
+        increment=req.increment,
     )
     return JobResponse(job=db_get_job(team, job_id))
 

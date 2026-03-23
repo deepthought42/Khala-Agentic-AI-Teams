@@ -26,6 +26,7 @@ class ApplyPatchRequest(BaseModel):
     merge_fields: dict[str, Any] | None = None
     merge_nested: dict[str, Any] | None = None
     append_to: dict[str, list[Any]] | None = None
+    increment: dict[str, int] | None = None
 
 
 class AppendEventRequest(BaseModel):

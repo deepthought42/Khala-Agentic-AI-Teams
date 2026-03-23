@@ -350,15 +350,14 @@ def skip_current_story_gap(
     job_id: str,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
 ) -> None:
-    """Skip the current story gap and advance to the next one (clears waiting flag)."""
-    # Need to read current index, increment, then write
-    job = _client(cache_dir).get_job(job_id)
-    if job is None:
-        return
-    new_index = job.get("current_story_gap_index", 0) + 1
+    """Skip the current story gap and advance to the next one (clears waiting flag).
+
+    Uses an atomic increment so concurrent skip requests cannot lose an update.
+    """
     _client(cache_dir).atomic_update(
         job_id,
-        merge_fields={"current_story_gap_index": new_index, "waiting_for_story_input": False},
+        merge_fields={"waiting_for_story_input": False},
+        increment={"current_story_gap_index": 1},
     )
 
 

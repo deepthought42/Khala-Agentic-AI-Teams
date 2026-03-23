@@ -275,8 +275,9 @@ class JobServiceClient:
         merge_fields: Optional[Dict[str, Any]] = None,
         merge_nested: Optional[Dict[str, Any]] = None,
         append_to: Optional[Dict[str, List[Any]]] = None,
+        increment: Optional[Dict[str, int]] = None,
     ) -> None:
-        """Perform an atomic batch of merge + append operations."""
+        """Perform an atomic batch of merge + append + increment operations."""
         if not self._is_remote:
 
             def _fn(d: Dict[str, Any]) -> None:
@@ -302,6 +303,12 @@ class JobServiceClient:
                             existing_list = []
                         existing_list.extend(items)
                         d[field_name] = existing_list
+                if increment:
+                    for field_name, delta in increment.items():
+                        current = d.get(field_name, 0)
+                        if not isinstance(current, (int, float)):
+                            current = 0
+                        d[field_name] = current + delta
 
             self._get_local().apply_to_job(job_id, _fn)
             return
@@ -312,8 +319,13 @@ class JobServiceClient:
                 "merge_fields": merge_fields,
                 "merge_nested": merge_nested,
                 "append_to": append_to,
+                "increment": increment,
             },
         )
+
+    def increment_field(self, job_id: str, field: str, delta: int = 1) -> None:
+        """Atomically increment an integer field by *delta*."""
+        self.atomic_update(job_id, increment={field: delta})
 
     def heartbeat(self, job_id: str) -> None:
         """Touch last_heartbeat_at for a job."""
