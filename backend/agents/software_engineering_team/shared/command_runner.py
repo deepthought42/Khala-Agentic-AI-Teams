@@ -368,13 +368,19 @@ def run_command_with_nvm(  # pragma: no cover
         "console.error(\"Node \"+process.version+\" is below minimum v18 for modern frontend frameworks\");"
         "process.exit(1);'"
     )
+    # Try all instant `nvm use` options before any slow `nvm install`.
+    # Each `nvm use` is validated with `npm --version` so we skip versions
+    # where node works but npm is corrupted (broken tar extraction in cache).
+    # In CI, setup-node puts Node on the system PATH so `nvm use system`
+    # succeeds immediately, avoiding corrupted-cache source compilations.
+    npm_ok = "npm --version >/dev/null 2>&1"
     script = (
         f"{nvm_prefix} && "
-        f"{{ nvm use {node_version} 2>/dev/null || "
+        f"{{ {{ nvm use {node_version} 2>/dev/null && {npm_ok}; }} || "
+        f"{{ nvm use {NVM_NODE_FALLBACK_VERSION} 2>/dev/null && {npm_ok}; }} || "
+        f"{{ nvm use system 2>/dev/null && {npm_ok}; }} || "
         f"{{ nvm install {node_version} --no-progress && nvm use {node_version}; }} || "
-        f"nvm use {NVM_NODE_FALLBACK_VERSION} 2>/dev/null || "
-        f"{{ nvm install {NVM_NODE_FALLBACK_VERSION} --no-progress && nvm use {NVM_NODE_FALLBACK_VERSION}; }} || "
-        f"nvm use system; }} && "
+        f"{{ nvm install {NVM_NODE_FALLBACK_VERSION} --no-progress && nvm use {NVM_NODE_FALLBACK_VERSION}; }}; }} && "
         f"{version_check} && "
         f"{shlex.join(cmd)}"
     )
