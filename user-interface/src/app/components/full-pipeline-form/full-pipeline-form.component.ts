@@ -1,4 +1,4 @@
-import { Component, effect, input, OnDestroy, output } from '@angular/core';
+import { Component, effect, input, OnDestroy, output, inject } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -52,6 +52,8 @@ const CONTENT_PROFILE_OPTIONS: { value: BlogContentProfile; label: string; hint:
   styleUrl: './full-pipeline-form.component.scss',
 })
 export class FullPipelineFormComponent implements OnDestroy {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<FullPipelineRequest>();
 
   /**
@@ -83,7 +85,7 @@ export class FullPipelineFormComponent implements OnDestroy {
     return !this.brandSpecConfigured();
   }
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       brief: ['', [Validators.required, Validators.minLength(3)]],
       title_concept: [''],

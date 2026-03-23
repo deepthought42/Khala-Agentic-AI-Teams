@@ -2,12 +2,10 @@
 
 import inspect
 from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 
 from backend_agent.agent import BackendExpertAgent
 from frontend_team.feature_agent.agent import FrontendExpertAgent
+
 from llm_service import DummyLLMClient
 
 
@@ -38,6 +36,7 @@ def test_backend_persist_qa_artifacts_writes_test_files(tmp_path: Path) -> None:
     _run_git(tmp_path, ["git", "init"])
     _run_git(tmp_path, ["git", "config", "user.email", "test@test.com"])
     _run_git(tmp_path, ["git", "config", "user.name", "Test"])
+    _run_git(tmp_path, ["git", "config", "commit.gpgsign", "false"])
     (tmp_path / "tests").mkdir(exist_ok=True)
     (tmp_path / "tests" / "__init__.py").write_text("")
     _run_git(tmp_path, ["git", "add", "-A"])
@@ -76,7 +75,6 @@ def test_frontend_has_run_workflow() -> None:
 
 def test_orchestrator_passes_security_agent_to_backend() -> None:
     """Orchestrator passes security_agent when calling backend run_workflow."""
-    from orchestrator import run_orchestrator
 
     # Read orchestrator source and verify the call includes security_agent
     orchestrator_path = Path(__file__).resolve().parent.parent / "orchestrator.py"

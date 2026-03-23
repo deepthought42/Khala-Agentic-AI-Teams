@@ -1,4 +1,4 @@
-import { Component, output } from '@angular/core';
+import { Component, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -24,6 +24,8 @@ import type { RunMarketResearchRequest, TeamTopology } from '../../models';
   styleUrl: './market-research-form.component.scss',
 })
 export class MarketResearchFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<RunMarketResearchRequest>();
 
   form: FormGroup;
@@ -32,7 +34,7 @@ export class MarketResearchFormComponent {
     { value: 'split', label: 'Split' },
   ];
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       product_concept: ['', [Validators.required, Validators.minLength(3)]],
       target_users: ['', [Validators.required, Validators.minLength(3)]],

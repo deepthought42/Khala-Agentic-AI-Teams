@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-import sys
 _team_dir = Path(__file__).resolve().parent.parent
 if str(_team_dir) not in sys.path:
     sys.path.insert(0, str(_team_dir))
@@ -42,6 +42,7 @@ def temp_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True, check=True)
     return repo

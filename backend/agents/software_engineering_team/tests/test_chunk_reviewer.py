@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from code_review_agent.chunk_reviewer import ChunkReviewAgent, review_chunk
 from code_review_agent.models import ChunkReviewInput
 
@@ -11,6 +9,7 @@ from code_review_agent.models import ChunkReviewInput
 def test_review_chunk_returns_approved_issues_summary():
     """Chunk reviewer returns dict with approved, issues, summary."""
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": True,
         "issues": [],
@@ -41,6 +40,7 @@ def test_review_chunk_returns_approved_issues_summary():
 def test_review_chunk_includes_file_path_in_issues():
     """Chunk reviewer issues include file_path from response or label."""
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": False,
         "issues": [
@@ -76,6 +76,7 @@ def test_review_chunk_includes_file_path_in_issues():
 def test_chunk_review_agent_run_returns_chunk_review_output():
     """ChunkReviewAgent.run(ChunkReviewInput) returns ChunkReviewOutput with file_path in issues."""
     mock_llm = MagicMock()
+    mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.return_value = {
         "approved": False,
         "issues": [

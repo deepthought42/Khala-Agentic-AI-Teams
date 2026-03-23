@@ -1,22 +1,20 @@
 """Unit tests for the orchestrator."""
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
+import orchestrator
 
+from llm_service import OLLAMA_WEEKLY_LIMIT_MESSAGE, LLMJsonParseError, LLMRateLimitError
 from software_engineering_team.shared.command_runner import CommandResult
-from llm_service import LLMJsonParseError, LLMRateLimitError, OLLAMA_WEEKLY_LIMIT_MESSAGE
 from software_engineering_team.shared.models import (
     ProductRequirements,
     SystemArchitecture,
     Task,
     TaskAssignment,
-    TaskUpdate,
     TaskType,
+    TaskUpdate,
 )
-import orchestrator
 
 
 def test_run_build_verification_appends_fix_line_when_pytest_fails_with_test_error_handlers(
@@ -44,10 +42,10 @@ def test_run_build_verification_appends_fix_line_when_pytest_fails_with_test_err
     )
 
     with patch(
-        "shared.command_runner.run_python_syntax_check",
+        "software_engineering_team.shared.command_runner.run_python_syntax_check",
         return_value=CommandResult(True, 0, "", ""),
     ):
-        with patch("shared.command_runner.run_pytest", return_value=mock_result):
+        with patch("software_engineering_team.shared.command_runner.run_pytest", return_value=mock_result):
             ok, error_output = orchestrator._run_build_verification(
                 tmp_path, "backend", "task-1"
             )
@@ -142,7 +140,7 @@ def test_run_failed_tasks_pauses_on_llm_rate_limit(tmp_path: Path) -> None:
     with patch("orchestrator.update_job", side_effect=capture_update_job):
         with patch("orchestrator._get_agents", return_value=mock_agents):
             with patch(
-                "shared.command_runner.ensure_backend_project_initialized",
+                "software_engineering_team.shared.command_runner.ensure_backend_project_initialized",
                 return_value=mock_init_result,
             ):
                 orchestrator.run_failed_tasks(job_id)
@@ -363,7 +361,7 @@ def test_frontend_json_parse_failure_triggers_tech_lead_review_for_task_breakdow
                     kwargs["append_task_id_fn"](nt.id)
 
     with patch(
-        "shared.command_runner.ensure_frontend_project_initialized",
+        "software_engineering_team.shared.command_runner.ensure_frontend_project_initialized",
         return_value=mock_init,
     ):
         with patch("orchestrator._run_tech_lead_review", side_effect=capture_review):

@@ -1,6 +1,5 @@
 """Unit tests for LLM client error handling, retries, and exceptions."""
 
-import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -8,12 +7,12 @@ import httpx
 import pytest
 
 from llm_service import (
+    OLLAMA_WEEKLY_LIMIT_MESSAGE,
     DummyLLMClient,
     LLMJsonParseError,
     LLMPermanentError,
     LLMRateLimitError,
     LLMTemporaryError,
-    OLLAMA_WEEKLY_LIMIT_MESSAGE,
     OllamaLLMClient,
     _clear_client_cache_for_testing,
     get_client,
@@ -29,7 +28,7 @@ def test_ollama_429_raises_rate_limit_error_after_retries() -> None:
         mock_response.headers = {}
         mock_response.text = "Too Many Requests"
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value.__enter__.return_value = mock_response
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         with patch.dict(os.environ, {"SW_LLM_MAX_RETRIES": "1"}, clear=False):
@@ -53,7 +52,7 @@ def test_ollama_500_raises_temporary_error_after_retries() -> None:
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value.__enter__.return_value = mock_response
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         with patch.dict(os.environ, {"SW_LLM_MAX_RETRIES": "1"}, clear=False):
@@ -71,7 +70,7 @@ def test_ollama_400_raises_permanent_error_no_retry() -> None:
         mock_response.status_code = 400
         mock_response.text = "Bad Request"
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value.__enter__.return_value = mock_response
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         with pytest.raises(LLMPermanentError) as exc_info:
@@ -87,11 +86,11 @@ def test_ollama_200_returns_parsed_json() -> None:
     with patch("httpx.Client") as mock_client_cls:
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": '{"key": "value"}'}}]
-        }
+        mock_response.iter_lines.return_value = iter([
+            'data: {"choices": [{"delta": {"content": "{\\"key\\": \\"value\\"}"},"finish_reason":"stop"}]}'
+        ])
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value.__enter__.return_value = mock_response
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         result = client.complete_json("test prompt")
@@ -105,15 +104,18 @@ def test_ollama_malformed_response_raises_permanent_error() -> None:
     with patch("httpx.Client") as mock_client_cls:
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"choices": []}  # No first choice
+        # Stream returns non-JSON content → complete_json raises LLMPermanentError (LLMJsonParseError)
+        mock_response.iter_lines.return_value = iter([
+            'data: {"choices": [{"delta": {"content": "this is not valid json"},"finish_reason":"stop"}]}'
+        ])
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value.__enter__.return_value = mock_response
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         with pytest.raises(LLMPermanentError) as exc_info:
             client.complete_json("test prompt")
 
-    assert "choices" in str(exc_info.value).lower() or "format" in str(exc_info.value).lower()
+    assert "JSON" in str(exc_info.value) or "parse" in str(exc_info.value).lower()
 
 
 def test_ollama_connection_error_raises_temporary_error_after_retries() -> None:
@@ -121,7 +123,7 @@ def test_ollama_connection_error_raises_temporary_error_after_retries() -> None:
     client = OllamaLLMClient(model="test", base_url="http://localhost:9999", timeout=5)
     with patch("httpx.Client") as mock_client_cls:
         mock_client = MagicMock()
-        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
+        mock_client.stream.side_effect = httpx.ConnectError("Connection refused")
         mock_client_cls.return_value.__enter__.return_value = mock_client
 
         with patch.dict(os.environ, {"SW_LLM_MAX_RETRIES": "1"}, clear=False):
@@ -283,7 +285,9 @@ def test_get_client_cache_returns_same_instance() -> None:
 
 def test_extract_task_assignment_from_content_recovers_tasks() -> None:
     """When LLM returns raw content with embedded JSON, extract_task_assignment_from_content recovers it."""
-    from software_engineering_team.shared.llm_response_utils import extract_task_assignment_from_content
+    from software_engineering_team.shared.llm_response_utils import (
+        extract_task_assignment_from_content,
+    )
 
     content = '''Here is the task plan:
 
@@ -306,7 +310,9 @@ def test_extract_task_assignment_from_content_recovers_tasks() -> None:
 
 def test_extract_task_assignment_from_content_returns_none_for_empty() -> None:
     """extract_task_assignment_from_content returns None when no tasks in content."""
-    from software_engineering_team.shared.llm_response_utils import extract_task_assignment_from_content
+    from software_engineering_team.shared.llm_response_utils import (
+        extract_task_assignment_from_content,
+    )
 
     assert extract_task_assignment_from_content("") is None
     assert extract_task_assignment_from_content("No JSON here") is None

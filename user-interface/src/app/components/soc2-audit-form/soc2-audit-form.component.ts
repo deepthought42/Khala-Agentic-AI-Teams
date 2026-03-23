@@ -1,4 +1,4 @@
-import { Component, output } from '@angular/core';
+import { Component, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -20,11 +20,13 @@ import type { RunAuditRequest } from '../../models';
   styleUrl: './soc2-audit-form.component.scss',
 })
 export class Soc2AuditFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<RunAuditRequest>();
 
   form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       repo_path: ['', [Validators.required, Validators.minLength(1)]],
     });

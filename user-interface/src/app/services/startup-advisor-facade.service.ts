@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, inject } from '@angular/core';
 import { map, tap } from 'rxjs/operators';
 import { Observable, of } from 'rxjs';
 import { StudioGridApiService } from './studio-grid-api.service';
@@ -33,10 +33,10 @@ const STARTUP_AGENT_HINTS = [
 
 @Injectable({ providedIn: 'root' })
 export class StartupAdvisorFacadeService {
+  private readonly studioGridApi = inject(StudioGridApiService);
+
   private readonly intakeSignal = signal<StartupAdvisorIntake | null>(null);
   private readonly recommendationsSignal = signal<StartupAdvisorRecommendation[]>([]);
-
-  constructor(private readonly studioGridApi: StudioGridApiService) {}
 
   get intakeSnapshot(): StartupAdvisorIntake | null {
     return this.intakeSignal();

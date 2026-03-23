@@ -8,10 +8,14 @@ import { InvestmentDashboardComponent } from './investment-dashboard.component';
 describe('InvestmentDashboardComponent', () => {
   let component: InvestmentDashboardComponent;
   let fixture: ComponentFixture<InvestmentDashboardComponent>;
-  let apiSpy: { healthCheck: ReturnType<typeof vi.fn> };
+  let apiSpy: { healthCheck: ReturnType<typeof vi.fn>; getStrategyLabResults: ReturnType<typeof vi.fn>; runStrategyLab: ReturnType<typeof vi.fn> };
 
   beforeEach(async () => {
-    apiSpy = { healthCheck: vi.fn().mockReturnValue(of({ status: 'ok' })) };
+    apiSpy = {
+      healthCheck: vi.fn().mockReturnValue(of({ status: 'ok' })),
+      getStrategyLabResults: vi.fn().mockReturnValue(of({ results: [], total: 0 })),
+      runStrategyLab: vi.fn(),
+    };
     await TestBed.configureTestingModule({
       imports: [InvestmentDashboardComponent, NoopAnimationsModule],
       providers: [{ provide: InvestmentApiService, useValue: apiSpy }],

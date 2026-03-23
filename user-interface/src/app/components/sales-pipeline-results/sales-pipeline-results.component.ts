@@ -9,13 +9,9 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import type {
   SalesPipelineResult,
-  Prospect,
   QualificationScore,
-  BANTScore,
-  DealRiskSignal,
   CloseType,
   ForecastCategory,
-  NurtureTouchpoint,
   OutreachChannel,
 } from '../../models';
 

@@ -1,9 +1,16 @@
+import { TestBed } from '@angular/core/testing';
+import { vi } from 'vitest';
+import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import { RunTeamTrackingComponent } from './run-team-tracking.component';
 import type { JobStatusResponse, TaskStateEntry, PlanningHierarchy } from '../../models';
 
 describe('RunTeamTrackingComponent work tree fallback initiative behavior', () => {
   const createComponent = (): RunTeamTrackingComponent => {
-    return new RunTeamTrackingComponent({} as never);
+    const apiSpy = { getJobStatus: vi.fn() };
+    TestBed.configureTestingModule({
+      providers: [{ provide: SoftwareEngineeringApiService, useValue: apiSpy }],
+    });
+    return TestBed.runInInjectionContext(() => new RunTeamTrackingComponent());
   };
 
   const baseStatus = (): JobStatusResponse => ({
@@ -47,7 +54,7 @@ describe('RunTeamTrackingComponent work tree fallback initiative behavior', () =
         task_states: taskStates,
       };
 
-      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => Array<{ label: string; status: string }> })
+      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => { label: string; status: string }[] })
         .buildWorkTreeRows(status);
 
       expect(rows.some((row) => row.label === 'Uncategorized Initiative')).toBe(false);
@@ -72,7 +79,7 @@ describe('RunTeamTrackingComponent work tree fallback initiative behavior', () =
         task_states: taskStates,
       };
 
-      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => Array<{ label: string }> })
+      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => { label: string }[] })
         .buildWorkTreeRows(status);
 
       expect(rows.some((row) => row.label === 'Uncategorized Initiative')).toBe(true);
@@ -123,7 +130,7 @@ describe('RunTeamTrackingComponent work tree fallback initiative behavior', () =
         planning_hierarchy: hierarchy,
       };
 
-      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => Array<{ label: string; level: string }> })
+      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => { label: string; level: string }[] })
         .buildWorkTreeRows(status);
 
       // Should have proper hierarchy labels from planning_hierarchy
@@ -161,7 +168,7 @@ describe('RunTeamTrackingComponent work tree fallback initiative behavior', () =
         planning_hierarchy: hierarchy,
       };
 
-      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => Array<{ label: string }> })
+      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => { label: string }[] })
         .buildWorkTreeRows(status);
 
       // Orphan tasks should go into fallback
@@ -197,7 +204,7 @@ describe('RunTeamTrackingComponent work tree fallback initiative behavior', () =
         planning_hierarchy: hierarchy,
       };
 
-      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => Array<{ label: string; status: string }> })
+      const rows = (component as never as { buildWorkTreeRows: (s: JobStatusResponse) => { label: string; status: string }[] })
         .buildWorkTreeRows(status);
 
       // All tasks completed, so parent statuses should also be completed

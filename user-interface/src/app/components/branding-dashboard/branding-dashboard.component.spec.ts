@@ -19,6 +19,8 @@ describe('BrandingDashboardComponent', () => {
     listConversations: ReturnType<typeof vi.fn>;
     createBrand: ReturnType<typeof vi.fn>;
     getBrand: ReturnType<typeof vi.fn>;
+    createConversation: ReturnType<typeof vi.fn>;
+    createConversationForBrand: ReturnType<typeof vi.fn>;
   };
   let snackBarSpy: { open: ReturnType<typeof vi.fn> };
 
@@ -28,6 +30,7 @@ describe('BrandingDashboardComponent', () => {
         onAction: () => ({ subscribe: vi.fn() }),
       }),
     };
+    const emptyConversationState = { conversation_id: 'c1', messages: [], mission: null, latest_output: null, suggested_questions: [] };
     apiSpy = {
       health: vi.fn().mockReturnValue(of({ status: 'ok' })),
       listClients: vi.fn().mockReturnValue(of([workspaceClient])),
@@ -36,6 +39,8 @@ describe('BrandingDashboardComponent', () => {
       listConversations: vi.fn().mockReturnValue(of([])),
       createBrand: vi.fn(),
       getBrand: vi.fn(),
+      createConversation: vi.fn().mockReturnValue(of(emptyConversationState)),
+      createConversationForBrand: vi.fn().mockReturnValue(of(emptyConversationState)),
     };
     await TestBed.configureTestingModule({
       imports: [BrandingDashboardComponent, NoopAnimationsModule],
@@ -119,6 +124,7 @@ describe('BrandingDashboardComponent workspace bootstrap', () => {
   it('creates default client when API returns no workspaces', async () => {
     const snackBar = { open: vi.fn().mockReturnValue({ onAction: () => ({ subscribe: vi.fn() }) }) };
     let listCalls = 0;
+    const emptyConversationState2 = { conversation_id: 'c1', messages: [], mission: null, latest_output: null, suggested_questions: [] };
     const api = {
       health: vi.fn().mockReturnValue(of({ status: 'ok' })),
       listClients: vi.fn().mockImplementation(() => {
@@ -130,6 +136,8 @@ describe('BrandingDashboardComponent workspace bootstrap', () => {
       listConversations: vi.fn().mockReturnValue(of([])),
       createBrand: vi.fn(),
       getBrand: vi.fn(),
+      createConversation: vi.fn().mockReturnValue(of(emptyConversationState2)),
+      createConversationForBrand: vi.fn().mockReturnValue(of(emptyConversationState2)),
     };
 
     TestBed.resetTestingModule();

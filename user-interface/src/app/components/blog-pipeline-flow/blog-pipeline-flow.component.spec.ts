@@ -1,5 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { BlogPipelineFlowComponent, BLOG_PHASES } from './blog-pipeline-flow.component';
+import { BlogPipelineFlowComponent } from './blog-pipeline-flow.component';
 import type { BlogJobStatusResponse } from '../../models';
 
 describe('BlogPipelineFlowComponent', () => {

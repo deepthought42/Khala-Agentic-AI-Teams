@@ -153,6 +153,7 @@ def test_apply_repair_fixes_rejects_path_outside_tree(tmp_path: Path) -> None:
 def test_orchestrator_repair_requeue_on_backend_crash(tmp_path: Path) -> None:
     """On backend NameError crash, repair applied, task re-queued, worker picks it up and completes."""
     import orchestrator
+
     from software_engineering_team.shared.models import Task, TaskType
 
     backend_dir = tmp_path / "backend"
@@ -207,7 +208,7 @@ def test_orchestrator_repair_requeue_on_backend_crash(tmp_path: Path) -> None:
     }
 
     with patch("orchestrator.update_job"):
-        with patch("shared.command_runner.ensure_backend_project_initialized") as mock_init:
+        with patch("software_engineering_team.shared.command_runner.ensure_backend_project_initialized") as mock_init:
             mock_init.return_value = MagicMock(success=True)
             with patch("orchestrator._apply_repair_fixes", return_value=True):
                 orchestrator._run_backend_frontend_workers(
@@ -238,6 +239,7 @@ def test_orchestrator_repair_requeue_on_backend_crash(tmp_path: Path) -> None:
 def test_orchestrator_requeues_when_task_contract_is_repaired(tmp_path: Path) -> None:
     """Backend task blocked by missing contract fields is refined and re-queued."""
     import orchestrator
+
     from software_engineering_team.shared.models import Task, TaskType
 
     backend_dir = tmp_path / "backend"
@@ -307,7 +309,7 @@ def test_orchestrator_requeues_when_task_contract_is_repaired(tmp_path: Path) ->
     completed_code_task_ids = []
 
     with patch("orchestrator.update_job"):
-        with patch("shared.command_runner.ensure_backend_project_initialized") as mock_init:
+        with patch("software_engineering_team.shared.command_runner.ensure_backend_project_initialized") as mock_init:
             mock_init.return_value = MagicMock(success=True)
             orchestrator._run_backend_frontend_workers(
                 job_id="test-job",

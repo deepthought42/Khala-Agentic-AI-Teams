@@ -1,4 +1,4 @@
-import { Component, Input, output } from '@angular/core';
+import { Component, Input, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -22,13 +22,15 @@ import type { ReviseMarketingTeamRequest } from '../../models';
   styleUrl: './social-marketing-revise.component.scss',
 })
 export class SocialMarketingReviseComponent {
+  private readonly fb = inject(FormBuilder);
+
   @Input() jobId: string | null = null;
 
   readonly submitRequest = output<ReviseMarketingTeamRequest>();
 
   form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       feedback: ['', [Validators.required, Validators.minLength(3)]],
       approved_for_testing: [false],

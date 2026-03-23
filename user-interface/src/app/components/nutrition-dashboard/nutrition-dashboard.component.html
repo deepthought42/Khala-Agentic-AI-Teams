@@ -317,7 +317,7 @@
                               }
                             </ul>
                           }
-                          @if (meal.prep_time_minutes != null || meal.cook_time_minutes != null) {
+                          @if (meal.prep_time_minutes !== null || meal.cook_time_minutes !== null) {
                             <p class="meta">
                               Prep {{ meal.prep_time_minutes ?? '—' }} min · Cook {{ meal.cook_time_minutes ?? '—' }} min
                               @if (meal.portions_servings) {

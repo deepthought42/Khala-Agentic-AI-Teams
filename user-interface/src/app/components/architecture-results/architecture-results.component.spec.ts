@@ -13,7 +13,7 @@ describe('ArchitectureResultsComponent', () => {
 
     fixture = TestBed.createComponent(ArchitectureResultsComponent);
     component = fixture.componentInstance;
-    component.data = { overview: '', architecture_doc: '', diagram_entries: [] } as any;
+    component.data = { overview: '', architecture_document: '', diagrams: {}, components: [], decisions: [] } as any;
     fixture.detectChanges();
   });
 

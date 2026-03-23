@@ -18,7 +18,7 @@ import type { PendingQuestion, AnswerSubmission, JobStatusResponse, PlanningV3St
 import { QuestionCardComponent } from './question-card/question-card.component';
 
 /** Endpoint type determines which API to call for submitting answers. */
-export type SubmitEndpointType = 'run-team' | 'planning-v3' | 'product-analysis';
+export type SubmitEndpointType = 'run-team' | 'planning-v2' | 'planning-v3' | 'product-analysis';
 
 interface QuestionAnswer {
   questionId: string;
@@ -62,15 +62,15 @@ export class PendingQuestionsComponent implements OnChanges {
   @Input() submitEndpoint: SubmitEndpointType = 'run-team';
   @Output() answersSubmitted = new EventEmitter<JobStatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse>();
 
-  answers: Map<string, QuestionAnswer> = new Map();
+  answers = new Map<string, QuestionAnswer>();
   submitting = false;
   error: string | null = null;
 
   /** Track which questions are currently being auto-answered. */
-  autoAnsweringQuestions: Set<string> = new Set();
+  autoAnsweringQuestions = new Set<string>();
 
   /** Store auto-answer results for display. */
-  autoAnswerResults: Map<string, AutoAnswerResponse> = new Map();
+  autoAnswerResults = new Map<string, AutoAnswerResponse>();
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['questions']) {
@@ -299,6 +299,11 @@ export class PendingQuestionsComponent implements OnChanges {
         other_text: a.other_text ?? undefined,
       }));
       this.planningV3Api.submitAnswers(this.jobId, body).subscribe({
+        next: handleSuccess,
+        error: handleError,
+      });
+    } else if (this.submitEndpoint === 'planning-v2') {
+      this.api.submitPlanningV2Answers(this.jobId, request).subscribe({
         next: handleSuccess,
         error: handleError,
       });

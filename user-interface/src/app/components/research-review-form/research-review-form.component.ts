@@ -1,4 +1,4 @@
-import { Component, output } from '@angular/core';
+import { Component, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -26,12 +26,14 @@ import type { ResearchAndReviewRequest } from '../../models';
   styleUrl: './research-review-form.component.scss',
 })
 export class ResearchReviewFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   /** Emits when form is submitted with valid data. */
   readonly submitRequest = output<ResearchAndReviewRequest>();
 
   form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       brief: ['', [Validators.required, Validators.minLength(3)]],
       title_concept: [''],

@@ -4,7 +4,13 @@ import { of } from 'rxjs';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { vi } from 'vitest';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
+import { PlanningV3ApiService } from '../../services/planning-v3-api.service';
 import { SoftwareEngineeringDashboardComponent } from './software-engineering-dashboard.component';
+
+vi.mock('rxjs', async (importOriginal) => {
+  const rxjs = await importOriginal<typeof import('rxjs')>();
+  return { ...rxjs, timer: vi.fn(() => rxjs.of(0)) };
+});
 
 describe('SoftwareEngineeringDashboardComponent', () => {
   let component: SoftwareEngineeringDashboardComponent;
@@ -28,10 +34,15 @@ describe('SoftwareEngineeringDashboardComponent', () => {
     apiSpy.getRunningJobs.mockReturnValue(of({ jobs: [] }));
     apiSpy.health.mockReturnValue(of({ status: 'ok' }));
 
+    const planningV3ApiSpy = {
+      getJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      run: vi.fn(),
+    };
     await TestBed.configureTestingModule({
       imports: [SoftwareEngineeringDashboardComponent, NoopAnimationsModule],
       providers: [
         { provide: SoftwareEngineeringApiService, useValue: apiSpy },
+        { provide: PlanningV3ApiService, useValue: planningV3ApiSpy },
         { provide: ActivatedRoute, useValue: { queryParams: of({}) } },
       ],
     }).compileComponents();

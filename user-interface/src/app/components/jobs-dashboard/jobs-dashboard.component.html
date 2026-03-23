@@ -85,7 +85,7 @@
               </td>
               <td class="col-progress">
                 <div class="progress-cell">
-                  @if (getProgress(job) != null) {
+                  @if (getProgress(job) !== null) {
                     <mat-progress-bar
                       mode="determinate"
                       [value]="getProgress(job)!"

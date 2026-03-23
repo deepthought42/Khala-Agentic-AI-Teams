@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
-from devops_team.infra_debug_agent import InfraDebugAgent, IaCDebugInput, IaCDebugOutput, IaCExecutionError
-from devops_team.infra_patch_agent import InfraPatchAgent, IaCPatchInput, IaCPatchOutput
-
+from devops_team.infra_debug_agent import (
+    IaCDebugInput,
+    IaCDebugOutput,
+    IaCExecutionError,
+    InfraDebugAgent,
+)
+from devops_team.infra_patch_agent import IaCPatchInput, InfraPatchAgent
 
 # ---------------------------------------------------------------------------
 # Debug Agent tests
@@ -190,7 +192,7 @@ class TestDevOpsPipelineDebugPatchLoop:
         from devops_team.models import DevOpsTaskSpec
         spec = DevOpsTaskSpec(
             task_id="t1", title="Test", goal={"summary": "test"},
-            platform_scope={"environments": ["dev"]},
+            platform_scope={"cloud": "on-premises", "environments": ["dev"]},
             acceptance_criteria=["IaC validates"],
             constraints={"secrets": {"source": "env"}},
         )
@@ -249,7 +251,7 @@ class TestDevOpsPipelineDebugPatchLoop:
         from devops_team.models import DevOpsTaskSpec
         spec = DevOpsTaskSpec(
             task_id="t1", title="Test", goal={"summary": "test"},
-            platform_scope={"environments": ["dev"]},
+            platform_scope={"cloud": "on-premises", "environments": ["dev"]},
             acceptance_criteria=["IaC validates"],
             constraints={"secrets": {"source": "env"}},
         )

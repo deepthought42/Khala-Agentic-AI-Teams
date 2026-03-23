@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { of } from 'rxjs';
+import { provideRouter } from '@angular/router';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { vi } from 'vitest';
 import { AISystemsApiService } from '../../services/ai-systems-api.service';
@@ -24,7 +25,7 @@ describe('AISystemsDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [AISystemsDashboardComponent, NoopAnimationsModule],
-      providers: [{ provide: AISystemsApiService, useValue: apiSpy }],
+      providers: [provideRouter([]), { provide: AISystemsApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(AISystemsDashboardComponent);

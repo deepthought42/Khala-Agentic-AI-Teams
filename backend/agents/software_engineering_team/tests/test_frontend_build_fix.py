@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from frontend_team.feature_agent.agent import (
     _apply_frontend_build_fix_edits,
     _extract_affected_file_paths_from_frontend_build_errors,
@@ -127,6 +125,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
         subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
 
         (tmp_path / "src" / "app").mkdir(parents=True)
         (tmp_path / "src" / "app" / "app.component.ts").write_text(
@@ -141,10 +140,11 @@ class TestFrontendWorkflowBuildFixSpecialist:
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
         return tmp_path
 
-    @patch("shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
+    @patch("software_engineering_team.shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
     def test_specialist_invoked_on_repeated_failure(self, _mock_install: MagicMock, _setup_repo: Path) -> None:
-        from software_engineering_team.shared.models import Task, TaskType
         from build_fix_specialist.models import CodeEdit
+
+        from software_engineering_team.shared.models import Task, TaskType
 
         task = Task(
             id="fe-1", type=TaskType.FRONTEND, assignee="frontend",
@@ -217,7 +217,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
 
         mock_specialist.run.assert_called()
 
-    @patch("shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
+    @patch("software_engineering_team.shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
     def test_falls_back_to_qa_when_no_edits(self, _mock_install: MagicMock, _setup_repo: Path) -> None:
         from software_engineering_team.shared.models import Task, TaskType
 
@@ -280,7 +280,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
 
         mock_qa.run.assert_called()
 
-    @patch("shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
+    @patch("software_engineering_team.shared.command_runner.ensure_frontend_dependencies_installed", return_value=_INSTALL_OK)
     def test_specialist_failure_is_nonblocking(self, _mock_install: MagicMock, _setup_repo: Path) -> None:
         from software_engineering_team.shared.models import Task, TaskType
 

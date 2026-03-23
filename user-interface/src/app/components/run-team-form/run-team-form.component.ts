@@ -18,6 +18,8 @@ import type { RunTeamResponse } from '../../models';
   styleUrl: './run-team-form.component.scss',
 })
 export class RunTeamFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<RunTeamResponse>();
 
   form: FormGroup;
@@ -28,7 +30,7 @@ export class RunTeamFormComponent {
 
   private readonly api = inject(SoftwareEngineeringApiService);
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       project_name: ['', [Validators.required, Validators.minLength(1), Validators.maxLength(200)]],
     });

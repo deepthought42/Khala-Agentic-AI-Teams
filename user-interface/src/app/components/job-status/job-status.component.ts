@@ -1,4 +1,4 @@
-import { Component, Input, OnDestroy, OnInit, output } from '@angular/core';
+import { Component, Input, OnDestroy, OnInit, output, inject } from '@angular/core';
 import { timer, Subscription, switchMap } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -15,6 +15,8 @@ import type { JobStatusResponse } from '../../models';
   styleUrl: './job-status.component.scss',
 })
 export class JobStatusComponent implements OnInit, OnDestroy {
+  private readonly api = inject(SoftwareEngineeringApiService);
+
   @Input() jobId: string | null = null;
 
   readonly statusChange = output<JobStatusResponse>();
@@ -22,8 +24,6 @@ export class JobStatusComponent implements OnInit, OnDestroy {
   status: JobStatusResponse | null = null;
   loading = true;
   private sub: Subscription | null = null;
-
-  constructor(private readonly api: SoftwareEngineeringApiService) {}
 
   ngOnInit(): void {
     if (this.jobId) {

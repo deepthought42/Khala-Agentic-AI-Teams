@@ -28,10 +28,10 @@
 
       <!-- Skills Input -->
       <div class="skills-section">
-        <label class="skills-label">
+        <span class="skills-label">
           <mat-icon>auto_awesome</mat-icon>
           Required Skills
-        </label>
+        </span>
 
         <div class="skill-input-row">
           <mat-form-field appearance="outline" class="skill-input">
@@ -67,10 +67,10 @@
 
       <!-- Result Limit -->
       <div class="limit-section">
-        <label class="limit-label">
+        <span class="limit-label">
           <mat-icon>format_list_numbered</mat-icon>
           Max results: <strong>{{ limit }}</strong>
-        </label>
+        </span>
         <mat-slider min="1" max="10" step="1" class="limit-slider">
           <input matSliderThumb [(ngModel)]="limit" />
         </mat-slider>

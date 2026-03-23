@@ -79,6 +79,7 @@ export class SocialMarketingDashboardComponent implements OnInit, OnDestroy {
     if (!this.jobId) return;
     this.error = null;
     this.api.ingestPerformance(this.jobId, { observations }).subscribe({
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       next: () => {},
       error: (err) => {
         this.error = err?.error?.detail ?? err?.message ?? 'Ingest failed';

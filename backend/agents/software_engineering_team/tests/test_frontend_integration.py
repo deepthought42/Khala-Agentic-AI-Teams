@@ -1,6 +1,5 @@
 """Integration test: init frontend project, add MatButton, run ng build."""
 
-import os
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,7 @@ def test_frontend_init_matbutton_ng_build_succeeds(tmp_path: Path) -> None:
     Initialize frontend project, add a minimal MatButton component, run ng build.
     Verifies the scaffold (Material, provideAnimations, theme) supports MatButton.
     """
-    result = ensure_frontend_project_initialized(tmp_path)
+    result = ensure_frontend_project_initialized(tmp_path, framework="angular")
     assert result.success, f"ensure_frontend_project_initialized failed: {result.stderr}"
 
     # Add MatButton to app.component.ts

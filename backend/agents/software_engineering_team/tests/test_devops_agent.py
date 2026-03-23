@@ -4,8 +4,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from devops_agent.agent import DevOpsExpertAgent, _gather_codebase_context
 
 
@@ -26,6 +24,9 @@ def test_devops_run_workflow_calls_plan_task_without_error() -> None:
         path = Path(tmp)
         (path / "package.json").write_text("{}")
         subprocess.run(["git", "init"], cwd=path, capture_output=True, check=False)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, capture_output=True, check=False)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=path, capture_output=True, check=False)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=path, capture_output=True, check=False)
         result = agent.run_workflow(
             repo_path=path,
             task_description="Containerize frontend",

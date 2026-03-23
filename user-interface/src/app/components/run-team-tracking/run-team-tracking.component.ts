@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, OnDestroy, OnInit, output, SimpleChanges } from '@angular/core';
+import { Component, Input, OnChanges, OnDestroy, OnInit, output, SimpleChanges, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -74,6 +74,8 @@ interface FlatWorkTreeNode {
   styleUrl: './run-team-tracking.component.scss',
 })
 export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
+  private readonly api = inject(SoftwareEngineeringApiService);
+
   @Input() jobId: string | null = null;
 
   /** Emits status updates for parent components that need them. */
@@ -91,8 +93,6 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
     { id: 'execution', label: 'Execution', icon: 'play_arrow' },
     { id: 'completed', label: 'Completed', icon: 'check_circle' },
   ];
-
-  constructor(private readonly api: SoftwareEngineeringApiService) {}
 
   ngOnInit(): void {
     if (this.jobId) {
@@ -488,7 +488,6 @@ export class RunTeamTrackingComponent implements OnInit, OnChanges, OnDestroy {
     if (!this.status) return [];
 
     const nodes: FlatTreeNode[] = [];
-    const parentIsLast: boolean[] = [];
 
     // Root node - Job
     nodes.push({

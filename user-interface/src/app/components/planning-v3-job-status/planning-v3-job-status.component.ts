@@ -59,6 +59,7 @@ export class PlanningV3JobStatusComponent implements OnInit, OnDestroy {
           if (res.status === 'completed') {
             this.api.getResult(this.jobId).subscribe({
               next: (r) => (this.result = r),
+              // eslint-disable-next-line @typescript-eslint/no-empty-function
               error: () => {},
             });
           }

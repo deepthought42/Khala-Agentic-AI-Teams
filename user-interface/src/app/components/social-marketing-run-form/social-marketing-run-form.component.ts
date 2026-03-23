@@ -1,4 +1,4 @@
-import { Component, output } from '@angular/core';
+import { Component, output, inject } from '@angular/core';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -22,11 +22,13 @@ import type { RunMarketingTeamRequest } from '../../models';
   styleUrl: './social-marketing-run-form.component.scss',
 })
 export class SocialMarketingRunFormComponent {
+  private readonly fb = inject(FormBuilder);
+
   readonly submitRequest = output<RunMarketingTeamRequest>();
 
   form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       brand_guidelines_path: ['', Validators.required],
       brand_objectives_path: ['', Validators.required],

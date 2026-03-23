@@ -1,4 +1,4 @@
-import { Component, Input, OnDestroy, OnInit } from '@angular/core';
+import { Component, Input, OnDestroy, OnInit, inject } from '@angular/core';
 import { timer, Subscription, switchMap } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -13,13 +13,13 @@ import type { MarketingJobStatusResponse } from '../../models';
   styleUrl: './social-marketing-status.component.scss',
 })
 export class SocialMarketingStatusComponent implements OnInit, OnDestroy {
+  private readonly api = inject(SocialMarketingApiService);
+
   @Input() jobId: string | null = null;
 
   status: MarketingJobStatusResponse | null = null;
   loading = true;
   private sub: Subscription | null = null;
-
-  constructor(private readonly api: SocialMarketingApiService) {}
 
   ngOnInit(): void {
     if (this.jobId) {

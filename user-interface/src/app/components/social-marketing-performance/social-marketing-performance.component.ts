@@ -1,4 +1,4 @@
-import { Component, Input, output } from '@angular/core';
+import { Component, Input, output, inject } from '@angular/core';
 
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -21,13 +21,15 @@ import type { PostPerformanceObservation } from '../../models';
   styleUrl: './social-marketing-performance.component.scss',
 })
 export class SocialMarketingPerformanceComponent {
+  private readonly fb = inject(FormBuilder);
+
   @Input() jobId: string | null = null;
 
   readonly submitObservations = output<PostPerformanceObservation[]>();
 
   form: FormGroup;
 
-  constructor(private readonly fb: FormBuilder) {
+  constructor() {
     this.form = this.fb.nonNullable.group({
       observationsJson: ['[]', Validators.required],
     });

@@ -31,10 +31,10 @@ export class ArchitectureResultsComponent implements AfterViewInit, AfterViewChe
 
   overviewHtml = signal<SafeHtml>('');
   architectureDocHtml = signal<SafeHtml>('');
-  diagramEntries: Array<{ name: string; id: string; rendered: boolean }> = [];
+  diagramEntries: { name: string; id: string; rendered: boolean }[] = [];
   private mermaidRendered = new Set<string>();
 
-  objectEntries(obj: Record<string, unknown>): Array<{ key: string; value: unknown }> {
+  objectEntries(obj: Record<string, unknown>): { key: string; value: unknown }[] {
     return Object.entries(obj).map(([key, value]) => ({ key, value }));
   }
 
@@ -50,7 +50,7 @@ export class ArchitectureResultsComponent implements AfterViewInit, AfterViewChe
     return '';
   }
 
-  getDecisionDetails(d: unknown): Array<{ key: string; value: unknown }> {
+  getDecisionDetails(d: unknown): { key: string; value: unknown }[] {
     if (d && typeof d === 'object') {
       const o = d as Record<string, unknown>;
       return Object.entries(o)
@@ -106,8 +106,7 @@ export class ArchitectureResultsComponent implements AfterViewInit, AfterViewChe
     const diagrams = this.data?.diagrams;
     if (!diagrams || typeof diagrams !== 'object') return;
 
-    for (let i = 0; i < this.diagramEntries.length; i++) {
-      const { name, id } = this.diagramEntries[i];
+    for (const { name, id } of this.diagramEntries) {
       if (this.mermaidRendered.has(id)) continue;
 
       const container = this.elementRef.nativeElement.querySelector(

@@ -6,9 +6,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from linting_tool_agent import LintingToolAgent, LintIssue, LintToolInput, LintToolOutput
-from linting_tool_agent.models import LintExecutionResult, LintPlan
 from linting_tool_agent.linter_runner import detect_linter, parse_lint_output
-
+from linting_tool_agent.models import LintExecutionResult, LintPlan
 
 # ---------------------------------------------------------------------------
 # Model construction and serialization
@@ -59,7 +58,8 @@ def test_lint_tool_output_construction() -> None:
 
 def test_detect_linter_defaults_to_ruff(tmp_path: Path) -> None:
     """When no config files exist, default to ruff for backend."""
-    plan = detect_linter(tmp_path, "backend")
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True):
+        plan = detect_linter(tmp_path, "backend")
     assert plan.linter_name == "ruff"
     assert plan.linter_command == ["ruff", "check", "."]
     assert plan.config_file is None
@@ -67,21 +67,24 @@ def test_detect_linter_defaults_to_ruff(tmp_path: Path) -> None:
 
 def test_detect_linter_ruff_toml(tmp_path: Path) -> None:
     (tmp_path / "ruff.toml").write_text("[lint]\nselect = ['E']\n")
-    plan = detect_linter(tmp_path, "backend")
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True):
+        plan = detect_linter(tmp_path, "backend")
     assert plan.linter_name == "ruff"
     assert plan.config_file == "ruff.toml"
 
 
 def test_detect_linter_pyproject_ruff(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 120\n")
-    plan = detect_linter(tmp_path, "backend")
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True):
+        plan = detect_linter(tmp_path, "backend")
     assert plan.linter_name == "ruff"
     assert plan.config_file == "pyproject.toml"
 
 
 def test_detect_linter_flake8(tmp_path: Path) -> None:
     (tmp_path / ".flake8").write_text("[flake8]\nmax-line-length = 120\n")
-    plan = detect_linter(tmp_path, "backend")
+    with patch("linting_tool_agent.linter_runner._is_command_available", side_effect=lambda cmd: cmd == "flake8"):
+        plan = detect_linter(tmp_path, "backend")
     assert plan.linter_name == "flake8"
     assert plan.linter_command == ["flake8", "."]
 
@@ -160,7 +163,8 @@ def test_agent_run_lint_passes(tmp_path: Path) -> None:
     mock_llm = MagicMock()
     agent = LintingToolAgent(mock_llm)
 
-    with patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True), \
+            patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
         mock_cmd.return_value = MagicMock(success=True, output="", stdout="", stderr="")
         result = agent.run(LintToolInput(repo_path=str(tmp_path), agent_type="backend"))
 
@@ -190,7 +194,8 @@ def test_agent_run_lint_fails_and_produces_edits(tmp_path: Path) -> None:
     agent = LintingToolAgent(mock_llm)
 
     lint_output = "app/main.py:1:1: F401 `os` imported but unused\n"
-    with patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True), \
+            patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
         mock_cmd.return_value = MagicMock(
             success=False, output=lint_output, stdout=lint_output, stderr="",
             exit_code=1
@@ -215,7 +220,8 @@ def test_agent_run_llm_failure_is_non_blocking(tmp_path: Path) -> None:
     agent = LintingToolAgent(mock_llm)
 
     lint_output = "app/main.py:1:1: F401 `os` imported but unused\n"
-    with patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
+    with patch("linting_tool_agent.linter_runner._is_command_available", return_value=True), \
+            patch("linting_tool_agent.linter_runner.run_command") as mock_cmd:
         mock_cmd.return_value = MagicMock(
             success=False, output=lint_output, stdout=lint_output, stderr="",
             exit_code=1
@@ -235,12 +241,14 @@ def test_agent_run_llm_failure_is_non_blocking(tmp_path: Path) -> None:
 def test_backend_workflow_calls_linting_tool_agent(tmp_path: Path) -> None:
     """When linting_tool_agent is provided, run_workflow invokes it."""
     import subprocess
+
     from backend_agent import BackendExpertAgent
 
     # Set up a minimal git repo
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "README.md").write_text("x", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
@@ -268,7 +276,7 @@ def test_backend_workflow_calls_linting_tool_agent(tmp_path: Path) -> None:
         plan=lint_plan, execution_result=lint_exec, summary="Lint passed"
     )
 
-    from qa_agent.models import QAOutput, BugReport
+    from qa_agent.models import QAOutput
 
     mock_qa = MagicMock()
     mock_qa.run.return_value = QAOutput(
@@ -312,7 +320,7 @@ def test_backend_workflow_calls_linting_tool_agent(tmp_path: Path) -> None:
         },
     )
 
-    result = agent.run_workflow(
+    agent.run_workflow(
         repo_path=tmp_path,
         task=task,
         spec_content="test spec",

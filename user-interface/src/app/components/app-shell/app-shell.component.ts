@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatToolbarModule } from '@angular/material/toolbar';
@@ -27,7 +27,8 @@ import { ApiStatusWidgetComponent } from '../api-status-widget/api-status-widget
   styleUrl: './app-shell.component.scss',
 })
 export class AppShellComponent {
-  constructor(private readonly router: Router) {}
+  private readonly router = inject(Router);
+
 
   /** Returns true if the given path is the current route (for aria-current). */
   isActive(path: string): boolean {

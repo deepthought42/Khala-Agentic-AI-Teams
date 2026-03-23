@@ -5,25 +5,21 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from backend_agent.agent import (
-    EXCEPTION_HANDLER_TEST_PATTERNS,
     MAX_PREWRITE_REGENERATIONS,
     MAX_PROBLEM_SOLVER_CYCLES,
     BackendExpertAgent,
     _build_code_review_issues_for_build_failure,
     _build_code_review_issues_for_missing_test_routes,
+    _build_completion_package,
     _build_error_signature,
     _extract_failing_test_file_from_build_errors,
     _is_pytest_assertion_failure,
     _test_routes_missing_from_main_py,
     _test_routes_referenced_in_tests,
     _validate_task_contract,
-    _build_completion_package,
 )
 from backend_agent.models import BackendInput
-
-
 
 
 def test_problem_solver_cycle_constant_defaults_to_twenty() -> None:
@@ -428,6 +424,7 @@ def test_run_workflow_exits_at_five_same_build_failures_and_notifies_tech_lead(
         check=True,
         capture_output=True,
     )
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
@@ -498,9 +495,9 @@ def test_run_workflow_invokes_build_fix_specialist_when_same_build_fails_twice(
     tmp_path: Path,
 ) -> None:
     """When build fails 2 times with same error, BuildFixSpecialist is invoked (and can apply patch)."""
-    from software_engineering_team.shared.models import Task, TaskType
-
     from build_fix_specialist.models import CodeEdit
+
+    from software_engineering_team.shared.models import Task, TaskType
 
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
@@ -515,6 +512,7 @@ def test_run_workflow_invokes_build_fix_specialist_when_same_build_fails_twice(
         check=True,
         capture_output=True,
     )
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text(
         "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/health')\ndef h(): return {}",
@@ -601,6 +599,7 @@ def test_run_workflow_skips_specialist_when_none(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("print('hi')", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
@@ -717,6 +716,7 @@ def test_run_workflow_uses_problem_solver_agent_on_build_failure(tmp_path: Path)
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app").mkdir(exist_ok=True)
     (tmp_path / "app" / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8")
     subprocess.run(["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True)
@@ -798,8 +798,9 @@ def test_validate_task_contract_flags_missing_contract_fields() -> None:
 
 def test_build_completion_package_contains_trace_and_gates() -> None:
     """Completion package includes traceability and quality gate matrix."""
-    from software_engineering_team.shared.models import Task, TaskType
     from backend_agent.models import BackendOutput, ReviewIterationRecord
+
+    from software_engineering_team.shared.models import Task, TaskType
 
     task = Task(
         id="BE-1",

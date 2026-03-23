@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { forkJoin } from 'rxjs';
 import { map, catchError } from 'rxjs/operators';
 import { of } from 'rxjs';
@@ -27,17 +27,15 @@ interface ApiStatus {
   styleUrl: './api-status-widget.component.scss',
 })
 export class ApiStatusWidgetComponent implements OnInit {
+  private readonly blogging = inject(BloggingApiService);
+  private readonly softwareEngineering = inject(SoftwareEngineeringApiService);
+  private readonly marketResearch = inject(MarketResearchApiService);
+  private readonly soc2 = inject(Soc2ComplianceApiService);
+  private readonly socialMarketing = inject(SocialMarketingApiService);
+  private readonly branding = inject(BrandingApiService);
+
   statuses: ApiStatus[] = [];
   loading = true;
-
-  constructor(
-    private readonly blogging: BloggingApiService,
-    private readonly softwareEngineering: SoftwareEngineeringApiService,
-    private readonly marketResearch: MarketResearchApiService,
-    private readonly soc2: Soc2ComplianceApiService,
-    private readonly socialMarketing: SocialMarketingApiService,
-    private readonly branding: BrandingApiService
-  ) {}
 
   ngOnInit(): void {
     forkJoin({

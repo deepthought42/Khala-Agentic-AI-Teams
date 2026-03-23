@@ -2,37 +2,23 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict
 from unittest.mock import MagicMock
 
 import pytest
-
 from devops_team import DevOpsTaskSpec, DevOpsTeamLeadAgent, DevOpsTeamResult
 from devops_team.models import (
-    CriterionTrace,
     DevOpsCompletionPackage,
     DevOpsConstraints,
-    GateStatus,
-    GitCommitMetadata,
-    GitMergeMetadata,
-    GitOperationsMetadata,
-    HandoffInfo,
     PlatformScope,
     ReleaseReadiness,
-    RepoContext,
     ReviewFinding,
-    RiskLevel,
     SubtaskContract,
-    TaskGoal,
-    TaskScope,
 )
 from devops_team.orchestrator import DEVOPS_REQUIRED_GATE_NAMES, ENV_POLICY
 from devops_team.task_clarifier import DevOpsTaskClarifierAgent, DevOpsTaskClarifierInput
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -514,7 +500,10 @@ class TestCICDPipelineAgent:
 
 class TestDeploymentStrategyAgent:
     def test_run_returns_strategy(self) -> None:
-        from devops_team.deployment_strategy_agent import DeploymentStrategyAgent, DeploymentStrategyAgentInput
+        from devops_team.deployment_strategy_agent import (
+            DeploymentStrategyAgent,
+            DeploymentStrategyAgentInput,
+        )
         mock = MagicMock()
         mock.complete_json.return_value = {
             "artifacts": {"deploy/values.yaml": "replicas: 2"},
@@ -557,7 +546,10 @@ class TestDevSecOpsReviewAgent:
 
 class TestDevOpsTestValidationAgent:
     def test_aggregates_gates(self) -> None:
-        from devops_team.test_validation_agent import DevOpsTestValidationAgent, DevOpsTestValidationInput
+        from devops_team.test_validation_agent import (
+            DevOpsTestValidationAgent,
+            DevOpsTestValidationInput,
+        )
         mock = MagicMock()
         mock.complete_json.return_value = {
             "approved": True,
@@ -574,7 +566,10 @@ class TestDevOpsTestValidationAgent:
         assert out.quality_gates["iac_validate"] == "pass"
 
     def test_rejects_on_fail_gate(self) -> None:
-        from devops_team.test_validation_agent import DevOpsTestValidationAgent, DevOpsTestValidationInput
+        from devops_team.test_validation_agent import (
+            DevOpsTestValidationAgent,
+            DevOpsTestValidationInput,
+        )
         mock = MagicMock()
         mock.complete_json.return_value = {
             "approved": True,
@@ -610,7 +605,10 @@ class TestChangeReviewAgent:
 
 class TestDocumentationRunbookAgent:
     def test_produces_completion_package(self) -> None:
-        from devops_team.doc_runbook_agent import DocumentationRunbookAgent, DocumentationRunbookInput
+        from devops_team.doc_runbook_agent import (
+            DocumentationRunbookAgent,
+            DocumentationRunbookInput,
+        )
         mock = MagicMock()
         mock.complete_json.return_value = {
             "files": {"docs/runbook.md": "# Runbook"},
@@ -639,6 +637,9 @@ class TestDevOpsTeamLeadAgentIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             subprocess.run(["git", "init"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=path, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=path, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=path,
                 task_description="Add backend deployment automation",
@@ -757,6 +758,9 @@ class TestDevOpsTeamLeadAgentIntegration:
         agent = DevOpsTeamLeadAgent(mock_llm)
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=Path(tmp),
                 task_description="Deploy",
@@ -779,6 +783,9 @@ class TestBackwardCompatibility:
         agent = DevOpsTeamLeadAgent(mock_llm)
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, capture_output=True, check=False)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp, capture_output=True, check=False)
             result = agent.run_workflow(
                 repo_path=Path(tmp),
                 task_description="Add CI/CD",
@@ -868,7 +875,6 @@ class TestDevOpsTeamLeadAgentExecutionTools:
 class TestMainOrchestratorRegistration:
     def test_devops_team_lead_registered(self) -> None:
         """Verify the main orchestrator registers DevOpsTeamLeadAgent."""
-        from devops_team import DevOpsTeamLeadAgent as DTL
         import importlib
         mod = importlib.import_module("orchestrator")
         source = Path(mod.__file__).read_text()

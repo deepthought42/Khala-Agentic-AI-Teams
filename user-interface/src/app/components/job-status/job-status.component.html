@@ -22,7 +22,7 @@
       @if (status.current_task) {
         <p><strong>Current task:</strong> {{ status.current_task }}</p>
       }
-      @if (status.progress != null) {
+      @if (status.progress !== null) {
         <p><strong>Progress:</strong> {{ status.progress }}%</p>
         <mat-progress-bar [value]="status.progress"></mat-progress-bar>
       }
