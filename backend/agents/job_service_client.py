@@ -210,9 +210,14 @@ class JobServiceClient:
 
     def mark_all_active_jobs_failed(self, reason: str) -> List[str]:
         if not self._is_remote:
-            return self._get_local().mark_stale_active_jobs_failed(
-                stale_after_seconds=0, reason=reason
-            )
+            local = self._get_local()
+            failed: List[str] = []
+            for job in local.list_jobs(statuses=list(_ACTIVE_STATUSES)):
+                jid = job.get("job_id")
+                if jid:
+                    local.update_job(jid, status=JOB_STATUS_FAILED, error=reason)
+                    failed.append(jid)
+            return failed
         resp = self._request(
             "POST",
             self._url(f"/jobs/{self.team}/mark-all-running-failed"),
