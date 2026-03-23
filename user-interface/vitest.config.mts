@@ -8,6 +8,12 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['src/test-setup.mjs'],
     include: ['src/**/*.spec.ts'],
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        execArgv: ['--max-old-space-size=4096'],
+      },
+    },
     coverage: {
       provider: 'v8',
       include: ['src/app/**/*.ts'],
