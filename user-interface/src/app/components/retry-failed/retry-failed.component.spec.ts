@@ -22,11 +22,11 @@ describe('RetryFailedComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it('should emit retry when retry action triggered', (done) => {
-    component.retry.subscribe(() => {
-      expect(true).toBe(true);
-      done();
+  it('should emit retry when retry action triggered', async () => {
+    const retryEmitted = new Promise<void>((resolve) => {
+      component.retry.subscribe(() => resolve());
     });
     fixture.nativeElement.querySelector('button')?.click();
+    await retryEmitted;
   });
 });
