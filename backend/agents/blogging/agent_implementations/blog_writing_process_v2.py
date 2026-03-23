@@ -77,6 +77,21 @@ PipelineStatus = Literal["PASS", "FAIL", "NEEDS_HUMAN_REVIEW"]
 JobUpdater = Callable[..., None]
 
 
+def _is_external_cancellation(exc: BaseException) -> bool:
+    """True when exception chain indicates runtime cancellation (e.g., Temporal)."""
+    cur: Optional[BaseException] = exc
+    for _ in range(8):
+        if cur is None:
+            break
+        cls = cur.__class__
+        if cls.__name__ == "CancelledError":
+            module = getattr(cls, "__module__", "")
+            if module.startswith("temporalio"):
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def planning_llm_client(base: LLMClient) -> LLMClient:
     """Use BLOG_PLANNING_MODEL for planning when set (Ollama clients only)."""
     model = planning_model_override()
@@ -129,6 +144,8 @@ def run_research_and_planning(
     except BloggingError:
         raise
     except Exception as e:
+        if _is_external_cancellation(e):
+            raise
         raise ResearchError(f"Research failed: {e}", cause=e) from e
 
     logger.info("Research complete: %s references", len(research_result.references))
@@ -187,6 +204,8 @@ def run_research_and_planning(
     except BloggingError:
         raise
     except Exception as e:
+        if _is_external_cancellation(e):
+            raise
         raise PlanningError(f"Planning failed: {e}", cause=e) from e
 
     plan = planning_phase_result.content_plan
@@ -570,6 +589,8 @@ def run_pipeline(
             except BloggingError:
                 raise
             except Exception as e:
+                if _is_external_cancellation(e):
+                    raise
                 raise DraftError(f"Draft revision failed: {e}", iteration=iteration, cause=e) from e
 
             logger.info("Draft iteration %s: revised, length=%s", iteration, len(draft_result.draft))
@@ -613,6 +634,8 @@ def run_pipeline(
             except BloggingError:
                 raise
             except Exception as e:
+                if _is_external_cancellation(e):
+                    raise
                 raise FactCheckError(f"Fact check failed: {e}", cause=e) from e
             
             # Compliance phase
@@ -634,6 +657,8 @@ def run_pipeline(
             except BloggingError:
                 raise
             except Exception as e:
+                if _is_external_cancellation(e):
+                    raise
                 raise ComplianceError(f"Compliance check failed: {e}", cause=e) from e
 
             all_pass = (
@@ -733,6 +758,8 @@ def run_pipeline(
             except BloggingError:
                 raise
             except Exception as e:
+                if _is_external_cancellation(e):
+                    raise
                 raise DraftError(f"Rewrite revision failed: {e}", iteration=rewrite_iter + 1, cause=e) from e
 
             write_artifact(work_dir, "final.md", draft_result.draft)

@@ -88,8 +88,8 @@ describe('SoftwareEngineeringDashboardComponent', () => {
 
   it('should call runPlanningV2 and set planningV2JobId on success', () => {
     apiSpy.runPlanningV2.mockReturnValue(of({ job_id: 'plan-1', status: 'running' }));
-    component.onPlanningV2Submit({ repo_path: '/tmp', goal: 'Goal' });
-    expect(apiSpy.runPlanningV2).toHaveBeenCalledWith({ repo_path: '/tmp', goal: 'Goal' });
+    component.onPlanningV2Submit({ repo_path: '/tmp', spec_content: 'Goal' });
+    expect(apiSpy.runPlanningV2).toHaveBeenCalledWith({ repo_path: '/tmp', spec_content: 'Goal' });
     expect(component.planningV2JobId).toBe('plan-1');
     expect(component.loading).toBe(false);
   });

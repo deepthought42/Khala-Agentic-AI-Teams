@@ -14,7 +14,15 @@ import { MatChipsModule } from '@angular/material/chips';
 import { Observable } from 'rxjs';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
 import { PlanningV3ApiService } from '../../services/planning-v3-api.service';
-import type { PendingQuestion, AnswerSubmission, JobStatusResponse, PlanningV3StatusResponse, ProductAnalysisStatusResponse, AutoAnswerResponse } from '../../models';
+import type {
+  PendingQuestion,
+  AnswerSubmission,
+  JobStatusResponse,
+  PlanningV2StatusResponse,
+  PlanningV3StatusResponse,
+  ProductAnalysisStatusResponse,
+  AutoAnswerResponse,
+} from '../../models';
 import { QuestionCardComponent } from './question-card/question-card.component';
 
 /** Endpoint type determines which API to call for submitting answers. */
@@ -60,7 +68,9 @@ export class PendingQuestionsComponent implements OnChanges {
   @Input() questions: PendingQuestion[] = [];
   /** Which endpoint to call: 'run-team' (default), 'planning-v3', or 'product-analysis'. */
   @Input() submitEndpoint: SubmitEndpointType = 'run-team';
-  @Output() answersSubmitted = new EventEmitter<JobStatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse>();
+  @Output() answersSubmitted = new EventEmitter<
+    JobStatusResponse | PlanningV2StatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse
+  >();
 
   answers = new Map<string, QuestionAnswer>();
   submitting = false;
@@ -281,7 +291,9 @@ export class PendingQuestionsComponent implements OnChanges {
 
     const request = { answers: submissions };
 
-    const handleSuccess = (response: JobStatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse): void => {
+    const handleSuccess = (
+      response: JobStatusResponse | PlanningV2StatusResponse | PlanningV3StatusResponse | ProductAnalysisStatusResponse,
+    ): void => {
       this.submitting = false;
       this.answersSubmitted.emit(response);
     };

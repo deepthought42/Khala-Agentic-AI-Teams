@@ -38,6 +38,21 @@ def _format_audience_from_dict(audience: Any) -> Optional[str]:
     return None
 
 
+def _is_external_cancellation(exc: BaseException) -> bool:
+    """True when exception chain indicates runtime cancellation (e.g., Temporal)."""
+    cur: Optional[BaseException] = exc
+    for _ in range(8):
+        if cur is None:
+            break
+        cls = cur.__class__
+        if cls.__name__ == "CancelledError":
+            module = getattr(cls, "__module__", "")
+            if module.startswith("temporalio"):
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> None:
     """
     Run the full blog pipeline and update the job store. Used by API and Temporal activity.
@@ -65,6 +80,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
 
     try:
         from blogging.shared.blog_job_store import (
+            JOB_STATUS_CANCELLED,
             JOB_STATUS_COMPLETED,
             JOB_STATUS_NEEDS_REVIEW,
             complete_blog_job,
@@ -76,6 +92,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
     except ImportError:
         try:
             from shared.blog_job_store import (
+                JOB_STATUS_CANCELLED,
                 JOB_STATUS_COMPLETED,
                 JOB_STATUS_NEEDS_REVIEW,
                 complete_blog_job,
@@ -89,6 +106,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
             update_blog_job = None
             start_blog_job = None
             complete_blog_job = None
+            JOB_STATUS_CANCELLED = "cancelled"
             JOB_STATUS_COMPLETED = "completed"
             JOB_STATUS_NEEDS_REVIEW = "needs_human_review"
             BloggingError = Exception
@@ -182,6 +200,19 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
         logger.exception("Pipeline failed for job %s", job_id)
         _fail_job(job_id, str(e), failed_phase=getattr(e, "phase", None))
     except Exception as e:
+        if _is_external_cancellation(e):
+            logger.info("Pipeline cancelled for job %s", job_id)
+            if update_blog_job is not None:
+                try:
+                    update_blog_job(
+                        job_id,
+                        status=JOB_STATUS_CANCELLED,
+                        status_text="Pipeline cancelled",
+                        error="Cancelled",
+                    )
+                except Exception:
+                    pass
+            return
         logger.exception("Unexpected error in pipeline for job %s", job_id)
         _fail_job(job_id, str(e))
     finally:
