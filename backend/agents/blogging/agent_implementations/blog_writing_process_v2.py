@@ -53,6 +53,7 @@ from shared.errors import (
 from shared.models import BlogPhase, get_phase_progress
 from shared.planning_config import planning_model_override
 from shared.style_loader import load_style_file
+from temporalio.exceptions import CancelledError
 from validators.runner import run_validators_from_work_dir
 
 from llm_service import OllamaLLMClient, get_client
@@ -132,6 +133,8 @@ def run_research_and_planning(
                     status_text=status_text,
                     **kwargs,
                 )
+            except CancelledError:
+                raise
             except Exception as e:
                 logger.warning("Failed to update job status: %s", e)
 
@@ -142,6 +145,8 @@ def run_research_and_planning(
         research_agent = ResearchAgent(llm_client=llm_client)
         research_result = research_agent.run(brief, progress_callback=_research_progress)
     except BloggingError:
+        raise
+    except CancelledError:
         raise
     except Exception as e:
         if _is_external_cancellation(e):
@@ -175,6 +180,8 @@ def run_research_and_planning(
             )
             write_artifact(work_dir, "allowed_claims.json", allowed.to_dict())
             logger.info("Persisted allowed_claims.json (%s claims)", len(allowed.claims))
+        except CancelledError:
+            raise
         except Exception as e:
             logger.warning("Could not extract allowed claims: %s", e)
 
@@ -303,6 +310,8 @@ def run_pipeline(
                     status_text=status_text,
                     **kwargs,
                 )
+            except CancelledError:
+                raise
             except Exception as e:
                 logger.warning("Failed to update job status: %s", e)
     
@@ -373,6 +382,8 @@ def run_pipeline(
                 progress=26,
                 status_text=f"Title selected: {selected_title}",
             )
+        except CancelledError:
+            raise
         except Exception as e:
             logger.warning("Title selection phase error (skipping): %s", e)
 
@@ -452,6 +463,8 @@ def run_pipeline(
                     progress=30,
                     status_text="No personal story opportunities identified — proceeding to draft",
                 )
+        except CancelledError:
+            raise
         except Exception as e:
             logger.warning("Story elicitation phase error (skipping): %s", e)
 
@@ -504,6 +517,8 @@ def run_pipeline(
                     draft_output_path=draft_output_path,
                 )
             except BloggingError:
+                raise
+            except CancelledError:
                 raise
             except Exception as e:
                 raise DraftError(f"Initial draft generation failed: {e}", iteration=iteration, cause=e) from e
@@ -588,6 +603,8 @@ def run_pipeline(
                 )
             except BloggingError:
                 raise
+            except CancelledError:
+                raise
             except Exception as e:
                 if _is_external_cancellation(e):
                     raise
@@ -633,6 +650,8 @@ def run_pipeline(
                 )
             except BloggingError:
                 raise
+            except CancelledError:
+                raise
             except Exception as e:
                 if _is_external_cancellation(e):
                     raise
@@ -655,6 +674,8 @@ def run_pipeline(
                     on_llm_request=lambda msg: _update(BlogPhase.COMPLIANCE, status_text=msg),
                 )
             except BloggingError:
+                raise
+            except CancelledError:
                 raise
             except Exception as e:
                 if _is_external_cancellation(e):
@@ -756,6 +777,8 @@ def run_pipeline(
                     draft_output_path=draft_output_path,
                 )
             except BloggingError:
+                raise
+            except CancelledError:
                 raise
             except Exception as e:
                 if _is_external_cancellation(e):

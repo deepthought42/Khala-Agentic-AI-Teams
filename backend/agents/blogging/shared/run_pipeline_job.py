@@ -10,6 +10,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from temporalio.exceptions import CancelledError
+
 logger = logging.getLogger(__name__)
 
 # Base directory for run artifacts (must match api/main.py RUN_ARTIFACTS_BASE when used from API)
@@ -131,6 +133,8 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
         if update_blog_job is not None:
             try:
                 update_blog_job(job_id, **kwargs)
+            except CancelledError:
+                raise
             except Exception as e:
                 logger.warning("Failed to update job %s: %s", job_id, e)
 
@@ -188,6 +192,8 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
                 parse_retry_count=planning_phase_result.parse_retry_count,
                 planning_wall_ms_total=planning_phase_result.planning_wall_ms_total,
             )
+    except CancelledError:
+        raise
     except PlanningError as e:
         logger.exception("Planning failed for job %s", job_id)
         _fail_job(

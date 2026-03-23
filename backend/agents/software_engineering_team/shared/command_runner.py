@@ -28,9 +28,11 @@ TEST_TIMEOUT = 120   # pytest
 
 # Node version for modern frontend frameworks. NVM installs and uses this for frontend commands.
 # Angular CLI v19+ requires Node v20.19+ or v22.12+; React/Vue work with v18+.
-FRONTEND_NODE_VERSION = "22.12"
-# Fallback Node version if FRONTEND_NODE_VERSION install fails (e.g. 22 = latest v22).
-NVM_NODE_FALLBACK_VERSION = "22"
+# Using "22" (latest v22.x) avoids pinning to a specific patch that may have corrupted
+# NVM cache entries on CI runners.
+FRONTEND_NODE_VERSION = "22"
+# Fallback Node version if FRONTEND_NODE_VERSION install fails (e.g. lts/* = current LTS).
+NVM_NODE_FALLBACK_VERSION = "lts/*"
 
 # Legacy alias for backwards compatibility
 ANGULAR_NODE_VERSION = FRONTEND_NODE_VERSION
@@ -366,10 +368,19 @@ def run_command_with_nvm(  # pragma: no cover
         "console.error(\"Node \"+process.version+\" is below minimum v18 for modern frontend frameworks\");"
         "process.exit(1);'"
     )
+    # Try all instant `nvm use` options before any slow `nvm install`.
+    # Each `nvm use` is validated with `npm --version` so we skip versions
+    # where node works but npm is corrupted (broken tar extraction in cache).
+    # In CI, setup-node puts Node on the system PATH so `nvm use system`
+    # succeeds immediately, avoiding corrupted-cache source compilations.
+    npm_ok = "npm --version >/dev/null 2>&1"
     script = (
         f"{nvm_prefix} && "
+        f"{{ {{ nvm use {node_version} 2>/dev/null && {npm_ok}; }} || "
+        f"{{ nvm use {NVM_NODE_FALLBACK_VERSION} 2>/dev/null && {npm_ok}; }} || "
+        f"{{ nvm use system 2>/dev/null && {npm_ok}; }} || "
         f"{{ nvm install {node_version} --no-progress && nvm use {node_version}; }} || "
-        f"{{ nvm install {NVM_NODE_FALLBACK_VERSION} --no-progress && nvm use {NVM_NODE_FALLBACK_VERSION}; }} && "
+        f"{{ nvm install {NVM_NODE_FALLBACK_VERSION} --no-progress && nvm use {NVM_NODE_FALLBACK_VERSION}; }}; }} && "
         f"{version_check} && "
         f"{shlex.join(cmd)}"
     )
