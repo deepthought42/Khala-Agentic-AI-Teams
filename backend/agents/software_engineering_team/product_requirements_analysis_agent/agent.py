@@ -2213,7 +2213,7 @@ Previously Answered Questions:
                 )
             except Exception as exc:
                 logger.error("SOP Phase 1 communication failed: %s", exc)
-                break
+                raise
 
             if not answered:
                 logger.info("SOP Phase 1: No answers received in round %d", round_num)
