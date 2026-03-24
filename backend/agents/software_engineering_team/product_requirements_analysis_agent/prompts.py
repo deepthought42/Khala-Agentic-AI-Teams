@@ -954,6 +954,9 @@ of a software project's environment constraints and requirements gathering.
 {all_decisions}
 ---
 
+## Already-used question IDs (do NOT regenerate these)
+{existing_question_ids}
+
 ## Your task
 1. Review the specification and the decisions already collected for the "{sub_phase_name}" sub-phase.
 2. Determine if we have ENOUGH information to consider this sub-phase COMPLETE. A sub-phase is complete when all the key aspects described in the objective have either been answered or can be clearly inferred from the spec.

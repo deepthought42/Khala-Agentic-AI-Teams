@@ -179,7 +179,8 @@ def _context_discovery_fallback_questions() -> List[OpenQuestion]:
 # ``depends_on`` are conditional — they are only asked when the parent
 # question's answer matches one of the listed values.
 
-MAX_SOP_ROUNDS = 5  # Safety limit for multi-round SOP Phase 1
+MAX_SOP_ROUNDS = 5  # Safety limit for multi-round SOP Phase 1 (hardcoded questions)
+MAX_GAP_ROUNDS = 3  # Safety limit for LLM gap-analysis follow-up rounds per sub-phase
 
 SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
     SOPSubPhase.DEPLOYMENT: [
@@ -2282,6 +2283,9 @@ Previously Answered Questions:
         information collected so far (from spec + user answers). If gaps remain,
         the LLM generates targeted follow-up questions with spec-aware options.
 
+        On LLM error or malformed response, returns ``(True, [])`` to gracefully
+        degrade and avoid blocking the workflow.
+
         Returns (is_complete, follow_up_questions).
         """
         objective = SOP_SUB_PHASE_OBJECTIVES.get(sub_phase.value, "")
@@ -2298,6 +2302,8 @@ Previously Answered Questions:
             {"sop_id": d.sop_id, "sub_phase": d.sub_phase.value if isinstance(d.sub_phase, SOPSubPhase) else str(d.sub_phase), "decision": d.decision}
             for d in all_decisions
         ]
+        # Build list of existing question IDs so the LLM avoids regenerating them
+        existing_ids_str = ", ".join(sorted(decisions_map.keys())) if decisions_map else "(none)"
 
         prompt = SOP_SUB_PHASE_GAP_ANALYSIS_PROMPT.format(
             sub_phase_name=sub_phase.value,
@@ -2305,6 +2311,7 @@ Previously Answered Questions:
             spec_excerpt=spec_content[:6000],
             sub_phase_decisions=json.dumps(sub_phase_decisions, indent=2),
             all_decisions=json.dumps(all_decisions_summary, indent=2),
+            existing_question_ids=existing_ids_str,
         )
 
         try:
@@ -2333,6 +2340,7 @@ Previously Answered Questions:
             if not isinstance(raw_questions, list):
                 return False, []
 
+            skipped_dupes = 0
             follow_ups: List[OpenQuestion] = []
             for rq in raw_questions:
                 if not isinstance(rq, dict) or "question_text" not in rq:
@@ -2340,6 +2348,7 @@ Previously Answered Questions:
                 q_id = rq.get("id", f"P1.{sub_phase.value[:6]}.gen_{len(follow_ups) + 1}")
                 # Skip if we already have a decision for this question ID
                 if q_id in decisions_map:
+                    skipped_dupes += 1
                     continue
 
                 # Parse options from LLM response
@@ -2363,7 +2372,16 @@ Previously Answered Questions:
                     if not any(o.label.lower() == "other" for o in options):
                         options.append(QuestionOption(id="opt_other", label="Other", is_default=False, rationale="Specify your preference.", confidence=0.3))
                     if len(options) < 3:
-                        options.insert(0, QuestionOption(id="opt_text", label="(Please type your answer)", is_default=True, rationale="", confidence=0.5))
+                        options.insert(0, QuestionOption(id="opt_text", label="(Please type your answer)", is_default=False, rationale="", confidence=0.5))
+
+                # Ensure exactly one is_default=True
+                defaults = [o for o in options if o.is_default]
+                if len(defaults) == 0 and options:
+                    options[0] = options[0].model_copy(update={"is_default": True})
+                elif len(defaults) > 1:
+                    for o in defaults[1:]:
+                        idx = options.index(o)
+                        options[idx] = o.model_copy(update={"is_default": False})
 
                 follow_ups.append(
                     OpenQuestion(
@@ -2379,9 +2397,15 @@ Previously Answered Questions:
                     )
                 )
 
+            if skipped_dupes:
+                logger.warning(
+                    "SOP Phase 1: Sub-phase '%s' gap analysis generated %d question(s) with duplicate IDs — skipped",
+                    sub_phase.value, skipped_dupes,
+                )
+
             return False, follow_ups
         except Exception as exc:
-            logger.warning("Sub-phase gap analysis failed for '%s': %s", sub_phase.value, str(exc)[:200])
+            logger.error("Sub-phase gap analysis failed for '%s': %s", sub_phase.value, str(exc)[:200])
             return True, []  # On failure, consider complete to avoid blocking
 
     def _run_sop_phase1(
@@ -2495,7 +2519,7 @@ Previously Answered Questions:
                 self._record_answers(repo_path, answered, iteration=0)
 
             # --- Phase B: Gap analysis — generate follow-up questions until sub-phase is complete ---
-            for gap_round in range(1, MAX_SOP_ROUNDS + 1):
+            for gap_round in range(1, MAX_GAP_ROUNDS + 1):
                 job_updater(
                     status_text=f"SOP Phase 1 — {sub_phase.value}: assessing completeness...",
                 )
