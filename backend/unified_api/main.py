@@ -219,7 +219,9 @@ def _try_mount_blogging(app: FastAPI) -> bool:
 def _try_mount_software_engineering(app: FastAPI) -> bool:
     """Mount software engineering team API."""
     return try_mount_or_proxy(
-        app, "software_engineering", "software_engineering_team.api.main",
+        app,
+        "software_engineering",
+        "software_engineering_team.api.main",
         service_url_env="SOFTWARE_ENGINEERING_SERVICE_URL",
     )
 
@@ -227,7 +229,9 @@ def _try_mount_software_engineering(app: FastAPI) -> bool:
 def _try_mount_personal_assistant(app: FastAPI) -> bool:
     """Mount personal assistant team API."""
     return try_mount_or_proxy(
-        app, "personal_assistant", "personal_assistant_team.api.main",
+        app,
+        "personal_assistant",
+        "personal_assistant_team.api.main",
         service_url_env="PERSONAL_ASSISTANT_SERVICE_URL",
     )
 
@@ -235,7 +239,9 @@ def _try_mount_personal_assistant(app: FastAPI) -> bool:
 def _try_mount_market_research(app: FastAPI) -> bool:
     """Mount market research team API."""
     return try_mount_or_proxy(
-        app, "market_research", "market_research_team.api.main",
+        app,
+        "market_research",
+        "market_research_team.api.main",
         service_url_env="MARKET_RESEARCH_SERVICE_URL",
     )
 
@@ -243,7 +249,9 @@ def _try_mount_market_research(app: FastAPI) -> bool:
 def _try_mount_soc2_compliance(app: FastAPI) -> bool:
     """Mount SOC2 compliance team API."""
     return try_mount_or_proxy(
-        app, "soc2_compliance", "soc2_compliance_team.api.main",
+        app,
+        "soc2_compliance",
+        "soc2_compliance_team.api.main",
         service_url_env="SOC2_COMPLIANCE_SERVICE_URL",
     )
 
@@ -251,7 +259,9 @@ def _try_mount_soc2_compliance(app: FastAPI) -> bool:
 def _try_mount_social_marketing(app: FastAPI) -> bool:
     """Mount social media marketing team API."""
     return try_mount_or_proxy(
-        app, "social_marketing", "social_media_marketing_team.api.main",
+        app,
+        "social_marketing",
+        "social_media_marketing_team.api.main",
         service_url_env="SOCIAL_MARKETING_SERVICE_URL",
     )
 
@@ -259,7 +269,9 @@ def _try_mount_social_marketing(app: FastAPI) -> bool:
 def _try_mount_branding(app: FastAPI) -> bool:
     """Mount branding team API."""
     return try_mount_or_proxy(
-        app, "branding", "branding_team.api.main",
+        app,
+        "branding",
+        "branding_team.api.main",
         service_url_env="BRANDING_SERVICE_URL",
     )
 
@@ -267,7 +279,9 @@ def _try_mount_branding(app: FastAPI) -> bool:
 def _try_mount_agent_provisioning(app: FastAPI) -> bool:
     """Mount agent provisioning team API."""
     return try_mount_or_proxy(
-        app, "agent_provisioning", "agent_provisioning_team.api.main",
+        app,
+        "agent_provisioning",
+        "agent_provisioning_team.api.main",
         service_url_env="AGENT_PROVISIONING_SERVICE_URL",
     )
 
@@ -280,7 +294,9 @@ def _try_mount_accessibility_audit(app: FastAPI) -> bool:
     """
     if _is_proxied("accessibility_audit"):
         return try_mount_or_proxy(
-            app, "accessibility_audit", "",
+            app,
+            "accessibility_audit",
+            "",
             service_url_env="ACCESSIBILITY_AUDIT_SERVICE_URL",
         )
     try:
@@ -304,7 +320,9 @@ def _try_mount_accessibility_audit(app: FastAPI) -> bool:
 def _try_mount_ai_systems(app: FastAPI) -> bool:
     """Mount AI systems team API."""
     return try_mount_or_proxy(
-        app, "ai_systems", "ai_systems_team.api.main",
+        app,
+        "ai_systems",
+        "ai_systems_team.api.main",
         service_url_env="AI_SYSTEMS_SERVICE_URL",
     )
 
@@ -312,7 +330,9 @@ def _try_mount_ai_systems(app: FastAPI) -> bool:
 def _try_mount_investment(app: FastAPI) -> bool:
     """Mount investment team API."""
     return try_mount_or_proxy(
-        app, "investment", "investment_team.api.main",
+        app,
+        "investment",
+        "investment_team.api.main",
         service_url_env="INVESTMENT_SERVICE_URL",
     )
 
@@ -320,7 +340,9 @@ def _try_mount_investment(app: FastAPI) -> bool:
 def _try_mount_nutrition_meal_planning(app: FastAPI) -> bool:
     """Mount nutrition & meal planning team API."""
     return try_mount_or_proxy(
-        app, "nutrition_meal_planning", "nutrition_meal_planning_team.api.main",
+        app,
+        "nutrition_meal_planning",
+        "nutrition_meal_planning_team.api.main",
         service_url_env="NUTRITION_MEAL_PLANNING_SERVICE_URL",
     )
 
@@ -328,7 +350,9 @@ def _try_mount_nutrition_meal_planning(app: FastAPI) -> bool:
 def _try_mount_planning_v3(app: FastAPI) -> bool:
     """Mount Planning V3 team API."""
     return try_mount_or_proxy(
-        app, "planning_v3", "planning_v3_team.api.main",
+        app,
+        "planning_v3",
+        "planning_v3_team.api.main",
         service_url_env="PLANNING_V3_SERVICE_URL",
     )
 
@@ -336,7 +360,9 @@ def _try_mount_planning_v3(app: FastAPI) -> bool:
 def _try_mount_coding_team(app: FastAPI) -> bool:
     """Mount Coding Team API."""
     return try_mount_or_proxy(
-        app, "coding_team", "coding_team.api.main",
+        app,
+        "coding_team",
+        "coding_team.api.main",
         service_url_env="CODING_TEAM_SERVICE_URL",
     )
 
@@ -344,7 +370,9 @@ def _try_mount_coding_team(app: FastAPI) -> bool:
 def _try_mount_studio_grid(app: FastAPI) -> bool:
     """Mount StudioGrid design-system workflow API."""
     return try_mount_or_proxy(
-        app, "studio_grid", "studiogrid.api.main",
+        app,
+        "studio_grid",
+        "studiogrid.api.main",
         service_url_env="STUDIO_GRID_SERVICE_URL",
     )
 
@@ -352,7 +380,9 @@ def _try_mount_studio_grid(app: FastAPI) -> bool:
 def _try_mount_sales_team(app: FastAPI) -> bool:
     """Mount AI Sales Team API."""
     return try_mount_or_proxy(
-        app, "sales_team", "sales_team.api.main",
+        app,
+        "sales_team",
+        "sales_team.api.main",
         service_url_env="SALES_TEAM_SERVICE_URL",
     )
 
@@ -360,7 +390,9 @@ def _try_mount_sales_team(app: FastAPI) -> bool:
 def _try_mount_road_trip_planning(app: FastAPI) -> bool:
     """Mount Road Trip Planning team API."""
     return try_mount_or_proxy(
-        app, "road_trip_planning", "road_trip_planning_team.api.main",
+        app,
+        "road_trip_planning",
+        "road_trip_planning_team.api.main",
         service_url_env="ROAD_TRIP_PLANNING_SERVICE_URL",
     )
 
