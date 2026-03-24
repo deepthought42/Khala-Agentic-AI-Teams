@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
-from llm_service import LLMClient
+from llm_service import LLMClient, compact_text
 from software_engineering_team.shared.prompt_utils import log_llm_prompt
 from software_engineering_team.shared.repo_utils import int_env as _int_env
 from software_engineering_team.shared.task_plan import TaskPlan
@@ -395,7 +395,7 @@ class DevOpsExpertAgent:
                     tech_stack=tech_stack,
                     target_repo=target_repo,
                     task_plan=plan_text if plan_text else None,
-                    build_errors=build_errors[: compute_build_errors_chars(self.llm)]
+                    build_errors=compact_text(build_errors, compute_build_errors_chars(self.llm), self.llm, "build errors")
                     if build_errors
                     else None,
                 )

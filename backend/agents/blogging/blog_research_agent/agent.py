@@ -9,6 +9,8 @@ from pydantic import HttpUrl
 
 logger = logging.getLogger(__name__)
 
+from llm_service import compact_text  # noqa: E402
+
 from .agent_cache import AgentCache  # noqa: E402
 from .llm import LLMClient, LLMJsonParseError  # noqa: E402
 from .models import (  # noqa: E402
@@ -375,13 +377,17 @@ class ResearchAgent:
         brief_input: ResearchBriefInput,
     ) -> Tuple[SourceDocument, float, float, float, str]:
         """Score a single document for relevance, authority, accuracy, and type. Used by _score_documents."""
+        # Budget: leave room for the prompt template (~2K), brief, and response tokens.
+        ctx_tokens = self.llm.get_max_context_tokens() if hasattr(self.llm, "get_max_context_tokens") else 16384
+        max_content_chars = int((ctx_tokens - 6000) * 3.5)  # reserve 6K tokens for prompt + response
+        doc_content = compact_text(doc.content or "", max_content_chars, self.llm, "document for scoring")
         prompt = (
             DOC_RELEVANCE_SCORING_PROMPT
             + "\n\n"
             + (
                 f"Brief:\n{brief_input.brief}\n\n"
                 f"Document title: {doc.title or ''}\n"
-                f"Document content:\n{doc.content}\n"
+                f"Document content:\n{doc_content}\n"
             )
         )
         data = self.llm.complete_json(prompt, temperature=0.0)
@@ -449,7 +455,9 @@ class ResearchAgent:
     ) -> ResearchReference:
         """Summarize a single document into a ResearchReference. Used by _summarize_documents."""
         doc, relevance, authority, accuracy, type_label = item
-        excerpt = doc.content[:8000]
+        ctx_tokens = self.llm.get_max_context_tokens() if hasattr(self.llm, "get_max_context_tokens") else 16384
+        max_content_chars = int((ctx_tokens - 6000) * 3.5)
+        doc_content = compact_text(doc.content or "", max_content_chars, self.llm, "document for summarization")
         prompt = DOC_SUMMARIZATION_PROMPT + "\n\n" + (f"Brief:\n{brief_input.brief}\n")
         if brief_input.audience:
             prompt += f"Audience: {brief_input.audience}\n"
@@ -458,7 +466,7 @@ class ResearchAgent:
         prompt += (
             f"\nDocument title: {doc.title or ''}\n"
             f"Document URL: {doc.url}\n"
-            f"Document excerpt:\n{excerpt}\n"
+            f"Document content:\n{doc_content}\n"
         )
         try:
             data = self.llm.complete_json(prompt, temperature=0.2)

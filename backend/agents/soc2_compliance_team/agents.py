@@ -65,6 +65,11 @@ def _run_tsc_agent(
     context: RepoContext,
 ) -> TSCAuditResult:
     """Generic TSC audit: one criterion, one LLM call, return TSCAuditResult."""
+    # Compute budgets from model context: reserve 8K tokens for prompt template + response
+    ctx_tokens = llm.get_max_context_tokens() if hasattr(llm, "get_max_context_tokens") else 16384
+    total_chars = int((ctx_tokens - 8000) * 3.5)
+    readme_budget = min(total_chars // 4, 200_000)
+    code_budget = total_chars - readme_budget
     prompt = f"""You are a SOC2 auditor specializing in the **{criterion_name}** Trust Service Criterion.
 Your task is to review the following repository content and identify compliance gaps or risks.
 
@@ -77,12 +82,12 @@ Your task is to review the following repository content and identify compliance 
 
 **README / docs (if any):**
 ```
-{compact_text(context.readme_content, 200_000, llm, "README content")}
+{compact_text(context.readme_content, readme_budget, llm, "README content")}
 ```
 
 **Code and configuration:**
 ```
-{compact_text(context.code_summary, 600_000, llm, "code and configuration")}
+{compact_text(context.code_summary, code_budget, llm, "code and configuration")}
 ```
 
 Identify any gaps, missing controls, or risks relative to this criterion. If the codebase does not address this criterion (e.g. no backup/monitoring for Availability), report that as a finding.
