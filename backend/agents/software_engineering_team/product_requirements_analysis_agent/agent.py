@@ -51,6 +51,8 @@ from .prompts import (
     SOP_ARCHITECTURE_ANALYSIS_PROMPT,
     SOP_GENERATE_OPTIONS_PROMPT,
     SOP_SPEC_EXTRACTION_PROMPT,
+    SOP_SUB_PHASE_GAP_ANALYSIS_PROMPT,
+    SOP_SUB_PHASE_OBJECTIVES,
     SPEC_CLEANUP_CHUNK_PROMPT,
     SPEC_CLEANUP_PROMPT,
     SPEC_CONSISTENCY_CLARIFICATION_PROMPT,
@@ -2267,6 +2269,121 @@ Previously Answered Questions:
 
         return options
 
+    def _assess_sub_phase_gaps(
+        self,
+        sub_phase: SOPSubPhase,
+        spec_content: str,
+        all_decisions: List[SOPDecision],
+        decisions_map: Dict[str, str],
+    ) -> Tuple[bool, List[OpenQuestion]]:
+        """Assess whether a sub-phase is complete and generate follow-up questions for gaps.
+
+        Uses an LLM call to evaluate the sub-phase against its objectives and the
+        information collected so far (from spec + user answers). If gaps remain,
+        the LLM generates targeted follow-up questions with spec-aware options.
+
+        Returns (is_complete, follow_up_questions).
+        """
+        objective = SOP_SUB_PHASE_OBJECTIVES.get(sub_phase.value, "")
+        if not objective:
+            return True, []
+
+        # Collect decisions for this sub-phase only
+        sub_phase_decisions = [
+            {"sop_id": d.sop_id, "question": d.question_text, "decision": d.decision, "source": d.source}
+            for d in all_decisions if d.sub_phase == sub_phase
+        ]
+        # Also include all decisions for cross-referencing
+        all_decisions_summary = [
+            {"sop_id": d.sop_id, "sub_phase": d.sub_phase.value if isinstance(d.sub_phase, SOPSubPhase) else str(d.sub_phase), "decision": d.decision}
+            for d in all_decisions
+        ]
+
+        prompt = SOP_SUB_PHASE_GAP_ANALYSIS_PROMPT.format(
+            sub_phase_name=sub_phase.value,
+            sub_phase_objective=objective,
+            spec_excerpt=spec_content[:6000],
+            sub_phase_decisions=json.dumps(sub_phase_decisions, indent=2),
+            all_decisions=json.dumps(all_decisions_summary, indent=2),
+        )
+
+        try:
+            raw = self.llm.complete_text(prompt)
+            if not raw or not raw.strip():
+                return True, []  # On failure, consider complete to avoid blocking
+            parsed = self._parse_llm_json(raw)
+            if not isinstance(parsed, dict):
+                return True, []
+
+            is_complete = bool(parsed.get("is_complete", True))
+            if is_complete:
+                logger.info(
+                    "SOP Phase 1: Sub-phase '%s' assessed as COMPLETE: %s",
+                    sub_phase.value, str(parsed.get("completeness_rationale", ""))[:200],
+                )
+                return True, []
+
+            logger.info(
+                "SOP Phase 1: Sub-phase '%s' has GAPS: %s",
+                sub_phase.value, str(parsed.get("completeness_rationale", ""))[:200],
+            )
+
+            # Parse follow-up questions
+            raw_questions = parsed.get("follow_up_questions", [])
+            if not isinstance(raw_questions, list):
+                return False, []
+
+            follow_ups: List[OpenQuestion] = []
+            for rq in raw_questions:
+                if not isinstance(rq, dict) or "question_text" not in rq:
+                    continue
+                q_id = rq.get("id", f"P1.{sub_phase.value[:6]}.gen_{len(follow_ups) + 1}")
+                # Skip if we already have a decision for this question ID
+                if q_id in decisions_map:
+                    continue
+
+                # Parse options from LLM response
+                raw_opts = rq.get("options", [])
+                options: List[QuestionOption] = []
+                for i, opt in enumerate(raw_opts):
+                    if not isinstance(opt, dict) or "label" not in opt:
+                        continue
+                    options.append(
+                        QuestionOption(
+                            id=opt.get("id", f"opt_gen_{i}"),
+                            label=opt["label"],
+                            is_default=bool(opt.get("is_default", False)),
+                            rationale=str(opt.get("rationale", "")),
+                            confidence=float(opt.get("confidence", 0.5)),
+                        )
+                    )
+
+                # Ensure minimum 3 options
+                if len(options) < 3:
+                    if not any(o.label.lower() == "other" for o in options):
+                        options.append(QuestionOption(id="opt_other", label="Other", is_default=False, rationale="Specify your preference.", confidence=0.3))
+                    if len(options) < 3:
+                        options.insert(0, QuestionOption(id="opt_text", label="(Please type your answer)", is_default=True, rationale="", confidence=0.5))
+
+                follow_ups.append(
+                    OpenQuestion(
+                        id=q_id,
+                        question_text=rq["question_text"],
+                        context=str(rq.get("context", "")),
+                        category=str(rq.get("category", "general")),
+                        priority=str(rq.get("priority", "high")),
+                        allow_multiple=bool(rq.get("allow_multiple", False)),
+                        source="sop_phase1",
+                        sop_sub_phase=sub_phase.value,
+                        options=options,
+                    )
+                )
+
+            return False, follow_ups
+        except Exception as exc:
+            logger.warning("Sub-phase gap analysis failed for '%s': %s", sub_phase.value, str(exc)[:200])
+            return True, []  # On failure, consider complete to avoid blocking
+
     def _run_sop_phase1(
         self,
         spec_content: str,
@@ -2279,9 +2396,10 @@ Previously Answered Questions:
         Sequential sub-phase approach:
         1. Extract answers already present in the spec.
         2. Iterate through each sub-phase one at a time (DEPLOYMENT, REGULATIONS, ..., PRIORITIES).
-        3. For each sub-phase, collect askable questions and present them to the user.
-        4. Complete the sub-phase (including conditional follow-ups) before moving to the next.
-        5. Every question is guaranteed at least 3 answer options informed by the spec.
+        3. For each sub-phase, first ask the hardcoded SOP questions (with conditional follow-ups).
+        4. Then assess whether the sub-phase is complete using LLM gap analysis.
+        5. If gaps remain, generate and ask follow-up questions until the sub-phase is complete.
+        6. Every question is guaranteed at least 3 answer options informed by the spec.
 
         Returns (all_decisions, updated_spec, answered_questions).
         """
@@ -2301,10 +2419,8 @@ Previously Answered Questions:
         # Step 2: Iterate through sub-phases ONE AT A TIME in order
         for sub_phase in SOPSubPhase:
             q_defs = SOP_PHASE1_QUESTIONS.get(sub_phase, [])
-            if not q_defs:
-                continue
 
-            # Multiple rounds within a sub-phase to handle conditional follow-ups
+            # --- Phase A: Ask hardcoded SOP questions (including conditional follow-ups) ---
             for round_num in range(1, MAX_SOP_ROUNDS + 1):
                 sub_phase_questions: List[OpenQuestion] = []
 
@@ -2337,10 +2453,7 @@ Previously Answered Questions:
                     )
 
                 if not sub_phase_questions:
-                    logger.info(
-                        "SOP Phase 1: Sub-phase '%s' complete (all questions answered or skipped)", sub_phase.value,
-                    )
-                    break  # This sub-phase is done — move to the next
+                    break  # No more hardcoded questions for this sub-phase
 
                 logger.info(
                     "SOP Phase 1 sub-phase '%s' round %d: asking %d questions",
@@ -2366,6 +2479,59 @@ Previously Answered Questions:
                     break
 
                 # Record answers as SOPDecision objects
+                for aq in answered:
+                    decision = SOPDecision(
+                        sop_id=aq.question_id,
+                        sub_phase=sub_phase,
+                        question_text=aq.question_text,
+                        decision=aq.selected_answer,
+                        source="user",
+                        confidence=1.0,
+                    )
+                    all_decisions.append(decision)
+                    decisions_map[aq.question_id] = aq.selected_answer
+
+                all_answered.extend(answered)
+                self._record_answers(repo_path, answered, iteration=0)
+
+            # --- Phase B: Gap analysis — generate follow-up questions until sub-phase is complete ---
+            for gap_round in range(1, MAX_SOP_ROUNDS + 1):
+                job_updater(
+                    status_text=f"SOP Phase 1 — {sub_phase.value}: assessing completeness...",
+                )
+                is_complete, follow_ups = self._assess_sub_phase_gaps(
+                    sub_phase, spec_content, all_decisions, decisions_map,
+                )
+                if is_complete or not follow_ups:
+                    logger.info(
+                        "SOP Phase 1: Sub-phase '%s' is complete after %d gap-analysis round(s)",
+                        sub_phase.value, gap_round,
+                    )
+                    break
+
+                logger.info(
+                    "SOP Phase 1 sub-phase '%s' gap round %d: asking %d follow-up questions",
+                    sub_phase.value, gap_round, len(follow_ups),
+                )
+                job_updater(
+                    status_text=f"SOP Phase 1 — {sub_phase.value}: {len(follow_ups)} follow-up question(s) to fill gaps",
+                )
+
+                try:
+                    answered = self._communicate_with_user(
+                        job_id=job_id,
+                        open_questions=follow_ups,
+                        repo_path=repo_path,
+                        iteration=0,
+                    )
+                except Exception as exc:
+                    logger.error("SOP Phase 1 gap-analysis communication failed in sub-phase '%s': %s", sub_phase.value, exc)
+                    raise
+
+                if not answered:
+                    logger.info("SOP Phase 1: No answers to gap questions for sub-phase '%s'", sub_phase.value)
+                    break
+
                 for aq in answered:
                     decision = SOPDecision(
                         sop_id=aq.question_id,
