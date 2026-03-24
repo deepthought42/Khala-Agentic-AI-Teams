@@ -103,6 +103,7 @@ class LLMClient(ABC):
         temperature: float = 0.0,
         system_prompt: Optional[str] = None,
         tools: Optional[list] = None,
+        think: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """
@@ -112,6 +113,11 @@ class LLMClient(ABC):
         When the model invokes a tool, the returned dict has the key ``__tool_calls__`` whose
         value is a list of tool-call objects (id, type, function.name, function.arguments).
         Optional kwargs may include expected_keys, decomposition_hints for PA-style robust extraction.
+
+        ``think`` controls chain-of-thought / reasoning mode:
+        - ``None`` (default): use the global setting (``LLM_ENABLE_THINKING`` env var).
+        - ``True``: force thinking on for this call.
+        - ``False``: force thinking off (use for simple extraction / scoring).
         """
         ...
 
@@ -123,18 +129,22 @@ class LLMClient(ABC):
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         tools: Optional[list] = None,
+        think: Optional[bool] = None,
     ) -> str:
         """
         Run the model and return raw text.
 
         Override in implementations that support it. Default uses complete_json and extracts text.
         Pass ``tools`` for function/tool calling; tool-call responses are returned as JSON strings.
+
+        ``think`` controls chain-of-thought / reasoning mode (see ``complete_json``).
         """
         result = self.complete_json(
             prompt,
             temperature=temperature,
             system_prompt=system_prompt,
             tools=tools,
+            think=think,
         )
         if isinstance(result, dict) and len(result) == 1 and "text" in result:
             return str(result["text"])
@@ -150,6 +160,10 @@ class LLMClient(ABC):
         return 16384
 
     # Alias for SE code that uses complete_text
-    def complete_text(self, prompt: str, *, temperature: float = 0.0) -> str:
+    def complete_text(
+        self, prompt: str, *, temperature: float = 0.0, think: Optional[bool] = None
+    ) -> str:
         """Alias for complete() for backward compatibility with SE team."""
-        return self.complete(prompt, temperature=temperature, max_tokens=None, system_prompt=None)
+        return self.complete(
+            prompt, temperature=temperature, max_tokens=None, system_prompt=None, think=think
+        )

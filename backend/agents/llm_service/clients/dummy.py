@@ -142,6 +142,7 @@ class DummyLLMClient(LLMClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
+        think: Optional[bool] = None,
     ) -> str:
         self._request_count += 1
         return "Dummy text completion (no LLM)."
@@ -153,6 +154,7 @@ class DummyLLMClient(LLMClient):
         temperature: float = 0.0,
         system_prompt: Optional[str] = None,
         tools: Optional[list] = None,
+        think: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         lowered = prompt.lower()

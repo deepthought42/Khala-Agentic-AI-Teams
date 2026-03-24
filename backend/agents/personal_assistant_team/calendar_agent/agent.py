@@ -161,6 +161,7 @@ class CalendarAgent:
                 prompt,
                 temperature=0.1,
                 expected_keys=["events", "ambiguities"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to parse event from text (JSON extraction failed):\n%s", e)
@@ -348,6 +349,7 @@ class CalendarAgent:
                 prompt,
                 temperature=0.3,
                 expected_keys=["suggestions"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate schedule suggestions (JSON extraction failed):\n%s", e)

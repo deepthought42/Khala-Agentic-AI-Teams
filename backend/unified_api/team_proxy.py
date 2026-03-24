@@ -54,12 +54,22 @@ async def proxy_request(request: Request, target_base_url: str, path: str) -> Re
 
     body = await request.body()
 
-    resp = await client.request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        content=body,
-    )
+    try:
+        resp = await client.request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body,
+        )
+    except httpx.ConnectError as exc:
+        logger.error("Proxy connect error: %s %s -> %s", request.method, request.url.path, url)
+        raise exc
+    except httpx.ConnectTimeout as exc:
+        logger.error("Proxy connect timeout: %s %s -> %s", request.method, request.url.path, url)
+        raise exc
+    except httpx.HTTPError as exc:
+        logger.error("Proxy HTTP error: %s %s -> %s: %s", request.method, request.url.path, url, exc)
+        raise exc
 
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP_RESPONSE}
 

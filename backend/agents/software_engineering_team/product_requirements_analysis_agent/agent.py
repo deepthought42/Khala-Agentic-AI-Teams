@@ -509,12 +509,32 @@ SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
             "category": "business",
             "allow_multiple": True,
             "options": [
-                {"id": "opt_jira", "label": "Jira", "rationale": "Project tracking and issue management."},
-                {"id": "opt_confluence", "label": "Confluence", "rationale": "Documentation and knowledge base."},
-                {"id": "opt_datadog", "label": "Datadog", "rationale": "Monitoring and observability platform."},
-                {"id": "opt_pagerduty", "label": "PagerDuty", "rationale": "Incident management and alerting."},
+                {
+                    "id": "opt_jira",
+                    "label": "Jira",
+                    "rationale": "Project tracking and issue management.",
+                },
+                {
+                    "id": "opt_confluence",
+                    "label": "Confluence",
+                    "rationale": "Documentation and knowledge base.",
+                },
+                {
+                    "id": "opt_datadog",
+                    "label": "Datadog",
+                    "rationale": "Monitoring and observability platform.",
+                },
+                {
+                    "id": "opt_pagerduty",
+                    "label": "PagerDuty",
+                    "rationale": "Incident management and alerting.",
+                },
                 {"id": "opt_splunk", "label": "Splunk", "rationale": "Log management and SIEM."},
-                {"id": "opt_other", "label": "Other", "rationale": "Specify your proprietary tools."},
+                {
+                    "id": "opt_other",
+                    "label": "Other",
+                    "rationale": "Specify your proprietary tools.",
+                },
             ],
             "depends_on": {"P1.tools.a": ["Proprietary"]},
         },
@@ -525,11 +545,27 @@ SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
             "allow_multiple": True,
             "options": [
                 {"id": "opt_docker", "label": "Docker", "rationale": "Containerization standard."},
-                {"id": "opt_kubernetes", "label": "Kubernetes", "rationale": "Container orchestration."},
-                {"id": "opt_postgres", "label": "PostgreSQL", "rationale": "Full-featured relational database."},
-                {"id": "opt_redis", "label": "Redis", "rationale": "In-memory data store and cache."},
+                {
+                    "id": "opt_kubernetes",
+                    "label": "Kubernetes",
+                    "rationale": "Container orchestration.",
+                },
+                {
+                    "id": "opt_postgres",
+                    "label": "PostgreSQL",
+                    "rationale": "Full-featured relational database.",
+                },
+                {
+                    "id": "opt_redis",
+                    "label": "Redis",
+                    "rationale": "In-memory data store and cache.",
+                },
                 {"id": "opt_nginx", "label": "Nginx", "rationale": "Web server and reverse proxy."},
-                {"id": "opt_other", "label": "Other", "rationale": "Specify your open source tools."},
+                {
+                    "id": "opt_other",
+                    "label": "Other",
+                    "rationale": "Specify your open source tools.",
+                },
             ],
             "depends_on": {"P1.tools.a": ["Open Source"]},
         },
@@ -616,13 +652,42 @@ SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
             "category": "architecture",
             "allow_multiple": True,
             "options": [
-                {"id": "opt_fastapi", "label": "FastAPI", "rationale": "Modern Python async API framework.", "is_default": True},
-                {"id": "opt_django", "label": "Django", "rationale": "Full-featured Python web framework."},
-                {"id": "opt_flask", "label": "Flask", "rationale": "Lightweight Python web framework."},
-                {"id": "opt_express", "label": "Express.js", "rationale": "Minimal Node.js web framework."},
-                {"id": "opt_nextjs", "label": "Next.js", "rationale": "React meta-framework with SSR."},
-                {"id": "opt_spring", "label": "Spring Boot", "rationale": "Enterprise Java framework."},
-                {"id": "opt_rails", "label": "Ruby on Rails", "rationale": "Convention-over-configuration web framework."},
+                {
+                    "id": "opt_fastapi",
+                    "label": "FastAPI",
+                    "rationale": "Modern Python async API framework.",
+                    "is_default": True,
+                },
+                {
+                    "id": "opt_django",
+                    "label": "Django",
+                    "rationale": "Full-featured Python web framework.",
+                },
+                {
+                    "id": "opt_flask",
+                    "label": "Flask",
+                    "rationale": "Lightweight Python web framework.",
+                },
+                {
+                    "id": "opt_express",
+                    "label": "Express.js",
+                    "rationale": "Minimal Node.js web framework.",
+                },
+                {
+                    "id": "opt_nextjs",
+                    "label": "Next.js",
+                    "rationale": "React meta-framework with SSR.",
+                },
+                {
+                    "id": "opt_spring",
+                    "label": "Spring Boot",
+                    "rationale": "Enterprise Java framework.",
+                },
+                {
+                    "id": "opt_rails",
+                    "label": "Ruby on Rails",
+                    "rationale": "Convention-over-configuration web framework.",
+                },
                 {"id": "opt_other", "label": "Other", "rationale": "Specify your framework."},
             ],
             "depends_on": None,
@@ -634,11 +699,28 @@ SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
             "allow_multiple": False,
             "options": [
                 {"id": "opt_pip", "label": "pip", "rationale": "Standard Python package manager."},
-                {"id": "opt_poetry", "label": "Poetry", "rationale": "Modern Python dependency management.", "is_default": True},
+                {
+                    "id": "opt_poetry",
+                    "label": "Poetry",
+                    "rationale": "Modern Python dependency management.",
+                    "is_default": True,
+                },
                 {"id": "opt_npm", "label": "npm", "rationale": "Default Node.js package manager."},
-                {"id": "opt_yarn", "label": "yarn", "rationale": "Fast, reliable Node.js package manager."},
-                {"id": "opt_pnpm", "label": "pnpm", "rationale": "Efficient, disk-space-saving Node.js package manager."},
-                {"id": "opt_maven", "label": "Maven", "rationale": "Java/JVM build and dependency tool."},
+                {
+                    "id": "opt_yarn",
+                    "label": "yarn",
+                    "rationale": "Fast, reliable Node.js package manager.",
+                },
+                {
+                    "id": "opt_pnpm",
+                    "label": "pnpm",
+                    "rationale": "Efficient, disk-space-saving Node.js package manager.",
+                },
+                {
+                    "id": "opt_maven",
+                    "label": "Maven",
+                    "rationale": "Java/JVM build and dependency tool.",
+                },
                 {"id": "opt_gradle", "label": "Gradle", "rationale": "Flexible JVM build tool."},
                 {"id": "opt_cargo", "label": "Cargo", "rationale": "Rust package manager."},
                 {"id": "opt_other", "label": "Other", "rationale": "Specify your preference."},
@@ -1150,10 +1232,27 @@ SOP_PHASE1_QUESTIONS: Dict[SOPSubPhase, List[Dict[str, Any]]] = {
             "category": "business",
             "allow_multiple": False,
             "options": [
-                {"id": "opt_security_first", "label": "Security > Performance > Simplicity", "rationale": "Security-first approach for sensitive applications."},
-                {"id": "opt_performance_first", "label": "Performance > Scalability > Simplicity", "rationale": "Performance-oriented for high-traffic applications."},
-                {"id": "opt_simplicity_first", "label": "Simplicity > Frugality > Security", "rationale": "Simplicity-first for rapid development and maintainability.", "is_default": True},
-                {"id": "opt_other", "label": "Other", "rationale": "Specify your custom priority ranking."},
+                {
+                    "id": "opt_security_first",
+                    "label": "Security > Performance > Simplicity",
+                    "rationale": "Security-first approach for sensitive applications.",
+                },
+                {
+                    "id": "opt_performance_first",
+                    "label": "Performance > Scalability > Simplicity",
+                    "rationale": "Performance-oriented for high-traffic applications.",
+                },
+                {
+                    "id": "opt_simplicity_first",
+                    "label": "Simplicity > Frugality > Security",
+                    "rationale": "Simplicity-first for rapid development and maintainability.",
+                    "is_default": True,
+                },
+                {
+                    "id": "opt_other",
+                    "label": "Other",
+                    "rationale": "Specify your custom priority ranking.",
+                },
             ],
             "depends_on": None,
         },
@@ -1190,13 +1289,26 @@ def _sop_phase1_fallback_questions() -> List[OpenQuestion]:
                 # Add "Other" if not present
                 if not any(o.label.lower() == "other" for o in options):
                     options.append(
-                        QuestionOption(id="opt_other", label="Other", is_default=False, rationale="Specify your preference.", confidence=0.3)
+                        QuestionOption(
+                            id="opt_other",
+                            label="Other",
+                            is_default=False,
+                            rationale="Specify your preference.",
+                            confidence=0.3,
+                        )
                     )
                 # Add a free-text placeholder if still short
                 if len(options) < MIN_OPTIONS:
-                    options.insert(0, QuestionOption(
-                        id="opt_text", label="(Please type your answer)", is_default=True, rationale="", confidence=0.5,
-                    ))
+                    options.insert(
+                        0,
+                        QuestionOption(
+                            id="opt_text",
+                            label="(Please type your answer)",
+                            is_default=True,
+                            rationale="",
+                            confidence=0.5,
+                        ),
+                    )
             if not options:
                 continue  # Should not happen after above logic, but guard anyway
             fallback.append(
@@ -2884,7 +2996,9 @@ Previously Answered Questions:
                 )
             return options
         except Exception as exc:
-            logger.warning("Spec-aware option generation failed for %s: %s", q_def["sop_id"], str(exc)[:200])
+            logger.warning(
+                "Spec-aware option generation failed for %s: %s", q_def["sop_id"], str(exc)[:200]
+            )
             return []
 
     def _build_question_options(
@@ -2928,14 +3042,27 @@ Previously Answered Questions:
         # Ensure "Other" option exists
         if not any(o.label.lower() == "other" for o in options):
             options.append(
-                QuestionOption(id="opt_other", label="Other", is_default=False, rationale="Specify your preference.", confidence=0.3)
+                QuestionOption(
+                    id="opt_other",
+                    label="Other",
+                    is_default=False,
+                    rationale="Specify your preference.",
+                    confidence=0.3,
+                )
             )
 
         # Final safety: if still < MIN_OPTIONS, add a free-text placeholder
         if len(options) < MIN_OPTIONS:
-            options.insert(0, QuestionOption(
-                id="opt_text", label="(Please type your answer)", is_default=True, rationale="", confidence=0.5,
-            ))
+            options.insert(
+                0,
+                QuestionOption(
+                    id="opt_text",
+                    label="(Please type your answer)",
+                    is_default=True,
+                    rationale="",
+                    confidence=0.5,
+                ),
+            )
 
         return options
 
@@ -2963,12 +3090,24 @@ Previously Answered Questions:
 
         # Collect decisions for this sub-phase only
         sub_phase_decisions = [
-            {"sop_id": d.sop_id, "question": d.question_text, "decision": d.decision, "source": d.source}
-            for d in all_decisions if d.sub_phase == sub_phase
+            {
+                "sop_id": d.sop_id,
+                "question": d.question_text,
+                "decision": d.decision,
+                "source": d.source,
+            }
+            for d in all_decisions
+            if d.sub_phase == sub_phase
         ]
         # Also include all decisions for cross-referencing
         all_decisions_summary = [
-            {"sop_id": d.sop_id, "sub_phase": d.sub_phase.value if isinstance(d.sub_phase, SOPSubPhase) else str(d.sub_phase), "decision": d.decision}
+            {
+                "sop_id": d.sop_id,
+                "sub_phase": d.sub_phase.value
+                if isinstance(d.sub_phase, SOPSubPhase)
+                else str(d.sub_phase),
+                "decision": d.decision,
+            }
             for d in all_decisions
         ]
         # Build list of existing question IDs so the LLM avoids regenerating them
@@ -2995,13 +3134,15 @@ Previously Answered Questions:
             if is_complete:
                 logger.info(
                     "SOP Phase 1: Sub-phase '%s' assessed as COMPLETE: %s",
-                    sub_phase.value, str(parsed.get("completeness_rationale", ""))[:200],
+                    sub_phase.value,
+                    str(parsed.get("completeness_rationale", ""))[:200],
                 )
                 return True, []
 
             logger.info(
                 "SOP Phase 1: Sub-phase '%s' has GAPS: %s",
-                sub_phase.value, str(parsed.get("completeness_rationale", ""))[:200],
+                sub_phase.value,
+                str(parsed.get("completeness_rationale", ""))[:200],
             )
 
             # Parse follow-up questions
@@ -3039,9 +3180,26 @@ Previously Answered Questions:
                 # Ensure minimum 3 options
                 if len(options) < 3:
                     if not any(o.label.lower() == "other" for o in options):
-                        options.append(QuestionOption(id="opt_other", label="Other", is_default=False, rationale="Specify your preference.", confidence=0.3))
+                        options.append(
+                            QuestionOption(
+                                id="opt_other",
+                                label="Other",
+                                is_default=False,
+                                rationale="Specify your preference.",
+                                confidence=0.3,
+                            )
+                        )
                     if len(options) < 3:
-                        options.insert(0, QuestionOption(id="opt_text", label="(Please type your answer)", is_default=False, rationale="", confidence=0.5))
+                        options.insert(
+                            0,
+                            QuestionOption(
+                                id="opt_text",
+                                label="(Please type your answer)",
+                                is_default=False,
+                                rationale="",
+                                confidence=0.5,
+                            ),
+                        )
 
                 # Ensure exactly one is_default=True
                 defaults = [o for o in options if o.is_default]
@@ -3069,12 +3227,15 @@ Previously Answered Questions:
             if skipped_dupes:
                 logger.warning(
                     "SOP Phase 1: Sub-phase '%s' gap analysis generated %d question(s) with duplicate IDs — skipped",
-                    sub_phase.value, skipped_dupes,
+                    sub_phase.value,
+                    skipped_dupes,
                 )
 
             return False, follow_ups
         except Exception as exc:
-            logger.error("Sub-phase gap analysis failed for '%s': %s", sub_phase.value, str(exc)[:200])
+            logger.error(
+                "Sub-phase gap analysis failed for '%s': %s", sub_phase.value, str(exc)[:200]
+            )
             return True, []  # On failure, consider complete to avoid blocking
 
     def _run_sop_phase1(
@@ -3127,7 +3288,7 @@ Previously Answered Questions:
                         continue  # Condition not met
                     if cond_result is None:
                         continue  # Parent not answered yet — defer to next round within this sub-phase
-                        
+
                     # Build options ensuring at least 3 valid choices, informed by spec
                     options = self._build_question_options(q_def, spec_content, decisions_map)
 
@@ -3150,7 +3311,9 @@ Previously Answered Questions:
 
                 logger.info(
                     "SOP Phase 1 sub-phase '%s' round %d: asking %d questions",
-                    sub_phase.value, round_num, len(sub_phase_questions),
+                    sub_phase.value,
+                    round_num,
+                    len(sub_phase_questions),
                 )
                 job_updater(
                     status_text=f"SOP Phase 1 — {sub_phase.value}: waiting for answers to {len(sub_phase_questions)} question(s)",
@@ -3164,11 +3327,19 @@ Previously Answered Questions:
                         iteration=0,
                     )
                 except Exception as exc:
-                    logger.error("SOP Phase 1 communication failed in sub-phase '%s': %s", sub_phase.value, exc)
+                    logger.error(
+                        "SOP Phase 1 communication failed in sub-phase '%s': %s",
+                        sub_phase.value,
+                        exc,
+                    )
                     raise
 
                 if not answered:
-                    logger.info("SOP Phase 1: No answers received for sub-phase '%s' round %d", sub_phase.value, round_num)
+                    logger.info(
+                        "SOP Phase 1: No answers received for sub-phase '%s' round %d",
+                        sub_phase.value,
+                        round_num,
+                    )
                     break
 
                 # Record answers as SOPDecision objects
@@ -3193,18 +3364,24 @@ Previously Answered Questions:
                     status_text=f"SOP Phase 1 — {sub_phase.value}: assessing completeness...",
                 )
                 is_complete, follow_ups = self._assess_sub_phase_gaps(
-                    sub_phase, spec_content, all_decisions, decisions_map,
+                    sub_phase,
+                    spec_content,
+                    all_decisions,
+                    decisions_map,
                 )
                 if is_complete or not follow_ups:
                     logger.info(
                         "SOP Phase 1: Sub-phase '%s' is complete after %d gap-analysis round(s)",
-                        sub_phase.value, gap_round,
+                        sub_phase.value,
+                        gap_round,
                     )
                     break
 
                 logger.info(
                     "SOP Phase 1 sub-phase '%s' gap round %d: asking %d follow-up questions",
-                    sub_phase.value, gap_round, len(follow_ups),
+                    sub_phase.value,
+                    gap_round,
+                    len(follow_ups),
                 )
                 job_updater(
                     status_text=f"SOP Phase 1 — {sub_phase.value}: {len(follow_ups)} follow-up question(s) to fill gaps",
@@ -3218,11 +3395,18 @@ Previously Answered Questions:
                         iteration=0,
                     )
                 except Exception as exc:
-                    logger.error("SOP Phase 1 gap-analysis communication failed in sub-phase '%s': %s", sub_phase.value, exc)
+                    logger.error(
+                        "SOP Phase 1 gap-analysis communication failed in sub-phase '%s': %s",
+                        sub_phase.value,
+                        exc,
+                    )
                     raise
 
                 if not answered:
-                    logger.info("SOP Phase 1: No answers to gap questions for sub-phase '%s'", sub_phase.value)
+                    logger.info(
+                        "SOP Phase 1: No answers to gap questions for sub-phase '%s'",
+                        sub_phase.value,
+                    )
                     break
 
                 for aq in answered:

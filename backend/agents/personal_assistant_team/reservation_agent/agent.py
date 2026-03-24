@@ -218,6 +218,7 @@ class ReservationAgent:
                 prompt,
                 temperature=0.1,
                 expected_keys=["reservation_type", "venue_name", "datetime", "party_size", "notes"],
+                think=False,
             )
             return data
         except JSONExtractionFailure as e:

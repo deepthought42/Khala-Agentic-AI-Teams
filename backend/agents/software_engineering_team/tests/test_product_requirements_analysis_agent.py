@@ -1380,16 +1380,26 @@ def test_sop_models_basic() -> None:
 def test_assess_sub_phase_gaps_complete() -> None:
     """When LLM reports sub-phase as complete, returns (True, [])."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": True,
-        "completeness_rationale": "All deployment aspects covered.",
-        "follow_up_questions": [],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": True,
+            "completeness_rationale": "All deployment aspects covered.",
+            "follow_up_questions": [],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
         SOPSubPhase.DEPLOYMENT,
         "Deploy on AWS with ECS containers.",
-        [SOPDecision(sop_id="P1.deploy.a", sub_phase=SOPSubPhase.DEPLOYMENT, question_text="Where?", decision="AWS", source="spec")],
+        [
+            SOPDecision(
+                sop_id="P1.deploy.a",
+                sub_phase=SOPSubPhase.DEPLOYMENT,
+                question_text="Where?",
+                decision="AWS",
+                source="spec",
+            )
+        ],
         {"P1.deploy.a": "AWS"},
     )
     assert is_complete is True
@@ -1399,30 +1409,59 @@ def test_assess_sub_phase_gaps_complete() -> None:
 def test_assess_sub_phase_gaps_incomplete_with_follow_ups() -> None:
     """When LLM reports gaps, returns (False, [OpenQuestion, ...])."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Missing region info.",
-        "follow_up_questions": [
-            {
-                "id": "P1.deploy.gen_1",
-                "question_text": "Which AWS region?",
-                "context": "Region affects latency.",
-                "category": "infrastructure",
-                "priority": "high",
-                "allow_multiple": False,
-                "sop_sub_phase": "deployment",
-                "options": [
-                    {"id": "opt_1", "label": "us-east-1", "is_default": True, "rationale": "Common.", "confidence": 0.8},
-                    {"id": "opt_2", "label": "eu-west-1", "is_default": False, "rationale": "EU.", "confidence": 0.5},
-                    {"id": "opt_3", "label": "ap-southeast-1", "is_default": False, "rationale": "APAC.", "confidence": 0.4},
-                    {"id": "opt_other", "label": "Other", "is_default": False, "rationale": "Specify.", "confidence": 0.3},
-                ],
-            }
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Missing region info.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.deploy.gen_1",
+                    "question_text": "Which AWS region?",
+                    "context": "Region affects latency.",
+                    "category": "infrastructure",
+                    "priority": "high",
+                    "allow_multiple": False,
+                    "sop_sub_phase": "deployment",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "us-east-1",
+                            "is_default": True,
+                            "rationale": "Common.",
+                            "confidence": 0.8,
+                        },
+                        {
+                            "id": "opt_2",
+                            "label": "eu-west-1",
+                            "is_default": False,
+                            "rationale": "EU.",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_3",
+                            "label": "ap-southeast-1",
+                            "is_default": False,
+                            "rationale": "APAC.",
+                            "confidence": 0.4,
+                        },
+                        {
+                            "id": "opt_other",
+                            "label": "Other",
+                            "is_default": False,
+                            "rationale": "Specify.",
+                            "confidence": 0.3,
+                        },
+                    ],
+                }
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.DEPLOYMENT, "Deploy on AWS.", [], {},
+        SOPSubPhase.DEPLOYMENT,
+        "Deploy on AWS.",
+        [],
+        {},
     )
     assert is_complete is False
     assert len(follow_ups) == 1
@@ -1437,7 +1476,10 @@ def test_assess_sub_phase_gaps_malformed_json() -> None:
     llm.complete_text.return_value = "This is not valid JSON at all"
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.DEPLOYMENT, "Some spec.", [], {},
+        SOPSubPhase.DEPLOYMENT,
+        "Some spec.",
+        [],
+        {},
     )
     assert is_complete is True
     assert follow_ups == []
@@ -1449,7 +1491,10 @@ def test_assess_sub_phase_gaps_llm_exception() -> None:
     llm.complete_text.side_effect = RuntimeError("LLM unavailable")
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.SECURITY, "Some spec.", [], {},
+        SOPSubPhase.SECURITY,
+        "Some spec.",
+        [],
+        {},
     )
     assert is_complete is True
     assert follow_ups == []
@@ -1458,35 +1503,81 @@ def test_assess_sub_phase_gaps_llm_exception() -> None:
 def test_assess_sub_phase_gaps_duplicate_ids_skipped() -> None:
     """Follow-up questions with IDs already in decisions_map are skipped with a warning."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Gaps remain.",
-        "follow_up_questions": [
-            {
-                "id": "P1.deploy.a",
-                "question_text": "Duplicate question?",
-                "options": [
-                    {"id": "opt_1", "label": "A", "is_default": True, "rationale": ".", "confidence": 0.5},
-                    {"id": "opt_2", "label": "B", "is_default": False, "rationale": ".", "confidence": 0.5},
-                    {"id": "opt_3", "label": "C", "is_default": False, "rationale": ".", "confidence": 0.5},
-                ],
-            },
-            {
-                "id": "P1.deploy.gen_1",
-                "question_text": "New question?",
-                "options": [
-                    {"id": "opt_1", "label": "X", "is_default": True, "rationale": ".", "confidence": 0.5},
-                    {"id": "opt_2", "label": "Y", "is_default": False, "rationale": ".", "confidence": 0.5},
-                    {"id": "opt_3", "label": "Z", "is_default": False, "rationale": ".", "confidence": 0.5},
-                ],
-            },
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Gaps remain.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.deploy.a",
+                    "question_text": "Duplicate question?",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "A",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_2",
+                            "label": "B",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_3",
+                            "label": "C",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                    ],
+                },
+                {
+                    "id": "P1.deploy.gen_1",
+                    "question_text": "New question?",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "X",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_2",
+                            "label": "Y",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_3",
+                            "label": "Z",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                    ],
+                },
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
         SOPSubPhase.DEPLOYMENT,
         "Some spec.",
-        [SOPDecision(sop_id="P1.deploy.a", sub_phase=SOPSubPhase.DEPLOYMENT, question_text="Where?", decision="AWS", source="spec")],
+        [
+            SOPDecision(
+                sop_id="P1.deploy.a",
+                sub_phase=SOPSubPhase.DEPLOYMENT,
+                question_text="Where?",
+                decision="AWS",
+                source="spec",
+            )
+        ],
         {"P1.deploy.a": "AWS"},
     )
     assert is_complete is False
@@ -1498,20 +1589,33 @@ def test_assess_sub_phase_gaps_duplicate_ids_skipped() -> None:
 def test_assess_sub_phase_gaps_all_dupes_returns_empty_follow_ups() -> None:
     """When all LLM questions are duplicates, follow_ups is empty (loop will exit)."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Gaps remain.",
-        "follow_up_questions": [
-            {
-                "id": "P1.deploy.a",
-                "question_text": "Dupe 1?",
-                "options": [{"id": "o1", "label": "A", "is_default": True, "rationale": ".", "confidence": 0.5}],
-            },
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Gaps remain.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.deploy.a",
+                    "question_text": "Dupe 1?",
+                    "options": [
+                        {
+                            "id": "o1",
+                            "label": "A",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        }
+                    ],
+                },
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.DEPLOYMENT, "Spec.", [], {"P1.deploy.a": "AWS"},
+        SOPSubPhase.DEPLOYMENT,
+        "Spec.",
+        [],
+        {"P1.deploy.a": "AWS"},
     )
     assert is_complete is False
     assert follow_ups == []
@@ -1520,22 +1624,33 @@ def test_assess_sub_phase_gaps_all_dupes_returns_empty_follow_ups() -> None:
 def test_assess_sub_phase_gaps_options_padded_to_min_3() -> None:
     """When LLM returns < 3 options, they are padded to at least 3."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Gaps.",
-        "follow_up_questions": [
-            {
-                "id": "P1.deploy.gen_1",
-                "question_text": "Which compute model?",
-                "options": [
-                    {"id": "opt_1", "label": "Serverless", "is_default": True, "rationale": ".", "confidence": 0.8},
-                ],
-            },
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Gaps.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.deploy.gen_1",
+                    "question_text": "Which compute model?",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "Serverless",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.8,
+                        },
+                    ],
+                },
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.DEPLOYMENT, "Spec.", [], {},
+        SOPSubPhase.DEPLOYMENT,
+        "Spec.",
+        [],
+        {},
     )
     assert is_complete is False
     assert len(follow_ups) == 1
@@ -1548,21 +1663,41 @@ def test_assess_sub_phase_gaps_options_padded_to_min_3() -> None:
 def test_assess_sub_phase_gaps_exactly_one_default() -> None:
     """After option padding/parsing, exactly one option has is_default=True."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Gaps.",
-        "follow_up_questions": [
-            {
-                "id": "P1.data.gen_1",
-                "question_text": "Which database?",
-                "options": [
-                    {"id": "opt_1", "label": "PostgreSQL", "is_default": True, "rationale": ".", "confidence": 0.8},
-                    {"id": "opt_2", "label": "MySQL", "is_default": True, "rationale": ".", "confidence": 0.6},
-                    {"id": "opt_3", "label": "MongoDB", "is_default": False, "rationale": ".", "confidence": 0.4},
-                ],
-            },
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Gaps.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.data.gen_1",
+                    "question_text": "Which database?",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "PostgreSQL",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.8,
+                        },
+                        {
+                            "id": "opt_2",
+                            "label": "MySQL",
+                            "is_default": True,
+                            "rationale": ".",
+                            "confidence": 0.6,
+                        },
+                        {
+                            "id": "opt_3",
+                            "label": "MongoDB",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.4,
+                        },
+                    ],
+                },
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     _, follow_ups = agent._assess_sub_phase_gaps(SOPSubPhase.DATA, "Spec.", [], {})
     assert len(follow_ups) == 1
@@ -1573,21 +1708,41 @@ def test_assess_sub_phase_gaps_exactly_one_default() -> None:
 def test_assess_sub_phase_gaps_no_defaults_sets_first() -> None:
     """When LLM returns no default option, the first option becomes default."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({
-        "is_complete": False,
-        "completeness_rationale": "Gaps.",
-        "follow_up_questions": [
-            {
-                "id": "P1.sec.gen_1",
-                "question_text": "Auth method?",
-                "options": [
-                    {"id": "opt_1", "label": "OAuth2", "is_default": False, "rationale": ".", "confidence": 0.7},
-                    {"id": "opt_2", "label": "SAML", "is_default": False, "rationale": ".", "confidence": 0.5},
-                    {"id": "opt_3", "label": "API Keys", "is_default": False, "rationale": ".", "confidence": 0.3},
-                ],
-            },
-        ],
-    })
+    llm.complete_text.return_value = json.dumps(
+        {
+            "is_complete": False,
+            "completeness_rationale": "Gaps.",
+            "follow_up_questions": [
+                {
+                    "id": "P1.sec.gen_1",
+                    "question_text": "Auth method?",
+                    "options": [
+                        {
+                            "id": "opt_1",
+                            "label": "OAuth2",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.7,
+                        },
+                        {
+                            "id": "opt_2",
+                            "label": "SAML",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.5,
+                        },
+                        {
+                            "id": "opt_3",
+                            "label": "API Keys",
+                            "is_default": False,
+                            "rationale": ".",
+                            "confidence": 0.3,
+                        },
+                    ],
+                },
+            ],
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     _, follow_ups = agent._assess_sub_phase_gaps(SOPSubPhase.SECURITY, "Spec.", [], {})
     assert len(follow_ups) == 1
@@ -1603,7 +1758,10 @@ def test_assess_sub_phase_gaps_empty_llm_response() -> None:
     llm.complete_text.return_value = ""
     agent = ProductRequirementsAnalysisAgent(llm)
     is_complete, follow_ups = agent._assess_sub_phase_gaps(
-        SOPSubPhase.BUDGET, "Spec.", [], {},
+        SOPSubPhase.BUDGET,
+        "Spec.",
+        [],
+        {},
     )
     assert is_complete is True
     assert follow_ups == []
@@ -1612,11 +1770,22 @@ def test_assess_sub_phase_gaps_empty_llm_response() -> None:
 def test_assess_sub_phase_gaps_passes_existing_ids_to_prompt() -> None:
     """Verify that existing question IDs are passed to the LLM prompt."""
     llm = MagicMock()
-    llm.complete_text.return_value = json.dumps({"is_complete": True, "completeness_rationale": "Done.", "follow_up_questions": []})
+    llm.complete_text.return_value = json.dumps(
+        {"is_complete": True, "completeness_rationale": "Done.", "follow_up_questions": []}
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     agent._assess_sub_phase_gaps(
-        SOPSubPhase.DEPLOYMENT, "Spec.",
-        [SOPDecision(sop_id="P1.deploy.a", sub_phase=SOPSubPhase.DEPLOYMENT, question_text="Q", decision="A", source="user")],
+        SOPSubPhase.DEPLOYMENT,
+        "Spec.",
+        [
+            SOPDecision(
+                sop_id="P1.deploy.a",
+                sub_phase=SOPSubPhase.DEPLOYMENT,
+                question_text="Q",
+                decision="A",
+                source="user",
+            )
+        ],
         {"P1.deploy.a": "AWS", "P1.deploy.b": "ECS"},
     )
     # The prompt should contain the existing question IDs
@@ -1629,4 +1798,5 @@ def test_max_gap_rounds_constant() -> None:
     """MAX_GAP_ROUNDS should be a reasonable limit smaller than MAX_SOP_ROUNDS."""
     assert MAX_GAP_ROUNDS == 3
     from product_requirements_analysis_agent.agent import MAX_SOP_ROUNDS
+
     assert MAX_GAP_ROUNDS <= MAX_SOP_ROUNDS

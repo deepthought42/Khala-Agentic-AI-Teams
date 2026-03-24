@@ -279,6 +279,10 @@ class PendingQuestion(BaseModel):
         description="Selectable answer options. Always includes an 'other' option automatically.",
     )
     required: bool = Field(default=True, description="Whether this question must be answered.")
+    allow_multiple: bool = Field(
+        default=False,
+        description="True = checkboxes (select all that apply), False = radio buttons (select one).",
+    )
     source: str = Field(
         default="planning",
         description="Source of the question: planning, tech_lead, execution, etc.",

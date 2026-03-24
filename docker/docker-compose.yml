@@ -710,9 +710,10 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
+      start_period: 60s
+      interval: 15s
       timeout: 10s
-      retries: 3
+      retries: 10
 
   frontend:
     build:

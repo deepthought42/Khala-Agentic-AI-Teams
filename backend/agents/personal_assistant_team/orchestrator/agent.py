@@ -84,6 +84,7 @@ class PersonalAssistantOrchestrator:
                 prompt,
                 temperature=0.1,
                 expected_keys=["primary_intent", "secondary_intents", "entities", "confidence"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Intent classification failed with JSON extraction error:\n%s", e)
@@ -599,7 +600,7 @@ class PersonalAssistantOrchestrator:
         )
 
         try:
-            data = self.llm.complete_json(prompt, temperature=0.4)
+            data = self.llm.complete_json(prompt, temperature=0.4, think=False)
             response_message = data.get("message", "I've processed your request.")
             suggestions = data.get("follow_up_suggestions", [])
         except Exception as e:

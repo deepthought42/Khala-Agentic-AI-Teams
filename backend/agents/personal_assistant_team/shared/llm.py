@@ -93,6 +93,7 @@ class LLMClient(_BaseLLMClient):
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         json_mode: bool = False,
+        think: Optional[bool] = None,
     ) -> str:
         """Override in subclasses to call the LLM and return raw text."""
         raise NotImplementedError("Subclasses must implement _ollama_complete")
@@ -117,9 +118,14 @@ class LLMClient(_BaseLLMClient):
         continuation_attempts = 0
         decomposition_attempts = 0
 
+        think = kwargs.pop("think", None)
         # --- direct attempt ---
         response = self._ollama_complete(
-            prompt, temperature=temperature, system_prompt=system_prompt, json_mode=True
+            prompt,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            json_mode=True,
+            think=think,
         )
         raw_responses.append(response)
         attempts_made += 1
@@ -138,6 +144,7 @@ class LLMClient(_BaseLLMClient):
                 temperature=temperature,
                 system_prompt=system_prompt,
                 json_mode=True,
+                think=think,
             )
             raw_responses.append(continuation)
             attempts_made += 1
@@ -154,7 +161,11 @@ class LLMClient(_BaseLLMClient):
             if decomposition_attempts >= self.MAX_DECOMPOSITION_ATTEMPTS:
                 break
             resp = self._ollama_complete(
-                subtask_prompt, temperature=temperature, system_prompt=system_prompt, json_mode=True
+                subtask_prompt,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                json_mode=True,
+                think=think,
             )
             raw_responses.append(resp)
             attempts_made += 1
@@ -311,12 +322,14 @@ class _PALLMClientWrapper(LLMClient):
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         json_mode: bool = False,
+        think: Optional[bool] = None,
     ) -> str:
         return self._inner.complete(
             prompt,
             temperature=temperature,
             max_tokens=max_tokens or 4096,
             system_prompt=system_prompt,
+            think=think,
         )
 
     def complete_json(
@@ -325,6 +338,7 @@ class _PALLMClientWrapper(LLMClient):
         *,
         temperature: float = 0.0,
         system_prompt: Optional[str] = None,
+        think: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         try:
@@ -332,6 +346,7 @@ class _PALLMClientWrapper(LLMClient):
                 prompt,
                 temperature=temperature,
                 system_prompt=system_prompt,
+                think=think,
             )
         except LLMJsonParseError as e:
             raise JSONExtractionFailure(

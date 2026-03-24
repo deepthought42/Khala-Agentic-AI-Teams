@@ -104,37 +104,71 @@
   }
 
   <div class="options-list">
-    <!-- All questions use checkboxes for multi-select -->
-    <div class="multi-select-hint">
-      <mat-icon>info_outline</mat-icon>
-      <span>Select all that apply</span>
-    </div>
-    @for (option of question.options; track option.id) {
+    @if (isMultiSelect) {
+      <div class="select-hint">
+        <mat-icon>info_outline</mat-icon>
+        <span>Select all that apply</span>
+      </div>
+      @for (option of question.options; track option.id) {
+        <div class="option-wrapper">
+          <mat-checkbox
+            [checked]="isOptionSelected(option.id)"
+            (change)="onOptionToggle(option.id, $event.checked)"
+            class="option-checkbox"
+          >
+            {{ option.label }}
+            @if (option.is_default) {
+              <span class="default-badge">Recommended</span>
+            }
+          </mat-checkbox>
+          @if (option.rationale) {
+            <p class="option-rationale">{{ option.rationale }}</p>
+          }
+        </div>
+      }
       <div class="option-wrapper">
         <mat-checkbox
-          [checked]="isOptionSelected(option.id)"
-          (change)="onOptionToggle(option.id, $event.checked)"
-          class="option-checkbox"
+          [checked]="isOtherSelected()"
+          (change)="onOptionToggle('other', $event.checked)"
+          class="option-checkbox other-option"
         >
-          {{ option.label }}
-          @if (option.is_default) {
-            <span class="default-badge">Recommended</span>
-          }
+          Other (specify below)
         </mat-checkbox>
-        @if (option.rationale) {
-          <p class="option-rationale">{{ option.rationale }}</p>
-        }
       </div>
+    } @else {
+      <div class="select-hint">
+        <mat-icon>info_outline</mat-icon>
+        <span>Select one option</span>
+      </div>
+      <mat-radio-group class="radio-group" (change)="onRadioChange($event.value)">
+        @for (option of question.options; track option.id) {
+          <div class="option-wrapper">
+            <mat-radio-button
+              [value]="option.id"
+              [checked]="isOptionSelected(option.id)"
+              class="option-radio"
+            >
+              {{ option.label }}
+              @if (option.is_default) {
+                <span class="default-badge">Recommended</span>
+              }
+            </mat-radio-button>
+            @if (option.rationale) {
+              <p class="option-rationale">{{ option.rationale }}</p>
+            }
+          </div>
+        }
+        <div class="option-wrapper">
+          <mat-radio-button
+            value="other"
+            [checked]="isOtherSelected()"
+            class="option-radio other-option"
+          >
+            Other (specify below)
+          </mat-radio-button>
+        </div>
+      </mat-radio-group>
     }
-    <div class="option-wrapper">
-      <mat-checkbox
-        [checked]="isOtherSelected()"
-        (change)="onOptionToggle('other', $event.checked)"
-        class="option-checkbox other-option"
-      >
-        Other (specify below)
-      </mat-checkbox>
-    </div>
 
     @if (isOtherSelected()) {
       <mat-form-field appearance="outline" class="other-input">

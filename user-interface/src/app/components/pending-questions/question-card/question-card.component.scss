@@ -226,7 +226,7 @@
 .options-list {
   padding-left: 40px;
 
-  .multi-select-hint {
+  .select-hint {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -245,8 +245,14 @@
     }
   }
 
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+  }
+
   .option-wrapper {
-    .option-checkbox {
+    .option-checkbox,
+    .option-radio {
       margin-bottom: 0;
     }
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class TriggerType(str, Enum):
     """How a process is initiated."""
 
@@ -43,6 +44,7 @@ class ProcessStatus(str, Enum):
 # Process building blocks
 # ---------------------------------------------------------------------------
 
+
 class ProcessStepAgent(BaseModel):
     """An agent assigned to a process step."""
 
@@ -57,9 +59,15 @@ class ProcessStep(BaseModel):
     name: str = Field(..., description="Human-readable step name")
     description: str = Field(default="", description="What happens in this step")
     step_type: StepType = Field(default=StepType.ACTION)
-    agents: list[ProcessStepAgent] = Field(default_factory=list, description="Agents responsible for this step")
-    next_steps: list[str] = Field(default_factory=list, description="step_ids that follow this step")
-    condition: Optional[str] = Field(default=None, description="Condition expression for decision steps")
+    agents: list[ProcessStepAgent] = Field(
+        default_factory=list, description="Agents responsible for this step"
+    )
+    next_steps: list[str] = Field(
+        default_factory=list, description="step_ids that follow this step"
+    )
+    condition: Optional[str] = Field(
+        default=None, description="Condition expression for decision steps"
+    )
 
 
 class ProcessTrigger(BaseModel):
@@ -92,6 +100,7 @@ class ProcessDefinition(BaseModel):
 # Agentic Team
 # ---------------------------------------------------------------------------
 
+
 class AgenticTeam(BaseModel):
     """Top-level team definition containing processes."""
 
@@ -106,6 +115,7 @@ class AgenticTeam(BaseModel):
 # ---------------------------------------------------------------------------
 # API request / response models
 # ---------------------------------------------------------------------------
+
 
 class CreateTeamRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
@@ -135,6 +145,7 @@ class TeamDetailResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Conversation models
 # ---------------------------------------------------------------------------
+
 
 class ConversationMessage(BaseModel):
     role: str = Field(..., pattern=r"^(user|assistant)$")
