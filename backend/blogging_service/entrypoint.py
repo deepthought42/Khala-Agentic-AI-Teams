@@ -37,10 +37,14 @@ def _shutdown_hook() -> None:
 if __name__ == "__main__":
     _start_temporal_worker()
     atexit.register(_shutdown_hook)
+    # workers=1 is required: the Temporal worker thread stores the client and
+    # event loop in module-level globals. With workers>1 uvicorn forks, and
+    # child processes lose access to the parent's globals. Using 1 worker
+    # keeps the Temporal client and API handler in the same process.
     uvicorn.run(
         "blogging.api.main:app",
         host="0.0.0.0",
         port=8090,
-        workers=2,
+        workers=1,
         log_level="info",
     )
