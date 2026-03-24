@@ -1,17 +1,20 @@
 .widget {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 6px;
   flex-wrap: wrap;
 
   .label {
-    font-size: 0.75rem;
-    margin-right: 0.25rem;
+    font-size: var(--kh-text-xs);
+    color: var(--kh-text-muted);
+    margin-right: 2px;
+    font-family: var(--kh-font-sans);
+    font-weight: 500;
   }
 
   .status .icon {
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
   }
 }

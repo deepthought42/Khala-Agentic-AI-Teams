@@ -9,9 +9,10 @@ Supports job_updater callback for UI phase tracking.
 """
 
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Literal, Optional, Tuple, Union
 
 from blog_compliance_agent import BlogComplianceAgent
 from blog_copy_editor_agent import BlogCopyEditorAgent, CopyEditorInput
@@ -243,6 +244,223 @@ def run_research_and_planning(
     return research_result, research_document, planning_phase_result
 
 
+def _extract_plan_keywords(plan: Any) -> list[str]:
+    """Extract searchable keywords from a content plan for story bank queries.
+
+    Combines the overarching topic and section titles, splits on whitespace,
+    and filters to words >= 4 chars to avoid noise from short stopwords.
+    """
+    parts: list[str] = []
+    topic = getattr(plan, "overarching_topic", "") or ""
+    parts.extend(topic.lower().split())
+    for section in getattr(plan, "sections", []) or []:
+        title = getattr(section, "title", "") or ""
+        parts.extend(title.lower().split())
+    # Deduplicate and filter short words (stopwords like "the", "and", "for")
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for word in parts:
+        cleaned = word.strip(".,;:!?()[]\"'")
+        if len(cleaned) >= 4 and cleaned not in seen:
+            seen.add(cleaned)
+            keywords.append(cleaned)
+    return keywords
+
+
+# Regex matching [Author: ...] placeholders in draft output.
+_PLACEHOLDER_RE = re.compile(
+    r"\[Author:\s*(?:add\s+)?(.+?)\]",
+    re.IGNORECASE,
+)
+
+
+def _extract_story_placeholders(draft_text: str) -> List[Tuple[str, str]]:
+    """Return (full_match, topic_description) pairs for each ``[Author: ...]`` placeholder."""
+    results = []
+    for m in _PLACEHOLDER_RE.finditer(draft_text):
+        results.append((m.group(0), m.group(1).strip()))
+    return results
+
+
+def _fill_story_placeholders(
+    *,
+    draft_text: str,
+    plan: Any,
+    llm_client: Any,
+    job_id: str,
+    job_updater: Callable,
+    elicited_stories_text: Optional[str],
+    draft_agent: Any,
+    draft_input_kwargs: dict,
+    work_dir: Optional[Union[str, Path]],
+    iteration: int,
+) -> Tuple[Any, Optional[str]]:
+    """Scan draft for ``[Author: ...]`` placeholders and interview the user for each.
+
+    For each placeholder the ghost writer conducts an interview.  If the user
+    indicates they have no relevant experience the placeholder is removed and
+    the section is rewritten without a personal story.  Otherwise the collected
+    narrative replaces the placeholder.
+
+    Returns ``(updated_draft_result, updated_elicited_stories_text)``.
+    """
+    from blog_draft_agent.models import DraftInput, DraftOutput
+    from ghost_writer_agent import GhostWriterElicitationAgent
+    from ghost_writer_agent.agent import MAX_ROUNDS_POST_DRAFT
+    from ghost_writer_agent.models import StoryGap
+    from shared.blog_job_store import (
+        add_story_agent_message,
+        get_blog_job,
+        update_blog_job,
+    )
+
+    placeholders = _extract_story_placeholders(draft_text)
+    if not placeholders:
+        return DraftOutput(draft=draft_text), elicited_stories_text
+
+    logger.info("Post-draft: found %d story placeholder(s) to fill", len(placeholders))
+    job_updater(
+        phase="story_elicitation",
+        progress=35,
+        status_text=f"Draft has {len(placeholders)} story placeholder(s) — waiting for your stories...",
+    )
+
+    ghost_agent = GhostWriterElicitationAgent(llm_client=llm_client)
+    new_narratives: list[str] = []
+    skipped_topics: list[str] = []
+
+    # Build story gaps from placeholders
+    gaps = []
+    for _full_match, topic in placeholders:
+        gaps.append(
+            StoryGap(
+                section_title=topic[:80],
+                section_context=f"The draft needs a personal story about: {topic}",
+                seed_question=(
+                    f"The blog post needs a personal story about: {topic}\n\n"
+                    "Walk me through a specific time you experienced this. "
+                    "I'll ask follow-up questions until we have a complete story "
+                    "with real numbers.\n\n"
+                    "If you don't have any relevant experience with this topic, "
+                    'just reply "skip" or "no experience" and we\'ll rewrite that '
+                    "section without a personal story."
+                ),
+            )
+        )
+
+    # Store gaps in the job and run interviews
+    gap_dicts = [g.model_dump() for g in gaps]
+    update_blog_job(
+        job_id,
+        story_gaps=gap_dicts,
+        current_story_gap_index=0,
+        waiting_for_story_input=False,
+    )
+
+    for idx, gap in enumerate(gaps):
+        job_data = get_blog_job(job_id)
+        if job_data and job_data.get("status") in ("failed", "cancelled"):
+            break
+
+        job_updater(
+            phase="story_elicitation",
+            progress=35 + idx,
+            status_text=f"Waiting for your story {idx + 1}/{len(gaps)}: {gap.section_title}",
+        )
+        update_blog_job(job_id, current_story_gap_index=idx)
+
+        # Post seed question — pipeline pauses here until user responds
+        add_story_agent_message(job_id, gap.seed_question, idx)
+
+        # conduct_interview waits indefinitely for each user response
+        result = ghost_agent.conduct_interview(
+            gap=gap,
+            job_id=job_id,
+            gap_index=idx,
+            job_updater=job_updater,
+            max_rounds=MAX_ROUNDS_POST_DRAFT,
+        )
+
+        if result.skipped:
+            skipped_topics.append(gap.section_title)
+            logger.info("Post-draft: user has no experience for '%s'", gap.section_title)
+        elif result.narrative:
+            new_narratives.append(
+                f"[Story for section: {gap.section_title}]\n{result.narrative}"
+            )
+            # Save to story bank for reuse across future posts
+            try:
+                from shared.story_bank import save_story
+
+                save_story(
+                    narrative=result.narrative,
+                    section_title=gap.section_title,
+                    section_context=gap.section_context,
+                    keywords=_extract_plan_keywords(plan),
+                    source_job_id=job_id,
+                )
+            except Exception as e:
+                logger.warning("Story bank save failed (non-fatal): %s", e)
+        else:
+            # No narrative and not skipped — treat as no usable material
+            skipped_topics.append(gap.section_title)
+
+    update_blog_job(
+        job_id,
+        waiting_for_story_input=False,
+        current_story_gap_index=len(gaps),
+    )
+
+    if not new_narratives and not skipped_topics:
+        return DraftOutput(draft=draft_text), elicited_stories_text
+
+    # Merge new narratives into elicited_stories_text
+    if new_narratives:
+        new_text = "\n\n".join(new_narratives)
+        if elicited_stories_text:
+            elicited_stories_text = elicited_stories_text + "\n\n" + new_text
+        else:
+            elicited_stories_text = new_text
+
+    # Re-draft with the updated stories and skip instructions
+    job_updater(
+        phase="draft_initial",
+        progress=40,
+        status_text="Re-drafting with your stories and removing unsupported story sections...",
+    )
+
+    skip_instruction = ""
+    if skipped_topics:
+        skip_list = "; ".join(skipped_topics)
+        skip_instruction = (
+            f"\n\nSECTIONS WHERE THE AUTHOR HAS NO PERSONAL EXPERIENCE (rewrite these "
+            f"sections using research facts, labeled hypotheticals, or straight explanation "
+            f"instead of personal stories — remove any [Author: ...] placeholders): {skip_list}"
+        )
+
+    try:
+        draft_input = DraftInput(
+            **draft_input_kwargs,
+            elicited_stories=(elicited_stories_text or "") + skip_instruction or None,
+        )
+        draft_output_path = (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
+        redraft_result = draft_agent.run(
+            draft_input,
+            on_llm_request=lambda msg: job_updater(phase="draft_initial", status_text=msg),
+            draft_output_path=draft_output_path,
+        )
+        logger.info(
+            "Post-draft re-draft complete: %d new stories, %d skipped topics, length=%s",
+            len(new_narratives),
+            len(skipped_topics),
+            len(redraft_result.draft),
+        )
+        return redraft_result, elicited_stories_text
+    except Exception as e:
+        logger.warning("Post-draft re-draft failed (keeping original): %s", e)
+        return DraftOutput(draft=draft_text), elicited_stories_text
+
+
 def run_pipeline(
     brief: ResearchBriefInput,
     *,
@@ -444,6 +662,26 @@ def run_pipeline(
                     elicited_stories_text = "\n\n".join(collected_narratives)
                     complete_story_elicitation(job_id, elicited_stories=collected_narratives)
 
+                    # Persist each narrative to the story bank for reuse across future posts.
+                    try:
+                        from shared.story_bank import save_story
+
+                        topic_keywords = _extract_plan_keywords(plan)
+                        for idx2, gap2 in enumerate(story_gaps):
+                            # Find the matching narrative (format: "[Story for section: ...]\n<narrative>")
+                            for narr in collected_narratives:
+                                if gap2.section_title in narr:
+                                    raw_narrative = narr.split("\n", 1)[1] if "\n" in narr else narr
+                                    save_story(
+                                        narrative=raw_narrative,
+                                        section_title=gap2.section_title,
+                                        section_context=gap2.section_context,
+                                        keywords=topic_keywords,
+                                        source_job_id=job_id,
+                                    )
+                    except Exception as e:
+                        logger.warning("Story bank save failed (non-fatal): %s", e)
+
                 update_blog_job(
                     job_id,
                     waiting_for_story_input=False,
@@ -467,6 +705,33 @@ def run_pipeline(
             raise
         except Exception as e:
             logger.warning("Story elicitation phase error (skipping): %s", e)
+
+    # Augment stories from the story bank: retrieve previously elicited narratives that match
+    # this post's topic and sections, so the draft agent has real stories even if the ghost
+    # writer interview was skipped or produced fewer stories than needed.
+    try:
+        from shared.story_bank import find_relevant_stories
+
+        bank_keywords = _extract_plan_keywords(plan)
+        bank_results = find_relevant_stories(bank_keywords, limit=5)
+        if bank_results:
+            bank_stories = []
+            for r in bank_results:
+                # Skip stories that are already in elicited_stories_text (same job)
+                if elicited_stories_text and r["narrative"] in elicited_stories_text:
+                    continue
+                bank_stories.append(
+                    f"[Banked story for section: {r['section_title']}]\n{r['narrative']}"
+                )
+            if bank_stories:
+                bank_text = "\n\n".join(bank_stories)
+                if elicited_stories_text:
+                    elicited_stories_text = elicited_stories_text + "\n\n" + bank_text
+                else:
+                    elicited_stories_text = bank_text
+                logger.info("Story bank: augmented with %d banked story(ies)", len(bank_stories))
+    except Exception as e:
+        logger.warning("Story bank retrieval failed (non-fatal): %s", e)
 
     # Draft + Copy Editor loop (load style and brand spec as raw text for draft/editor agents)
     writing_style_content = load_style_file(STYLE_GUIDE_PATH, "writing style guide")
@@ -530,6 +795,36 @@ def run_pipeline(
                 status_text=f"Initial draft complete ({len(draft_result.draft)} chars)",
                 draft_iterations=iteration,
             )
+
+            # ── Post-draft story elicitation ─────────────────────────────────
+            # Scan the draft for [Author: ...] placeholders left by the draft
+            # agent.  For each one, offer the ghost writer interview so the user
+            # can provide a real story.  Collected stories are injected and the
+            # draft is regenerated.
+            if job_id is not None and job_updater is not None:
+                draft_result, elicited_stories_text = _fill_story_placeholders(
+                    draft_text=draft_result.draft,
+                    plan=plan,
+                    llm_client=llm_client,
+                    job_id=job_id,
+                    job_updater=job_updater,
+                    elicited_stories_text=elicited_stories_text,
+                    draft_agent=draft_agent,
+                    draft_input_kwargs=dict(
+                        research_document=research_document,
+                        research_references=research_result.references if research_result.references else None,
+                        content_plan=plan,
+                        audience=brief.audience,
+                        tone_or_purpose=brief.tone_or_purpose,
+                        allowed_claims=allowed_claims_data if isinstance(allowed_claims_data, dict) else None,
+                        target_word_count=length_policy.target_word_count,
+                        length_guidance=build_draft_length_instruction(length_policy),
+                        selected_title=selected_title or None,
+                    ),
+                    work_dir=work_dir,
+                    iteration=iteration,
+                )
+
         else:
             # Copy edit loop
             copy_edit_num = iteration - 1

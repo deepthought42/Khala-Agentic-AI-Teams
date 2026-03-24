@@ -1,84 +1,87 @@
 // ============================================================================
-// App Shell - Navigation Sidebar
+// App Shell — Premium Dark + Amber
 // ============================================================================
 
 .sidenav-container {
   height: 100vh;
 }
 
+// ============================================================================
+// Sidebar
+// ============================================================================
+
 .sidenav {
-  width: 256px;
-  background: #0d1117;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  width: 260px;
+  background: var(--kh-surface-1);
+  border-right: 1px solid var(--kh-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-// ============================================================================
-// Brand Header
-// ============================================================================
+// ── Brand Header ────────────────────────────────────────────────────────────
 
 .sidenav-header {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 24px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 20px;
+  border-bottom: 1px solid var(--kh-border-subtle);
 }
 
 .brand-logo {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  background: var(--kh-accent-gradient);
   flex-shrink: 0;
+  box-shadow: 0 0 16px rgba(251, 191, 36, 0.3);
 }
 
 .brand-icon {
-  font-size: 22px;
-  width: 22px;
-  height: 22px;
-  color: #fff;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #09090b;
 }
 
 .brand-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
 .brand-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: #f0f6fc;
-  letter-spacing: -0.01em;
+  font-size: var(--kh-text-lg);
+  font-weight: 700;
+  color: var(--kh-text-primary);
+  letter-spacing: -0.02em;
   line-height: 1.2;
 }
 
 .brand-subtitle {
-  font-size: 0.6875rem;
-  color: #8b949e;
-  letter-spacing: 0.02em;
+  font-size: var(--kh-text-xs);
+  color: var(--kh-text-muted);
+  letter-spacing: 0.03em;
   line-height: 1.2;
+  text-transform: uppercase;
+  font-weight: 500;
 }
 
-// ============================================================================
-// Navigation Section
-// ============================================================================
+// ── Navigation ──────────────────────────────────────────────────────────────
 
 .nav-section {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 12px;
+  padding: 12px;
 }
 
 .nav-group {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 
   &:last-child {
     margin-bottom: 0;
@@ -86,39 +89,38 @@
 }
 
 .nav-group-label {
-  padding: 0 8px 10px;
+  padding: 0 10px 8px;
   font-size: 0.6875rem;
-  font-weight: 500;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #6e7681;
+  letter-spacing: 0.08em;
+  color: var(--kh-text-muted);
 }
 
-// ============================================================================
-// Navigation Links
-// ============================================================================
+// ── Navigation Links ────────────────────────────────────────────────────────
 
 .nav-link {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  margin-bottom: 2px;
-  border-radius: 6px;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 1px;
+  border-radius: var(--kh-radius-md);
   text-decoration: none;
-  color: #c9d1d9;
-  font-size: 0.875rem;
-  font-weight: 400;
-  transition: all 0.15s ease;
+  color: var(--kh-text-tertiary);
+  font-size: var(--kh-text-sm);
+  font-weight: 450;
+  font-family: var(--kh-font-sans);
+  transition: all var(--kh-transition);
   position: relative;
 
   mat-icon {
-    font-size: 20px;
-    width: 20px;
-    height: 20px;
-    color: #8b949e;
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: var(--kh-text-muted);
     flex-shrink: 0;
-    transition: color 0.15s ease;
+    transition: color var(--kh-transition);
   }
 
   span {
@@ -128,20 +130,20 @@
   }
 
   &:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: #f0f6fc;
+    background: var(--kh-glass-hover);
+    color: var(--kh-text-secondary);
 
     mat-icon {
-      color: #c9d1d9;
+      color: var(--kh-text-tertiary);
     }
   }
 
   &.active {
-    background: rgba(59, 130, 246, 0.15);
-    color: #58a6ff;
+    background: var(--kh-accent-muted);
+    color: var(--kh-accent-text);
 
     mat-icon {
-      color: #58a6ff;
+      color: var(--kh-accent);
     }
 
     &::before {
@@ -151,8 +153,8 @@
       top: 50%;
       transform: translateY(-50%);
       width: 3px;
-      height: 20px;
-      background: #3b82f6;
+      height: 16px;
+      background: var(--kh-accent);
       border-radius: 0 2px 2px 0;
     }
   }
@@ -160,10 +162,9 @@
 
 .nav-link-nested {
   margin-left: 16px;
-  padding-left: 20px;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0 6px 6px 0;
-  margin-bottom: 2px;
+  padding-left: 18px;
+  border-left: 1px solid var(--kh-border-subtle);
+  border-radius: 0 var(--kh-radius-md) var(--kh-radius-md) 0;
 
   &.active::before {
     display: none;
@@ -171,86 +172,99 @@
 }
 
 .nav-link-primary {
-  margin-bottom: 16px;
-  padding: 12px 14px;
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--kh-accent-muted);
+  border: 1px solid rgba(251, 191, 36, 0.25);
   font-weight: 500;
+  color: var(--kh-text-secondary);
 
   mat-icon {
-    color: #58a6ff;
+    color: var(--kh-accent);
   }
 
   &:hover {
-    background: rgba(59, 130, 246, 0.15);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: var(--kh-accent-subtle);
+    border-color: rgba(251, 191, 36, 0.35);
+    color: var(--kh-text-primary);
   }
 
   &.active {
-    background: rgba(59, 130, 246, 0.2);
-    border-color: #3b82f6;
+    background: var(--kh-accent-subtle);
+    border-color: rgba(251, 191, 36, 0.45);
+    color: var(--kh-accent-text);
+    box-shadow: 0 0 14px rgba(251, 191, 36, 0.15);
   }
 }
 
-// ============================================================================
-// Sidenav Footer
-// ============================================================================
+// ── Sidebar Footer ──────────────────────────────────────────────────────────
 
 .sidenav-footer {
   margin-top: auto;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--kh-border-subtle);
 }
 
 .footer-content {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
+  padding: 14px;
 
   mat-icon {
-    font-size: 14px;
-    width: 14px;
-    height: 14px;
-    color: #6e7681;
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+    color: var(--kh-accent);
+    opacity: 0.6;
   }
 
   span {
-    font-size: 0.75rem;
-    color: #6e7681;
+    font-size: 0.6875rem;
+    color: var(--kh-text-muted);
     letter-spacing: 0.02em;
+    font-weight: 500;
   }
 }
 
 // ============================================================================
-// Main Content Area
+// Toolbar
 // ============================================================================
 
 .main-toolbar {
-  background: #161b22 !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: #f0f6fc;
+  background: var(--kh-surface-1) !important;
+  border-bottom: 1px solid var(--kh-border);
+  color: var(--kh-text-primary);
+  height: 56px !important;
+  min-height: 56px !important;
 }
 
 .menu-button {
-  margin-right: 12px;
-  color: #8b949e;
+  margin-right: 8px;
+  color: var(--kh-text-muted);
+  transition: color var(--kh-transition);
 
   &:hover {
-    color: #f0f6fc;
+    color: var(--kh-text-primary);
   }
 }
 
 .toolbar-title {
-  font-size: 1rem;
-  font-weight: 500;
-  color: #f0f6fc;
+  font-size: var(--kh-text-base);
+  font-weight: 600;
+  color: var(--kh-text-secondary);
+  letter-spacing: -0.01em;
+  font-family: var(--kh-font-sans);
 }
 
+// ============================================================================
+// Content Area
+// ============================================================================
+
 .content {
-  padding: 24px;
-  min-height: calc(100vh - 64px);
-  background: #0d1117;
+  padding: var(--kh-space-8);
+  min-height: calc(100vh - 56px);
+  background: var(--kh-surface-0);
 }
 
 .spacer {
@@ -265,14 +279,14 @@
   position: absolute;
   top: -50px;
   left: 0;
-  background: #3b82f6;
-  color: #fff;
-  padding: 12px 20px;
+  background: var(--kh-accent);
+  color: #09090b;
+  padding: 10px 20px;
   z-index: 1000;
   text-decoration: none;
-  font-weight: 500;
-  font-size: 0.875rem;
-  border-radius: 0 0 6px 0;
+  font-weight: 600;
+  font-size: var(--kh-text-sm);
+  border-radius: 0 0 var(--kh-radius-md) 0;
   transition: top 0.2s ease;
 
   &:focus {
@@ -281,12 +295,12 @@
 }
 
 // ============================================================================
-// Scrollbar Styling
+// Scrollbar
 // ============================================================================
 
 .nav-section {
   &::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   &::-webkit-scrollbar-track {
@@ -294,11 +308,11 @@
   }
 
   &::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.12);
     }
   }
 }

@@ -23,7 +23,8 @@ from .models import StoryElicitationResult, StoryGap
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 2  # seconds between job-store polls
-MAX_ROUNDS = 5  # maximum interview turns per story gap
+MAX_ROUNDS = 5  # soft cap for pre-draft interviews (user can still be asked more)
+MAX_ROUNDS_POST_DRAFT = 50  # hard safety cap for post-draft interviews (effectively unlimited)
 
 _FIND_GAPS_SYSTEM = """\
 You are an expert ghost writer interviewer who specializes in finding places in a
@@ -40,6 +41,7 @@ For each gap you identify, write an opening interview question that:
   - Asks about a specific event or moment (not a general question)
   - Is conversational and non-intimidating
   - Opens with "Tell me about..." or "Walk me through the time when..." or similar
+  - Probes for concrete numbers (team size, timeline, budget, measurable outcome)
 
 Return a JSON array of objects. Each object has:
   - "section_title": exact title of the section
@@ -54,23 +56,68 @@ _EVALUATE_SYSTEM = """\
 You are an expert ghost writer evaluating whether an author's response contains
 enough raw material to write a compelling first-person anecdote for their blog post.
 
-A response is "sufficient" if it contains at least:
-  - A specific event or moment (not just a general statement)
-  - Some indication of what happened or what was learned
-  - Enough detail that you could write 2–4 sentences of vivid first-person narrative
+Use the STAR framework (Situation, Task, Action, Result) to evaluate completeness.
 
-A response is "insufficient" if it is:
+There are THREE possible outcomes:
+
+1. **sufficient** — the author has provided enough STAR material:
+  - SITUATION: A specific context or event (not just a general statement) — ideally with a concrete number (team size, timeline, budget, scale)
+  - TASK: What needed to happen or what problem existed
+  - ACTION: What the author specifically did
+  - RESULT: A measurable outcome or clear lesson learned — ideally with a real number (percentage improvement, dollar amount, time saved, error reduction)
+
+2. **no_experience** — the author explicitly indicates they have no relevant experience:
+  - They said something like "skip", "no experience", "I haven't done that", "n/a", "pass",
+    "I don't have a story for this", or otherwise clearly communicated they cannot provide
+    an anecdote for this topic. Respect this immediately — do not push back or suggest
+    they try harder.
+
+3. **insufficient** — the author is trying but hasn't given enough detail yet:
   - Vague ("yeah I've done that kind of thing")
   - Only confirms the experience exists without details
-  - Missing the outcome or what was learned
+  - Missing the outcome/result or what was learned
+  - Has no concrete numbers anywhere in the story
+
+When asking follow-up questions (insufficient only), specifically probe for:
+  - Missing STAR elements (especially Situation numbers and Result numbers)
+  - "What were the actual numbers?" / "How big was the impact?"
+  - "What specifically did you do differently?" (Action)
+  - "What was the measurable result?" (Result)
 
 Given the conversation so far and the section context, respond in JSON:
 {
   "sufficient": true/false,
-  "follow_up": "If not sufficient: a single specific follow-up question to extract more detail. If sufficient: null.",
-  "narrative": "If sufficient: a 2–5 sentence first-person narrative (as if Brandon wrote it) compiled from what they shared. If not sufficient: null."
+  "no_experience": true/false,
+  "follow_up": "If insufficient (not no_experience): a single specific follow-up question targeting the weakest STAR element. Otherwise: null.",
+  "narrative": "If sufficient: a 2–5 sentence first-person narrative in STAR format (as if the author wrote it) compiled from what they shared. Lead with the situation, include the action taken, and close with the measurable result. Use real numbers from the author's responses. Otherwise: null."
 }
 """
+
+
+_NO_EXPERIENCE_PHRASES = frozenset({
+    "skip",
+    "no experience",
+    "no relevant experience",
+    "n/a",
+    "none",
+    "pass",
+    "i don't have",
+    "i haven't",
+    "i have no",
+    "i can't think of",
+    "nothing comes to mind",
+    "not applicable",
+    "i don't have a story",
+    "no story",
+})
+
+
+def _is_no_experience(message: str) -> bool:
+    """Return True if the user's message indicates they have no relevant experience."""
+    text = message.strip().lower().rstrip(".!?")
+    if text in _NO_EXPERIENCE_PHRASES:
+        return True
+    return any(phrase in text for phrase in _NO_EXPERIENCE_PHRASES)
 
 
 class GhostWriterElicitationAgent:
@@ -124,17 +171,26 @@ class GhostWriterElicitationAgent:
         job_id: str,
         gap_index: int,
         job_updater: Optional[Callable[..., None]] = None,
+        max_rounds: int = MAX_ROUNDS,
     ) -> StoryElicitationResult:
         """
         Conduct a multi-turn interview for a single story gap.
 
-        Posts questions to the job store, waits for user responses, evaluates
-        sufficiency, and compiles a first-person narrative when ready.
+        Posts questions to the job store, waits **indefinitely** for each user
+        response, evaluates sufficiency, and compiles a first-person STAR
+        narrative when ready.
+
+        The interview ends when one of these happens:
+        1. The LLM evaluates the material as **sufficient** → returns narrative.
+        2. The LLM (or direct phrase detection) identifies a **no_experience**
+           response → returns skipped=True, narrative=None.
+        3. The user explicitly skips via the UI (gap index advanced).
+        4. The job is cancelled/failed.
+        5. Safety cap (*max_rounds*) is reached → compiles from history.
 
         The pipeline must have already posted the seed question and set
-        waiting_for_story_input=True before calling this method.
+        ``waiting_for_story_input=True`` before calling this method.
         """
-        # Import job store functions here to avoid circular imports at module load
         from shared.blog_job_store import (
             add_story_agent_message,
             get_blog_job,
@@ -145,63 +201,70 @@ class GhostWriterElicitationAgent:
             {"role": "agent", "content": gap.seed_question}
         ]
 
-        for round_num in range(MAX_ROUNDS):
-            # Wait for user response
+        for round_num in range(max_rounds):
+            # ── Wait indefinitely for the user to respond ────────────────
             while is_waiting_for_story_input(job_id):
                 job_data = get_blog_job(job_id)
                 if job_data and job_data.get("status") in ("failed", "cancelled"):
                     return StoryElicitationResult(gap=gap, narrative=None, skipped=True, rounds_used=round_num)
-                # Check if user skipped (gap index advanced)
                 if job_data and job_data.get("current_story_gap_index", 0) > gap_index:
                     return StoryElicitationResult(gap=gap, narrative=None, skipped=True, rounds_used=round_num)
                 time.sleep(POLL_INTERVAL)
 
-            # Check if user skipped this gap
+            # Check if user skipped via UI
             job_data = get_blog_job(job_id)
             if job_data and job_data.get("current_story_gap_index", 0) > gap_index:
                 return StoryElicitationResult(gap=gap, narrative=None, skipped=True, rounds_used=round_num + 1)
 
-            # Get user's last message from chat history
+            # Get user's last message
             history = (job_data or {}).get("story_chat_history", [])
-            user_messages = [m for m in history if m.get("role") == "user" and m.get("gap_index", gap_index) == gap_index or m.get("role") == "user"]
+            user_messages = [
+                m for m in history
+                if m.get("role") == "user" and m.get("gap_index", gap_index) == gap_index
+            ]
             last_user_msg = user_messages[-1]["content"] if user_messages else ""
+
+            # ── Quick check: did user say "skip" / "no experience"? ──────
+            if _is_no_experience(last_user_msg):
+                logger.info("Ghost writer: user indicated no experience for '%s'", gap.section_title)
+                return StoryElicitationResult(gap=gap, narrative=None, skipped=True, rounds_used=round_num + 1)
 
             conversation.append({"role": "user", "content": last_user_msg})
 
-            # Evaluate sufficiency
+            # ── Evaluate with LLM ────────────────────────────────────────
             evaluation = self._evaluate_response(gap, conversation)
 
+            # Outcome 1: no_experience flagged by LLM
+            if evaluation.get("no_experience"):
+                logger.info("Ghost writer: LLM detected no-experience for '%s'", gap.section_title)
+                return StoryElicitationResult(gap=gap, narrative=None, skipped=True, rounds_used=round_num + 1)
+
+            # Outcome 2: sufficient STAR material
             if evaluation.get("sufficient"):
                 narrative = evaluation.get("narrative")
-                logger.info("Ghost writer: sufficient story collected for '%s' after %s round(s)", gap.section_title, round_num + 1)
-                return StoryElicitationResult(
-                    gap=gap,
-                    narrative=narrative,
-                    skipped=False,
-                    rounds_used=round_num + 1,
+                logger.info(
+                    "Ghost writer: sufficient story collected for '%s' after %s round(s)",
+                    gap.section_title,
+                    round_num + 1,
                 )
+                return StoryElicitationResult(gap=gap, narrative=narrative, skipped=False, rounds_used=round_num + 1)
 
-            if round_num >= MAX_ROUNDS - 1:
-                # Max rounds reached — compile whatever we have
-                narrative = evaluation.get("narrative") or self._compile_from_history(gap, conversation)
-                logger.info("Ghost writer: max rounds reached for '%s', compiling from history", gap.section_title)
-                return StoryElicitationResult(
-                    gap=gap,
-                    narrative=narrative,
-                    skipped=False,
-                    rounds_used=round_num + 1,
-                )
-
-            # Ask follow-up question
+            # Outcome 3: insufficient — ask follow-up (loop continues)
             follow_up = evaluation.get("follow_up")
             if not follow_up:
+                # LLM couldn't generate a follow-up — compile from what we have
+                narrative = self._compile_from_history(gap, conversation)
+                if narrative:
+                    return StoryElicitationResult(gap=gap, narrative=narrative, skipped=False, rounds_used=round_num + 1)
                 break
 
             conversation.append({"role": "agent", "content": follow_up})
             add_story_agent_message(job_id, follow_up, gap_index)
-            # waiting_for_story_input is set to True inside add_story_agent_message
 
-        return StoryElicitationResult(gap=gap, narrative=None, skipped=False, rounds_used=MAX_ROUNDS)
+        # Safety cap reached — compile whatever we have
+        logger.info("Ghost writer: round cap reached for '%s', compiling from history", gap.section_title)
+        narrative = self._compile_from_history(gap, conversation)
+        return StoryElicitationResult(gap=gap, narrative=narrative, skipped=False, rounds_used=max_rounds)
 
     def _evaluate_response(
         self,
@@ -247,14 +310,17 @@ class GhostWriterElicitationAgent:
         prompt = (
             f"Section context: {gap.section_context}\n\n"
             f"Author's raw responses: {user_content}\n\n"
-            "Write a 2–5 sentence first-person narrative (as if the author wrote it) "
-            "that captures the key moment or experience they described. "
-            "Be concrete and specific. Use 'I' voice. Do not invent details."
+            "Write a 2–5 sentence first-person narrative using STAR format "
+            "(Situation, Task, Action, Result) as if the author wrote it. "
+            "Lead with the specific situation (include a number if the author gave one: team size, timeline, budget). "
+            "Include the action they took. Close with the measurable result "
+            "(include a real number if the author gave one: percentage, dollar amount, time saved). "
+            "Use 'I' voice. Do not invent details or numbers the author did not provide."
         )
         try:
             return self.llm_client.chat(
                 messages=[{"role": "user", "content": prompt}],
-                system="You are a skilled ghost writer who turns author notes into vivid first-person prose.",
+                system="You are a skilled ghost writer who turns author notes into vivid first-person STAR-format narratives.",
             )
         except Exception as e:
             logger.warning("Ghost writer compile_from_history failed: %s", e)

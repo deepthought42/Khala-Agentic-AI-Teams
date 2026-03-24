@@ -1,10 +1,13 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { ActivatedRoute } from '@angular/router';
 import { vi } from 'vitest';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { BrandingApiService } from '../../services/branding-api.service';
 import { BrandingDashboardComponent } from './branding-dashboard.component';
+
+const fakeRoute = { snapshot: { queryParamMap: { get: () => null } } };
 
 const workspaceClient = { id: 'w1', name: 'My brands', created_at: '2020-01-01', updated_at: '2020-01-01' };
 
@@ -47,6 +50,7 @@ describe('BrandingDashboardComponent', () => {
       providers: [
         { provide: BrandingApiService, useValue: apiSpy },
         { provide: MatSnackBar, useValue: snackBarSpy },
+        { provide: ActivatedRoute, useValue: fakeRoute },
       ],
     }).compileComponents();
 
@@ -146,6 +150,7 @@ describe('BrandingDashboardComponent workspace bootstrap', () => {
       providers: [
         { provide: BrandingApiService, useValue: api },
         { provide: MatSnackBar, useValue: snackBar },
+        { provide: ActivatedRoute, useValue: fakeRoute },
       ],
     }).compileComponents();
 

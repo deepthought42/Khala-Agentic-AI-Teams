@@ -1,17 +1,38 @@
 .error-container {
-  padding: 1rem;
+  padding: var(--kh-space-3) 0;
 }
 
 .error-card {
-  border-left: 4px solid var(--mat-warn-500, #f44336);
+  background: var(--kh-error-subtle) !important;
+  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+  border-left: 3px solid var(--kh-error) !important;
 }
 
 .error-content {
   display: flex;
   align-items: flex-start;
-  gap: 0.75rem;
+  gap: var(--kh-space-3);
+
+  mat-icon {
+    color: var(--kh-error);
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  strong {
+    color: var(--kh-text-primary);
+    font-family: var(--kh-font-sans);
+    font-weight: 600;
+    font-size: var(--kh-text-sm);
+  }
 
   p {
-    margin: 0.25rem 0 0;
+    margin: var(--kh-space-1) 0 0;
+    color: var(--kh-text-secondary);
+    font-size: var(--kh-text-sm);
+    line-height: 1.5;
   }
 }

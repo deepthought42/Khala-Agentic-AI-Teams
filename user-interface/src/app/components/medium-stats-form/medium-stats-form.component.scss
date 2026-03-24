@@ -5,8 +5,8 @@
 .medium-stats-form {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  margin-top: 0.5rem;
+  gap: var(--kh-space-4);
+  margin-top: var(--kh-space-2);
 }
 
 .full-width {
@@ -14,5 +14,5 @@
 }
 
 mat-slide-toggle {
-  margin-bottom: 0.25rem;
+  margin-bottom: var(--kh-space-1);
 }

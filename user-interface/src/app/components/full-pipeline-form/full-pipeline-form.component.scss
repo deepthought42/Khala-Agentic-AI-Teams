@@ -5,19 +5,19 @@
 form {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--kh-space-3);
 }
 
 .section-label {
-  margin: 0.5rem 0 0;
-  font-size: 0.875rem;
-  font-weight: 500;
-  opacity: 0.75;
+  margin: var(--kh-space-2) 0 0;
+  font-size: var(--kh-text-sm);
+  font-weight: 600;
+  color: var(--kh-text-tertiary);
 }
 
 .row-2 {
   display: flex;
-  gap: 1rem;
+  gap: var(--kh-space-4);
   flex-wrap: wrap;
 }
 
@@ -27,14 +27,17 @@ form {
 }
 
 .brand-spec-note {
-  margin: 0.25rem 0 0.5rem;
-  padding: 0.75rem 1rem;
-  border-radius: 8px;
-  background: rgba(96, 165, 250, 0.08);
-  border: 1px solid rgba(96, 165, 250, 0.2);
-  color: rgba(255, 255, 255, 0.85);
+  margin: var(--kh-space-1) 0 var(--kh-space-2);
+  padding: var(--kh-space-3) var(--kh-space-4);
+  border-radius: var(--kh-radius-md);
+  background: var(--kh-accent-muted);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  color: var(--kh-text-secondary);
+  font-size: var(--kh-text-sm);
 
   code {
-    font-size: 0.85em;
+    font-family: var(--kh-font-mono);
+    font-size: 0.9em;
+    color: var(--kh-accent-text);
   }
 }

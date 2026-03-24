@@ -77,6 +77,12 @@
       <div class="split-panel">
         <div class="panel chat-panel">
           <div class="chat-toolbar">
+            @if (selectedBrand) {
+              <button mat-stroked-button type="button" (click)="startFreshConversation()">
+                <mat-icon>add_comment</mat-icon>
+                New conversation
+              </button>
+            }
             @if (hasConversationHistory && conversationMission) {
               <button mat-stroked-button color="primary" type="button" (click)="onOpenSaveAsBrand()" [disabled]="!canCreateBrandFromChat">
                 Save conversation as brand

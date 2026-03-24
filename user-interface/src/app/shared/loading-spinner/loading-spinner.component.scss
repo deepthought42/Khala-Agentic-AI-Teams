@@ -3,12 +3,14 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
-  gap: 0.5rem;
+  padding: var(--kh-space-8);
+  gap: var(--kh-space-4);
 
   .message {
     margin: 0;
-    font-size: 0.875rem;
-    color: var(--mat-sys-on-surface-variant);
+    font-size: var(--kh-text-sm);
+    color: var(--kh-text-tertiary);
+    font-family: var(--kh-font-sans);
+    letter-spacing: 0.01em;
   }
 }

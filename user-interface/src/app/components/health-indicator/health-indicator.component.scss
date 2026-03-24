@@ -1,10 +1,22 @@
 .health-indicator {
   display: inline-flex;
   align-items: center;
+  gap: var(--kh-space-2);
+  padding: 4px 10px;
+  border-radius: var(--kh-radius-full);
+  font-size: var(--kh-text-xs);
+  font-weight: 500;
+  font-family: var(--kh-font-sans);
+  background: var(--kh-glass);
+  border: 1px solid var(--kh-border-subtle);
 
   .icon {
-    font-size: 1.25rem;
-    width: 1.25rem;
-    height: 1.25rem;
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+  }
+
+  .label {
+    color: var(--kh-text-tertiary);
   }
 }
