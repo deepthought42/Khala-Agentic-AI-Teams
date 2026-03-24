@@ -395,7 +395,9 @@ class DevOpsExpertAgent:
                     tech_stack=tech_stack,
                     target_repo=target_repo,
                     task_plan=plan_text if plan_text else None,
-                    build_errors=compact_text(build_errors, compute_build_errors_chars(self.llm), self.llm, "build errors")
+                    build_errors=compact_text(
+                        build_errors, compute_build_errors_chars(self.llm), self.llm, "build errors"
+                    )
                     if build_errors
                     else None,
                 )

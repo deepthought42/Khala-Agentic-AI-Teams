@@ -378,9 +378,17 @@ class ResearchAgent:
     ) -> Tuple[SourceDocument, float, float, float, str]:
         """Score a single document for relevance, authority, accuracy, and type. Used by _score_documents."""
         # Budget: leave room for the prompt template (~2K), brief, and response tokens.
-        ctx_tokens = self.llm.get_max_context_tokens() if hasattr(self.llm, "get_max_context_tokens") else 16384
-        max_content_chars = int((ctx_tokens - 6000) * 3.5)  # reserve 6K tokens for prompt + response
-        doc_content = compact_text(doc.content or "", max_content_chars, self.llm, "document for scoring")
+        ctx_tokens = (
+            self.llm.get_max_context_tokens()
+            if hasattr(self.llm, "get_max_context_tokens")
+            else 16384
+        )
+        max_content_chars = int(
+            (ctx_tokens - 6000) * 3.5
+        )  # reserve 6K tokens for prompt + response
+        doc_content = compact_text(
+            doc.content or "", max_content_chars, self.llm, "document for scoring"
+        )
         prompt = (
             DOC_RELEVANCE_SCORING_PROMPT
             + "\n\n"
@@ -455,9 +463,15 @@ class ResearchAgent:
     ) -> ResearchReference:
         """Summarize a single document into a ResearchReference. Used by _summarize_documents."""
         doc, relevance, authority, accuracy, type_label = item
-        ctx_tokens = self.llm.get_max_context_tokens() if hasattr(self.llm, "get_max_context_tokens") else 16384
+        ctx_tokens = (
+            self.llm.get_max_context_tokens()
+            if hasattr(self.llm, "get_max_context_tokens")
+            else 16384
+        )
         max_content_chars = int((ctx_tokens - 6000) * 3.5)
-        doc_content = compact_text(doc.content or "", max_content_chars, self.llm, "document for summarization")
+        doc_content = compact_text(
+            doc.content or "", max_content_chars, self.llm, "document for summarization"
+        )
         prompt = DOC_SUMMARIZATION_PROMPT + "\n\n" + (f"Brief:\n{brief_input.brief}\n")
         if brief_input.audience:
             prompt += f"Audience: {brief_input.audience}\n"
