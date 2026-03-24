@@ -401,7 +401,9 @@ def _try_mount_road_trip_planning(app: FastAPI) -> bool:
 def _try_mount_agentic_team_provisioning(app: FastAPI) -> bool:
     """Mount Agentic Team Provisioning API."""
     return try_mount_or_proxy(
-        app, "agentic_team_provisioning", "agentic_team_provisioning.api.main",
+        app,
+        "agentic_team_provisioning",
+        "agentic_team_provisioning.api.main",
         service_url_env="AGENTIC_TEAM_PROVISIONING_SERVICE_URL",
     )
 

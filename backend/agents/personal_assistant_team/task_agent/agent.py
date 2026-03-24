@@ -226,6 +226,7 @@ class TaskAgent:
                 prompt,
                 temperature=0.2,
                 expected_keys=["items", "list_name"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to parse tasks (JSON extraction failed):\n%s", e)
@@ -421,6 +422,7 @@ class TaskAgent:
                 prompt,
                 temperature=0.1,
                 expected_keys=["categorized_items"],
+                think=False,
             )
             return data.get("categorized_items", [])
         except JSONExtractionFailure as e:
@@ -472,6 +474,7 @@ class TaskAgent:
                 prompt,
                 temperature=0.4,
                 expected_keys=["suggestions"],
+                think=False,
             )
             return data.get("suggestions", [])
         except JSONExtractionFailure as e:

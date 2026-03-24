@@ -115,6 +115,7 @@ class UserProfileAgent:
                 prompt,
                 temperature=0.2,
                 expected_keys=["extracted_info", "reasoning"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to extract preferences (JSON extraction failed):\n%s", e)

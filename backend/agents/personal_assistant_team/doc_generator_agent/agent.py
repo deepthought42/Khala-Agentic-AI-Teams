@@ -121,6 +121,7 @@ class DocGeneratorAgent:
                 prompt,
                 temperature=0.3,
                 expected_keys=["title", "content"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate process doc (JSON extraction failed):\n%s", e)
@@ -180,6 +181,7 @@ class DocGeneratorAgent:
                 prompt,
                 temperature=0.2,
                 expected_keys=["title", "items"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate checklist (JSON extraction failed):\n%s", e)
@@ -232,6 +234,7 @@ class DocGeneratorAgent:
                 prompt,
                 temperature=0.3,
                 expected_keys=["title", "content", "fields"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate template (JSON extraction failed):\n%s", e)
@@ -305,6 +308,7 @@ class DocGeneratorAgent:
                 prompt,
                 temperature=0.2,
                 expected_keys=["title", "content"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate SOP (JSON extraction failed):\n%s", e)
@@ -372,6 +376,7 @@ class DocGeneratorAgent:
                 prompt,
                 temperature=0.3,
                 expected_keys=["title", "content"],
+                think=False,
             )
         except JSONExtractionFailure as e:
             logger.error("Failed to generate meeting agenda (JSON extraction failed):\n%s", e)

@@ -460,13 +460,19 @@ class OllamaLLMClient(LLMClient):
         )
 
     def _should_enable_thinking(self) -> bool:
-        """Enable thinking mode for all models by default; disable via LLM_ENABLE_THINKING=false."""
+        """Global default: enable thinking for all models; disable via LLM_ENABLE_THINKING=false."""
         env_val = (
             os.environ.get(llm_config.ENV_LLM_ENABLE_THINKING)
             or os.environ.get(llm_config.ENV_LLM_ENABLE_THINKING_SW)
             or ""
         ).lower()
         return env_val != "false"
+
+    def _resolve_think(self, think: Optional[bool]) -> bool:
+        """Resolve per-call think override against global default."""
+        if think is not None:
+            return think
+        return self._should_enable_thinking()
 
     def _parse_response_content(self, data: dict) -> str:
         """Extract content or tool_calls from OpenAI-compatible response.
@@ -564,6 +570,7 @@ class OllamaLLMClient(LLMClient):
                                 content_parts: list[str] = []
                                 finish_reason: Optional[str] = None
                                 tool_call_buffers: dict[int, dict] = {}
+                                has_reasoning: bool = False
                                 for line in response.iter_lines():
                                     if not line or not line.startswith("data:"):
                                         continue
@@ -582,6 +589,14 @@ class OllamaLLMClient(LLMClient):
                                         piece = delta.get("content")
                                         if piece:
                                             content_parts.append(piece)
+                                        # Track reasoning tokens so we can distinguish
+                                        # "model thought but produced no answer" from
+                                        # "model returned nothing at all".
+                                        reasoning = delta.get("reasoning_content") or delta.get(
+                                            "thinking"
+                                        )
+                                        if reasoning:
+                                            has_reasoning = True
                                         for tc in delta.get("tool_calls") or []:
                                             idx = tc.get("index", 0)
                                             if idx not in tool_call_buffers:
@@ -604,7 +619,20 @@ class OllamaLLMClient(LLMClient):
                                         if fr:
                                             finish_reason = fr
                                 elapsed = time.monotonic() - t0
-                                logger.info("LLM streaming response complete in %.1fs", elapsed)
+                                joined_content = "".join(content_parts)
+                                logger.info(
+                                    "LLM streaming response complete in %.1fs (content=%d chars, reasoning=%s, finish=%s)",
+                                    elapsed,
+                                    len(joined_content),
+                                    has_reasoning,
+                                    finish_reason or "stop",
+                                )
+                                if not joined_content.strip() and has_reasoning:
+                                    logger.warning(
+                                        "LLM produced reasoning tokens but no content — "
+                                        "model likely spent its token budget on thinking. "
+                                        "Consider raising max_tokens or disabling thinking (LLM_ENABLE_THINKING=false)."
+                                    )
                                 tool_calls = None
                                 if tool_call_buffers:
                                     tool_calls = []
@@ -621,7 +649,7 @@ class OllamaLLMClient(LLMClient):
                                     "choices": [
                                         {
                                             "message": {
-                                                "content": "".join(content_parts),
+                                                "content": joined_content,
                                                 "tool_calls": tool_calls,
                                             },
                                             "finish_reason": finish_reason or "stop",
@@ -822,12 +850,19 @@ class OllamaLLMClient(LLMClient):
         *,
         temperature: float = 0.0,
         system_prompt: Optional[str] = None,
+        think: Optional[bool] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Run the model with JSON mode and return a decoded dict."""
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
-        logger.info("LLM request: provider=ollama model=%s base_url=%s", self.model, self.base_url)
+        use_think = self._resolve_think(think)
+        logger.info(
+            "LLM request: provider=ollama model=%s base_url=%s think=%s",
+            self.model,
+            self.base_url,
+            use_think,
+        )
         system_message = system_prompt or (
             "You are a strict JSON generator. Respond with a single valid JSON object only, "
             "no explanatory text, no Markdown, no code fences. "
@@ -855,7 +890,7 @@ class OllamaLLMClient(LLMClient):
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
             ],
-            "think": self._should_enable_thinking(),
+            "think": use_think,
         }
         if tools:
             payload["tools"] = tools
@@ -890,6 +925,7 @@ class OllamaLLMClient(LLMClient):
                 backoff_base=backoff_base,
                 backoff_max=backoff_max,
                 sem=sem,
+                use_think=use_think,
             )
         except LLMJsonParseError:
             # If content starts with '{' but is unparseable, the server likely cut off the
@@ -911,6 +947,7 @@ class OllamaLLMClient(LLMClient):
                     backoff_base=backoff_base,
                     backoff_max=backoff_max,
                     sem=sem,
+                    use_think=use_think,
                 )
             raise
 
@@ -947,6 +984,7 @@ class OllamaLLMClient(LLMClient):
         backoff_base: float,
         backoff_max: float,
         sem: threading.BoundedSemaphore,
+        use_think: bool = True,
     ) -> Dict[str, Any]:
         """On truncation: continue via multi-turn conversation, then parse JSON (same as SE team)."""
         accumulated = initial_partial
@@ -969,7 +1007,7 @@ class OllamaLLMClient(LLMClient):
                 "max_tokens": max_tokens,
                 "response_format": {"type": "json_object"},
                 "messages": messages,
-                "think": self._should_enable_thinking(),
+                "think": use_think,
             }
 
             try:
@@ -999,12 +1037,17 @@ class OllamaLLMClient(LLMClient):
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         tools: Optional[list] = None,
+        think: Optional[bool] = None,
     ) -> str:
         """Return raw text from the model (no JSON mode). Pass tools for function/tool calling."""
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
+        use_think = self._resolve_think(think)
         logger.info(
-            "LLM request (text): provider=ollama model=%s base_url=%s", self.model, self.base_url
+            "LLM request (text): provider=ollama model=%s base_url=%s think=%s",
+            self.model,
+            self.base_url,
+            use_think,
         )
         env_max = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS) or os.environ.get(
             llm_config.ENV_LLM_MAX_TOKENS_SW
@@ -1023,7 +1066,7 @@ class OllamaLLMClient(LLMClient):
             "temperature": temperature,
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
-            "think": self._should_enable_thinking(),
+            "think": use_think,
         }
         if system_prompt:
             payload["messages"] = [
@@ -1045,6 +1088,7 @@ class OllamaLLMClient(LLMClient):
                 backoff_base=backoff_base,
                 backoff_max=backoff_max,
                 sem=sem,
+                use_think=use_think,
             )
 
     def _complete_text_with_continuation(
@@ -1058,6 +1102,7 @@ class OllamaLLMClient(LLMClient):
         backoff_base: float,
         backoff_max: float,
         sem: threading.BoundedSemaphore,
+        use_think: bool = True,
     ) -> str:
         """On truncation: continue via multi-turn conversation, return merged text."""
         accumulated = initial_partial
@@ -1082,7 +1127,7 @@ class OllamaLLMClient(LLMClient):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "messages": messages,
-                "think": self._should_enable_thinking(),
+                "think": use_think,
             }
             try:
                 next_content = self._ollama_post(

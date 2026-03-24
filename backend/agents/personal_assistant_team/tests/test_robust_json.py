@@ -23,6 +23,7 @@ class MockLLMClient(LLMClient):
         max_tokens=None,
         system_prompt=None,
         json_mode: bool = False,
+        think=None,
     ) -> str:
         self.prompts.append(prompt)
         if self.call_count < len(self.responses):

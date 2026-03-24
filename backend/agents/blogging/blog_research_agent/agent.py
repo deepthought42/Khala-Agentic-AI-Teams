@@ -263,7 +263,7 @@ class ResearchAgent:
             prompt += f"Tone/Purpose: {brief_input.tone_or_purpose}\n"
 
         self._report_llm("Parsing brief...", 0.05)
-        parsed = self.llm.complete_json(prompt, temperature=0.0)
+        parsed = self.llm.complete_json(prompt, temperature=0.0, think=False)
 
         return {
             "core_topics": parsed.get("core_topics") or [brief_input.brief],
@@ -287,7 +287,7 @@ class ResearchAgent:
             tone_or_purpose=brief_input.tone_or_purpose or "",
         )
         self._report_llm("Generating search queries...", 0.10)
-        data = self.llm.complete_json(prompt, temperature=0.3)
+        data = self.llm.complete_json(prompt, temperature=0.3, think=False)
         queries_data = data.get("queries") or []
 
         queries: List[SearchQuery] = []
@@ -398,7 +398,7 @@ class ResearchAgent:
                 f"Document content:\n{doc_content}\n"
             )
         )
-        data = self.llm.complete_json(prompt, temperature=0.0)
+        data = self.llm.complete_json(prompt, temperature=0.0, think=False)
         rel = data.get("relevance_score")
         auth = data.get("authority_score")
         acc = data.get("accuracy_score")
@@ -483,7 +483,7 @@ class ResearchAgent:
             f"Document content:\n{doc_content}\n"
         )
         try:
-            data = self.llm.complete_json(prompt, temperature=0.2)
+            data = self.llm.complete_json(prompt, temperature=0.2, think=False)
             summary = data.get("summary") or ""
             key_points = data.get("key_points") or []
         except Exception as e:
@@ -659,7 +659,7 @@ class ResearchAgent:
         )
         self._report_llm("Finding similar topics...", 0.90)
         try:
-            data = self.llm.complete_json(prompt, temperature=0.2)
+            data = self.llm.complete_json(prompt, temperature=0.2, think=False)
             items = data.get("similar_topics") or []
             topics: List[str] = []
             for item in items if isinstance(items, list) else []:

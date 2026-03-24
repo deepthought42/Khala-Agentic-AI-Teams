@@ -100,7 +100,9 @@ class AgenticTeamStore:
                 "INSERT INTO teams (team_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (team_id, name, description, now, now),
             )
-        return AgenticTeam(team_id=team_id, name=name, description=description, created_at=now, updated_at=now)
+        return AgenticTeam(
+            team_id=team_id, name=name, description=description, created_at=now, updated_at=now
+        )
 
     def get_team(self, team_id: str) -> Optional[AgenticTeam]:
         with self._lock, self._connect() as conn:
@@ -145,7 +147,9 @@ class AgenticTeamStore:
         now = _now_iso()
         data = process.model_dump(mode="json")
         with self._lock, self._connect() as conn:
-            existing = conn.execute("SELECT 1 FROM processes WHERE process_id = ?", (process.process_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT 1 FROM processes WHERE process_id = ?", (process.process_id,)
+            ).fetchone()
             if existing:
                 conn.execute(
                     "UPDATE processes SET data_json = ?, updated_at = ? WHERE process_id = ?",
@@ -160,7 +164,9 @@ class AgenticTeamStore:
 
     def get_process(self, process_id: str) -> Optional[ProcessDefinition]:
         with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT data_json FROM processes WHERE process_id = ?", (process_id,)).fetchone()
+            row = conn.execute(
+                "SELECT data_json FROM processes WHERE process_id = ?", (process_id,)
+            ).fetchone()
             if not row:
                 return None
         return ProcessDefinition(**json.loads(row["data_json"]))
@@ -214,7 +220,10 @@ class AgenticTeamStore:
                 "INSERT INTO conv_messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                 (conversation_id, role, content, now),
             )
-            conn.execute("UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", (now, conversation_id))
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (now, conversation_id),
+            )
 
     def get_messages(self, conversation_id: str) -> list[ConversationMessage]:
         with self._lock, self._connect() as conn:
@@ -222,7 +231,10 @@ class AgenticTeamStore:
                 "SELECT role, content, timestamp FROM conv_messages WHERE conversation_id = ? ORDER BY id",
                 (conversation_id,),
             ).fetchall()
-        return [ConversationMessage(role=r["role"], content=r["content"], timestamp=r["timestamp"]) for r in rows]
+        return [
+            ConversationMessage(role=r["role"], content=r["content"], timestamp=r["timestamp"])
+            for r in rows
+        ]
 
     def list_conversations(self, team_id: str) -> list[dict]:
         with self._lock, self._connect() as conn:
