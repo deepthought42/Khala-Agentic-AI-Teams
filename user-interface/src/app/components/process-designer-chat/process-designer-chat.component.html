@@ -1,0 +1,159 @@
+<div class="designer-layout">
+  <!-- Chat panel -->
+  <div class="chat-panel">
+    <mat-card class="chat-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>smart_toy</mat-icon>
+          Process Designer
+        </mat-card-title>
+        <span class="spacer"></span>
+        <button mat-icon-button (click)="newConversation()" matTooltip="Start new conversation" [disabled]="loading()">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </mat-card-header>
+
+      <mat-card-content>
+        @if (error()) {
+          <p class="error-text">{{ error() }}</p>
+        }
+
+        <div class="messages-container" #messagesContainer>
+          @for (msg of messages(); track msg.timestamp + msg.content) {
+            <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+              <div class="message-content">{{ msg.content }}</div>
+              <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
+            </div>
+          }
+
+          @if (loading()) {
+            <div class="message assistant">
+              <div class="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          }
+        </div>
+
+        <form [formGroup]="form" (ngSubmit)="onSubmit()" class="input-form">
+          <mat-form-field appearance="outline" class="message-input">
+            <mat-label>Describe your process...</mat-label>
+            <input
+              matInput
+              formControlName="message"
+              [attr.aria-label]="'Message input'"
+              (keydown.enter)="$event.preventDefault(); onSubmit()"
+            />
+          </mat-form-field>
+          <button
+            mat-fab
+            color="primary"
+            type="submit"
+            [disabled]="form.invalid || loading()"
+            [attr.aria-label]="'Send message'"
+          >
+            <mat-icon>send</mat-icon>
+          </button>
+        </form>
+
+        @if (suggestedQuestions().length > 0) {
+          <div class="suggested-questions">
+            @for (q of suggestedQuestions(); track q) {
+              <button mat-stroked-button (click)="onSuggestedQuestion(q)" [disabled]="loading()">
+                {{ q }}
+              </button>
+            }
+          </div>
+        }
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Process visualization panel -->
+  <div class="process-panel">
+    <mat-card class="process-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>account_tree</mat-icon>
+          Process Diagram
+        </mat-card-title>
+      </mat-card-header>
+
+      <mat-card-content>
+        @if (currentProcess(); as process) {
+          <div class="process-meta">
+            <h3 class="process-name">{{ process.name || 'Untitled Process' }}</h3>
+            @if (process.description) {
+              <p class="process-description">{{ process.description }}</p>
+            }
+            <mat-chip-set class="process-chips">
+              <mat-chip>
+                <mat-icon matChipAvatar>play_arrow</mat-icon>
+                {{ process.trigger.trigger_type }}
+              </mat-chip>
+              <mat-chip>{{ process.steps.length }} step{{ process.steps.length !== 1 ? 's' : '' }}</mat-chip>
+              <mat-chip [class]="'status-' + process.status">{{ process.status }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          @if (flowchartSvg()) {
+            <div class="flowchart-container" [innerHTML]="flowchartSvg()"></div>
+          }
+
+          <!-- Step details list -->
+          <div class="step-list">
+            @for (step of process.steps; track step.step_id) {
+              <div class="step-detail">
+                <div class="step-header">
+                  @if (step.step_type === 'decision') {
+                    <mat-icon class="step-icon decision">call_split</mat-icon>
+                  } @else if (step.step_type === 'parallel_split') {
+                    <mat-icon class="step-icon parallel">fork_right</mat-icon>
+                  } @else if (step.step_type === 'wait') {
+                    <mat-icon class="step-icon wait">hourglass_empty</mat-icon>
+                  } @else {
+                    <mat-icon class="step-icon action">play_circle</mat-icon>
+                  }
+                  <span class="step-name">{{ step.name }}</span>
+                </div>
+                @if (step.description) {
+                  <p class="step-description">{{ step.description }}</p>
+                }
+                @if (step.agents.length > 0) {
+                  <div class="step-agents">
+                    @for (agent of step.agents; track agent.agent_name) {
+                      <mat-chip class="agent-chip">
+                        <mat-icon matChipAvatar>person</mat-icon>
+                        {{ agent.agent_name }}
+                      </mat-chip>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+
+          @if (process.output.description) {
+            <div class="output-section">
+              <h4>
+                <mat-icon>output</mat-icon>
+                Output
+              </h4>
+              <p>{{ process.output.description }}</p>
+              @if (process.output.destination) {
+                <p class="output-destination">Destination: {{ process.output.destination }}</p>
+              }
+            </div>
+          }
+        } @else {
+          <div class="empty-process">
+            <mat-icon class="empty-icon">account_tree</mat-icon>
+            <p>The process diagram will appear here as you define it through the chat.</p>
+          </div>
+        }
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>
