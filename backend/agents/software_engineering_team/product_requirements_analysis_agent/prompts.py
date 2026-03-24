@@ -829,6 +829,44 @@ If no questions are answered by the spec, return:
 """
 
 # ---------------------------------------------------------------------------
+# SOP Phase 1: Generate spec-aware answer options for questions with few/no hardcoded options
+# ---------------------------------------------------------------------------
+
+SOP_GENERATE_OPTIONS_PROMPT = """You are an expert Product Analyst. Generate 3-6 relevant answer options for the following SOP question. \
+The options must be specific, actionable, and informed by the project specification and any prior decisions already made.
+
+Question: {question_text}
+Question ID: {sop_id}
+
+Prior decisions already made:
+---
+{prior_decisions}
+---
+
+Product Specification excerpt:
+---
+{spec_excerpt}
+---
+
+RULES:
+1. Generate 3-6 options that are RELEVANT to this specific project based on the spec and prior decisions.
+2. If prior decisions indicate a specific technology (e.g., Python was chosen as language), tailor options accordingly (e.g., suggest Python-specific frameworks like FastAPI, Django, Flask).
+3. Mark exactly ONE option as is_default (the one most aligned with the spec).
+4. Always include an "Other" option as the last option.
+5. Each option must have a brief rationale explaining why it is relevant.
+
+Respond with a JSON object only, no markdown:
+{{
+  "options": [
+    {{"id": "opt_1", "label": "Option label", "is_default": true, "rationale": "Why this fits the project.", "confidence": 0.7}},
+    {{"id": "opt_2", "label": "Another option", "is_default": false, "rationale": "Why this is relevant.", "confidence": 0.5}},
+    {{"id": "opt_3", "label": "Third option", "is_default": false, "rationale": "Why this could work.", "confidence": 0.4}},
+    {{"id": "opt_other", "label": "Other", "is_default": false, "rationale": "Specify your preference.", "confidence": 0.3}}
+  ]
+}}
+"""
+
+# ---------------------------------------------------------------------------
 # SOP Phase 1: Round Prompt — Generate questions for unanswered SOP items
 # ---------------------------------------------------------------------------
 
