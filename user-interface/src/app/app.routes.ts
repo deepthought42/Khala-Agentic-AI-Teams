@@ -22,6 +22,7 @@ import { StartupAdvisorDashboardComponent } from './components/startup-advisor-d
 import { StartupAdvisorIntakeComponent } from './components/startup-advisor-intake/startup-advisor-intake.component';
 import { StartupAdvisorRecommendationsComponent } from './components/startup-advisor-recommendations/startup-advisor-recommendations.component';
 import { StartupAdvisorExecutionComponent } from './components/startup-advisor-execution/startup-advisor-execution.component';
+import { AgenticTeamDashboardComponent } from './components/agentic-team-dashboard/agentic-team-dashboard.component';
 
 export const routes: Routes = [
   {
@@ -47,6 +48,7 @@ export const routes: Routes = [
       { path: 'studio-grid', component: StudioGridDashboardComponent },
       { path: 'sales', component: SalesDashboardComponent },
       { path: 'nutrition', component: NutritionDashboardComponent },
+      { path: 'agentic-teams', component: AgenticTeamDashboardComponent },
       {
         path: 'startup-advisor',
         component: StartupAdvisorDashboardComponent,

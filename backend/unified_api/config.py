@@ -139,6 +139,12 @@ TEAM_CONFIGS: dict[str, TeamConfig] = {
         ),
         tags=["travel", "road-trip", "itinerary", "planning"],
     ),
+    "agentic_team_provisioning": TeamConfig(
+        name="Agentic Team Provisioning",
+        prefix="/api/agentic-team-provisioning",
+        description="Create agentic teams and define their processes through conversation",
+        tags=["agentic", "teams", "processes", "provisioning"],
+    ),
 }
 
 

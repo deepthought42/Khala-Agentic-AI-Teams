@@ -22,4 +22,5 @@ export const environment = {
   /** StudioGrid design-system workflow API */
   studioGridApiUrl: `${apiBase}/api/studio-grid`,
   salesApiUrl: `${apiBase}/api/sales`,
+  agenticTeamProvisioningApiUrl: `${apiBase}/api/agentic-team-provisioning`,
 };
