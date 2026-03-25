@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -12,7 +12,7 @@ import { MatIconModule } from '@angular/material/icon';
   styleUrl: './blog-landing.component.scss',
 })
 export class BlogLandingComponent {
-  constructor(private readonly router: Router) {}
+  private readonly router = inject(Router);
 
   navigateToDashboard(): void {
     this.router.navigate(['/blogging/dashboard']);
