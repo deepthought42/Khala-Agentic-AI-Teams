@@ -30,6 +30,22 @@ from ..interface import (
 
 logger = logging.getLogger(__name__)
 
+
+def _caller_tag() -> str:
+    """Return 'module.function' of the first caller outside llm_service for log context."""
+    import inspect
+
+    for frame_info in inspect.stack()[2:]:  # skip _caller_tag and its immediate caller
+        mod = frame_info.frame.f_globals.get("__name__", "")
+        if mod and "llm_service" not in mod:
+            func = frame_info.function
+            # Shorten module path: "blogging.blog_draft_agent.agent" -> "blog_draft_agent.agent"
+            parts = mod.rsplit(".", 2)
+            short = ".".join(parts[-2:]) if len(parts) > 1 else mod
+            return f"{short}.{func}"
+    return "unknown"
+
+
 # Default cap for max_tokens
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
@@ -620,18 +636,21 @@ class OllamaLLMClient(LLMClient):
                                             finish_reason = fr
                                 elapsed = time.monotonic() - t0
                                 joined_content = "".join(content_parts)
+                                caller = getattr(self, "_current_caller", "unknown")
                                 logger.info(
-                                    "LLM streaming response complete in %.1fs (content=%d chars, reasoning=%s, finish=%s)",
+                                    "LLM streaming response complete in %.1fs (caller=%s, content=%d chars, reasoning=%s, finish=%s)",
                                     elapsed,
+                                    caller,
                                     len(joined_content),
                                     has_reasoning,
                                     finish_reason or "stop",
                                 )
                                 if not joined_content.strip() and has_reasoning:
                                     logger.warning(
-                                        "LLM produced reasoning tokens but no content — "
+                                        "LLM produced reasoning tokens but no content (caller=%s) — "
                                         "model likely spent its token budget on thinking. "
-                                        "Consider raising max_tokens or disabling thinking (LLM_ENABLE_THINKING=false)."
+                                        "Consider raising max_tokens or disabling thinking (LLM_ENABLE_THINKING=false).",
+                                        caller,
                                     )
                                 tool_calls = None
                                 if tool_call_buffers:
@@ -857,10 +876,12 @@ class OllamaLLMClient(LLMClient):
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
         use_think = self._resolve_think(think)
+        caller = _caller_tag()
+        self._current_caller = caller
         logger.info(
-            "LLM request: provider=ollama model=%s base_url=%s think=%s",
+            "LLM request: caller=%s provider=ollama model=%s think=%s",
+            caller,
             self.model,
-            self.base_url,
             use_think,
         )
         system_message = system_prompt or (
@@ -1043,10 +1064,12 @@ class OllamaLLMClient(LLMClient):
         max_retries, backoff_base, backoff_max = _parse_retry_config()
         sem = _get_ollama_semaphore()
         use_think = self._resolve_think(think)
+        caller = _caller_tag()
+        self._current_caller = caller
         logger.info(
-            "LLM request (text): provider=ollama model=%s base_url=%s think=%s",
+            "LLM request (text): caller=%s provider=ollama model=%s think=%s",
+            caller,
             self.model,
-            self.base_url,
             use_think,
         )
         env_max = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS) or os.environ.get(
