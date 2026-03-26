@@ -23,7 +23,9 @@ app = FastAPI(
 
 
 class CreateConversationRequest(BaseModel):
-    initial_message: Optional[str] = Field(default=None, description="Optional first message from the founder")
+    initial_message: Optional[str] = Field(
+        default=None, description="Optional first message from the founder"
+    )
 
 
 class SendMessageRequest(BaseModel):
@@ -151,7 +153,9 @@ def get_or_create_conversation() -> ConversationStateResponse:
             raise HTTPException(status_code=500, detail="Failed to load conversation")
         messages, context = state
 
-    return _build_response(cid, messages, context, artifacts, _DEFAULT_SUGGESTED if len(messages) <= 1 else [])
+    return _build_response(
+        cid, messages, context, artifacts, _DEFAULT_SUGGESTED if len(messages) <= 1 else []
+    )
 
 
 @app.post("/conversation/messages", response_model=ConversationStateResponse)

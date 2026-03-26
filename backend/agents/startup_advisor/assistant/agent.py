@@ -133,7 +133,9 @@ class StartupAdvisorAgent:
         for role, content in history:
             prefix = "Assistant: " if role == "assistant" else "Founder: "
             conversation_lines.append(f"{prefix}{content}")
-        conversation_history = "\n".join(conversation_lines) if conversation_lines else "(New conversation)"
+        conversation_history = (
+            "\n".join(conversation_lines) if conversation_lines else "(New conversation)"
+        )
 
         prompt = USER_TURN_TEMPLATE.format(
             context_json=json.dumps(context, indent=2) if context else "{}",

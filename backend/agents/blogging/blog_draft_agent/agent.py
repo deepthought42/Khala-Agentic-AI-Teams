@@ -28,7 +28,6 @@ from .prompts import (
     DRAFT_SYSTEM_REMINDER,
     EXTRACT_NOTES_PROMPT,
     REVISE_DRAFT_PROMPT,
-    REVISE_SINGLE_ITEM_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -339,123 +338,6 @@ class BlogDraftAgent:
         if draft_output_path:
             _write_draft_to_path(draft, draft_output_path)
         return DraftOutput(draft=draft)
-
-    def _build_revise_single_item_prompt(
-        self,
-        draft: str,
-        item: Any,
-        item_index: int,
-        style_guide_text: str,
-        revise_input: ReviseDraftInput,
-    ) -> str:
-        """Build the revision prompt for a single feedback item."""
-        loc = f" [{item.location}]" if getattr(item, "location", None) else ""
-        line = f"[{item.severity}] {item.category}{loc}: {item.issue}"
-        if getattr(item, "suggestion", None):
-            line += f"\n   Suggestion: {item.suggestion}"
-
-        brand_section = (
-            self._brand_spec_prompt
-            if self._brand_spec_prompt
-            else "No brand specification was provided. Follow the style guide below."
-        )
-        cp = compact_text(
-            revise_input.outline_for_prompt(), COMPACT_OUTLINE_CHARS, self.llm, "content plan"
-        )
-        prompt_parts = [
-            REVISE_SINGLE_ITEM_PROMPT,
-            "",
-            "---",
-            "BRAND AND STYLE (mandatory for every sentence):",
-            "---",
-            brand_section,
-            "",
-            "---",
-            "STYLE GUIDE (follow in the revised draft):",
-            "---",
-            style_guide_text,
-            "",
-            "---",
-            "CONTENT PLAN (preserve section intent):",
-            "---",
-            cp,
-            "",
-            "---",
-            f"SINGLE FEEDBACK ITEM TO APPLY (item {item_index}):",
-            "---",
-            line,
-            "",
-            "---",
-            "CURRENT DRAFT:",
-            "---",
-            draft,
-        ]
-        if revise_input.audience:
-            prompt_parts.insert(0, f"Audience: {revise_input.audience}\n")
-        if revise_input.tone_or_purpose:
-            prompt_parts.insert(0, f"Tone/Purpose: {revise_input.tone_or_purpose}\n")
-        if revise_input.allowed_claims and revise_input.allowed_claims.get("claims"):
-            claims_list = revise_input.allowed_claims["claims"]
-            claims_text = "\n".join(
-                f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')}" for c in claims_list
-            )
-            block = "\n".join(
-                [
-                    "",
-                    "---",
-                    "ALLOWED CLAIMS (preserve [CLAIM:id] tags; do not add new factual claims):",
-                    "---",
-                    claims_text,
-                ]
-            )
-            prompt_parts.insert(len(prompt_parts) - 5, block)
-        if revise_input.selected_title:
-            prompt_parts.extend(
-                [
-                    "",
-                    "---",
-                    f"AUTHOR-CHOSEN TITLE (preserve this exact H1): {revise_input.selected_title}",
-                ]
-            )
-        if revise_input.elicited_stories:
-            prompt_parts.extend(
-                [
-                    "",
-                    "---",
-                    "AUTHOR'S PERSONAL STORIES (preserve these in the revision):\n"
-                    + revise_input.elicited_stories,
-                ]
-            )
-        if revise_input.research_document:
-            research = revise_input.research_document.strip()
-            prompt_parts.extend(
-                [
-                    "",
-                    "---",
-                    "RESEARCH (for context; preserve facts):",
-                    "---",
-                    research,
-                ]
-            )
-        length_block = (
-            revise_input.length_guidance.strip()
-            if (revise_input.length_guidance or "").strip()
-            else (
-                f"TARGET LENGTH: The revised draft should be approximately {revise_input.target_word_count} words. "
-                "Apply the feedback item above without significantly expanding the post beyond this target."
-            )
-        )
-        prompt_parts.extend(
-            [
-                "",
-                "---",
-                length_block,
-                "",
-                "---",
-                'Use this format: first line {"draft": 0}, then ---DRAFT---, then the full revised blog post in Markdown.',
-            ]
-        )
-        return "\n".join(prompt_parts)
 
     def _format_feedback_item_line(self, item: Any, index: int) -> str:
         """One numbered feedback line (+ optional suggestion) for batch revise prompts."""
