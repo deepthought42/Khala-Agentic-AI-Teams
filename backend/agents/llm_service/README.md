@@ -35,7 +35,6 @@ max_ctx = client.get_max_context_tokens()
 | `LLM_BACKOFF_BASE` | Backoff base (seconds) | `SW_LLM_BACKOFF_BASE` |
 | `LLM_BACKOFF_MAX` | Max backoff (seconds) | `SW_LLM_BACKOFF_MAX_SECONDS` |
 | `LLM_MAX_CONCURRENCY` | Max concurrent Ollama calls | `SW_LLM_MAX_CONCURRENCY` |
-| `LLM_ENABLE_THINKING` | Enable thinking for qwen3.5 | `SW_LLM_ENABLE_THINKING` |
 | `OLLAMA_API_KEY` | **Required for Ollama Cloud.** API key from https://ollama.com/settings/keys. All LLM requests use this when set. | `LLM_OLLAMA_API_KEY`, `SW_LLM_OLLAMA_API_KEY` (overrides) |
 
 ### Troubleshooting
@@ -48,7 +47,7 @@ max_ctx = client.get_max_context_tokens()
 
 **500 Internal Server Error from Ollama Cloud**
 
-- **Thinking mode:** With `qwen3.5:397b-cloud`, the client may send `think: true`, which some endpoints reject. Set `LLM_ENABLE_THINKING=false` (or `SW_LLM_ENABLE_THINKING=false`) and retry.
+- **Thinking mode:** With `qwen3.5:397b-cloud`, the client may send `think: true`, which some endpoints reject. Ensure the caller passes `think=False` and retry.
 - **Quota / capacity:** Check your Ollama Cloud account and https://status.ollama.com (or Ollama’s status page) for outages or rate limits.
 - **Model / size:** Try a smaller model (e.g. `LLM_MODEL=qwen3.5:8b-cloud`) or reduce prompt size to rule out server-side overload.
 
