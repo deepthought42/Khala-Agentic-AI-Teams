@@ -59,8 +59,6 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   private queryParamsSub: Subscription | null = null;
   private pendingJobId: string | null = null;
 
-  mode: 'chat' | 'form' = 'chat';
-
   selectedTabIndex = 0;
   activeTab: DashboardTab = 'build';
 

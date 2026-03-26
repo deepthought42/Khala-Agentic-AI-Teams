@@ -1,5 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { of } from 'rxjs';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
 import { BloggingApiService } from '../../services/blogging-api.service';
@@ -57,29 +57,5 @@ describe('BloggingDashboardComponent', () => {
 
   it('should fetch all jobs via getJobs(false) on init', () => {
     expect(apiSpy.getJobs).toHaveBeenCalledWith(false);
-  });
-
-  it('should call startResearchReviewAsync and refetch jobs on success', () => {
-    apiSpy.startResearchReviewAsync.mockReturnValue(of({ job_id: 'new-job-123' }));
-    apiSpy.getJobs.mockReturnValue(of([{ job_id: 'new-job-123', status: 'running', brief: 'Test', progress: 0 }]));
-
-    component.onResearchReviewSubmit({ brief: 'Test', max_results: 20 });
-
-    expect(apiSpy.startResearchReviewAsync).toHaveBeenCalledWith({
-      brief: 'Test',
-      max_results: 20,
-    });
-    expect(component.loading).toBe(false);
-  });
-
-  it('should set error on startResearchReviewAsync failure', () => {
-    apiSpy.startResearchReviewAsync.mockReturnValue(
-      throwError(() => ({ error: { detail: 'Server error' } }))
-    );
-
-    component.onResearchReviewSubmit({ brief: 'Test', max_results: 20 });
-
-    expect(component.error).toBeTruthy();
-    expect(component.loading).toBe(false);
   });
 });

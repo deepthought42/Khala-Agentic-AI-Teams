@@ -1,76 +1,16 @@
 <h1>Social Media Marketing API</h1>
 <p>Campaign planning, performance ingestion, revision.</p>
 
-<div class="mode-toggle">
-  <button mat-stroked-button [class.active]="mode === 'chat'" (click)="mode = 'chat'">
-    <mat-icon>chat</mat-icon> Chat
-  </button>
-  <button mat-stroked-button [class.active]="mode === 'form'" (click)="mode = 'form'">
-    <mat-icon>edit_note</mat-icon> Form
-  </button>
-</div>
-
-@if (mode === 'chat') {
-  <app-team-assistant-chat
-    [teamApiUrl]="'/api/social-marketing/assistant'"
-    [teamName]="'Social Media Marketing'"
-    [teamDescription]="'Plan a social media campaign for your brand'"
-  />
-}
-
-@if (mode === 'form') {
-<div class="header-row">
-  <app-health-indicator [healthCheck]="healthCheck" label="Social Marketing API" />
-</div>
-
-@if (loading) {
-  <app-loading-spinner message="Processing..." />
-}
-
-@if (error) {
-  <app-error-message [message]="error" />
-}
-
-<mat-tab-group>
-  <mat-tab label="Run">
-    <div class="tab-content">
-      <app-social-marketing-run-form (submitRequest)="onRunSubmit($event)" />
-      @if (jobId) {
-        <div class="job-actions-row">
-          <button mat-stroked-button (click)="stopJob()" type="button">
-            <mat-icon>stop</mat-icon>
-            Stop
-          </button>
-          <button mat-stroked-button (click)="deleteJob()" type="button">
-            <mat-icon>delete</mat-icon>
-            Delete
-          </button>
-          <button mat-stroked-button (click)="clearJob()" type="button">
-            <mat-icon>add</mat-icon>
-            Start new
-          </button>
-        </div>
-        <app-social-marketing-status [jobId]="jobId" />
-      }
-    </div>
-  </mat-tab>
-  @if (jobId) {
-    <mat-tab label="Performance">
-      <div class="tab-content">
-        <app-social-marketing-performance
-          [jobId]="jobId"
-          (submitObservations)="onPerformanceSubmit($event)"
-        />
-      </div>
-    </mat-tab>
-    <mat-tab label="Revise">
-      <div class="tab-content">
-        <app-social-marketing-revise
-          [jobId]="jobId"
-          (submitRequest)="onReviseSubmit($event)"
-        />
-      </div>
-    </mat-tab>
-  }
-</mat-tab-group>
-}
+<app-team-assistant-chat
+  [teamApiUrl]="'/api/social-marketing/assistant'"
+  [teamName]="'Social Media Marketing'"
+  [teamDescription]="'Plan a social media campaign for your brand'"
+  [fields]="[
+    {key: 'brand_name', label: 'Brand name', placeholder: 'Name of your brand', required: true},
+    {key: 'target_audience', label: 'Target audience', placeholder: 'Who are you targeting?', required: true},
+    {key: 'goals', label: 'Campaign goals', placeholder: 'e.g. engagement, follower growth'},
+    {key: 'voice_and_tone', label: 'Voice and tone', placeholder: 'e.g. professional, playful'},
+    {key: 'cadence_posts_per_day', label: 'Posts per day', placeholder: 'Number of posts per day'},
+    {key: 'duration_days', label: 'Duration (days)', placeholder: 'Campaign length in days'}
+  ]"
+/>

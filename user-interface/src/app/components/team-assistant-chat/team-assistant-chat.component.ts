@@ -9,40 +9,43 @@ import {
   AfterViewChecked,
   inject,
 } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { TeamAssistantApiService } from '../../services/team-assistant-api.service';
 import type {
   TeamAssistantMessage,
   TeamAssistantConversationState,
+  TeamAssistantFieldSpec,
 } from '../../models/team-assistant.model';
 
 @Component({
   selector: 'app-team-assistant-chat',
   standalone: true,
   imports: [
+    FormsModule,
     ReactiveFormsModule,
     MatCardModule,
     MatFormFieldModule,
     MatInputModule,
     MatButtonModule,
     MatIconModule,
+    MatTooltipModule,
   ],
   templateUrl: './team-assistant-chat.component.html',
   styleUrl: './team-assistant-chat.component.scss',
 })
 export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
-  /** Base URL for the team's assistant API, e.g. '/api/soc2-compliance/assistant'. */
   @Input() teamApiUrl = '';
-  /** Display name shown in the card header. */
   @Input() teamName = 'Assistant';
-  /** Short description shown below the title. */
   @Input() teamDescription = '';
-  /** Emitted when all required fields are collected and the user clicks Launch. */
+  /** Field definitions — drives the right-side form panel. */
+  @Input() fields: TeamAssistantFieldSpec[] = [];
   @Output() launchWorkflow = new EventEmitter<Record<string, unknown>>();
 
   @ViewChild('messagesContainer') messagesContainer!: ElementRef<HTMLDivElement>;
@@ -58,7 +61,12 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
   ready = false;
   missingFields: string[] = [];
 
-  form = this.fb.nonNullable.group({
+  /** Field currently being edited (key), or null if none. */
+  editingField: string | null = null;
+  /** Draft value while editing a field. */
+  editingValue = '';
+
+  chatForm = this.fb.nonNullable.group({
     message: ['', [Validators.required, Validators.minLength(1)]],
   });
 
@@ -70,9 +78,11 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     this.scrollToBottom();
   }
 
+  // --- Chat actions ---
+
   onSubmit(): void {
-    if (this.form.invalid || this.loading) return;
-    const message = this.form.getRawValue().message.trim();
+    if (this.chatForm.invalid || this.loading) return;
+    const message = this.chatForm.getRawValue().message.trim();
     if (!message) return;
     this.sendMessage(message);
   }
@@ -90,21 +100,58 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     this.loadConversation();
   }
 
+  // --- Inline field editing ---
+
+  startEdit(fieldKey: string): void {
+    this.editingField = fieldKey;
+    const current = this.context[fieldKey];
+    this.editingValue = current != null ? String(current) : '';
+  }
+
+  saveEdit(): void {
+    if (!this.editingField) return;
+    const key = this.editingField;
+    const value = this.editingValue.trim();
+    this.context = { ...this.context, [key]: value || undefined };
+    this.editingField = null;
+    this.editingValue = '';
+    // Push to backend
+    this.api.updateContext(this.teamApiUrl, { [key]: value }).subscribe({
+      next: res => {
+        this.context = res.context ?? this.context;
+        this.checkReadiness();
+      },
+      error: () => {},
+    });
+  }
+
+  cancelEdit(): void {
+    this.editingField = null;
+    this.editingValue = '';
+  }
+
+  fieldValue(key: string): string {
+    const v = this.context[key];
+    return v != null && v !== '' ? String(v) : '';
+  }
+
+  isFieldFilled(key: string): boolean {
+    const v = this.context[key];
+    return v != null && v !== '';
+  }
+
+  // --- Helpers ---
+
   formatTime(timestamp: string): string {
     if (!timestamp) return '';
     try {
-      const d = new Date(timestamp);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
       return '';
     }
   }
 
-  contextKeys(): string[] {
-    return Object.keys(this.context).filter(k => this.context[k] != null && this.context[k] !== '');
-  }
-
-  // --- private ---
+  // --- Private ---
 
   private scrollToBottom(): void {
     if (this.messagesContainer?.nativeElement) {
@@ -137,7 +184,7 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
 
   private sendMessage(message: string): void {
     if (!this.teamApiUrl) return;
-    this.form.reset({ message: '' });
+    this.chatForm.reset({ message: '' });
     this.messages = [
       ...this.messages,
       { role: 'user', content: message, timestamp: new Date().toISOString() },

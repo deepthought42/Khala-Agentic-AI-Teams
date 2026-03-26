@@ -5,36 +5,15 @@
   <app-health-indicator [healthCheck]="healthCheck" label="Market Research API" />
 </div>
 
-<div class="mode-toggle">
-  <button mat-stroked-button [class.active]="mode === 'chat'" (click)="mode = 'chat'">
-    <mat-icon>chat</mat-icon> Chat
-  </button>
-  <button mat-stroked-button [class.active]="mode === 'form'" (click)="mode = 'form'">
-    <mat-icon>edit_note</mat-icon> Form
-  </button>
-</div>
-
-@if (mode === 'chat') {
-  <app-team-assistant-chat
-    [teamApiUrl]="'/api/market-research/assistant'"
-    [teamName]="'Market Research'"
-    [teamDescription]="'Describe your product concept and the team will conduct market research'"
-  />
-}
-
-@if (mode === 'form') {
-@if (loading) {
-  <app-loading-spinner message="Processing..." />
-}
-
-@if (error) {
-  <app-error-message [message]="error" />
-}
-
-<div class="content">
-  <app-market-research-form (submitRequest)="onSubmit($event)" />
-  @if (result) {
-    <app-market-research-results [data]="result" />
-  }
-</div>
-}
+<app-team-assistant-chat
+  [teamApiUrl]="'/api/market-research/assistant'"
+  [teamName]="'Market Research'"
+  [teamDescription]="'Describe your product concept and the team will conduct market research'"
+  [fields]="[
+    {key: 'product_concept', label: 'Product concept', placeholder: 'Describe your product or service', required: true},
+    {key: 'target_users', label: 'Target users', placeholder: 'Who is this product for?', required: true},
+    {key: 'business_goal', label: 'Business goal', placeholder: 'What do you want to learn or validate?', required: true},
+    {key: 'topology', label: 'Research topology', placeholder: 'unified or split'},
+    {key: 'transcripts', label: 'Interview transcripts', placeholder: 'Paste or describe user interview data'}
+  ]"
+/>

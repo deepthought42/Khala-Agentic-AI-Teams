@@ -12,14 +12,6 @@
     </div>
 
     <div class="header-actions">
-      <div class="mode-toggle">
-        <button mat-stroked-button [class.active]="mode === 'chat'" (click)="mode = 'chat'">
-          <mat-icon>chat</mat-icon> Chat
-        </button>
-        <button mat-stroked-button [class.active]="mode === 'form'" (click)="mode = 'form'">
-          <mat-icon>edit_note</mat-icon> Form
-        </button>
-      </div>
       <!-- Health Indicator -->
       <div class="health-indicator" [class.healthy]="healthStatus?.status === 'ok'" [class.error]="healthError">
         <mat-icon>{{ healthStatus?.status === 'ok' ? 'check_circle' : 'error' }}</mat-icon>
@@ -43,39 +35,19 @@
     </div>
   </div>
 
-  @if (mode === 'chat') {
-    <app-team-assistant-chat
-      [teamApiUrl]="'/api/accessibility-audit/assistant'"
-      [teamName]="'Accessibility Audit'"
-      [teamDescription]="'Set up an accessibility audit for your web pages or mobile apps'"
-    />
-  }
-
-  @if (mode === 'form') {
-  <!-- Active Job Info -->
-  @if (jobId || auditId) {
-    <div class="active-job-bar">
-      @if (jobId) {
-        <mat-chip class="job-chip">
-          <mat-icon>work</mat-icon>
-          Job: {{ jobId }}
-        </mat-chip>
-      }
-      @if (auditId) {
-        <mat-chip class="audit-chip">
-          <mat-icon>assignment</mat-icon>
-          Audit: {{ auditId }}
-        </mat-chip>
-      }
-      @if (lastStatus) {
-        <mat-chip class="status-chip" [class]="lastStatus.status">
-          {{ lastStatus.status | uppercase }}
-        </mat-chip>
-      }
-    </div>
-  }
-
-  <!-- Tab Navigation -->
+  <app-team-assistant-chat
+    [teamApiUrl]="'/api/accessibility-audit/assistant'"
+    [teamName]="'Accessibility Audit'"
+    [teamDescription]="'Set up an accessibility audit for your web pages or mobile apps'"
+    [fields]="[
+      {key: 'audit_name', label: 'Audit name', placeholder: 'Name for this audit', required: true},
+      {key: 'audit_type', label: 'Audit type', placeholder: 'webpage or mobile', required: true},
+      {key: 'web_urls', label: 'URLs to audit', placeholder: 'URLs to check', required: true},
+      {key: 'critical_journeys', label: 'Critical journeys', placeholder: 'Key user flows to test'},
+      {key: 'wcag_levels', label: 'WCAG levels', placeholder: 'A, AA, or AAA'},
+      {key: 'timebox_hours', label: 'Timebox (hours)', placeholder: 'Maximum hours for audit'}
+    ]"
+  />
   <mat-tab-group
     [selectedIndex]="selectedTabIndex"
     (selectedIndexChange)="onTabChange($event)"
@@ -183,5 +155,4 @@
       </div>
     </mat-tab>
   </mat-tab-group>
-  }
 </div>

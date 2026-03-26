@@ -312,12 +312,10 @@ class BlogDraftAgent:
         # Use raw-text completion so the model can output the hybrid format (---DRAFT--- then markdown).
         # complete_json() forces a single JSON object, so the model would output only {"draft": 0} and we'd get no content.
         draft = ""
-        draft_max_tokens = 32768
         try:
             raw_response = self.llm.complete(
                 prompt,
                 temperature=0.2,
-                max_tokens=draft_max_tokens,
                 system_prompt=WRITING_SYSTEM_PROMPT,
                 think=True,
             )
@@ -326,7 +324,7 @@ class BlogDraftAgent:
             logger.warning("Draft complete() failed: %s; trying complete_json fallback.", e)
             try:
                 data = self.llm.complete_json(
-                    prompt, temperature=0.2, max_tokens=draft_max_tokens, think=True
+                    prompt, temperature=0.2, think=True
                 )
                 raw_draft = data.get("draft")
                 if isinstance(raw_draft, str) and raw_draft.strip():
@@ -539,7 +537,6 @@ class BlogDraftAgent:
             return DraftOutput(draft=draft)
 
         style_guide_text = self._style_prompt
-        revise_max_tokens = 32768
         num_items = len(revise_input.feedback_items)
 
         logger.info("Revising draft for %s feedback items in a single pass", num_items)
@@ -556,7 +553,6 @@ class BlogDraftAgent:
                 raw_response = self.llm.complete(
                     prompt,
                     temperature=0.2,
-                    max_tokens=revise_max_tokens,
                     system_prompt=WRITING_SYSTEM_PROMPT,
                     think=True,
                 )
@@ -587,7 +583,7 @@ class BlogDraftAgent:
         if not revised or not revised.strip():
             try:
                 data = self.llm.complete_json(
-                    prompt, temperature=0.2, max_tokens=revise_max_tokens, think=True
+                    prompt, temperature=0.2, think=True
                 )
                 raw_draft = data.get("draft") if data else None
                 if isinstance(raw_draft, str) and raw_draft.strip():

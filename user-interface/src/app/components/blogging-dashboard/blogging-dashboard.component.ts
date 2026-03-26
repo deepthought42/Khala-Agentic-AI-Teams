@@ -1,6 +1,6 @@
 import { Component, inject, OnDestroy, OnInit } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
-import { CommonModule, SlicePipe } from '@angular/common';
+import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
@@ -18,20 +18,9 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
-import { ResearchReviewFormComponent } from '../research-review-form/research-review-form.component';
-import { ResearchReviewResultsComponent } from '../research-review-results/research-review-results.component';
-import { FullPipelineFormComponent } from '../full-pipeline-form/full-pipeline-form.component';
-import { FullPipelineResultsComponent } from '../full-pipeline-results/full-pipeline-results.component';
-import { MediumStatsFormComponent } from '../medium-stats-form/medium-stats-form.component';
-import { BlogPipelineFlowComponent } from '../blog-pipeline-flow/blog-pipeline-flow.component';
 import { TeamAssistantChatComponent } from '../team-assistant-chat/team-assistant-chat.component';
 import { Router } from '@angular/router';
 import type {
-  ResearchAndReviewRequest,
-  ResearchAndReviewResponse,
-  FullPipelineRequest,
-  FullPipelineResponse,
-  MediumStatsRequest,
   BlogJobListItem,
   BlogJobStatusResponse,
   ArtifactMeta,
@@ -71,7 +60,6 @@ export function artifactLabel(name: string): string {
   standalone: true,
   imports: [
     CommonModule,
-    SlicePipe,
     FormsModule,
     MatTabsModule,
     MatCardModule,
@@ -84,12 +72,6 @@ export function artifactLabel(name: string): string {
     MatInputModule,
     LoadingSpinnerComponent,
     ErrorMessageComponent,
-    ResearchReviewFormComponent,
-    ResearchReviewResultsComponent,
-    FullPipelineFormComponent,
-    FullPipelineResultsComponent,
-    MediumStatsFormComponent,
-    BlogPipelineFlowComponent,
     TeamAssistantChatComponent,
   ],
   templateUrl: './blogging-dashboard.component.html',
@@ -106,11 +88,8 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   private queryParamsSub: Subscription | null = null;
   private pendingJobId: string | null = null;
 
-  mode: 'chat' | 'form' = 'chat';
   loading = false;
   error: string | null = null;
-  researchReviewResult: ResearchAndReviewResponse | null = null;
-  fullPipelineResult: FullPipelineResponse | null = null;
 
   allJobs: BlogJobListItem[] = [];
   runningJobs: BlogJobListItem[] = [];
@@ -520,103 +499,4 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     return questions.every((q) => !q.required || (this.qaAnswers[q.id] ?? '').trim().length > 0);
   }
 
-  onResearchReviewSubmit(request: ResearchAndReviewRequest): void {
-    this.loading = true;
-    this.error = null;
-    this.researchReviewResult = null;
-    this.api.startResearchReviewAsync(request).subscribe({
-      next: (res) => {
-        this.loading = false;
-        this.api.getJobs(false).subscribe((jobs) => {
-          this.allJobs = jobs;
-          this.runningJobs = jobs.filter((j) => j.status === 'pending' || j.status === 'running');
-          this.completedJobs = jobs.filter((j) => this.isTerminalStatus(j.status));
-          const j = jobs.find((x) => x.job_id === res.job_id);
-          if (j) this.selectJob(j);
-          else {
-            const newJob: BlogJobListItem = {
-              job_id: res.job_id,
-              status: 'running',
-              brief: request.brief.slice(0, 100),
-              progress: 0,
-            };
-            this.allJobs = [newJob, ...this.allJobs];
-            this.runningJobs = [newJob, ...this.runningJobs];
-            this.selectJob(newJob);
-          }
-        });
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Request failed';
-        this.loading = false;
-      },
-    });
-  }
-
-  onFullPipelineSubmit(request: FullPipelineRequest): void {
-    this.loading = true;
-    this.error = null;
-    this.fullPipelineResult = null;
-    this.api.startFullPipelineAsync(request).subscribe({
-      next: (res) => {
-        this.loading = false;
-        this.api.getJobs(false).subscribe((jobs) => {
-          this.allJobs = jobs;
-          this.runningJobs = jobs.filter((j) => j.status === 'pending' || j.status === 'running');
-          this.completedJobs = jobs.filter((j) => this.isTerminalStatus(j.status));
-          const j = jobs.find((x) => x.job_id === res.job_id);
-          if (j) this.selectJob(j);
-          else {
-            const newJob: BlogJobListItem = {
-              job_id: res.job_id,
-              status: 'running',
-              brief: request.brief.slice(0, 100),
-              progress: 0,
-            };
-            this.allJobs = [newJob, ...this.allJobs];
-            this.runningJobs = [newJob, ...this.runningJobs];
-            this.selectJob(newJob);
-          }
-        });
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Request failed';
-        this.loading = false;
-      },
-    });
-  }
-
-  onMediumStatsSubmit(request: MediumStatsRequest): void {
-    this.loading = true;
-    this.error = null;
-    this.api.startMediumStatsAsync(request).subscribe({
-      next: (res) => {
-        this.loading = false;
-        this.api.getJobs(false).subscribe((jobs) => {
-          this.allJobs = jobs;
-          this.runningJobs = jobs.filter((j) => j.status === 'pending' || j.status === 'running');
-          this.completedJobs = jobs.filter((j) => this.isTerminalStatus(j.status));
-          const j = jobs.find((x) => x.job_id === res.job_id);
-          if (j) this.selectJob(j);
-          else {
-            const newJob: BlogJobListItem = {
-              job_id: res.job_id,
-              status: 'running',
-              brief: 'Medium post statistics',
-              progress: 0,
-              job_type: 'medium_stats',
-            };
-            this.allJobs = [newJob, ...this.allJobs];
-            this.runningJobs = [newJob, ...this.runningJobs];
-            this.selectJob(newJob);
-          }
-        });
-        this.router.navigate(['/blogging'], { queryParams: { jobId: res.job_id } });
-      },
-      error: (err) => {
-        this.error = err?.error?.detail ?? err?.message ?? 'Failed to start Medium stats job';
-        this.loading = false;
-      },
-    });
-  }
 }

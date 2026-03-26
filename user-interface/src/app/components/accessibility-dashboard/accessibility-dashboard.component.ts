@@ -45,7 +45,6 @@ export class AccessibilityDashboardComponent implements OnInit, OnDestroy {
   private readonly api = inject(AccessibilityApiService);
   private healthSub: Subscription | null = null;
 
-  mode: 'chat' | 'form' = 'chat';
   selectedTabIndex = 0;
   activeTab: DashboardTab = 'create';
 

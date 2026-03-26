@@ -27,3 +27,11 @@ export interface TeamAssistantReadiness {
   missing_fields: string[];
   context: Record<string, unknown>;
 }
+
+/** Describes one field shown in the form panel alongside the chat. */
+export interface TeamAssistantFieldSpec {
+  key: string;
+  label: string;
+  placeholder?: string;
+  required?: boolean;
+}
