@@ -25,9 +25,10 @@ from llm_service import (
 from .models import DraftInput, DraftOutput, ReviseDraftInput
 from .prompts import (
     ALLOWED_CLAIMS_INSTRUCTION,
-    DRAFT_SYSTEM_REMINDER,
+    DRAFT_TASK_INSTRUCTIONS,
     EXTRACT_NOTES_PROMPT,
-    REVISE_DRAFT_PROMPT,
+    REVISION_TASK_INSTRUCTIONS,
+    WRITING_SYSTEM_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ class BlogDraftAgent:
             else "No brand specification was provided. Follow the style guide below."
         )
         prompt_parts = [
-            DRAFT_SYSTEM_REMINDER,
+            DRAFT_TASK_INSTRUCTIONS,
             "",
             "---",
             "BRAND AND STYLE (mandatory for every sentence):",
@@ -317,7 +318,7 @@ class BlogDraftAgent:
                 prompt,
                 temperature=0.3,
                 max_tokens=draft_max_tokens,
-                system_prompt=DRAFT_SYSTEM_REMINDER,
+                system_prompt=WRITING_SYSTEM_PROMPT,
             )
             draft = _extract_draft_after_marker(raw_response)
         except (LLMJsonParseError, LLMTruncatedError) as e:
@@ -370,7 +371,7 @@ class BlogDraftAgent:
             revise_input.outline_for_prompt(), COMPACT_OUTLINE_CHARS, self.llm, "content plan"
         )
         prompt_parts = [
-            REVISE_DRAFT_PROMPT,
+            REVISION_TASK_INSTRUCTIONS,
             "",
             "---",
             "BRAND AND STYLE (mandatory for every sentence):",
@@ -552,7 +553,7 @@ class BlogDraftAgent:
                     prompt,
                     temperature=0.2,
                     max_tokens=revise_max_tokens,
-                    system_prompt=REVISE_DRAFT_PROMPT,
+                    system_prompt=WRITING_SYSTEM_PROMPT,
                 )
                 revised = _extract_draft_after_marker(raw_response)
                 if revised and revised.strip():
