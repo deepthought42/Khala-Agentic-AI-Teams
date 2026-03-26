@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { provideRouter } from '@angular/router';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { provideHttpClient } from '@angular/common/http';
 import { vi } from 'vitest';
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { SocialMarketingDashboardComponent } from './social-marketing-dashboard.component';
@@ -25,7 +26,7 @@ describe('SocialMarketingDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [SocialMarketingDashboardComponent, NoopAnimationsModule],
-      providers: [provideRouter([]), { provide: SocialMarketingApiService, useValue: apiSpy }],
+      providers: [provideHttpClient(), provideRouter([]), { provide: SocialMarketingApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(SocialMarketingDashboardComponent);

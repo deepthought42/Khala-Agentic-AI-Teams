@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { vi } from 'vitest';
+import { provideHttpClient } from '@angular/common/http';
 import { MarketResearchApiService } from '../../services/market-research-api.service';
 import { MarketResearchDashboardComponent } from './market-research-dashboard.component';
 
@@ -16,7 +17,7 @@ describe('MarketResearchDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [MarketResearchDashboardComponent],
-      providers: [{ provide: MarketResearchApiService, useValue: apiSpy }],
+      providers: [provideHttpClient(), { provide: MarketResearchApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(MarketResearchDashboardComponent);

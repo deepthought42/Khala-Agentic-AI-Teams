@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { provideHttpClient } from '@angular/common/http';
 import { vi } from 'vitest';
 import { AccessibilityApiService } from '../../services/accessibility-api.service';
 import { AccessibilityDashboardComponent } from './accessibility-dashboard.component';
@@ -22,7 +23,7 @@ describe('AccessibilityDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [AccessibilityDashboardComponent, NoopAnimationsModule],
-      providers: [{ provide: AccessibilityApiService, useValue: apiSpy }],
+      providers: [provideHttpClient(), { provide: AccessibilityApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(AccessibilityDashboardComponent);

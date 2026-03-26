@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { vi } from 'vitest';
+import { provideHttpClient } from '@angular/common/http';
 import { Soc2ComplianceApiService } from '../../services/soc2-compliance-api.service';
 import { Soc2ComplianceDashboardComponent } from './soc2-compliance-dashboard.component';
 
@@ -16,7 +17,7 @@ describe('Soc2ComplianceDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [Soc2ComplianceDashboardComponent],
-      providers: [{ provide: Soc2ComplianceApiService, useValue: apiSpy }],
+      providers: [provideHttpClient(), { provide: Soc2ComplianceApiService, useValue: apiSpy }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(Soc2ComplianceDashboardComponent);
