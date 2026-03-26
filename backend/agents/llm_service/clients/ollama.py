@@ -1049,9 +1049,7 @@ class OllamaLLMClient(LLMClient):
             self.model,
             use_think,
         )
-        env_max = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS) or os.environ.get(
-            llm_config.ENV_LLM_MAX_TOKENS_SW
-        )
+        env_max = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS)
         if max_tokens is None:
             if env_max:
                 try:
