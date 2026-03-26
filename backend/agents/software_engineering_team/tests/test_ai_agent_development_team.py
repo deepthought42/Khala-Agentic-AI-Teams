@@ -10,7 +10,7 @@ from software_engineering_team.shared.models import Task, TaskType
 
 
 class FakeLLM:
-    def complete_json(self, prompt: str):
+    def complete_json(self, prompt: str, **kwargs):
         if "spec intake specialist" in prompt:
             return {
                 "system_goal": "Build a spec-driven support agent system",
@@ -92,7 +92,7 @@ def test_ai_agent_development_workflow_success(tmp_path: Path):
 
 def test_ai_agent_development_workflow_problem_solving(tmp_path: Path):
     class SparseLLM(FakeLLM):
-        def complete_json(self, prompt: str):
+        def complete_json(self, prompt: str, **kwargs):
             if "delivery coordinator" in prompt:
                 return {"summary": "done", "handoff_notes": [], "runbook": []}
             if "AI systems planner" in prompt:
