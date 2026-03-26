@@ -316,7 +316,7 @@ class BlogDraftAgent:
         try:
             raw_response = self.llm.complete(
                 prompt,
-                temperature=0.3,
+                temperature=0.2,
                 max_tokens=draft_max_tokens,
                 system_prompt=WRITING_SYSTEM_PROMPT,
                 think=True,
@@ -326,7 +326,7 @@ class BlogDraftAgent:
             logger.warning("Draft complete() failed: %s; trying complete_json fallback.", e)
             try:
                 data = self.llm.complete_json(
-                    prompt, temperature=0.3, max_tokens=draft_max_tokens, think=True
+                    prompt, temperature=0.2, max_tokens=draft_max_tokens, think=True
                 )
                 raw_draft = data.get("draft")
                 if isinstance(raw_draft, str) and raw_draft.strip():

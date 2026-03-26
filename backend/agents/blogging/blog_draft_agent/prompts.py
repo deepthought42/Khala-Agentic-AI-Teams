@@ -109,6 +109,7 @@ EXPERIENCE, ANECDOTES, AND STORIES — ABSOLUTE ZERO FABRICATION POLICY:
 This is the highest-priority rule in this entire prompt. It overrides every other instruction, including voice and opening requirements.
 
 - NEVER invent first-person stories ("When I…", "In my last role…", "We once…", "My team and I…"), team anecdotes, or case studies presented as real events. NEVER invent specific autobiographical details, names, dates, employers, or incidents.
+- NEVER invent blog post titles, article titles, paper titles, book titles, URLs, or any reference that sounds like a real published work. If you did not find it in the RESEARCH DOCUMENT or ALLOWED CLAIMS, it does not exist. Do not make up titles like "Strands Agents SDK: A technical deep dive…" or any similar specific-sounding reference. If you want to cite a source, use the generic form: "AWS documentation on [topic] notes…" or "the official [product] documentation shows…". Only use a specific title if it appears verbatim in your research inputs.
 - NEVER take real data, numbers, or facts from the research and wrap them in a fabricated personal narrative. Using real data from a source does NOT make a made-up story real. "Last year I shipped a system that consumed 20,000 tokens" is fabrication even if the 20,000-token figure came from real documentation — because the story of YOU shipping it and measuring it is invented. The data is real; the story around it is not.
 - If the research contains a metric, quote, or finding: attribute it to the source ("AWS documentation shows…", "According to the Strands benchmark…"). Do NOT repackage it as your own experience.
 - The ONLY personal stories you may use are those explicitly provided in the "AUTHOR'S PERSONAL STORIES" section below (supplied by the ghost writer). If that section is absent or empty, you have ZERO personal stories to draw from. No exceptions.
@@ -245,6 +246,7 @@ Fix:
 - When concreteness is needed and no real example is available: use research-backed detail with attribution, a clearly labeled hypothetical ("Imagine a team that…" without fake proper nouns), straight explanation, or an author placeholder: `[Author: add a brief real example from your experience that illustrates <topic>.]`
 - Never fill an author placeholder with invented text
 - **Vague authority is fabrication in disguise.** "Studies show", "research indicates", "experts agree", "it's well-known that", "data suggests", "many organizations have found" are all fabrication unless followed by a named source. For every factual claim: either cite the specific source by name, use a [CLAIM:id] tag from the allowed claims list, frame it as a clearly labeled hypothetical, or delete it. There is no middle ground.
+- **Never invent titles of blog posts, articles, papers, books, or any specific-sounding reference.** If the editor flags a fabricated title (e.g. "Strands Agents SDK: A technical deep dive…"), replace it with a generic attribution ("AWS documentation on [topic] shows…" or "the official [product] docs note…"). Only use a specific title if it appears verbatim in the research document or allowed claims.
 - When a claim has a matching entry in the ALLOWED CLAIMS list, ALWAYS use the [CLAIM:id] tag and name the source. This is the primary tool for fixing attribution issues.
 
 **6. Length — cut non-essential material, preserve load-bearing content**
@@ -341,6 +343,7 @@ The editor frequently flags sentences that sound authoritative but lack specific
    - "Statistics show..." / "Data suggests..." (WHAT data? FROM WHERE?)
    - "Many organizations have found..." / "Teams often discover..." (vague authority)
    - Specific numbers, percentages, or dollar figures without a named source
+   - **Fabricated titles of blog posts, articles, or papers** — if a title in quotes or italics does not appear verbatim in the research or allowed claims, it is hallucinated. Replace with generic attribution: "AWS documentation on [topic]" or "the official docs note..."
 
 Before outputting, verify mentally that every numbered feedback item has been addressed in the draft. THEN do a second pass specifically for attribution: scan every factual claim and verify it either has a [CLAIM:id] tag, names a specific source, is clearly hypothetical, or has an author placeholder."""
 
