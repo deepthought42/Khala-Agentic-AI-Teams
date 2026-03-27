@@ -17,7 +17,7 @@ backend/agents/
 ├── soc2_compliance_team/
 ├── branding_team/
 ├── agent_provisioning_team/
-├── agentic_team_provisioning/         # Conversational team/process creation
+├── agentic_team_provisioning/         # Conversational team/process creation (see README.md)
 ├── accessibility_audit_team/
 ├── ai_systems_team/
 ├── investment_team/
@@ -81,12 +81,16 @@ For team-specific setup and env vars, use each team's README.
 - `ai_systems_team/README.md`
 - `investment_team/README.md`
 - `nutrition_meal_planning_team/README.md`
-- `road_trip_planning_team/`
-- `sales_team/`
-- `startup_advisor/`
-- `agentic_team_provisioning/`
+- `road_trip_planning_team/README.md`
+- `sales_team/README.md`
+- `startup_advisor/README.md`
+- `agentic_team_provisioning/README.md`
 - `llm_service/README.md`
 
 ## Shared integrations
 
 `integrations/` provides provider-neutral integration contracts and routing that can be reused by any team.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../README.md) monorepo (Unified API, Angular UI, and full team index).

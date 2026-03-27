@@ -89,3 +89,7 @@ When `LLM_MODEL_<agent_key>` and `LLM_MODEL` are unset, `config.AGENT_DEFAULT_MO
 2. In `config.py`, add provider resolution (e.g. `LLM_PROVIDER=openai`).
 3. In `factory.py`, branch on provider and return the new client (and cache if needed).
 4. No changes required in agent teams; they keep using `get_client(agent_key)`.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

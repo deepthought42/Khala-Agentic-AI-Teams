@@ -114,3 +114,7 @@ response = service.call(
 - `configure_mcp_tool(provider_name, tool_name, config)`
 
 This keeps MCP tool interaction behind one interface while still allowing provider-specific tool catalogs in config.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

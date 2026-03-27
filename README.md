@@ -7,7 +7,7 @@ Strands Agents is a monorepo for multi-agent "team" systems. Each team exposes a
 ```text
 strands-agents/
 ├── backend/
-│   ├── agents/                 # Team implementations + team-specific APIs (19 teams)
+│   ├── agents/                 # Team implementations + team-specific APIs (~19 mounted teams)
 │   ├── unified_api/            # Unified FastAPI app mounting all teams
 │   ├── run_unified_api.py      # Unified API launcher
 │   ├── studiogrid/             # StudioGrid design-system workflow
@@ -76,6 +76,13 @@ The Unified API mounts teams under `/api/*` prefixes. Current configured routes 
 - `/api/agentic-team-provisioning`
 - `/api/startup-advisor`
 
+## Platform notes (cross-cutting)
+
+- **Software Engineering sub-teams (UI):** Under **Development**, the UI nests **Planning** (`/software-engineering/planning-v3`) and **Coding Team** (`/software-engineering/coding-team`). The **Coding Team** is also a **logical sub-team** in Unified API config (`parent_team_key`: software engineering); HTTP API remains `/api/coding-team`.
+- **Investment (two tracks):** One API prefix (`/api/investment`) covers **Advisor / IPS** (user profile) and **Strategy Lab** (ideation and backtests without a profile). UI routes: `/investment`, `/investment/advisor`, `/investment/strategy-lab`. See `backend/agents/investment_team/README.md`.
+- **Agentic Team Provisioning:** Conversational design of rosters and processes; roster validation and optional Agent Provisioning bridge. See `backend/agents/agentic_team_provisioning/README.md` and `AGENTIC_TEAM_ARCHITECTURE.md`.
+- **Agent anatomy (single agents):** `backend/agents/agent_provisioning_team/AGENT_ANATOMY.md` — standard structure for provisioned AI agents (I/O, tools, memory, prompts, guardrails, subagents).
+
 ## Team documentation
 
 - `backend/agents/README.md` (backend agent monorepo overview)
@@ -93,10 +100,10 @@ The Unified API mounts teams under `/api/*` prefixes. Current configured routes 
 - `backend/agents/nutrition_meal_planning_team/README.md`
 - `backend/agents/planning_v3_team/README.md`
 - `backend/agents/coding_team/README.md`
-- `backend/agents/sales_team/` (AI Sales Team)
-- `backend/agents/road_trip_planning_team/` (Road Trip Planning)
+- `backend/agents/sales_team/README.md` (AI Sales Team)
+- `backend/agents/road_trip_planning_team/README.md` (Road Trip Planning)
 - `backend/agents/agentic_team_provisioning/` (Agentic Team Provisioning)
-- `backend/agents/startup_advisor/` (Startup Advisor)
+- `backend/agents/startup_advisor/README.md` (Startup Advisor)
 
 ## Docker
 
@@ -110,8 +117,11 @@ See `docker/README.md` for env vars, ports, and deployment notes.
 
 ## Additional docs
 
-- `backend/unified_api/README.md`
+- `backend/unified_api/README.md` (mounts, `TeamConfig`, optional `parent_team_key`, logical disabled teams)
 - `backend/studiogrid/README.md`
 - `backend/post_mortems/POST_MORTEMS.md`
 - `ARCHITECTURE.md`
 - `CONTRIBUTORS.md`
+- `CLAUDE.md` (Cursor / Claude Code guidance for this repo)
+
+Individual package READMEs under `backend/agents/**` and `user-interface/` end with a **Strands platform** link back to this file.

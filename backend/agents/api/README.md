@@ -56,3 +56,7 @@ Interactive docs: http://localhost:8000/docs
 ## Full Blogging Pipeline
 
 This mount may expose **research + planning** only, depending on deployment. For the full pipeline (planning → draft → copy-editor → gates → publication), see [blogging/README.md](../blogging/README.md) and the blogging service’s `/full-pipeline` routes.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

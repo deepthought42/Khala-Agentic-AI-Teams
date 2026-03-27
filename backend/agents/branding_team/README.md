@@ -294,3 +294,7 @@ In addition to codification, mood boards, guidelines, design system, wiki backlo
 - Sessions are currently stored **in memory** in the API process.
 - Restarting the API clears active session state.
 - Each answer is applied immediately to the mission context, then the orchestrator reruns to refresh output artifacts.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

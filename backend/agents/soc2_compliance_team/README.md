@@ -118,3 +118,7 @@ soc2_compliance_team/
 │   └── main.py        # FastAPI: POST /soc2-audit/run, GET /soc2-audit/status/{job_id}
 └── README.md
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

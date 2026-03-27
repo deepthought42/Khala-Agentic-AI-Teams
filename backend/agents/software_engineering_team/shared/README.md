@@ -387,3 +387,7 @@ from shared.sla_best_practices import (
 3. **Pydantic models**: Use provided models for type safety and validation
 4. **Logging**: Use the shared logging configuration for consistent output
 5. **Git operations**: Always use `git_utils` for repository operations to ensure consistency
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

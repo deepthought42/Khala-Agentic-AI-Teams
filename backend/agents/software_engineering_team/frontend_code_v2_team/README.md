@@ -292,3 +292,7 @@ Frontend Code V2 is called by the main Software Engineering Team orchestrator fo
 3. Frontend V2 completes the 7-phase workflow
 4. Results are returned to SE Team orchestrator
 5. SE Team proceeds with integration, DevOps, etc.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

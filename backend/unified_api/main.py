@@ -220,8 +220,10 @@ app.add_middleware(SecurityGatewayMiddleware)
 
 # Integrations API (Slack config, etc.)
 from unified_api.routes.integrations import router as integrations_router
+from unified_api.routes.llm_tools import router as llm_tools_router
 
 app.include_router(integrations_router)
+app.include_router(llm_tools_router)
 
 
 # ---------------------------------------------------------------------------

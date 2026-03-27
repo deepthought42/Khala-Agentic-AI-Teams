@@ -204,3 +204,7 @@ Planning V2 can be integrated with the Software Engineering Team orchestrator:
 5. SE Team reads plan and proceeds to execution
 
 **Note:** The specification must be validated before passing to Planning V2. The team does not perform spec review or expansion.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

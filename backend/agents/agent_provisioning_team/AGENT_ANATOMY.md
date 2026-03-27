@@ -41,6 +41,29 @@ Agents **must** declare which external capabilities they use. Group as in the de
 
 No hidden side channels: if the agent can affect the outside world, it goes through a named tool path.
 
+### 3.0 LLM tools discovery (`agent_llm_tools_service`)
+
+Before choosing which LLM function calls to enable, agents can discover what is available:
+
+- **In-process:** `LlmToolsService().list_tools()`, `get_tool(tool_id)`, `list_operations(tool_id)`, and **`get_documentation(tool_id)`** from **`agent_llm_tools_service`**.
+- **HTTP (unified API):** `GET /api/llm-tools/`, `GET /api/llm-tools/{tool_id}`, `GET /api/llm-tools/{tool_id}/operations`, and **`GET /api/llm-tools/{tool_id}/documentation`** (metadata only; no remote execution).
+
+`get_tool` embeds the same documentation object as the dedicated documentation route. The service provides **links** to official manuals (e.g. git-scm.com) and optional **`man` command hints** for agents running in a shell; it does **not** vend or proxy full man-page text.
+
+The first registered tool is **Git** (`tool_id=git`). Use summaries, operation schemas, and documentation links to decide whether Git (or a future tool) fits the task, then wire execution as in §3.1.
+
+### 3.1 Shared Git tools (LLM function calling)
+
+For any agent that operates on a **known local Git repository** (orchestrator-resolved `repo_path`), use the shared package **`agent_git_tools`**:
+
+- **`GIT_TOOL_DEFINITIONS`**: OpenAI-compatible tool specs (`git_status`, `git_diff`, `git_log`, `git_checkout_branch`, `git_create_feature_branch`, `git_write_files_and_commit`, `git_commit_working_tree`, `git_merge_branch`).
+- **`GitToolContext`**: host-injected `repo_path`, `default_base_branch`, and policy flags (e.g. `allow_merge_to_default_branch=False` during implement phases so merge stays orchestrator-gated).
+- **`build_git_tool_handlers(ctx)`**: returns a name → handler map for **`llm_service.tool_loop.complete_json_with_tool_loop`**, which runs multi-turn chat until the model returns final structured JSON.
+
+The executor delegates to **`software_engineering_team.shared.git_utils`** so subprocess Git behavior stays consistent. Models must not supply `repo_path` in tool arguments; the runtime ignores it.
+
+**Rollout:** `coding_team` `SeniorSWEAgent` enables Git tools by default. Other repo-backed teams can import the same definitions and bind a `GitToolContext` for their workspace.
+
 ---
 
 ## 4. Memory (file-backed or equivalent)

@@ -261,3 +261,7 @@ blogging/
 ## License
 
 This repository is provided as an example implementation for building Strands-style research agents.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

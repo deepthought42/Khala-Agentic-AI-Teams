@@ -68,6 +68,17 @@ python run_unified_api.py --workers 4 --log-level warning
 | GET | `/docs` | Interactive Swagger UI documentation |
 | GET | `/redoc` | ReDoc API documentation |
 
+### LLM tools catalog (discovery only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/llm-tools/` | List registered LLM tool bundles (e.g. `git`) |
+| GET | `/api/llm-tools/{tool_id}` | Tool metadata, embedded documentation links, and full OpenAI-style `tools` definitions |
+| GET | `/api/llm-tools/{tool_id}/operations` | Per-operation JSON Schema, doc links, and in-process execution hints |
+| GET | `/api/llm-tools/{tool_id}/documentation` | Tool-wide documentation URLs, short summary, and `man` hints (no full man text) |
+
+Execution stays in agent code (e.g. `agent_git_tools` + `GitToolContext`); these routes expose metadata only.
+
 ### Team API Prefixes
 
 | Team | Prefix | Team Docs |
@@ -91,6 +102,13 @@ python run_unified_api.py --workers 4 --log-level warning
 | Road Trip Planning | `/api/road-trip-planning` | `/api/road-trip-planning/docs` |
 | Agentic Team Provisioning | `/api/agentic-team-provisioning` | `/api/agentic-team-provisioning/docs` |
 | Startup Advisor | `/api/startup-advisor` | `/api/startup-advisor/docs` |
+
+### Team configuration hierarchy (`config.py`)
+
+- **`TeamConfig.parent_team_key`:** Optional link to a parent team for documentation and tooling (e.g. **Coding Team** → **Software Engineering**).
+- **`enabled=False`:** Team is not mounted; used for **logical** entries (e.g. **Investment Strategy Lab** metadata) whose HTTP routes still live on the parent prefix (`/api/investment/strategy-lab/*`).
+- **Investment** entry describes **two tracks** (advisor / IPS vs strategy lab) on one mounted API.
+- See `TEAM_CONFIGS` in `unified_api/config.py` and tests in `unified_api/tests/test_config.py`.
 
 ## Environment Variables
 
@@ -364,3 +382,7 @@ app.add_middleware(
     # ...
 )
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../README.md) monorepo (Unified API, Angular UI, and full team index).

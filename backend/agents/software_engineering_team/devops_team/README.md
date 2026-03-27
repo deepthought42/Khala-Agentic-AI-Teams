@@ -283,3 +283,7 @@ The DevOps Team is invoked by the main Software Engineering Team orchestrator:
 3. DevOps Team Lead orchestrates agents through the gate-based workflow
 4. Completion package is returned to SE Team
 5. SE Team proceeds with integration testing or delivery
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

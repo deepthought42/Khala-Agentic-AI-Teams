@@ -281,3 +281,7 @@ print(result.content_plan.total_required_posts if result.content_plan else 0)
 - Brand file paths must be readable by the API process.
 - Job storage is in-memory; restart clears job history.
 - Human approval is required before campaign testing/execution planning is finalized.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

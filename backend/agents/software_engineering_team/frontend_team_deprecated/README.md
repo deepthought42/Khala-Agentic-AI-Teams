@@ -94,3 +94,7 @@ Each completed task should include:
 
 - [Software Engineering Team README](../README.md) – Full SDLC, orchestrator, and run instructions
 - [Quality Gates](../quality_gates/README.md) – Cross-cutting review agents
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

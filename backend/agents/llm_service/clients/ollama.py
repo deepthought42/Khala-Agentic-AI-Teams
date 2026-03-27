@@ -1169,3 +1169,59 @@ class OllamaLLMClient(LLMClient):
             partial_content=accumulated,
             finish_reason="length",
         )
+
+    def chat_json_round(
+        self,
+        messages: list,
+        *,
+        temperature: float = 0.2,
+        tools: Optional[list] = None,
+        think: bool = False,
+        max_tokens: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """One chat completion round for multi-turn tool loops. See ``LLMClient.chat_json_round``."""
+        max_retries, backoff_base, backoff_max = _parse_retry_config()
+        sem = _get_ollama_semaphore()
+        self._current_caller = _caller_tag()
+        if max_tokens is None:
+            env_max = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS)
+            if env_max:
+                try:
+                    max_tokens = min(int(env_max), DEFAULT_MAX_OUTPUT_TOKENS)
+                except ValueError:
+                    max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
+            else:
+                max_tokens = min(self._fetch_model_num_ctx(), DEFAULT_MAX_OUTPUT_TOKENS)
+        max_tokens = min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
+        payload: dict = {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            "think": think,
+        }
+        if tools:
+            payload["tools"] = tools
+        else:
+            payload["response_format"] = {"type": "json_object"}
+        content = self._ollama_post(payload, max_retries, backoff_base, backoff_max, sem)
+        stripped = (content or "").strip()
+        if stripped.startswith("{") and "__tool_calls__" in stripped:
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict) and "__tool_calls__" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        try:
+            return self._extract_json(content)
+        except LLMJsonParseError:
+            if stripped.startswith("{"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict) and "__tool_calls__" in parsed:
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+            raise

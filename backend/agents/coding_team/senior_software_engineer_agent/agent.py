@@ -10,8 +10,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
+from agent_git_tools import GIT_TOOL_DEFINITIONS, GitToolContext, build_git_tool_handlers
 from coding_team.models import StackSpec, Task
 from coding_team.senior_software_engineer_agent import prompts
+from llm_service.tool_loop import complete_json_with_tool_loop
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ class SeniorSWEAgent:
         task: Task,
         repo_path: str | Path,
         repo_context: str = "",
+        *,
+        use_git_tools: bool = True,
     ) -> Dict[str, Any]:
         """
         Implement the task. Returns dict with:
@@ -42,7 +46,7 @@ class SeniorSWEAgent:
         - files_to_create_or_edit: optional list of {path, content} for orchestrator to apply
         - error: optional error message if failed
         """
-        Path(repo_path)
+        path = Path(repo_path).resolve()
         stack_name = self.stack_spec.name or self.agent_id
         tools_services = ", ".join(self.stack_spec.tools_services or [])
         user = prompts.IMPLEMENT_TASK_USER.format(
@@ -53,13 +57,38 @@ class SeniorSWEAgent:
             acceptance_criteria=json.dumps(task.acceptance_criteria),
             repo_context=repo_context[:4000] or "No existing code context provided.",
         )
-        try:
-            data = self.llm.complete_json(
-                user,
-                temperature=0.2,
-                system_prompt=prompts.IMPLEMENT_TASK_SYSTEM,
-                think=True,
+        system = prompts.IMPLEMENT_TASK_SYSTEM
+        if use_git_tools:
+            system += (
+                "\n\nYou may call the provided Git tools to inspect the repository, create a feature branch, "
+                "write files, and commit. The repository path is fixed by the runtime; do not pass repo_path. "
+                "When finished, respond with a single JSON object matching the schema above (summary, "
+                "files_to_create_or_edit, commands_run, ready_for_review) and do not call tools in that message."
             )
+        try:
+            if use_git_tools:
+                ctx = GitToolContext(
+                    path,
+                    allow_merge_to_default_branch=False,
+                )
+                handlers = build_git_tool_handlers(ctx)
+                data = complete_json_with_tool_loop(
+                    self.llm,
+                    user_prompt=user,
+                    system_prompt=system,
+                    tools=GIT_TOOL_DEFINITIONS,
+                    tool_handlers=handlers,
+                    max_rounds=16,
+                    temperature=0.2,
+                    think=True,
+                )
+            else:
+                data = self.llm.complete_json(
+                    user,
+                    temperature=0.2,
+                    system_prompt=prompts.IMPLEMENT_TASK_SYSTEM,
+                    think=True,
+                )
         except Exception as e:
             logger.warning("Senior SWE implement LLM failed: %s", e)
             return {
@@ -74,9 +103,12 @@ class SeniorSWEAgent:
             files = []
         commands = data.get("commands_run") or []
         ready = bool(data.get("ready_for_review", True))
+        branch = data.get("feature_branch")
+        if not isinstance(branch, str) or not branch.strip():
+            branch = f"feature/{task.id}"
         return {
             "status": "in_review" if ready else "in_progress",
-            "feature_branch": f"feature/{task.id}",
+            "feature_branch": branch.strip(),
             "changes_summary": summary,
             "files_to_create_or_edit": [f for f in files if isinstance(f, dict) and f.get("path")],
             "commands_run": [str(c) for c in commands],

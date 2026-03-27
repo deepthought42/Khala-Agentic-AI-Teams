@@ -167,3 +167,7 @@ uvicorn agent_provisioning_team.api.main:app --host 0.0.0.0 --port 8006
 | `REDIS_HOST` | Redis host | `localhost` |
 | `REDIS_PORT` | Redis port | `6379` |
 | `REDIS_PASSWORD` | Redis admin password | - |
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

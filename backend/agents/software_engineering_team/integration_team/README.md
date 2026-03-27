@@ -9,3 +9,7 @@ Post-execution agents that integrate or package the product after backend and fr
 | **Documentation Agent** | README and project docs; triggered per task and final pass |
 
 These agents run after implementation (and quality gates). Tech Lead triggers DevOps and Documentation; Integration runs once in the orchestrator.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

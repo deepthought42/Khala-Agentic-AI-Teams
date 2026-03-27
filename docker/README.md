@@ -39,7 +39,7 @@ This directory defines a **Docker Compose stack** that runs:
 
    | Service        | URL                         |
    |----------------|-----------------------------|
-   | **Angular UI** | http://localhost:4201       (proxies /api to agents) |
+   | **Angular UI** | http://localhost:4201       (proxies /api to agents; nested routes e.g. SE Planning/Coding Team, Investment Advisor/Strategy Lab, Agentic roster) |
    | Agents API     | http://localhost:8888       (direct) |
    | Temporal UI    | http://localhost:8080       |
    | Postgres       | localhost:5432 (user `postgres` / `temporal` / `strands`) |
@@ -138,3 +138,7 @@ After starting the stack:
 - Do not commit `.env` with real secrets. Use `.env.example` as a template only.
 - For production, do not expose Temporal or Postgres to the public internet; keep them on internal networks.
 - Leave **ENABLE_LOG_API** unset or 0 in production so the logs endpoint is disabled.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../README.md) monorepo (Unified API, Angular UI, and full team index).

@@ -52,3 +52,7 @@ ai_agent_development_team/
 - Explicit `current_phase`, `iterations_used`, `needs_followup`, and `failure_reason` fields on workflow result.
 - Per-microtask status tracking (`pending/in_progress/completed/failed`) with emitted files and notes.
 - Workflow trace events per phase for job-stream/status integrations.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

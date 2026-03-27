@@ -47,3 +47,7 @@ Example payload:
   "human_feedback": "Need evidence about willingness to pay before greenlighting MVP"
 }
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

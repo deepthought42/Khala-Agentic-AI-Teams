@@ -539,6 +539,20 @@ class DummyLLMClient(LLMClient):
             }
         elif "meal" in lowered and ("suggestions" in lowered or "recommendations" in lowered):
             return {"suggestions": [{"meal": "Dummy meal", "reason": "Dummy reason"}]}
+        elif (
+            system_prompt
+            and "senior software engineer" in system_prompt.lower()
+            and "files_to_create_or_edit" in system_prompt.lower()
+        ):
+            th = self._extract_task_hint(prompt)
+            return {
+                "summary": f"Implemented (dummy): {th}",
+                "files_to_create_or_edit": [
+                    {"path": "dummy_impl.txt", "content": f"# dummy implementation for {th}\n"}
+                ],
+                "commands_run": [],
+                "ready_for_review": True,
+            }
         # Blogging: structured content plan JSON (planning agent; token in user prompt)
         elif "content_plan_json_v1" in lowered:
             return {
@@ -593,3 +607,42 @@ class DummyLLMClient(LLMClient):
                 "plan_version": 1,
             }
         return {"output": "Dummy response", "status": "ok"}
+
+    def chat_json_round(
+        self,
+        messages: list,
+        *,
+        temperature: float = 0.2,
+        tools: Optional[list] = None,
+        think: bool = False,
+        max_tokens: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Support tool-loop tests: first round issues a no-op git_status call, then structured JSON."""
+        self._request_count += 1
+        has_tool_result = any(m.get("role") == "tool" for m in messages)
+        if tools and not has_tool_result:
+            return {
+                "__tool_calls__": [
+                    {
+                        "id": "dummy_git_status",
+                        "type": "function",
+                        "function": {"name": "git_status", "arguments": {}},
+                    }
+                ]
+            }
+        system_prompt = None
+        user_prompt = ""
+        for m in messages:
+            if m.get("role") == "system":
+                system_prompt = m.get("content")
+            elif m.get("role") == "user":
+                user_prompt = m.get("content") or ""
+        return self.complete_json(
+            user_prompt,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            tools=None,
+            think=think,
+            **kwargs,
+        )

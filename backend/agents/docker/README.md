@@ -198,3 +198,7 @@ docker exec strands-agents docker --version
 - Run on a dedicated CI/build host when possible
 - Do not expose the container to untrusted networks
 - The workspace volume is the only host path mounted; ensure it contains only trusted content
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

@@ -17,3 +17,7 @@ All agents consume implementation output and return review results. For discover
 from quality_gates import CodeReviewAgent, QAExpertAgent, CybersecurityExpertAgent, AcceptanceVerifierAgent, DbcCommentsAgent
 # Accessibility: from frontend_team.accessibility_agent import AccessibilityExpertAgent
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

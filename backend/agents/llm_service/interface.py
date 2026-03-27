@@ -162,3 +162,24 @@ class LLMClient(ABC):
         return self.complete(
             prompt, temperature=temperature, max_tokens=None, system_prompt=None, think=think
         )
+
+    def chat_json_round(
+        self,
+        messages: list[Dict[str, Any]],
+        *,
+        temperature: float = 0.2,
+        tools: Optional[list] = None,
+        think: bool = False,
+        max_tokens: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Single chat completion round with optional tools (multi-turn tool loops).
+
+        Returns either a normal structured dict (parsed from assistant content) or
+        ``{"__tool_calls__": [...]}`` when the model requests tool execution.
+        Default implementation: not supported — override in Ollama / Dummy clients.
+        """
+        raise LLMPermanentError(
+            f"{type(self).__name__} does not implement chat_json_round (required for tool loops)"
+        )

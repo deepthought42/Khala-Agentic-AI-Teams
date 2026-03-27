@@ -57,3 +57,7 @@ python agentcore_main.py
 - `data-architecture.md`
 - `observability-plan.md`
 - `open-questions.md`
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).

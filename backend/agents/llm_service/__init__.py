@@ -21,6 +21,7 @@ from .interface import (
     LLMTruncatedError,
     LLMUnreachableAfterRetriesError,
 )
+from .tool_loop import complete_json_with_tool_loop
 from .util import call_llm_with_retries, extract_json_from_response
 
 
@@ -31,6 +32,7 @@ def get_llm_config_summary() -> str:
 
 __all__ = [
     "_clear_client_cache_for_testing",
+    "complete_json_with_tool_loop",
     "call_llm_with_retries",
     "compact_text",
     "extract_json_from_response",

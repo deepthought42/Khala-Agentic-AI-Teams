@@ -395,3 +395,7 @@ It implements:
 - contract tests covering execution order + hard gate behavior (`tests/contract_tests/`)
 
 See `a11y_agency_spec.md` in that module for the exact phase sequence and gate contract.
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

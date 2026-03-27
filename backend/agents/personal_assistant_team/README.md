@@ -299,3 +299,7 @@ response = assistant.run(OrchestratorRequest(
 ))
 # Profile will be automatically updated with these preferences
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

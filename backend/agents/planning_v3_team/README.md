@@ -87,3 +87,7 @@ planning_v3_team/
     ├── __init__.py
     └── main.py
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

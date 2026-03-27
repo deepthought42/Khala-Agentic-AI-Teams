@@ -22,3 +22,7 @@ Agent registry helpers:
 PYTHONPATH=src python -m studiogrid.main registry list
 PYTHONPATH=src python -m studiogrid.main registry find --problem "Need accessibility review" --skills accessibility_review
 ```
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../README.md) monorepo (Unified API, Angular UI, and full team index).

@@ -22,3 +22,7 @@ Everything that produces plans and task assignments and writes to `plan/`.
 | **Domain planning agents** | API Contract, Data Architecture, UI/UX, Frontend Architecture, Infrastructure, DevOps Planning, QA Test Strategy, Security Planning, Observability, Performance Doc |
 | **Planning graph agents** (Tech Lead internal) | Backend, Frontend, Data, Test, Performance, Documentation, Quality Gate planning |
 | **Planning consolidation** | Master plan, risk register, ship checklist |
+
+## Strands platform
+
+This package is part of the [Strands Agents](../../../../README.md) monorepo (Unified API, Angular UI, and full team index).
