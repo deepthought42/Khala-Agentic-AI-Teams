@@ -2,6 +2,75 @@
 
 A multi-agent investment organization covering equities, bonds/Treasuries, options, real estate, FX, crypto, and optional commodities with IPS-first constraints.
 
+## Two tracks: Advisor (user profile) vs Strategy Lab (no profile)
+
+The package combines two logical workflows behind one HTTP API (`/api/investment`):
+
+| Track | Purpose | Requires `InvestmentProfile` / IPS? |
+|-------|---------|--------------------------------------|
+| **Financial advisor** | Build IPS, proposals, portfolio checks, promotion to paper/live for a **specific user**, committee memos | **Yes** — endpoints use `user_id` and load/store IPS |
+| **Strategy lab & research** | LLM-driven strategy ideation, swing-trading backtests, generic strategy specs and validation records | **No** — operates on `StrategySpec`, backtests, and lab records only |
+
+Promotion from a validated strategy to **paper/live under a client** is the bridge: `POST /promotions/decide` loads IPS by `user_id` and runs `PromotionGateAgent` with that IPS.
+
+```mermaid
+flowchart LR
+  subgraph advisor [Advisor track]
+    FA[FinancialAdvisorAgent]
+    Prof[POST /profiles]
+    IPS[(IPS per user_id)]
+    FA --> IPS
+    Prof --> IPS
+  end
+  subgraph lab [Strategy Lab track]
+    SI[StrategyIdeationAgent]
+    SL[POST /strategy-lab/run]
+    ST[POST /strategies]
+    BT[POST /backtests]
+    SI --> SL
+    ST --> BT
+  end
+  IPS --> PG[PolicyGuardianAgent]
+  IPS --> PGate[PromotionGateAgent]
+  ST --> Val[POST /strategies/id/validate]
+  Val --> PGate
+  PGate -->|"user_id for IPS"| IPS
+```
+
+### Implemented agents — profile requirement
+
+| Agent | Requires user / IPS? | Notes |
+|-------|----------------------|--------|
+| **FinancialAdvisorAgent** | Yes | Session and `InvestmentProfile.user_id` |
+| **PolicyGuardianAgent** | Yes (IPS) | `check_portfolio(ips, proposal)` |
+| **PromotionGateAgent** | Yes (IPS) | Live/paper gates from IPS |
+| **ValidationAgent** | No | Only `ValidationReport` checklist |
+| **InvestmentCommitteeAgent** | Yes (user id) | Memo `prepared_for_user_id` |
+| **StrategyIdeationAgent** | No | Prior lab results only |
+| **InvestmentTeamOrchestrator** | Mixed | Promotion needs IPS; web tool coordinator has no profile |
+| **InvestmentWebInterfaceCoordinator** | No investment profile | Provider login/config only |
+
+### HTTP endpoints — profile requirement
+
+**Requires `user_id` / IPS in store**
+
+- `POST /profiles`, `GET /profiles/{user_id}`
+- `POST /proposals/create`, `POST /proposals/{proposal_id}/validate`
+- `POST /promotions/decide`
+- `POST /memos`
+- `POST /advisor/sessions` (and messages / complete)
+
+**Does not require a user investment profile**
+
+- `POST /strategies`, `POST /strategies/{strategy_id}/validate`
+- `POST /backtests`, `GET /backtests`
+- `POST /strategy-lab/run`, `GET /strategy-lab/results`
+- `GET /workflow/status`, `GET /workflow/queues`
+
+### Catalog-only agents (`agent_catalog.py`)
+
+Core catalog roles that take **IPS / profile-shaped** inputs: Financial Advisor, IPS Generator, Asset Universe Builder, Portfolio Architect, Global Risk Manager, Explainability and Audit. Specialist desks (equities, crypto, options, etc.) are metadata for future orchestration; pure research/backtest roles are profile-agnostic in principle, while execution planners imply a target book or IPS when tied to a client.
+
 ## What this package implements
 
 - **Core data model** for portfolio, strategy, validation, promotion, execution, and private-deal workflows.

@@ -15,6 +15,8 @@ class TeamConfig:
     description: str
     enabled: bool = True
     tags: list[str] = field(default_factory=list)
+    # When set, this team is a logical sub-team of another mounted team (e.g. coding_team under software_engineering).
+    parent_team_key: str | None = None
 
 
 # Default port for the unified API server
@@ -94,8 +96,23 @@ TEAM_CONFIGS: dict[str, TeamConfig] = {
     "investment": TeamConfig(
         name="Investment",
         prefix="/api/investment",
-        description="Investment analysis and portfolio management",
-        tags=["investment", "finance"],
+        description=(
+            "Investment organization: (1) Financial advisor — IPS, proposals, promotion, memos (user profile); "
+            "(2) Strategy lab — ideation, backtests, generic strategies without a user profile. Same API prefix."
+        ),
+        tags=["investment", "finance", "investment-advisor", "investment-strategy-lab"],
+    ),
+    "investment_strategy_lab": TeamConfig(
+        name="Investment Strategy Lab",
+        prefix="/api/investment-strategy-lab",
+        description=(
+            "Logical sub-team of Investment: strategy ideation and backtests without InvestmentProfile. "
+            "HTTP routes are served on the parent Investment API: POST /api/investment/strategy-lab/run, "
+            "GET /api/investment/strategy-lab/results (not this prefix)."
+        ),
+        enabled=False,
+        tags=["investment", "strategy-lab", "backtest", "stocks", "crypto"],
+        parent_team_key="investment",
     ),
     "nutrition_meal_planning": TeamConfig(
         name="Nutrition & Meal Planning",
@@ -112,8 +129,12 @@ TEAM_CONFIGS: dict[str, TeamConfig] = {
     "coding_team": TeamConfig(
         name="Coding Team",
         prefix="/api/coding-team",
-        description="Tech Lead and stack-specialist Senior Software Engineers with Task Graph",
-        tags=["coding", "development"],
+        description=(
+            "Software Engineering sub-team: Tech Lead and stack-specialist Senior Software Engineers "
+            "with Task Graph (invoked by the SE orchestrator after planning)"
+        ),
+        tags=["coding", "development", "software-engineering"],
+        parent_team_key="software_engineering",
     ),
     "studio_grid": TeamConfig(
         name="StudioGrid",

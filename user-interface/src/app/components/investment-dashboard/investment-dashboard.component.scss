@@ -1,12 +1,47 @@
+.header-text {
+  flex: 1;
+  min-width: 0;
+}
+
 .page-subtitle {
   margin-top: 0.25rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.35rem;
   color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.6));
+}
+
+.sub-teams {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.7));
+
+  .sub-teams-label {
+    margin-right: 0.35rem;
+    font-weight: 500;
+  }
+
+  a {
+    color: var(--mat-sys-primary, #1976d2);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+
+    &.active-link {
+      font-weight: 600;
+      text-decoration: underline;
+    }
+  }
+
+  .sep {
+    margin: 0 0.35rem;
+    color: var(--mat-sys-outline, rgba(0, 0, 0, 0.38));
+  }
 }
 
 .page-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 0.5rem;

@@ -12,10 +12,11 @@ from unified_api.config import TEAM_CONFIGS, TeamConfig, get_enabled_teams
 
 
 def test_team_config_defaults():
-    """TeamConfig.enabled defaults to True and tags defaults to empty list."""
+    """TeamConfig.enabled defaults to True; tags and parent_team_key default appropriately."""
     cfg = TeamConfig(name="Test", prefix="/api/test", description="A test team")
     assert cfg.enabled is True
     assert cfg.tags == []
+    assert cfg.parent_team_key is None
 
 
 def test_team_config_can_be_disabled():
@@ -106,6 +107,26 @@ def test_software_engineering_team_config_structure():
     """Software engineering team config has correct prefix."""
     cfg = TEAM_CONFIGS["software_engineering"]
     assert cfg.prefix == "/api/software-engineering"
+
+
+def test_coding_team_is_sub_team_of_software_engineering():
+    """Coding team is registered as a sub-team of software engineering."""
+    cfg = TEAM_CONFIGS["coding_team"]
+    assert cfg.parent_team_key == "software_engineering"
+
+
+def test_investment_team_config_documents_dual_track():
+    """Investment team tags distinguish advisor vs strategy-lab surfaces."""
+    cfg = TEAM_CONFIGS["investment"]
+    assert "investment-advisor" in cfg.tags
+    assert "investment-strategy-lab" in cfg.tags
+
+
+def test_investment_strategy_lab_is_logical_sub_team():
+    """Strategy lab is a logical sub-team of Investment; not separately mounted."""
+    cfg = TEAM_CONFIGS["investment_strategy_lab"]
+    assert cfg.parent_team_key == "investment"
+    assert cfg.enabled is False
 
 
 def test_team_config_tags_is_list():

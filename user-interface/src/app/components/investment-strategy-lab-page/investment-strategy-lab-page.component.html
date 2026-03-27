@@ -1,0 +1,31 @@
+<div class="page-toolbar">
+  <a mat-button routerLink="/investment">
+    <mat-icon>arrow_back</mat-icon>
+    Investment
+  </a>
+</div>
+
+<h1 class="mat-headline-5">Strategy Lab</h1>
+<p class="subtitle">
+  Sub-area of <strong>Investment</strong>: generate and test stock/crypto swing strategies without an investment profile.
+  Uses <code>/api/investment/strategy-lab/*</code> and related strategy/backtest endpoints.
+</p>
+
+<div class="health-row" [class]="healthStatus">
+  @switch (healthStatus) {
+    @case ('checking') {
+      <mat-icon>hourglass_empty</mat-icon>
+      <span>Checking API…</span>
+    }
+    @case ('healthy') {
+      <mat-icon>check_circle</mat-icon>
+      <span>Investment API online</span>
+    }
+    @case ('unhealthy') {
+      <mat-icon>error</mat-icon>
+      <span>Investment API offline</span>
+    }
+  }
+</div>
+
+<app-strategy-lab />

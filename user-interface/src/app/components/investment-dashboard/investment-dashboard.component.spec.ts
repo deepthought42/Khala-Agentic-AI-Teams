@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { vi } from 'vitest';
+import { ActivatedRoute, provideRouter } from '@angular/router';
 import { InvestmentApiService } from '../../services/investment-api.service';
 import { InvestmentDashboardComponent } from './investment-dashboard.component';
 
@@ -18,7 +19,11 @@ describe('InvestmentDashboardComponent', () => {
     };
     await TestBed.configureTestingModule({
       imports: [InvestmentDashboardComponent, NoopAnimationsModule],
-      providers: [{ provide: InvestmentApiService, useValue: apiSpy }],
+      providers: [
+        provideRouter([]),
+        { provide: InvestmentApiService, useValue: apiSpy },
+        { provide: ActivatedRoute, useValue: { snapshot: { data: {} } } },
+      ],
     }).compileComponents();
 
     fixture = TestBed.createComponent(InvestmentDashboardComponent);

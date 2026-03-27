@@ -1,7 +1,25 @@
 <h1 class="mat-headline-5">Investment</h1>
 
 <div class="page-header">
-  <p class="mat-body-2 page-subtitle">Portfolio management, strategy validation, and promotion workflows</p>
+  <div class="header-text">
+    <p class="mat-body-2 page-subtitle">
+      @if (routeFocus === 'advisor') {
+        Advisor and IPS track: user profile, proposals, promotion gates, and workflow (requires an investment profile where noted).
+      } @else {
+        Portfolio management, strategy validation, promotion workflows, and strategy lab (profile optional for lab-only paths).
+      }
+    </p>
+    <p class="sub-teams">
+      <span class="sub-teams-label">Areas:</span>
+      <a routerLink="/investment/advisor">Advisor & IPS</a>
+      <span class="sep">·</span>
+      <a routerLink="/investment/strategy-lab">Strategy Lab</a>
+      <span class="sep">·</span>
+      <a routerLink="/investment" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active-link"
+        >Overview</a
+      >
+    </p>
+  </div>
   <div class="header-controls">
     <mat-button-toggle-group [(value)]="viewMode" class="view-toggle" aria-label="Interaction mode">
       <mat-button-toggle value="chat" matTooltip="Chat with your investment advisor">

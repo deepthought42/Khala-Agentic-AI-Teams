@@ -48,11 +48,14 @@ Agents are grouped by **SDLC phase** and **who consumes whose output**. Executio
 | **Discovery / Design (planning)** | planning_v3_team | Planning V3 workflow (intake → discovery → requirements → synthesis → document production); planning_v3_adapter maps handoff to ProductRequirements and project_overview for Tech Lead and Architecture |
 | **Design (post-planning)** | top-level | Architecture Expert, Tech Lead, planning consolidation |
 | **Setup** | top-level | Git Setup |
-| **Implementation** | backend | Backend Expert |
+| **Implementation** | **coding_team** (sub-team; `backend/agents/coding_team/`) | Tech Lead, stack-specialist Senior SWEs, Task Graph — **default SE execution path** after Planning V3 + adapter (replaces legacy Tech Lead task queues + backend/frontend v2 workers for new runs) |
+| **Implementation** | backend | Backend Expert (legacy path when not using coding_team) |
 | **Implementation** | frontend_team | UX Designer, UI Designer, Design System, Frontend Architect, Feature Agent, UX Engineer, Performance Engineer, Build/Release |
 | **Implementation** | ai_agent_development_team | Intake/Planning/Execution/Review/Problem-solving/Delivery phases for spec-to-agent-system workflows with dedicated tool agents |
 | **Quality** | quality gates (cross-cutting) | Code Review, QA Expert, Cybersecurity Expert, Accessibility Expert, Acceptance Verifier, DbC Comments |
 | **Integration / release** | top-level | Integration Agent, DevOps Team (sub-orchestrator), Documentation Agent |
+
+**Coding Team:** The `coding_team` package is the **Software Engineering sub-team** responsible for task-graph execution (see `coding_team/README.md`). The SE orchestrator calls `run_coding_team_orchestrator` in-process after planning; the same team is also exposed as `/api/coding-team` for standalone runs.
 
 **Planning:** The main pipeline uses `planning_v3_team` for discovery and planning; its handoff is adapted by `planning_v3_adapter` into ProductRequirements and project_overview for Tech Lead and Architecture Expert. The legacy `planning_team` (Spec Intake, Project Planning, domain planning agents) is no longer used in the main flow; clarification sessions still use `planning_team.spec_intake_agent` and `spec_clarification_agent` for open questions and assumptions.
 

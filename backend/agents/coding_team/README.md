@@ -1,6 +1,6 @@
 # Coding Team
 
-The **coding_team** implements delivery after planning: it receives the plan from the Planning team (Planning V3), generates a Task Graph from it, and executes work through a Tech Lead and multiple stack-specialist Senior Software Engineers.
+The **coding_team** is a **sub-team of the Software Engineering team**. It implements the main implementation path after planning: the SE orchestrator hands off to it; it receives the adapted plan from Planning V3, generates a Task Graph, and executes work through a Tech Lead and multiple stack-specialist Senior Software Engineers. The public API remains at `/api/coding-team` for direct jobs and health checks; logically it sits under Software Engineering in the platform hierarchy.
 
 ## Structure
 

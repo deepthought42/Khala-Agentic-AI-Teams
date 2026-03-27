@@ -58,6 +58,10 @@
           <mat-icon>description</mat-icon>
           <span>Planning</span>
         </a>
+        <a routerLink="/software-engineering/coding-team" routerLinkActive="active" class="nav-link nav-link-nested">
+          <mat-icon>code</mat-icon>
+          <span>Coding Team</span>
+        </a>
       </div>
 
       <div class="nav-group">
@@ -78,9 +82,22 @@
 
       <div class="nav-group">
         <div class="nav-group-label">Finance</div>
-        <a routerLink="/investment" routerLinkActive="active" class="nav-link">
+        <a
+          routerLink="/investment"
+          routerLinkActive="active"
+          [routerLinkActiveOptions]="{ exact: true }"
+          class="nav-link"
+        >
           <mat-icon>account_balance</mat-icon>
           <span>Investment</span>
+        </a>
+        <a routerLink="/investment/advisor" routerLinkActive="active" class="nav-link nav-link-nested">
+          <mat-icon>support_agent</mat-icon>
+          <span>Advisor & IPS</span>
+        </a>
+        <a routerLink="/investment/strategy-lab" routerLinkActive="active" class="nav-link nav-link-nested">
+          <mat-icon>science</mat-icon>
+          <span>Strategy Lab</span>
         </a>
         <a routerLink="/startup-advisor" routerLinkActive="active" class="nav-link">
           <mat-icon>rocket_launch</mat-icon>

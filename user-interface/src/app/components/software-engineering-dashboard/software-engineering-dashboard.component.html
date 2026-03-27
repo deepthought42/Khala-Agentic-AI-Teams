@@ -1,6 +1,13 @@
 <h1>Software Engineering Team API</h1>
 <p>Run team, job status, open questions, execution tasks.</p>
 
+<p class="sub-teams">
+  <span class="sub-teams-label">Sub-teams:</span>
+  <a routerLink="/software-engineering/planning-v3">Planning (V3)</a>
+  <span class="sep">·</span>
+  <a routerLink="/software-engineering/coding-team">Coding Team</a>
+</p>
+
 <div class="header-row">
   <app-health-indicator [healthCheck]="healthCheck" label="Software Engineering API" />
 </div>

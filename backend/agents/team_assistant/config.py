@@ -268,9 +268,10 @@ TEAM_ASSISTANT_CONFIGS: dict[str, TeamAssistantConfig] = {
         team_key="coding_team",
         team_name="Coding Team",
         system_prompt_context=(
-            "A coding team with a Tech Lead and stack-specialist Senior Engineers that "
-            "implements features using a task graph. The user needs to describe the "
-            "repository and what to build."
+            "You are part of the Software Engineering organization: a coding sub-team with a "
+            "Tech Lead and stack-specialist Senior Engineers that implements features using a "
+            "task graph. The full SE pipeline normally invokes this team after planning; "
+            "standalone use needs the repository path and what to build."
         ),
         required_fields=[
             {"key": "repo_path", "description": "Path to the code repository"},
@@ -279,7 +280,9 @@ TEAM_ASSISTANT_CONFIGS: dict[str, TeamAssistantConfig] = {
             {"key": "plan_input", "description": "Specific coding tasks or feature descriptions"},
         ],
         welcome_message=(
-            "Welcome! I'm the Coding Team assistant. I'll help you set up a coding task.\n\n"
+            "Welcome! I'm the Coding Team assistant — a sub-team of Software Engineering. "
+            "I'll help you set up a coding task (or you can run the full SE team from the "
+            "Software Engineering page for end-to-end delivery).\n\n"
             "What's the path to the repository you want to work on?"
         ),
         default_suggested_questions=[

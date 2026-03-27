@@ -1,5 +1,5 @@
 """
-FastAPI app for coding_team: POST /run, GET /status/{job_id}, GET /jobs.
+FastAPI app for coding_team: GET /health, POST /run, GET /status/{job_id}, GET /jobs.
 """
 
 from __future__ import annotations
@@ -70,6 +70,11 @@ class JobListItem(BaseModel):
     status: str
     repo_path: Optional[str] = None
     phase: Optional[str] = None
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "coding-team"}
 
 
 @app.post("/run", response_model=RunResponse)

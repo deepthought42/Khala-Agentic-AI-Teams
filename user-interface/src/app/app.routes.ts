@@ -10,11 +10,13 @@ import { SocialMarketingDashboardComponent } from './components/social-marketing
 import { BrandingDashboardComponent } from './components/branding-dashboard/branding-dashboard.component';
 import { SoftwareEngineeringDashboardComponent } from './components/software-engineering-dashboard/software-engineering-dashboard.component';
 import { PlanningV3PageComponent } from './components/planning-v3-page/planning-v3-page.component';
+import { CodingTeamPageComponent } from './components/coding-team-page/coding-team-page.component';
 import { PersonalAssistantDashboardComponent } from './components/personal-assistant-dashboard/personal-assistant-dashboard.component';
 import { AccessibilityDashboardComponent } from './components/accessibility-dashboard/accessibility-dashboard.component';
 import { AgentProvisioningDashboardComponent } from './components/agent-provisioning-dashboard/agent-provisioning-dashboard.component';
 import { AISystemsDashboardComponent } from './components/ai-systems-dashboard/ai-systems-dashboard.component';
 import { InvestmentDashboardComponent } from './components/investment-dashboard/investment-dashboard.component';
+import { InvestmentStrategyLabPageComponent } from './components/investment-strategy-lab-page/investment-strategy-lab-page.component';
 import { IntegrationsDashboardComponent } from './components/integrations-dashboard/integrations-dashboard.component';
 import { StudioGridDashboardComponent } from './components/studio-grid-dashboard/studio-grid-dashboard.component';
 import { SalesDashboardComponent } from './components/sales-dashboard/sales-dashboard.component';
@@ -34,6 +36,7 @@ export const routes: Routes = [
       { path: 'blogging/jobs/:jobId/artifacts/:artifactName', component: BlogArtifactViewerComponent },
       { path: 'software-engineering', component: SoftwareEngineeringDashboardComponent },
       { path: 'software-engineering/planning-v3', component: PlanningV3PageComponent },
+      { path: 'software-engineering/coding-team', component: CodingTeamPageComponent },
       { path: 'market-research', component: MarketResearchDashboardComponent },
       { path: 'soc2-compliance', component: Soc2ComplianceDashboardComponent },
       { path: 'social-marketing', component: SocialMarketingDashboardComponent },
@@ -43,6 +46,12 @@ export const routes: Routes = [
       { path: 'agent-provisioning', component: AgentProvisioningDashboardComponent },
       { path: 'ai-systems', component: AISystemsDashboardComponent },
       { path: 'investment', component: InvestmentDashboardComponent },
+      {
+        path: 'investment/advisor',
+        component: InvestmentDashboardComponent,
+        data: { investmentFocus: 'advisor' },
+      },
+      { path: 'investment/strategy-lab', component: InvestmentStrategyLabPageComponent },
       { path: 'integrations', component: IntegrationsDashboardComponent },
       { path: 'studio-grid', component: StudioGridDashboardComponent },
       { path: 'sales', component: SalesDashboardComponent },

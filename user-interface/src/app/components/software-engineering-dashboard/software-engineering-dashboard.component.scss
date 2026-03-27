@@ -1,3 +1,28 @@
+.sub-teams {
+  margin: 0 0 1rem;
+  font-size: 0.9375rem;
+  color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.7));
+
+  .sub-teams-label {
+    margin-right: 0.35rem;
+    font-weight: 500;
+  }
+
+  a {
+    color: var(--mat-sys-primary, #1976d2);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  .sep {
+    margin: 0 0.35rem;
+    color: var(--mat-sys-outline, rgba(0, 0, 0, 0.38));
+  }
+}
+
 .header-row {
   margin-bottom: 1rem;
 }

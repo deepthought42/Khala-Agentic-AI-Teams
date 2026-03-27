@@ -1,5 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatIconModule } from '@angular/material/icon';
 import { MatCardModule } from '@angular/material/card';
@@ -50,6 +51,10 @@ import {
 })
 export class InvestmentDashboardComponent implements OnInit {
   private readonly api = inject(InvestmentApiService);
+  private readonly route = inject(ActivatedRoute);
+
+  /** Set from route data when navigating to /investment/advisor */
+  routeFocus: 'default' | 'advisor' = 'default';
 
   viewMode: 'chat' | 'forms' = 'chat';
   selectedTabIndex = 0;
@@ -63,6 +68,12 @@ export class InvestmentDashboardComponent implements OnInit {
   showProfileForm = false;
 
   ngOnInit(): void {
+    const focus = this.route.snapshot.data['investmentFocus'];
+    if (focus === 'advisor') {
+      this.routeFocus = 'advisor';
+      this.viewMode = 'forms';
+      this.selectedTabIndex = 0;
+    }
     this.checkHealth();
   }
 

@@ -1,0 +1,18 @@
+.page-toolbar {
+  margin-bottom: 0.5rem;
+}
+
+.subtitle {
+  margin: 0 0 1rem;
+  max-width: 52rem;
+  line-height: 1.5;
+  color: var(--mat-sys-on-surface-variant, rgba(0, 0, 0, 0.7));
+
+  code {
+    font-size: 0.9em;
+  }
+}
+
+.header-row {
+  margin-bottom: 1rem;
+}
