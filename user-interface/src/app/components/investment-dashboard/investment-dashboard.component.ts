@@ -1,6 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink, RouterLinkActive } from '@angular/router';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatIconModule } from '@angular/material/icon';
 import { MatCardModule } from '@angular/material/card';
@@ -45,6 +45,8 @@ import {
     InvestmentPromotionComponent,
     InvestmentWorkflowComponent,
     StrategyLabComponent,
+    RouterLink,
+    RouterLinkActive,
   ],
   templateUrl: './investment-dashboard.component.html',
   styleUrl: './investment-dashboard.component.scss',
