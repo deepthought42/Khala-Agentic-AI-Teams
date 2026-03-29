@@ -10,7 +10,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { marked } from 'marked';
 import { SoftwareEngineeringApiService } from '../../services/software-engineering-api.service';
-import type { PlanningArtifactMeta, PlanningArtifactContentResponse } from '../../models';
+import type { PlanningArtifactMeta } from '../../models';
 
 @Component({
   selector: 'app-planning-artifacts-viewer',
