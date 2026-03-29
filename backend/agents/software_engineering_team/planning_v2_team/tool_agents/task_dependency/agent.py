@@ -23,6 +23,7 @@ from ...models import ToolAgentKind, ToolAgentPhaseInput, ToolAgentPhaseOutput
 from ...output_templates import parse_review_output
 from ...shared_planning_document import (
     AGENT_SECTION_MAP,
+    read_other_sections,
     shared_doc_asset_path,
     write_section,
 )
@@ -199,17 +200,13 @@ class TaskDependencyToolAgent:
                 f"- {t['id']}: [{t['team']}] {t['title']} - {t['description'][:80]}"
                 for t in tasks[:50]
             )
-            json.dumps(
-                [
-                    {
-                        "id": t["id"],
-                        "team": t["team"],
-                        "title": t["title"],
-                        "description": t["description"][:80],
-                    }
-                    for t in tasks[:50]
-                ]
-            )
+
+        # Blackboard: read other agents' sections for cross-referencing
+        blackboard_context = read_other_sections(
+            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_DEPENDENCY]
+        )
+        if blackboard_context:
+            logger.info("TaskDependency: read %d chars of cross-agent context from blackboard", len(blackboard_context))
 
         prompt = TASK_DEPENDENCY_REVIEW_PROMPT.format(tasks=tasks_text)
         raw_text = complete_text_with_continuation(

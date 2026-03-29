@@ -23,6 +23,7 @@ from ...output_templates import (
 )
 from ...shared_planning_document import (
     AGENT_SECTION_MAP,
+    read_other_sections,
     read_section,
     shared_doc_asset_path,
     write_section,
@@ -346,20 +347,15 @@ class ArchitectureToolAgent:
             fix_inp = inp.model_copy(update={"current_files": current_files})
             result = self.fix_all_issues(arch_issues, fix_inp)
             if result.files:
-                repo = Path(inp.repo_path or ".")
                 for rel_path, content in result.files.items():
-                    full_path = repo / rel_path
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text(content, encoding="utf-8")
+                    repo = Path(inp.repo_path or ".")
                     write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE], content)
-                    file_name = full_path.name
                     logger.info(
-                        "Architecture: applied fix — writing to file: %s (%d chars)",
-                        file_name,
+                        "Architecture: applied fix — writing to shared doc (%d chars)",
                         len(content),
                     )
-                    if rel_path not in files_written:
-                        files_written.append(rel_path)
+                    if shared_doc_asset_path() not in files_written:
+                        files_written.append(shared_doc_asset_path())
                     current_files[rel_path] = content
                 fixes_applied.append(result.summary)
             logger.info(
@@ -382,6 +378,13 @@ class ArchitectureToolAgent:
         layers = inp.metadata.get("layers", [])
         cross_cutting = inp.metadata.get("cross_cutting", [])
         deployment_model = inp.metadata.get("deployment_model", "")
+
+        # Blackboard: read other agents' sections for cross-referencing
+        blackboard_context = read_other_sections(
+            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
+        )
+        if blackboard_context:
+            logger.info("Architecture: read %d chars of cross-agent context from blackboard", len(blackboard_context))
 
         content_parts = ["# Architecture\n"]
 

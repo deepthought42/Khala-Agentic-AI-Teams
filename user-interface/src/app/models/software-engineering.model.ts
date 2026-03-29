@@ -481,6 +481,6 @@ export interface PlanningArtifactListResponse {
 /** Response with the content of a single planning artifact. */
 export interface PlanningArtifactContentResponse {
   name: string;
-  content: string | object;
+  content: string | Record<string, unknown>;
   content_type: string;
 }

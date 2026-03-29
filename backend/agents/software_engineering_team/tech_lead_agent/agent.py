@@ -76,7 +76,7 @@ class TechLeadAgent:
                 content = md_file.read_text(encoding="utf-8")
                 if content.strip():
                     artifacts.append(f"--- {md_file.name} ---\n{content}")
-            except Exception as e:
+            except (IOError, OSError, UnicodeDecodeError) as e:
                 logger.warning(
                     "Tech Lead: failed to read %s: %s. Next step -> Continuing with remaining artifacts",
                     md_file,
@@ -90,7 +90,7 @@ class TechLeadAgent:
                 content = shared_doc.read_text(encoding="utf-8")
                 if content.strip():
                     artifacts.insert(0, f"--- planning_team/planning_document.md ---\n{content}")
-            except Exception as e:
+            except (IOError, OSError, UnicodeDecodeError) as e:
                 logger.warning(
                     "Tech Lead: failed to read shared planning doc: %s",
                     e,

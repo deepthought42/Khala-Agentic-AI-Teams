@@ -28,6 +28,7 @@ from ...output_templates import (
 )
 from ...shared_planning_document import (
     AGENT_SECTION_MAP,
+    read_other_sections,
     read_section,
     shared_doc_asset_path,
     write_section,
@@ -507,20 +508,15 @@ class UserStoryToolAgent:
             fix_inp = inp.model_copy(update={"current_files": current_files})
             result = self.fix_all_issues(story_issues, fix_inp)
             if result.files:
-                repo = Path(inp.repo_path or ".")
                 for rel_path, content in result.files.items():
-                    full_path = repo / rel_path
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text(content, encoding="utf-8")
+                    repo = Path(inp.repo_path or ".")
                     write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.USER_STORY], content)
-                    file_name = full_path.name
                     logger.info(
-                        "UserStory: applied fix — writing to file: %s (%d chars)",
-                        file_name,
+                        "UserStory: applied fix — writing to shared doc (%d chars)",
                         len(content),
                     )
-                    if rel_path not in files_written:
-                        files_written.append(rel_path)
+                    if shared_doc_asset_path() not in files_written:
+                        files_written.append(shared_doc_asset_path())
                     current_files[rel_path] = content
                 fixes_applied.append(result.summary)
             if result.hierarchy:
@@ -550,6 +546,13 @@ class UserStoryToolAgent:
             )
 
         if not files_written:
+            # Blackboard: read other agents' sections for cross-referencing
+            blackboard_context = read_other_sections(
+                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]
+            )
+            if blackboard_context:
+                logger.info("UserStory: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+
             content = _hierarchy_to_markdown(hierarchy)
             repo = Path(inp.repo_path or ".")
             write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.USER_STORY], content)
@@ -815,7 +818,9 @@ class UserStoryToolAgent:
                 updated_content = next(iter(file_updates.values()), "")
 
             files: Dict[str, str] = {}
-            hierarchy: Optional[PlanningHierarchy] = None
+            # Preserve existing hierarchy from input — fixes update the markdown but don't
+            # restructure the hierarchy object itself.
+            hierarchy: Optional[PlanningHierarchy] = inp.hierarchy
             if updated_content and isinstance(updated_content, str) and updated_content.strip():
                 if looks_like_truncated_file_content(updated_content):
                     continued = attempt_fix_output_continuation(

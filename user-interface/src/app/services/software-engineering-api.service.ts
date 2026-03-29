@@ -363,7 +363,7 @@ export class SoftwareEngineeringApiService {
     artifactName: string
   ): Observable<PlanningArtifactContentResponse> {
     return this.http.get<PlanningArtifactContentResponse>(
-      `${this.baseUrl}/planning-v2/${jobId}/artifacts/${artifactName}`
+      `${this.baseUrl}/planning-v2/${jobId}/artifacts/${encodeURIComponent(artifactName)}`
     );
   }
 
