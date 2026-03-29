@@ -11,11 +11,17 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...models import ToolAgentKind, ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
 from ...output_templates import (
     looks_like_truncated_file_content,
     parse_devops_planning_output,
     parse_fix_output,
+)
+from ...shared_planning_document import (
+    AGENT_SECTION_MAP,
+    read_section,
+    shared_doc_asset_path,
+    write_section,
 )
 from ..json_utils import attempt_fix_output_continuation, complete_text_with_continuation
 
@@ -238,6 +244,7 @@ class DevOpsToolAgent:
                     full_path = repo / rel_path
                     full_path.parent.mkdir(parents=True, exist_ok=True)
                     full_path.write_text(content, encoding="utf-8")
+                    write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.DEVOPS], content)
                     file_name = full_path.name
                     logger.info(
                         "DevOps: applied fix — writing to file: %s (%d chars)",
@@ -254,7 +261,8 @@ class DevOpsToolAgent:
             )
 
         existing_doc = (
-            inp.current_files.get(planning_asset_path("devops.md")) if inp.current_files else None
+            (inp.current_files.get(planning_asset_path("devops.md")) if inp.current_files else None)
+            or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS])
         )
         if existing_doc and not devops_issues:
             return ToolAgentPhaseOutput(
@@ -310,13 +318,10 @@ class DevOpsToolAgent:
             content_parts.append("\n")
 
         if pipeline_stages or infrastructure:
-            rel_path = planning_asset_path("devops.md")
             content = "".join(content_parts)
             repo = Path(inp.repo_path or ".")
-            full_path = repo / rel_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
-            files_written.append(rel_path)
+            write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.DEVOPS], content)
+            files_written.append(shared_doc_asset_path())
 
         return ToolAgentPhaseOutput(
             summary="DevOps artifacts generated.",
@@ -348,6 +353,8 @@ class DevOpsToolAgent:
                     if "devops" in path.lower():
                         current_artifact = content
                         break
+        if not current_artifact:
+            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS]) or ""
 
         prompt = DEVOPS_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -481,6 +488,8 @@ class DevOpsToolAgent:
                     if "devops" in path.lower():
                         current_artifact = content
                         break
+        if not current_artifact:
+            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS]) or ""
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = DEVOPS_FIX_ALL_ISSUES_PROMPT.format(

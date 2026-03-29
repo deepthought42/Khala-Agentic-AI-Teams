@@ -83,6 +83,19 @@ class TechLeadAgent:
                     e,
                 )
 
+        # Also read the shared planning document from plan/planning_team/
+        shared_doc = plan_dir / "planning_team" / "planning_document.md"
+        if shared_doc.exists():
+            try:
+                content = shared_doc.read_text(encoding="utf-8")
+                if content.strip():
+                    artifacts.insert(0, f"--- planning_team/planning_document.md ---\n{content}")
+            except Exception as e:
+                logger.warning(
+                    "Tech Lead: failed to read shared planning doc: %s",
+                    e,
+                )
+
         if artifacts:
             logger.info("Tech Lead: read %d plan artifacts from %s", len(artifacts), plan_dir)
 

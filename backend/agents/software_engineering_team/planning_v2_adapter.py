@@ -27,6 +27,7 @@ class PlanningV2AdapterResult:
     hierarchy: Optional[PlanningHierarchy] = field(default=None)
     final_spec_content: Optional[str] = field(default=None)
     architecture_overview: Optional[str] = field(default=None)
+    shared_planning_doc_path: Optional[str] = field(default=None)
 
 
 def adapt_planning_v2_result(

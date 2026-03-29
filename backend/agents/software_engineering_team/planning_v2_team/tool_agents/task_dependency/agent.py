@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from software_engineering_team.shared.deduplication import (
@@ -18,8 +19,13 @@ from software_engineering_team.shared.deduplication import (
 )
 from software_engineering_team.shared.models import PlanningHierarchy
 
-from ...models import ToolAgentPhaseInput, ToolAgentPhaseOutput, planning_asset_path
+from ...models import ToolAgentKind, ToolAgentPhaseInput, ToolAgentPhaseOutput
 from ...output_templates import parse_review_output
+from ...shared_planning_document import (
+    AGENT_SECTION_MAP,
+    shared_doc_asset_path,
+    write_section,
+)
 from ..json_utils import complete_text_with_continuation
 
 if TYPE_CHECKING:
@@ -236,7 +242,10 @@ class TaskDependencyToolAgent:
 
         files: Dict[str, str] = {}
         if issues or recommendations or summary:
-            files[planning_asset_path("task_dependencies.md")] = "".join(content_parts)
+            content = "".join(content_parts)
+            repo = Path(inp.repo_path or ".")
+            write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.TASK_DEPENDENCY], content)
+            files[shared_doc_asset_path()] = content
 
         return ToolAgentPhaseOutput(
             summary=summary,
