@@ -58,8 +58,7 @@ Recap and one practical next step.
 """
 
     draft_input = DraftInput(
-        research_document=research_document.strip(),
-        outline=outline.strip(),
+        content_plan=None,  # type: ignore[arg-type]  # test harness — provide a real ContentPlan
         audience="Beginners to AI Agents",
         tone_or_purpose="Educational",
     )

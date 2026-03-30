@@ -4,6 +4,8 @@ import {
   Output,
   EventEmitter,
   OnInit,
+  OnChanges,
+  SimpleChanges,
   ViewChild,
   ElementRef,
   AfterViewChecked,
@@ -40,13 +42,18 @@ import type {
   templateUrl: './team-assistant-chat.component.html',
   styleUrl: './team-assistant-chat.component.scss',
 })
-export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
+export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewChecked {
   @Input() teamApiUrl = '';
   @Input() teamName = 'Assistant';
   @Input() teamDescription = '';
   /** Field definitions — drives the right-side form panel. */
   @Input() fields: TeamAssistantFieldSpec[] = [];
+  /** When set, use this specific conversation instead of the singleton. */
+  @Input() conversationId: string | null = null;
+
   @Output() launchWorkflow = new EventEmitter<Record<string, unknown>>();
+  /** Emitted when a conversation is loaded/created, so parent can track the ID. */
+  @Output() conversationLoaded = new EventEmitter<string>();
 
   @ViewChild('messagesContainer') messagesContainer!: ElementRef<HTMLDivElement>;
 
@@ -72,6 +79,12 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
 
   ngOnInit(): void {
     this.loadConversation();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['conversationId'] && !changes['conversationId'].firstChange) {
+      this.loadConversation();
+    }
   }
 
   ngAfterViewChecked(): void {
@@ -100,6 +113,23 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     this.loadConversation();
   }
 
+  /** Reset the conversation to start fresh. Can be called by the parent component. */
+  resetConversation(): void {
+    if (!this.teamApiUrl) return;
+    this.loading = true;
+    this.error = null;
+    this.api.resetConversation(this.teamApiUrl, this.conversationId ?? undefined).subscribe({
+      next: (res) => {
+        this.applyState(res);
+        this.loading = false;
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to reset conversation';
+        this.loading = false;
+      },
+    });
+  }
+
   // --- Inline field editing ---
 
   startEdit(fieldKey: string): void {
@@ -115,13 +145,12 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     this.context = { ...this.context, [key]: value || undefined };
     this.editingField = null;
     this.editingValue = '';
-    // Push to backend
-    this.api.updateContext(this.teamApiUrl, { [key]: value }).subscribe({
+    this.api.updateContext(this.teamApiUrl, { [key]: value }, this.conversationId ?? undefined).subscribe({
       next: res => {
         this.context = res.context ?? this.context;
         this.checkReadiness();
       },
-      error: () => { /* Context update failed silently; local state is already set */ },
+      error: () => {},
     });
   }
 
@@ -164,13 +193,16 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     this.messages = res.messages ?? [];
     this.context = res.context ?? {};
     this.suggestedQuestions = res.suggested_questions ?? [];
+    if (res.conversation_id) {
+      this.conversationLoaded.emit(res.conversation_id);
+    }
     this.checkReadiness();
   }
 
   private loadConversation(): void {
     if (!this.teamApiUrl) return;
     this.loading = true;
-    this.api.getConversation(this.teamApiUrl).subscribe({
+    this.api.getConversation(this.teamApiUrl, this.conversationId ?? undefined).subscribe({
       next: res => {
         this.applyState(res);
         this.loading = false;
@@ -191,7 +223,7 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
     ];
     this.loading = true;
     this.error = null;
-    this.api.sendMessage(this.teamApiUrl, message).subscribe({
+    this.api.sendMessage(this.teamApiUrl, message, this.conversationId ?? undefined).subscribe({
       next: res => {
         this.applyState(res);
         this.loading = false;
@@ -204,7 +236,7 @@ export class TeamAssistantChatComponent implements OnInit, AfterViewChecked {
   }
 
   private checkReadiness(): void {
-    this.api.getReadiness(this.teamApiUrl).subscribe({
+    this.api.getReadiness(this.teamApiUrl, this.conversationId ?? undefined).subscribe({
       next: res => {
         this.ready = res.ready;
         this.missingFields = res.missing_fields ?? [];

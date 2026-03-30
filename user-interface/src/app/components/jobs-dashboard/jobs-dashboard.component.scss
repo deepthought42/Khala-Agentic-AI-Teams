@@ -164,7 +164,8 @@
       &.status-waiting    { border-left: 3px solid var(--kh-warning); }
       &.status-completed  { border-left: 3px solid var(--kh-success); }
       &.status-failed     { border-left: 3px solid var(--kh-error); }
-      &.status-cancelled  { border-left: 3px solid var(--kh-text-muted); }
+      &.status-cancelled    { border-left: 3px solid var(--kh-text-muted); }
+      &.status-interrupted  { border-left: 3px solid var(--kh-warning); }
 
       td {
         padding: var(--kh-space-3) var(--kh-space-4);
@@ -243,6 +244,11 @@
   &.status-cancelled {
     background: rgba(113, 113, 122, 0.12);
     color: var(--kh-text-muted);
+  }
+
+  &.status-interrupted {
+    background: var(--kh-warning-subtle, rgba(251, 191, 36, 0.12));
+    color: var(--kh-warning, #d97706);
   }
 }
 

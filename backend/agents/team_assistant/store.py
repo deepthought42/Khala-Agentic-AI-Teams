@@ -1,8 +1,8 @@
 """Generic SQLite-backed conversation store for team assistants.
 
-Extracted from ``startup_advisor/store.py``: same schema and API, parameterized
-by team name for DB path isolation.  In-memory DB when no path is supplied
-(for tests), file-backed with WAL mode for production.
+Supports both singleton (legacy) and per-job conversation modes.
+In-memory DB when no path is supplied (for tests), file-backed with WAL mode
+for production.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -24,10 +24,12 @@ logger = logging.getLogger(__name__)
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     conversation_id    TEXT PRIMARY KEY,
+    job_id             TEXT DEFAULT NULL,
     context_json       TEXT NOT NULL DEFAULT '{}',
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_conversations_job_id ON conversations(job_id);
 CREATE TABLE IF NOT EXISTS conv_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,
@@ -87,6 +89,11 @@ class TeamAssistantConversationStore:
         conn = sqlite3.connect(self._file_path, timeout=15)  # type: ignore[arg-type]
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
+        # Migration: add job_id column if missing (existing databases)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+        if "job_id" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN job_id TEXT DEFAULT NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_job_id ON conversations(job_id)")
         conn.commit()
         conn.close()
 
@@ -111,15 +118,24 @@ class TeamAssistantConversationStore:
             finally:
                 conn.close()
 
-    def create(self, conversation_id: Optional[str] = None, context: Optional[dict] = None) -> str:
+    # ------------------------------------------------------------------
+    # Core CRUD
+    # ------------------------------------------------------------------
+
+    def create(
+        self,
+        conversation_id: Optional[str] = None,
+        context: Optional[dict] = None,
+        job_id: Optional[str] = None,
+    ) -> str:
         cid = conversation_id or str(uuid4())
         ctx_json = json.dumps(context or {})
         now = datetime.now(tz=timezone.utc).isoformat()
         with self._db() as conn:
             conn.execute(
-                "INSERT INTO conversations (conversation_id, context_json, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?)",
-                (cid, ctx_json, now, now),
+                "INSERT INTO conversations (conversation_id, job_id, context_json, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (cid, job_id, ctx_json, now, now),
             )
         return cid
 
@@ -201,6 +217,82 @@ class TeamAssistantConversationStore:
             for r in rows
         ]
 
+    # ------------------------------------------------------------------
+    # Job linking
+    # ------------------------------------------------------------------
+
+    def link_job(self, conversation_id: str, job_id: str) -> None:
+        """Associate a conversation with a pipeline job."""
+        ts = datetime.now(tz=timezone.utc).isoformat()
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE conversations SET job_id = ?, updated_at = ? WHERE conversation_id = ?",
+                (job_id, ts, conversation_id),
+            )
+
+    def get_by_job_id(self, job_id: str) -> Optional[str]:
+        """Return the conversation_id linked to *job_id*, or None."""
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT conversation_id FROM conversations WHERE job_id = ? LIMIT 1",
+                (job_id,),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    # ------------------------------------------------------------------
+    # Listing
+    # ------------------------------------------------------------------
+
+    def list_conversations(self) -> List[Dict[str, Any]]:
+        """Return all conversations as dicts."""
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, job_id, context_json, created_at FROM conversations ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            {
+                "conversation_id": r[0],
+                "job_id": r[1],
+                "context": json.loads(r[2]) if r[2] else {},
+                "created_at": r[3],
+            }
+            for r in rows
+        ]
+
+    def list_unlinked(self) -> List[Dict[str, Any]]:
+        """Return conversations with no job_id (drafts)."""
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, context_json, created_at FROM conversations"
+                " WHERE job_id IS NULL ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            {
+                "conversation_id": r[0],
+                "context": json.loads(r[1]) if r[1] else {},
+                "created_at": r[2],
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Deletion
+    # ------------------------------------------------------------------
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation and all its messages/artifacts. Returns True if it existed."""
+        with self._db() as conn:
+            conn.execute("DELETE FROM conv_artifacts WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM conv_messages WHERE conversation_id = ?", (conversation_id,))
+            result = conn.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?", (conversation_id,)
+            )
+        return result.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Legacy singleton (backward compat for non-blogging teams)
+    # ------------------------------------------------------------------
+
     def get_or_create_singleton(self) -> str:
         """Return the single conversation ID, creating one if none exists."""
         with self._db() as conn:
@@ -209,6 +301,14 @@ class TeamAssistantConversationStore:
             ).fetchone()
             if row is not None:
                 return str(row[0])
+        return self.create()
+
+    def reset_singleton(self) -> str:
+        """Delete the existing conversation and create a fresh one."""
+        with self._db() as conn:
+            conn.execute("DELETE FROM conv_artifacts")
+            conn.execute("DELETE FROM conv_messages")
+            conn.execute("DELETE FROM conversations")
         return self.create()
 
 

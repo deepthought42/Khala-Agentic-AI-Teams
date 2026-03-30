@@ -66,6 +66,10 @@ class MarkStaleResponse(BaseModel):
     failed_job_ids: list[str]
 
 
+class MarkInterruptedResponse(BaseModel):
+    interrupted_job_ids: list[str]
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str = "job-service"

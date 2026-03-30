@@ -28,6 +28,14 @@ export interface TeamAssistantReadiness {
   context: Record<string, unknown>;
 }
 
+/** Summary of a team assistant conversation (for listing). */
+export interface TeamConversationSummary {
+  conversation_id: string;
+  job_id?: string | null;
+  created_at: string;
+  brief: string;
+}
+
 /** Describes one field shown in the form panel alongside the chat. */
 export interface TeamAssistantFieldSpec {
   key: string;

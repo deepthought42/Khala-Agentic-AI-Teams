@@ -49,7 +49,6 @@ from .errors import (
     LLMUnreachableError,
     PlanningError,
     PublicationError,
-    ResearchError,
     ValidationError,
 )
 from .models import (
@@ -75,7 +74,6 @@ __all__ = [
     "LLMTemporaryError",
     "LLMUnreachableError",
     "PublicationError",
-    "ResearchError",
     "PlanningError",
     "ValidationError",
     "JOB_STATUS_PENDING",

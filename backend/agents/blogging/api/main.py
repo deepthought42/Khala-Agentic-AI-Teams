@@ -138,13 +138,13 @@ def _run_blogging_service_shutdown() -> None:
         from job_service_client import JobServiceClient
 
         client = JobServiceClient(team="blogging_team")
-        client.mark_all_active_jobs_failed(
+        client.mark_all_active_jobs_interrupted(
             "Blogging service shutting down",
             http_timeout=5.0,
             http_max_retries=0,
         )
-    except Exception:
-        logger.warning("Job-service shutdown notification failed", exc_info=True)
+    except Exception as exc:
+        logger.info("Job-service shutdown notification skipped: %s", exc)
 
     logger.info("Blogging service shutdown: stopping Temporal worker…")
     try:

@@ -27,7 +27,7 @@ COPY unified_api/medium_browser_login.py /app/unified_api/medium_browser_login.p
 COPY team_service/entrypoint.py /app/entrypoint.py
 
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/agents:/app
+ENV PYTHONPATH=/app/agents:/app/agents/blogging:/app
 
 ARG TEAM_PORT=8090
 ENV TEAM_PORT=${TEAM_PORT}

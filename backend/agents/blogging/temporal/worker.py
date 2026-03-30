@@ -162,5 +162,8 @@ def _force_stop_worker_loop(loop: asyncio.AbstractEventLoop) -> None:
 
     try:
         loop.call_soon_threadsafe(_stop)
+    except RuntimeError:
+        # Event loop already closed — nothing to stop
+        logger.debug("Temporal worker event loop already closed")
     except Exception:
-        logger.exception("Could not schedule Temporal worker loop stop")
+        logger.warning("Could not schedule Temporal worker loop stop")

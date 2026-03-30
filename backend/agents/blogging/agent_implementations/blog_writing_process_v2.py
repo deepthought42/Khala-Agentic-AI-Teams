@@ -23,11 +23,10 @@ from blog_publication_agent.models import PublishingPack
 from blog_research_agent.models import ResearchBriefInput
 from shared.artifacts import write_artifact
 from shared.blog_job_store import (
+    add_blog_pending_questions,
     get_blog_job,
-    get_user_draft_feedback,
-    is_waiting_for_draft_feedback,
+    is_waiting_for_blog_answers,
     record_guideline_updates,
-    request_draft_feedback,
 )
 from shared.brand_spec import load_brand_spec_prompt
 from shared.content_plan import (
@@ -694,6 +693,121 @@ def run_pipeline(
     except Exception as e:
         logger.warning("Story bank retrieval failed (non-fatal): %s", e)
 
+    # ------------------------------------------------------------------
+    # Outline approval: block until the user approves the outline
+    # ------------------------------------------------------------------
+    if job_id is not None and job_updater is not None:
+        try:
+            from shared.blog_job_store import (
+                get_blog_job,
+                get_user_draft_feedback,
+                is_waiting_for_draft_feedback,
+                request_draft_feedback,
+                update_blog_job,
+            )
+
+            outline_text = content_plan_to_outline_markdown(plan)
+            outline_revision = 0
+
+            # Present outline for approval
+            _update(
+                BlogPhase.PLANNING,
+                sub_progress=0.8,
+                status_text="Waiting for outline approval...",
+            )
+            request_draft_feedback(
+                job_id,
+                draft=outline_text,
+                revision=outline_revision,
+            )
+
+            while True:
+                # Poll until user submits feedback
+                while is_waiting_for_draft_feedback(job_id):
+                    job_data = get_blog_job(job_id)
+                    if job_data and job_data.get("status") in ("failed", "cancelled"):
+                        return planning_phase_result, None, "FAIL"
+                    time.sleep(10)
+
+                feedback_data = get_user_draft_feedback(job_id)
+                if not feedback_data:
+                    logger.warning("No outline feedback found; proceeding with current outline.")
+                    break
+
+                if feedback_data.get("approved"):
+                    logger.info("User approved outline at revision %s", outline_revision)
+                    _update(
+                        BlogPhase.PLANNING,
+                        sub_progress=0.95,
+                        status_text=f"Outline approved (revision {outline_revision})",
+                    )
+                    break
+
+                # User provided feedback — re-plan with their input
+                user_feedback_text = feedback_data.get("feedback", "")
+                logger.info("Outline feedback (revision %s): %s chars", outline_revision, len(user_feedback_text))
+                outline_revision += 1
+
+                _update(
+                    BlogPhase.PLANNING,
+                    sub_progress=0.85,
+                    status_text=f"Revising outline based on feedback (revision {outline_revision})...",
+                )
+
+                # Re-run planning with user feedback to refine the plan
+                planning_input_for_refine = PlanningInput(
+                    brief=brief.brief,
+                    audience=brief.audience,
+                    tone_or_purpose=brief.tone_or_purpose,
+                    length_policy_context=build_planning_length_context(length_policy),
+                    series_context_block=series_context_block(series_context),
+                )
+                planning_draft_agent = BlogDraftAgent(
+                    llm_client=planning_llm_client(llm_client),
+                    writing_style_guide_content="",
+                    brand_spec_content="",
+                )
+                try:
+                    refined_result = planning_draft_agent.plan_content(
+                        planning_input_for_refine,
+                        length_policy=length_policy,
+                        on_llm_request=lambda msg: _update(BlogPhase.PLANNING, status_text=msg),
+                        # Override the internal feedback with the user's feedback
+                    )
+                    plan = refined_result.content_plan
+                    planning_phase_result = refined_result
+                except Exception as e:
+                    logger.warning("Re-planning with feedback failed: %s; keeping current plan", e)
+
+                outline_text = content_plan_to_outline_markdown(plan)
+
+                # Persist updated artifacts
+                if work_dir is not None:
+                    write_artifact(work_dir, "content_plan.json", plan.model_dump(mode="json"))
+                    write_artifact(work_dir, "content_plan.md", content_plan_to_markdown_doc(plan))
+                    write_artifact(work_dir, "outline.md", outline_text)
+                    write_artifact(
+                        work_dir, "content_brief.md", content_plan_to_content_brief_markdown(plan)
+                    )
+
+                # Present revised outline for another round
+                _update(
+                    BlogPhase.PLANNING,
+                    sub_progress=0.8,
+                    status_text="Waiting for approval of revised outline...",
+                    content_plan_detail=content_plan_to_markdown_doc(plan),
+                )
+                request_draft_feedback(
+                    job_id,
+                    draft=outline_text,
+                    revision=outline_revision,
+                )
+
+        except CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Outline approval phase error (skipping): %s", e)
+
     # Draft + Copy Editor loop (load style and brand spec as raw text for draft/editor agents)
     writing_style_content = load_style_file(STYLE_GUIDE_PATH, "writing style guide")
     brand_spec_content = load_style_file(BRAND_SPEC_PROMPT_PATH, "brand spec prompt")
@@ -798,15 +912,23 @@ def run_pipeline(
                 )
 
             # ── Interactive draft review (user-as-editor) ──────────────────
-            # After the initial draft, present it to the user for review.
-            # The user acts as the editor: they can approve, provide feedback,
-            # or answer uncertainty questions. This loop continues until the
-            # user approves a draft.
+            # After the initial draft:
+            #   1. Check for uncertainty questions → block for answers
+            #   2. Revise draft with answers if any
+            #   3. Present draft for editor review → block for feedback
+            # This loop continues until the user approves a draft.
             if job_id is not None and job_updater is not None:
+                from shared.blog_job_store import (
+                    get_blog_job,
+                    get_user_draft_feedback,
+                    is_waiting_for_draft_feedback,
+                    request_draft_feedback,
+                )
+
                 content_plan_text = content_plan_to_outline_markdown(plan)
                 user_review_revision = 1
 
-                # Detect uncertainty questions on the initial draft
+                # ── Step 1: Identify and block on uncertainty questions ───
                 _update(
                     BlogPhase.DRAFT_REVIEW,
                     sub_progress=0.0,
@@ -815,17 +937,75 @@ def run_pipeline(
                 uncertainty_questions = draft_agent.identify_uncertainty_questions(
                     draft_result.draft, content_plan_text
                 )
-                uncertainty_q_dicts = [
-                    {
-                        "question_id": q.question_id,
-                        "question": q.question,
-                        "context": q.context,
-                        "section": q.section,
-                    }
-                    for q in uncertainty_questions
-                ]
 
-                # Present draft to user for feedback
+                if uncertainty_questions:
+                    q_dicts = [
+                        {
+                            "id": q.question_id,
+                            "question_text": q.question,
+                            "context": q.context,
+                            "required": True,
+                        }
+                        for q in uncertainty_questions
+                    ]
+                    _update(
+                        BlogPhase.DRAFT_REVIEW,
+                        sub_progress=0.05,
+                        status_text=f"Waiting for answers to {len(q_dicts)} question(s)...",
+                    )
+                    add_blog_pending_questions(job_id, q_dicts)
+
+                    # Block until user answers
+                    while is_waiting_for_blog_answers(job_id):
+                        job_data = get_blog_job(job_id)
+                        if job_data and job_data.get("status") in ("failed", "cancelled"):
+                            return planning_phase_result, draft_result, "FAIL"
+                        time.sleep(10)
+
+                    # ── Step 2: Revise draft with the user's answers ──────
+                    job_data = get_blog_job(job_id)
+                    submitted_answers = (job_data or {}).get("submitted_answers", [])
+                    if submitted_answers:
+                        # Build feedback text from answers for revision
+                        answer_lines = []
+                        for ans in submitted_answers:
+                            qid = ans.get("question_id", "")
+                            text = ans.get("selected_answer", "")
+                            if text:
+                                answer_lines.append(f"Q ({qid}): {text}")
+                        if answer_lines:
+                            answer_feedback = (
+                                "The author answered the following uncertainty questions. "
+                                "Incorporate these answers into the draft:\n\n"
+                                + "\n".join(answer_lines)
+                            )
+                            _update(
+                                BlogPhase.DRAFT_REVIEW,
+                                sub_progress=0.08,
+                                status_text="Incorporating answers into draft...",
+                            )
+                            draft_output_path = (
+                                (Path(work_dir) / "draft_v1_answered.md")
+                                if work_dir is not None
+                                else None
+                            )
+                            draft_result = draft_agent.revise_from_user_feedback(
+                                draft=draft_result.draft,
+                                user_feedback=answer_feedback,
+                                content_plan_text=content_plan_text,
+                                audience=brief.audience,
+                                tone_or_purpose=brief.tone_or_purpose,
+                                selected_title=selected_title or None,
+                                elicited_stories=elicited_stories_text or None,
+                                target_word_count=length_policy.target_word_count,
+                                length_guidance=build_draft_length_instruction(length_policy),
+                                on_llm_request=lambda msg: _update(
+                                    BlogPhase.DRAFT_REVIEW, status_text=msg
+                                ),
+                                draft_output_path=draft_output_path,
+                            )
+
+                # ── Step 3: Present draft for editor review ───────────────
                 _update(
                     BlogPhase.DRAFT_REVIEW,
                     sub_progress=0.1,
@@ -835,7 +1015,6 @@ def run_pipeline(
                     job_id,
                     draft=draft_result.draft,
                     revision=user_review_revision,
-                    uncertainty_questions=uncertainty_q_dicts if uncertainty_q_dicts else None,
                 )
 
                 # Poll until user submits feedback
@@ -1447,7 +1626,7 @@ def main() -> None:
     )
 
     work_dir = Path(__file__).resolve().parent / "run_dir"
-    research_result, planning_phase_result, draft_result, status = run_pipeline(
+    planning_phase_result, draft_result, status = run_pipeline(
         brief, work_dir=work_dir
     )
     plan = planning_phase_result.content_plan

@@ -326,6 +326,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       case 'completed': return 'status-completed';
       case 'failed': return 'status-failed';
       case 'cancelled': return 'status-cancelled';
+      case 'interrupted': return 'status-interrupted';
       default: return 'status-pending';
     }
   }

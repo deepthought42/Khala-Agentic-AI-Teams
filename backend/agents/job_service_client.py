@@ -29,6 +29,7 @@ JOB_STATUS_RUNNING = "running"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
 JOB_STATUS_CANCELLED = "cancelled"
+JOB_STATUS_INTERRUPTED = "interrupted"
 
 
 def _default_base_url() -> str:
@@ -217,38 +218,38 @@ class JobServiceClient:
         )
         return resp.json().get("failed_job_ids", [])
 
-    def mark_all_active_jobs_failed(
+    def mark_all_active_jobs_interrupted(
         self,
         reason: str,
         *,
         http_timeout: float = 30.0,
         http_max_retries: int = 3,
     ) -> List[str]:
+        """Mark all active (pending/running) jobs as interrupted due to service shutdown."""
         if not self._is_remote:
             local = self._get_local()
-            failed: List[str] = []
+            interrupted: List[str] = []
             _waiting_fields = (
                 "waiting_for_answers",
                 "waiting_for_title_selection",
                 "waiting_for_story_input",
             )
             for job in local.list_jobs(statuses=list(_ACTIVE_STATUSES)):
-                # Skip jobs in any waiting state — they are paused for user input
                 if any(job.get(wf) for wf in _waiting_fields):
                     continue
                 jid = job.get("job_id")
                 if jid:
-                    local.update_job(jid, status=JOB_STATUS_FAILED, error=reason)
-                    failed.append(jid)
-            return failed
+                    local.update_job(jid, status=JOB_STATUS_INTERRUPTED, error=reason)
+                    interrupted.append(jid)
+            return interrupted
         resp = self._request(
             "POST",
-            self._url(f"/jobs/{self.team}/mark-all-running-failed"),
+            self._url(f"/jobs/{self.team}/mark-all-running-interrupted"),
             json={"reason": reason},
             timeout=http_timeout,
             max_retries=http_max_retries,
         )
-        return resp.json().get("failed_job_ids", [])
+        return resp.json().get("interrupted_job_ids", [])
 
     # ------------------------------------------------------------------
     # Atomic patch helpers (HTTP-safe replacements for apply_to_job)

@@ -38,6 +38,9 @@ from db import (
     mark_all_active_jobs_failed as db_mark_all_active_jobs_failed,
 )
 from db import (
+    mark_all_active_jobs_interrupted as db_mark_all_active_jobs_interrupted,
+)
+from db import (
     mark_stale_active_jobs_failed as db_mark_stale_active_jobs_failed,
 )
 from db import (
@@ -56,6 +59,7 @@ from models import (
     JobListResponse,
     JobResponse,
     MarkAllFailedRequest,
+    MarkInterruptedResponse,
     MarkStaleRequest,
     MarkStaleResponse,
     ReplaceJobRequest,
@@ -188,3 +192,10 @@ def mark_stale_failed(team: str, req: MarkStaleRequest):
 def mark_all_running_failed(team: str, req: MarkAllFailedRequest):
     failed_ids = db_mark_all_active_jobs_failed(team, req.reason)
     return MarkStaleResponse(failed_job_ids=failed_ids)
+
+
+@app.post("/jobs/{team}/mark-all-running-interrupted", response_model=MarkInterruptedResponse)
+def mark_all_running_interrupted(team: str, req: MarkAllFailedRequest):
+    """Mark all active jobs as interrupted (service shutdown). Uses same request body as failed."""
+    ids = db_mark_all_active_jobs_interrupted(team, req.reason)
+    return MarkInterruptedResponse(interrupted_job_ids=ids)

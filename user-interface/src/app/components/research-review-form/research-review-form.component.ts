@@ -5,7 +5,8 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatCardModule } from '@angular/material/card';
-import type { ResearchAndReviewRequest } from '../../models';
+/** @deprecated Research phase removed from the blogging pipeline. */
+type ResearchAndReviewRequest = Record<string, unknown>;
 
 /**
  * Form for POST /research-and-review.

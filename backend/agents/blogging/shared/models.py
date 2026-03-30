@@ -55,7 +55,6 @@ def get_phase_progress(phase: BlogPhase, sub_progress: float = 0.0) -> int:
 
 # Phase order for tracking completed phases
 PHASE_ORDER = [
-    BlogPhase.RESEARCH,
     BlogPhase.PLANNING,
     BlogPhase.DRAFT_INITIAL,
     BlogPhase.DRAFT_REVIEW,

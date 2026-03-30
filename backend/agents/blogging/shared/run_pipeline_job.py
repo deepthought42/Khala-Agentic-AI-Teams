@@ -190,6 +190,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
             run_gates=bool(request_dict.get("run_gates", True)),
             max_rewrite_iterations=int(request_dict.get("max_rewrite_iterations", 3)),
             job_updater=job_updater,
+            job_id=job_id,
             length_policy=length_policy,
         )
         plan = planning_phase_result.content_plan

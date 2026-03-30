@@ -104,15 +104,14 @@ def test_health_degraded_when_enabled_team_not_mounted():
     # Insert a fake enabled team that is not mounted
     fake_key = "_test_fake_team"
     TEAM_CONFIGS[fake_key] = TeamConfig(name="Fake", prefix="/api/fake", description="test", enabled=True)
-    unified_main._mounted_teams.get(fake_key, False)
-    unified_main._mounted_teams[fake_key] = False
+    unified_main._registered_teams[fake_key] = False
 
     try:
         resp = client.get("/health")
         assert resp.json()["status"] == "degraded"
     finally:
         del TEAM_CONFIGS[fake_key]
-        unified_main._mounted_teams.pop(fake_key, None)
+        unified_main._registered_teams.pop(fake_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -167,44 +166,19 @@ def test_list_teams_docs_url_set_when_mounted():
 
 
 # ---------------------------------------------------------------------------
-# mount_all_teams / _try_mount_* helpers
+# Proxy registration
 # ---------------------------------------------------------------------------
 
 
-def test_mount_all_teams_returns_dict_with_all_team_keys():
-    """mount_all_teams() returns a dict keyed by every team defined in mount_functions."""
+def test_register_proxy_routes_skips_teams_without_url():
+    """_register_proxy_routes skips teams whose service URL env var is not set."""
     from fastapi import FastAPI
 
-    from unified_api.main import mount_all_teams
+    from unified_api.main import _register_proxy_routes
 
     test_app = FastAPI()
     with patch("unified_api.main.get_enabled_teams", return_value={}):
-        result = mount_all_teams(test_app)
+        result = _register_proxy_routes(test_app)
 
     assert isinstance(result, dict)
-    # All teams should be False (disabled/not mounted)
     assert all(v is False for v in result.values())
-
-
-def test_try_mount_blogging_returns_false_on_import_error():
-    """_try_mount_blogging returns False when the blogging module cannot be imported."""
-    from fastapi import FastAPI
-
-    from unified_api.main import _try_mount_blogging
-
-    test_app = FastAPI()
-    with patch.dict("sys.modules", {"blogging.api.main": None}), patch("unified_api.main.importlib") as _:
-        # Simulate ImportError by patching the import inside the function
-        import builtins
-
-        real_import = builtins.__import__
-
-        def _fail_blogging(name, *args, **kwargs):
-            if "blogging" in name:
-                raise ImportError("no blogging module")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=_fail_blogging):
-            result = _try_mount_blogging(test_app)
-
-    assert result is False

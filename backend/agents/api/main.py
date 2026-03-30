@@ -158,10 +158,10 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
 
     length_policy = resolve_length_policy()
 
-    from agent_implementations.blog_writing_process_v2 import run_research_and_planning
+    from agent_implementations.blog_writing_process_v2 import run_planning
 
     try:
-        research_result, _rd, planning_phase_result = run_research_and_planning(
+        planning_phase_result = run_planning(
             brief_input,
             work_dir=None,
             llm_client=llm_client,
@@ -201,8 +201,8 @@ def research_and_review(request: ResearchAndReviewRequest) -> ResearchAndReviewR
             for tc in plan.title_candidates
         ],
         outline=outline,
-        compiled_document=research_result.compiled_document,
-        notes=research_result.notes,
+        compiled_document=None,
+        notes=None,
     )
 
 

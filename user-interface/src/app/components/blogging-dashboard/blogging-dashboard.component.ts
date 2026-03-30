@@ -1,4 +1,4 @@
-import { Component, inject, OnDestroy, OnInit } from '@angular/core';
+import { Component, inject, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -10,6 +10,8 @@ import { Subscription, timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
 import type { BlogJobStreamEvent } from '../../models';
 import { BloggingApiService } from '../../services/blogging-api.service';
+import { TeamAssistantApiService } from '../../services/team-assistant-api.service';
+import type { TeamConversationSummary } from '../../models/team-assistant.model';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
 import { MatExpansionModule } from '@angular/material/expansion';
@@ -31,9 +33,23 @@ import type {
  * Blogging API dashboard: research-and-review and full-pipeline forms and results.
  * Shows Jobs panel (running and completed) with job details and produced assets.
  */
-const TERMINAL_STATUSES = ['completed', 'needs_human_review', 'failed'] as const;
+const TERMINAL_STATUSES = ['completed', 'needs_human_review', 'failed', 'interrupted'] as const;
 const POLL_JOBS_MS = 60000;
-const POLL_STATUS_MS = 60000; // Poll selected job status — pipeline jobs are long-running
+const POLL_STATUS_MS = 60000;
+
+/** Pipeline phases in execution order for the phase stepper. */
+const PIPELINE_PHASES = [
+  { key: 'planning', label: 'Planning' },
+  { key: 'title_selection', label: 'Title' },
+  { key: 'story_elicitation', label: 'Stories' },
+  { key: 'draft_initial', label: 'Draft' },
+  { key: 'draft_review', label: 'Review' },
+  { key: 'copy_edit', label: 'Copy Edit' },
+  { key: 'fact_check', label: 'Fact Check' },
+  { key: 'compliance', label: 'Compliance' },
+  { key: 'rewrite', label: 'Rewrite' },
+  { key: 'finalize', label: 'Finalize' },
+] as const;
 
 export function artifactLabel(name: string): string {
   const labels: Record<string, string> = {
@@ -77,8 +93,10 @@ export function artifactLabel(name: string): string {
   styleUrl: './blogging-dashboard.component.scss',
 })
 export class BloggingDashboardComponent implements OnInit, OnDestroy {
+  @ViewChild(TeamAssistantChatComponent) private assistantChat?: TeamAssistantChatComponent;
   readonly artifactLabel = artifactLabel;
   private readonly api = inject(BloggingApiService);
+  private readonly assistantApi = inject(TeamAssistantApiService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly sanitizer = inject(DomSanitizer);
@@ -88,8 +106,18 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   private queryParamsSub: Subscription | null = null;
   private pendingJobId: string | null = null;
 
+  private static readonly ASSISTANT_URL = '/api/blogging/assistant';
+
   loading = false;
   error: string | null = null;
+
+  /** Current conversation being viewed or edited. */
+  currentConversationId: string | null = null;
+  /** Draft conversations not yet linked to a job. */
+  draftConversations: TeamConversationSummary[] = [];
+
+  /** Current dashboard view. */
+  activeView: 'empty' | 'new-post' | 'jobs' | 'job-detail' = 'empty';
 
   allJobs: BlogJobListItem[] = [];
   runningJobs: BlogJobListItem[] = [];
@@ -101,9 +129,29 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   artifactsError: string | null = null;
   artifactContent: Record<string, string | object> = {};
   artifactContentLoading: Record<string, boolean> = {};
-  activeTabIndex = 1; // 0 Research and Review, 1 Full Pipeline, 2 Assets — default to Full Pipeline
-  /** From GET /health when `brand_spec_configured` is true — hides audience/tone on full pipeline form. */
+  /** From GET /health when `brand_spec_configured` is true — hides audience/tone on the form. */
   blogBrandSpecConfigured = false;
+
+  /** Fields shown in the new-post form. When brand spec is configured, audience/tone are pre-filled by the brand. */
+  get newPostFields() {
+    const fields = [
+      { key: 'brief', label: 'Blog brief', placeholder: 'What should the post be about?', required: true },
+    ];
+    if (!this.blogBrandSpecConfigured) {
+      fields.push(
+        { key: 'audience', label: 'Target audience', placeholder: 'Who is this for?', required: false },
+        { key: 'tone_or_purpose', label: 'Tone / purpose', placeholder: 'e.g. educational, persuasive, casual', required: false },
+      );
+    }
+    fields.push(
+      { key: 'content_profile', label: 'Content profile', placeholder: 'short_listicle, standard_article, or technical_deep_dive', required: false },
+    );
+    return fields;
+  }
+  // Pipeline launch state
+  launching = false;
+  launchError: string | null = null;
+
   viewArtifactModal: { name: string; content: string | object } | null = null;
   viewArtifactLoading = false;
   viewArtifactError: string | null = null;
@@ -123,8 +171,18 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   draftFeedbackText = '';
   draftFeedbackSubmitting = false;
 
+  readonly pipelinePhases = PIPELINE_PHASES;
+
   isTerminalStatus(status: string): boolean {
     return (TERMINAL_STATUSES as readonly string[]).includes(status);
+  }
+
+  isPhaseComplete(phaseKey: string): boolean {
+    if (!this.selectedJobStatus?.phase) return false;
+    if (this.isTerminalStatus(this.selectedJobStatus.status) && this.selectedJobStatus.status !== 'failed') return true;
+    const currentIdx = PIPELINE_PHASES.findIndex((p) => p.key === this.selectedJobStatus!.phase);
+    const checkIdx = PIPELINE_PHASES.findIndex((p) => p.key === phaseKey);
+    return checkIdx >= 0 && currentIdx > checkIdx;
   }
 
   canStopSelectedJob(): boolean {
@@ -191,10 +249,25 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
         } else if (this.selectedBlogJob) {
           const still = jobs.find((j) => j.job_id === this.selectedBlogJob!.job_id);
           if (!still) this.clearSelection();
-        } else if (this.runningJobs.length > 0) {
-          this.selectJob(this.runningJobs[0]);
-        } else if (this.completedJobs.length > 0) {
-          this.selectJob(this.completedJobs[0]);
+        }
+        // Set initial view based on whether jobs or drafts exist (no auto-selection)
+        if (this.activeView === 'empty' && !this.selectedBlogJob) {
+          this.activeView = (jobs.length > 0 || this.draftConversations.length > 0) ? 'jobs' : 'empty';
+        }
+      },
+    });
+
+    // Load draft conversations (unlinked to any job)
+    this.loadDraftConversations();
+  }
+
+  private loadDraftConversations(): void {
+    this.assistantApi.listUnlinkedConversations(BloggingDashboardComponent.ASSISTANT_URL).subscribe({
+      next: (resp) => {
+        this.draftConversations = resp.conversations ?? [];
+        // Update view if we're on empty but have drafts
+        if (this.activeView === 'empty' && this.draftConversations.length > 0) {
+          this.activeView = 'jobs';
         }
       },
     });
@@ -206,9 +279,136 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     this.stopJobStreaming();
   }
 
+  showNewPost(): void {
+    this.clearSelection();
+    this.currentConversationId = null;
+    // Create a new conversation, then switch to the form view
+    this.assistantApi.createConversation(BloggingDashboardComponent.ASSISTANT_URL).subscribe({
+      next: (resp) => {
+        this.currentConversationId = resp.conversation_id;
+        this.activeView = 'new-post';
+      },
+      error: () => {
+        // Fallback: show the form without a tracked conversation (singleton)
+        this.activeView = 'new-post';
+      },
+    });
+  }
+
+  resumeConversation(conv: TeamConversationSummary): void {
+    this.clearSelection();
+    this.currentConversationId = conv.conversation_id;
+    this.activeView = 'new-post';
+  }
+
+  deleteDraftConversation(convId: string): void {
+    if (!confirm('Delete this draft? This cannot be undone.')) return;
+    this.assistantApi.deleteConversation(BloggingDashboardComponent.ASSISTANT_URL, convId).subscribe({
+      next: () => {
+        this.draftConversations = this.draftConversations.filter((c) => c.conversation_id !== convId);
+        if (this.currentConversationId === convId) {
+          this.currentConversationId = null;
+        }
+      },
+      error: (err) => {
+        this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete draft';
+      },
+    });
+  }
+
+  onConversationLoaded(conversationId: string): void {
+    this.currentConversationId = conversationId;
+  }
+
+  showJobs(): void {
+    this.clearSelection();
+    this.activeView = 'jobs';
+    this.loadDraftConversations();
+  }
+
+  getTimeAgo(createdAt?: string): string {
+    if (!createdAt) return '';
+    const created = new Date(createdAt);
+    const now = new Date();
+    const diffMs = now.getTime() - created.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  }
+
+  cancelJobFromList(jobId: string): void {
+    this.api.cancelJob(jobId).subscribe({
+      error: (err) => { this.error = err?.error?.detail ?? err?.message ?? 'Failed to cancel job'; },
+    });
+  }
+
+  deleteJobFromList(jobId: string): void {
+    if (!confirm('Delete this job? This cannot be undone.')) return;
+    this.api.deleteJob(jobId).subscribe({
+      next: () => {
+        if (this.selectedBlogJob?.job_id === jobId) this.clearSelection();
+      },
+      error: (err) => { this.error = err?.error?.detail ?? err?.message ?? 'Failed to delete job'; },
+    });
+  }
+
+  /**
+   * Launch the blog pipeline from the assistant's conversation context.
+   * Maps context fields to FullPipelineRequest and starts the async pipeline.
+   */
+  launchBlogPipeline(context: Record<string, unknown>): void {
+    const brief = ((context['brief'] as string) ?? '').trim();
+    if (!brief) {
+      this.launchError = 'A blog brief is required to start the pipeline.';
+      return;
+    }
+    this.launching = true;
+    this.launchError = null;
+
+    const request: import('../../models').FullPipelineRequest = {
+      brief,
+      audience: (context['audience'] as string) || undefined,
+      tone_or_purpose: (context['tone_or_purpose'] as string) || undefined,
+      content_profile: (context['content_profile'] as import('../../models').BlogContentProfile) || undefined,
+    };
+
+    this.api.startFullPipelineAsync(request).subscribe({
+      next: (resp) => {
+        this.launching = false;
+        this.launchError = null;
+        // Link conversation to the new job
+        if (this.currentConversationId) {
+          this.assistantApi.linkConversationToJob(
+            BloggingDashboardComponent.ASSISTANT_URL,
+            this.currentConversationId,
+            resp.job_id,
+          ).subscribe({
+            next: () => {
+              // Remove from drafts list since it's now linked
+              this.draftConversations = this.draftConversations.filter(
+                (c) => c.conversation_id !== this.currentConversationId
+              );
+            },
+          });
+        }
+        this.pendingJobId = resp.job_id;
+        this.activeView = 'jobs';
+      },
+      error: (err) => {
+        this.launching = false;
+        this.launchError = err?.error?.detail ?? err?.message ?? 'Failed to start pipeline';
+      },
+    });
+  }
+
   private clearSelection(): void {
     this.selectedBlogJob = null;
     this.selectedJobStatus = null;
+    this.currentConversationId = null;
     this.stopJobStreaming();
     this.selectedJobArtifacts = [];
     this.artifactContent = {};
@@ -244,12 +444,20 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   }
 
   selectJob(job: BlogJobListItem): void {
+    this.activeView = 'job-detail';
     this.selectedBlogJob = job;
     this.selectedJobArtifacts = [];
     this.artifactContent = {};
     this.artifactContentLoading = {};
     this.artifactsError = null;
+    this.currentConversationId = null;
     this.stopJobStreaming();
+
+    // Load associated conversation for this job
+    this.assistantApi.getConversationByJob(BloggingDashboardComponent.ASSISTANT_URL, job.job_id).subscribe({
+      next: (state) => { this.currentConversationId = state.conversation_id; },
+      error: () => { this.currentConversationId = null; }, // No conversation for this job
+    });
 
     // For terminal jobs, just fetch once — no need for streaming or polling.
     if (this.isTerminalStatus(job.status)) {

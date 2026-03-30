@@ -43,12 +43,12 @@ def _start_temporal_worker() -> None:
 
 
 def _shutdown_hook() -> None:
-    """Mark active jobs as failed on service shutdown."""
+    """Mark active jobs as interrupted on service shutdown."""
     try:
         from job_service_client import JobServiceClient
 
         client = JobServiceClient(team=TEAM_NAME)
-        client.mark_all_active_jobs_failed(f"{TEAM_NAME} service shutting down")
+        client.mark_all_active_jobs_interrupted(f"{TEAM_NAME} service shutting down")
     except Exception:
         logger.warning("Shutdown hook failed for %s", TEAM_NAME, exc_info=True)
 
@@ -56,26 +56,28 @@ def _shutdown_hook() -> None:
 def _resolve_app() -> str:
     """Return a uvicorn import string for the ASGI app.
 
-    If TEAM_APP_ATTR points to an APIRouter (not a FastAPI app), create a
-    wrapper module with a FastAPI app that includes the router so uvicorn can
-    serve it.
+    If TEAM_APP_ATTR points to an APIRouter (not a FastAPI app), write a
+    wrapper module to disk so uvicorn worker processes can import it.
     """
+    # Validate the team module can be imported (fail fast with a clear error).
+    try:
+        importlib.import_module(TEAM_MODULE)
+    except Exception:
+        logger.exception("FATAL: cannot import team module %s", TEAM_MODULE)
+        raise
+
     if TEAM_APP_ATTR == "router":
-        # Build a wrapper FastAPI app at runtime and register it as a module attribute.
-        import types
+        # Write a real Python file that uvicorn workers can import.
+        import pathlib
 
-        from fastapi import FastAPI
-
-        mod = importlib.import_module(TEAM_MODULE)
-        router = getattr(mod, TEAM_APP_ATTR)
-        wrapper_app = FastAPI(title=f"{TEAM_NAME} API")
-        wrapper_app.include_router(router)
-        # Attach to a synthetic module so uvicorn's import string works.
-        wrapper = types.ModuleType("_team_wrapper")
-        wrapper.app = wrapper_app
-        import sys
-
-        sys.modules["_team_wrapper"] = wrapper
+        wrapper_path = pathlib.Path("/app/_team_wrapper.py")
+        wrapper_path.write_text(
+            f"from fastapi import FastAPI\n"
+            f"from {TEAM_MODULE} import {TEAM_APP_ATTR} as _router\n"
+            f"app = FastAPI(title='{TEAM_NAME} API')\n"
+            f"app.include_router(_router)\n",
+            encoding="utf-8",
+        )
         return "_team_wrapper:app"
     return f"{TEAM_MODULE}:{TEAM_APP_ATTR}"
 

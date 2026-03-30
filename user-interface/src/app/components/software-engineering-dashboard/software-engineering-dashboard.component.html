@@ -1,24 +1,111 @@
-<h1>Software Engineering Team API</h1>
-<p>Run team, job status, open questions, execution tasks.</p>
+<div class="page-header">
+  <h1>Software Engineering</h1>
+  <p class="page-subtitle">Full-stack development pipeline: planning, coding, review, and deployment.</p>
+  <div class="page-header-actions">
+    <button mat-raised-button color="primary" (click)="showNewProject()">
+      <mat-icon>add</mat-icon> New Project
+    </button>
+    @if (allJobs.length) {
+      <button mat-stroked-button (click)="showJobs()">
+        <mat-icon>list</mat-icon> Jobs ({{ allJobs.length }})
+      </button>
+    }
+  </div>
 
-<p class="sub-teams">
-  <span class="sub-teams-label">Sub-teams:</span>
-  <a routerLink="/software-engineering/planning-v3">Planning (V3)</a>
-  <span class="sep">·</span>
-  <a routerLink="/software-engineering/coding-team">Coding Team</a>
-</p>
-
-<div class="header-row">
-  <app-health-indicator [healthCheck]="healthCheck" label="Software Engineering API" />
+  <p class="sub-teams">
+    <span class="sub-teams-label">Sub-teams:</span>
+    <a routerLink="/software-engineering/planning-v3">Planning (V3)</a>
+    <span class="sep">·</span>
+    <a routerLink="/software-engineering/coding-team">Coding Team</a>
+  </p>
 </div>
 
-<app-team-assistant-chat
-  [teamApiUrl]="'/api/software-engineering/assistant'"
-  [teamName]="'Software Engineering'"
-  [teamDescription]="'Describe your project and the team will build it'"
-  [fields]="[
-    {key: 'spec', label: 'Project specification', placeholder: 'Describe what you want built', required: true},
-    {key: 'tech_stack', label: 'Tech stack', placeholder: 'Preferred languages or frameworks'},
-    {key: 'constraints', label: 'Constraints', placeholder: 'Deadlines, NFRs, or limitations'}
-  ]"
-/>
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Empty State — no projects yet                                          -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (activeView === 'empty') {
+  <div class="empty-state">
+    <mat-icon class="empty-state-icon">code</mat-icon>
+    <h2>No software projects yet</h2>
+    <p>Get started by creating your first project. The engineering team will plan, build, and test it for you.</p>
+    <button mat-raised-button color="primary" (click)="showNewProject()">
+      <mat-icon>add</mat-icon> Create Your First Project
+    </button>
+  </div>
+}
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- New Project — creation form                                            -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (activeView === 'new-project') {
+  <app-team-assistant-chat
+    [teamApiUrl]="'/api/software-engineering/assistant'"
+    [teamName]="'Software Engineering'"
+    [teamDescription]="'Describe your project and the team will build it'"
+    [fields]="[
+      {key: 'spec', label: 'Project specification', placeholder: 'Describe what you want built', required: true},
+      {key: 'tech_stack', label: 'Tech stack', placeholder: 'Preferred languages or frameworks'},
+      {key: 'constraints', label: 'Constraints', placeholder: 'Deadlines, NFRs, or limitations'}
+    ]"
+    (launchWorkflow)="launchProject($event)"
+  />
+  @if (launchError) {
+    <p style="color: var(--kh-error); font-size: var(--kh-text-sm);">{{ launchError }}</p>
+  }
+  @if (launching) {
+    <p style="color: var(--kh-text-tertiary); font-size: var(--kh-text-sm);">Starting project...</p>
+  }
+}
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Jobs List — browse all SE jobs                                         -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (activeView === 'jobs') {
+  <div class="jobs-list-view">
+
+    @if (runningJobs.length) {
+      <div class="jobs-list-section">
+        <h3 class="list-section-title">Running</h3>
+        <div class="jobs-list">
+          @for (job of runningJobs; track job.job_id) {
+            <a class="job-item" [routerLink]="['/jobs', job.job_id]">
+              <span class="job-type">{{ job.job_type }}</span>
+              <span class="job-id">{{ job.job_id }}</span>
+              @if (job.repo_path) {
+                <span class="job-repo">{{ job.repo_path }}</span>
+              }
+              <span class="job-status status-{{ job.status }}">{{ job.status }}</span>
+            </a>
+          }
+        </div>
+      </div>
+    }
+
+    @if (completedJobs.length) {
+      <div class="jobs-list-section">
+        <h3 class="list-section-title">Completed</h3>
+        <div class="jobs-list">
+          @for (job of completedJobs; track job.job_id) {
+            <a class="job-item" [routerLink]="['/jobs', job.job_id]">
+              <span class="job-type">{{ job.job_type }}</span>
+              <span class="job-id">{{ job.job_id }}</span>
+              @if (job.repo_path) {
+                <span class="job-repo">{{ job.repo_path }}</span>
+              }
+              <span class="job-status status-{{ job.status }}">{{ job.status }}</span>
+            </a>
+          }
+        </div>
+      </div>
+    }
+
+    @if (!allJobs.length) {
+      <div class="empty-state">
+        <p>No jobs found.</p>
+        <button mat-raised-button color="primary" (click)="showNewProject()">
+          <mat-icon>add</mat-icon> Create a Project
+        </button>
+      </div>
+    }
+  </div>
+}

@@ -1,8 +1,9 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { BloggingApiService } from '../../services/blogging-api.service';
 
 @Component({
   selector: 'app-blog-landing',
@@ -11,8 +12,19 @@ import { MatIconModule } from '@angular/material/icon';
   templateUrl: './blog-landing.component.html',
   styleUrl: './blog-landing.component.scss',
 })
-export class BlogLandingComponent {
+export class BlogLandingComponent implements OnInit {
   private readonly router = inject(Router);
+  private readonly api = inject(BloggingApiService);
+
+  ngOnInit(): void {
+    this.api.getJobs(false).subscribe({
+      next: (jobs) => {
+        if (jobs && jobs.length > 0) {
+          this.router.navigate(['/blogging/dashboard']);
+        }
+      },
+    });
+  }
 
   navigateToDashboard(): void {
     this.router.navigate(['/blogging/dashboard']);

@@ -2,7 +2,8 @@ import { Component, Input } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatChipsModule } from '@angular/material/chips';
-import type { ResearchAndReviewResponse } from '../../models';
+/** @deprecated Research phase removed from the blogging pipeline. */
+type ResearchAndReviewResponse = Record<string, unknown>;
 
 /**
  * Displays the response from POST /research-and-review.

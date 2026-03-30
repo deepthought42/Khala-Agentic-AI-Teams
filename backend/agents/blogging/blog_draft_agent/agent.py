@@ -9,24 +9,20 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
 from blog_planning_agent.json_utils import parse_json_object
 from blog_planning_agent.prompts import GENERATE_PLAN_SYSTEM, REFINE_PLAN_SYSTEM
-from blog_research_agent.models import ResearchReference
 from shared.content_plan import (
     ContentPlan,
     PlanningFailureReason,
     PlanningInput,
     PlanningPhaseResult,
     TitleCandidate,
-    build_research_digest,
-    content_plan_to_outline_markdown,
     section_count_bounds_for_profile,
 )
-from shared.content_profile import LengthPolicy, resolve_length_policy
+from shared.content_profile import LengthPolicy
 from shared.errors import PlanningError
 
 from llm_service import (
@@ -47,11 +43,9 @@ from .models import (
     WritingGuidelineUpdate,
 )
 from .prompts import (
-    ALLOWED_CLAIMS_INSTRUCTION,
     ANALYZE_USER_FEEDBACK_FOR_GUIDELINES_PROMPT,
     DRAFT_TASK_INSTRUCTIONS,
     ESCALATION_SUMMARY_PROMPT,
-    EXTRACT_NOTES_PROMPT,
     REVISION_TASK_INSTRUCTIONS,
     SELF_REVIEW_PROMPT,
     UNCERTAINTY_DETECTION_PROMPT,
@@ -108,10 +102,7 @@ VAGUE_CITATION_PATTERNS = [
 # (LLM-summarised) rather than naively truncated, preserving technical detail.
 # The model context (e.g. 262K tokens ≈ 917K chars) is large enough that
 # compaction should rarely be needed.
-COMPACT_RESEARCH_CHARS = 800_000
 COMPACT_OUTLINE_CHARS = 200_000
-COMPACT_CLAIMS_CHARS = 150_000
-COMPACT_PER_SOURCE_CHARS = 100_000
 
 
 def _extract_draft_after_marker(raw_response: str) -> str:
@@ -520,43 +511,6 @@ class BlogDraftAgent:
 
         return draft
 
-    def _extract_notes_from_source(
-        self,
-        ref: ResearchReference,
-        outline: str,
-        audience: Optional[str],
-        tone: Optional[str],
-    ) -> dict[str, Any]:
-        """
-        Extract notes and citations from a single source for use when drafting.
-        Returns dict with "notes" (str) and "citations" (list). On failure, returns safe default.
-        """
-        doc_text = (ref.content or ref.summary or "").strip()
-        if ref.key_points:
-            doc_text = doc_text + "\n\nKey points:\n" + "\n".join(f"- {p}" for p in ref.key_points)
-        doc_text = compact_text(doc_text, COMPACT_PER_SOURCE_CHARS, self.llm, "source document")
-        source_ref_str = f"{ref.title} ({ref.url})"
-        prompt = EXTRACT_NOTES_PROMPT + "\n\n---\nOUTLINE:\n" + outline + "\n\n---\n"
-        if audience:
-            prompt += f"Audience: {audience}\n"
-        if tone:
-            prompt += f"Tone/Purpose: {tone}\n"
-        prompt += f"\n---\nSOURCE: {ref.title}\nURL: {ref.url}\n---\nDocument text:\n{doc_text}"
-        try:
-            data = self.llm.complete_json(prompt, temperature=0.2, think=True)
-            notes = data.get("notes") or ""
-            citations = data.get("citations")
-            if not isinstance(citations, list):
-                citations = []
-            return {"notes": notes, "citations": citations, "source_ref": source_ref_str}
-        except Exception as e:
-            logger.warning("Extraction failed for source %s: %s", ref.title, e)
-            return {
-                "notes": ref.summary or "(No summary)",
-                "citations": [],
-                "source_ref": source_ref_str,
-            }
-
     def run(
         self,
         draft_input: DraftInput,
@@ -565,99 +519,21 @@ class BlogDraftAgent:
         draft_output_path: Optional[Union[str, Path]] = None,
     ) -> DraftOutput:
         """
-        Generate a blog post draft from the research document and/or references and outline.
-
-        When research_references is non-empty, extracts notes/citations from each source in parallel,
-        combines them, then drafts from the combined notes. Otherwise uses research_document (with truncation).
+        Generate a blog post draft from the approved content plan.
 
         When draft_output_path is set, writes the draft to that path and logs the path.
         """
         self._assert_guidelines_present()
-        provisional_outline = draft_input.outline_for_prompt().strip()
-        provisional_outline = compact_text(
-            provisional_outline, COMPACT_OUTLINE_CHARS, self.llm, "content plan"
-        )
-        if not provisional_outline:
+        outline = draft_input.outline_for_prompt().strip()
+        outline = compact_text(outline, COMPACT_OUTLINE_CHARS, self.llm, "content plan")
+        if not outline:
             logger.warning("Empty content plan; returning minimal draft.")
             return DraftOutput(draft="# Draft\n\nAdd a content plan to generate a draft.")
-
-        refs = draft_input.research_references if draft_input.research_references else []
-        if refs:
-            if on_llm_request:
-                on_llm_request("Extracting notes from sources...")
-            max_workers = min(len(refs), 8)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
-                    executor.submit(
-                        self._extract_notes_from_source,
-                        ref,
-                        provisional_outline,
-                        draft_input.audience,
-                        draft_input.tone_or_purpose,
-                    )
-                    for ref in refs
-                ]
-                extractions = [fut.result() for fut in futures]
-            combined_parts = []
-            for ext in extractions:
-                section = f"## Source: {ext['source_ref']}\n\n{ext['notes']}"
-                if ext.get("citations"):
-                    cit_lines = [
-                        f"- {c.get('fact_or_quote', '')} (source: {c.get('source_ref', ext['source_ref'])})"
-                        for c in ext["citations"]
-                    ]
-                    section += "\n\nCitations:\n" + "\n".join(cit_lines)
-                combined_parts.append(section)
-            research = "\n\n".join(combined_parts)
-            logger.info(
-                "Combined notes from %s sources, total len=%s",
-                len(refs),
-                len(research),
-            )
-        else:
-            research = (draft_input.research_document or "").strip()
-            research = compact_text(research, COMPACT_RESEARCH_CHARS, self.llm, "research document")
-            if not research:
-                logger.warning("Empty research_document; returning minimal draft.")
-                return DraftOutput(
-                    draft="# Draft\n\nAdd research document and outline to generate a draft."
-                )
-
-        # The draft agent now owns planning: generate/refine a content plan before writing.
-        planning_input = PlanningInput(
-            brief=(draft_input.content_plan.overarching_topic or provisional_outline)[:8000],
-            audience=draft_input.audience,
-            tone_or_purpose=draft_input.tone_or_purpose,
-            research_digest=build_research_digest(research, llm=self.llm),
-            length_policy_context=draft_input.length_guidance
-            or f"TARGET LENGTH: approximately {draft_input.target_word_count} words.",
-            series_context_block=None,
-        )
-        length_policy = resolve_length_policy(
-            explicit_target_word_count=draft_input.target_word_count
-        )
-        try:
-            planning_result = self.plan_content(
-                planning_input,
-                length_policy=length_policy,
-                on_llm_request=on_llm_request,
-            )
-            effective_plan = planning_result.content_plan
-        except Exception as e:
-            logger.warning("Draft-time planning failed; using provided content_plan. Error: %s", e)
-            effective_plan = draft_input.content_plan
-        outline = compact_text(
-            content_plan_to_outline_markdown(effective_plan),
-            COMPACT_OUTLINE_CHARS,
-            self.llm,
-            "content plan",
-        )
 
         style_guide_text = self._style_prompt
 
         logger.info(
-            "Generating draft: research len=%s, outline len=%s, style_guide len=%s",
-            len(research),
+            "Generating draft: outline len=%s, style_guide len=%s",
             len(outline),
             len(style_guide_text),
         )
@@ -681,43 +557,6 @@ class BlogDraftAgent:
             style_guide_text,
             "",
         ]
-        if draft_input.allowed_claims and draft_input.allowed_claims.get("claims"):
-            claims_list = draft_input.allowed_claims["claims"]
-            claims_text = "\n".join(
-                f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')} (sources: {', '.join(c.get('citations', []))})"
-                for c in claims_list
-            )
-            claims_text = compact_text(
-                claims_text, COMPACT_CLAIMS_CHARS, self.llm, "allowed claims"
-            )
-            prompt_parts.append(ALLOWED_CLAIMS_INSTRUCTION.format(claims_text=claims_text))
-            prompt_parts.append("")
-        prompt_parts.extend(
-            [
-                "---",
-                "RESEARCH DOCUMENT (use this for facts, examples, and substance):",
-                "---",
-                research,
-            ]
-        )
-        # Add source URLs for inline citations if research_references are available
-        if draft_input.research_references:
-            url_lines = []
-            for ref in draft_input.research_references:
-                url = str(ref.url) if hasattr(ref, "url") and ref.url else ""
-                title = getattr(ref, "title", "Untitled")
-                if url:
-                    url_lines.append(f"- {title}: {url}")
-            if url_lines:
-                prompt_parts.extend(
-                    [
-                        "",
-                        "---",
-                        "SOURCE URLS FOR INLINE CITATIONS (use these for hyperlinks in the draft):",
-                        "---",
-                        *url_lines,
-                    ]
-                )
         prompt_parts.extend(
             [
                 "",
@@ -766,9 +605,10 @@ class BlogDraftAgent:
             prompt_parts.append(draft_input.length_guidance.strip())
         else:
             prompt_parts.append(
-                f"TARGET LENGTH: Write approximately {draft_input.target_word_count} words. "
-                "Be complete and thorough within this limit — do not pad or repeat yourself to reach it, "
-                "and do not cut substance to stay under it. Aim for the target, not perfection."
+                f"TARGET LENGTH: Aim for roughly {draft_input.target_word_count} words "
+                f"(acceptable range: {int(draft_input.target_word_count * 0.75)}–{int(draft_input.target_word_count * 1.3)} words). "
+                "Hit the intent of the content profile first — do not pad to reach the number, "
+                "and do not cut necessary substance to stay under it."
             )
         prompt_parts.append("")
         prompt_parts.append(
@@ -921,22 +761,6 @@ class BlogDraftAgent:
             prompt_parts.insert(0, f"Audience: {revise_input.audience}\n")
         if revise_input.tone_or_purpose:
             prompt_parts.insert(0, f"Tone/Purpose: {revise_input.tone_or_purpose}\n")
-        if revise_input.allowed_claims and revise_input.allowed_claims.get("claims"):
-            claims_list = revise_input.allowed_claims["claims"]
-            claims_text = "\n".join(
-                f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')}" for c in claims_list
-            )
-            block = "\n".join(
-                [
-                    "",
-                    "---",
-                    "ALLOWED CLAIMS (USE these to fix vague citations; tag each with [CLAIM:id]; do not add factual claims outside this list):",
-                    "When the editor flags a vague or unattributed claim, check this list first. If a matching claim exists, rewrite the sentence to use its text with the [CLAIM:id] tag and name the source.",
-                    "---",
-                    claims_text,
-                ]
-            )
-            prompt_parts.insert(len(prompt_parts) - 5, block)
         if revise_input.selected_title:
             prompt_parts.extend(
                 [
@@ -954,22 +778,12 @@ class BlogDraftAgent:
                     + revise_input.elicited_stories,
                 ]
             )
-        if revise_input.research_document:
-            research = revise_input.research_document.strip()
-            prompt_parts.extend(
-                [
-                    "",
-                    "---",
-                    "RESEARCH (for context; preserve facts):",
-                    "---",
-                    research,
-                ]
-            )
         length_block = (
             revise_input.length_guidance.strip()
             if (revise_input.length_guidance or "").strip()
             else (
-                f"TARGET LENGTH: The revised draft should be approximately {revise_input.target_word_count} words. "
+                f"TARGET LENGTH: Aim for roughly {revise_input.target_word_count} words "
+                f"(acceptable range: {int(revise_input.target_word_count * 0.75)}–{int(revise_input.target_word_count * 1.3)} words). "
                 "Apply all feedback above without significantly expanding the post beyond this target."
             )
         )
@@ -1111,29 +925,6 @@ class BlogDraftAgent:
             feedback_line,
             "",
         ]
-        if revise_input.research_document:
-            prompt_parts.extend(
-                [
-                    "---",
-                    "RESEARCH (use for attribution when fixing citation issues):",
-                    "---",
-                    revise_input.research_document.strip(),
-                ]
-            )
-        if revise_input.allowed_claims and revise_input.allowed_claims.get("claims"):
-            claims_list = revise_input.allowed_claims["claims"]
-            claims_text = "\n".join(
-                f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')}" for c in claims_list
-            )
-            prompt_parts.extend(
-                [
-                    "",
-                    "---",
-                    "ALLOWED CLAIMS (USE these to fix vague citations; tag each with [CLAIM:id]):",
-                    "---",
-                    claims_text,
-                ]
-            )
         if revise_input.selected_title:
             prompt_parts.extend(
                 [
@@ -1149,7 +940,10 @@ class BlogDraftAgent:
         length_block = (
             revise_input.length_guidance.strip()
             if (revise_input.length_guidance or "").strip()
-            else f"TARGET LENGTH: approximately {revise_input.target_word_count} words."
+            else (
+                f"TARGET LENGTH: Aim for roughly {revise_input.target_word_count} words "
+                f"(acceptable range: {int(revise_input.target_word_count * 0.75)}–{int(revise_input.target_word_count * 1.3)} words)."
+            )
         )
         prompt_parts.extend(
             [
@@ -1448,8 +1242,6 @@ class BlogDraftAgent:
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
-        research_document: Optional[str] = None,
-        allowed_claims: Optional[dict] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
         uncertainty_answers: Optional[dict[str, str]] = None,
@@ -1507,16 +1299,6 @@ class BlogDraftAgent:
                 ]
             )
 
-        if research_document:
-            prompt_parts.extend(
-                ["---", "RESEARCH (for context):", "---", research_document.strip(), ""]
-            )
-        if allowed_claims and allowed_claims.get("claims"):
-            claims_list = allowed_claims["claims"]
-            claims_text = "\n".join(
-                f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')}" for c in claims_list
-            )
-            prompt_parts.extend(["---", "ALLOWED CLAIMS:", "---", claims_text, ""])
         if selected_title:
             prompt_parts.extend(
                 ["---", f"AUTHOR-CHOSEN TITLE (preserve this exact H1): {selected_title}", ""]
@@ -1531,7 +1313,10 @@ class BlogDraftAgent:
         length_block = (
             length_guidance.strip()
             if length_guidance.strip()
-            else f"TARGET LENGTH: approximately {target_word_count} words."
+            else (
+                f"TARGET LENGTH: Aim for roughly {target_word_count} words "
+                f"(acceptable range: {int(target_word_count * 0.75)}–{int(target_word_count * 1.3)} words)."
+            )
         )
         prompt_parts.extend(
             [

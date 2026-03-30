@@ -1,5 +1,5 @@
 """
-Models for the blog draft agent (draft from research document + content plan).
+Models for the blog draft agent (draft from content plan).
 """
 
 from __future__ import annotations
@@ -7,7 +7,6 @@ from __future__ import annotations
 from typing import List, Optional
 
 from blog_copy_editor_agent.models import FeedbackItem
-from blog_research_agent.models import ResearchReference
 from pydantic import BaseModel, Field, model_validator
 from shared.content_plan import ContentPlan, content_plan_to_outline_markdown
 
@@ -86,16 +85,8 @@ class DraftReviewResult(BaseModel):
 
 
 class DraftInput(BaseModel):
-    """Input for the blog draft agent: research and approved content plan."""
+    """Input for the blog draft agent: approved content plan and writing context."""
 
-    research_document: Optional[str] = Field(
-        None,
-        description="Compiled research document (fallback when research_references not used).",
-    )
-    research_references: Optional[List[ResearchReference]] = Field(
-        None,
-        description="Individual research sources; when non-empty, agent extracts notes/citations per source in parallel then drafts from combined notes.",
-    )
     content_plan: ContentPlan = Field(
         ...,
         description="Approved structured plan (sections, narrative flow, titles).",
@@ -107,10 +98,6 @@ class DraftInput(BaseModel):
     tone_or_purpose: Optional[str] = Field(
         None,
         description="Desired tone or purpose, e.g. 'educational', 'technical deep-dive'.",
-    )
-    allowed_claims: Optional[dict] = Field(
-        None,
-        description="Pre-loaded allowed_claims.json. When set, writer must use only these claims and tag as [CLAIM:id].",
     )
     target_word_count: int = Field(
         default=1000,
@@ -202,20 +189,12 @@ class ReviseDraftInput(BaseModel):
         None,
         description="Issues flagged multiple times across iterations with occurrence counts and suggestions.",
     )
-    research_document: Optional[str] = Field(
-        None,
-        description="Original research document (for context when revising).",
-    )
     content_plan: ContentPlan = Field(
         ...,
         description="Original content plan — preserve structure and section intent when revising.",
     )
     audience: Optional[str] = Field(None, description="Intended audience.")
     tone_or_purpose: Optional[str] = Field(None, description="Desired tone or purpose.")
-    allowed_claims: Optional[dict] = Field(
-        None,
-        description="Pre-loaded allowed_claims.json. When set, preserve claim tags [CLAIM:id] and do not add new factual claims.",
-    )
     target_word_count: int = Field(
         default=1000,
         ge=100,

@@ -126,7 +126,7 @@ export const SOURCE_DISPLAY: Record<
   { label: string; icon: string; route: string }
 > = {
   software_engineering: { label: 'Software Engineering', icon: 'code', route: '/software-engineering' },
-  blogging: { label: 'Blogging', icon: 'article', route: '/blogging' },
+  blogging: { label: 'Blogging', icon: 'article', route: '/blogging/dashboard' },
   ai_systems: { label: 'AI Systems', icon: 'smart_toy', route: '/ai-systems' },
   agent_provisioning: { label: 'Agent Provisioning', icon: 'settings', route: '/agent-provisioning' },
   social_marketing: { label: 'Social Marketing', icon: 'campaign', route: '/social-marketing' },
