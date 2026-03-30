@@ -206,7 +206,10 @@ class TaskDependencyToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_DEPENDENCY]
         )
         if blackboard_context:
-            logger.info("TaskDependency: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "TaskDependency: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         prompt = TASK_DEPENDENCY_REVIEW_PROMPT.format(tasks=tasks_text)
         raw_text = complete_text_with_continuation(

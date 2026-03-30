@@ -8,6 +8,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
 import { Subscription, timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
+import type { BlogJobStreamEvent } from '../../models';
 import { BloggingApiService } from '../../services/blogging-api.service';
 import { LoadingSpinnerComponent } from '../../shared/loading-spinner/loading-spinner.component';
 import { ErrorMessageComponent } from '../../shared/error-message/error-message.component';
@@ -85,6 +86,7 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   private readonly sanitizer = inject(DomSanitizer);
   private jobsSub: Subscription | null = null;
   private statusPollSub: Subscription | null = null;
+  private sseSub: Subscription | null = null;
   private queryParamsSub: Subscription | null = null;
   private pendingJobId: string | null = null;
 
@@ -118,6 +120,10 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   // Collaboration: Q&A
   qaAnswers: Record<string, string> = {};
   qaSubmitting = false;
+
+  // Collaboration: draft review
+  draftFeedbackText = '';
+  draftFeedbackSubmitting = false;
 
   isTerminalStatus(status: string): boolean {
     return (TERMINAL_STATUSES as readonly string[]).includes(status);
@@ -199,14 +205,13 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.queryParamsSub?.unsubscribe();
     this.jobsSub?.unsubscribe();
-    this.statusPollSub?.unsubscribe();
+    this.stopJobStreaming();
   }
 
   private clearSelection(): void {
     this.selectedBlogJob = null;
     this.selectedJobStatus = null;
-    this.statusPollSub?.unsubscribe();
-    this.statusPollSub = null;
+    this.stopJobStreaming();
     this.selectedJobArtifacts = [];
     this.artifactContent = {};
     this.artifactContentLoading = {};
@@ -214,6 +219,30 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     this.collaborationError = null;
     this.storyResponseText = '';
     this.qaAnswers = {};
+    this.draftFeedbackText = '';
+  }
+
+  /** Tear down both SSE and polling subscriptions. */
+  private stopJobStreaming(): void {
+    this.sseSub?.unsubscribe();
+    this.sseSub = null;
+    this.statusPollSub?.unsubscribe();
+    this.statusPollSub = null;
+  }
+
+  /** Fall back to the original timer-based polling for a job. */
+  private startPollingFallback(jobId: string): void {
+    this.statusPollSub?.unsubscribe();
+    this.statusPollSub = timer(0, POLL_STATUS_MS).pipe(
+      switchMap(() => this.api.getJobStatus(jobId))
+    ).subscribe({
+      next: (status) => {
+        this.selectedJobStatus = status;
+        if (this.isTerminalStatus(status.status) && this.selectedBlogJob?.job_id === jobId) {
+          this.loadArtifactsList(jobId);
+        }
+      },
+    });
   }
 
   selectJob(job: BlogJobListItem): void {
@@ -222,18 +251,63 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     this.artifactContent = {};
     this.artifactContentLoading = {};
     this.artifactsError = null;
-    this.statusPollSub?.unsubscribe();
-    this.statusPollSub = timer(0, POLL_STATUS_MS).pipe(
-      switchMap(() => this.api.getJobStatus(job.job_id))
-    ).subscribe({
-      next: (status) => {
-        this.selectedJobStatus = status;
-        if (this.isTerminalStatus(status.status) && this.selectedBlogJob?.job_id === job.job_id) {
-          this.loadArtifactsList(job.job_id);
+    this.stopJobStreaming();
+
+    // For terminal jobs, just fetch once — no need for streaming or polling.
+    if (this.isTerminalStatus(job.status)) {
+      this.api.getJobStatus(job.job_id).subscribe({
+        next: (status) => { this.selectedJobStatus = status; },
+      });
+      this.loadArtifactsList(job.job_id);
+      return;
+    }
+
+    // Try SSE first, fall back to polling on error.
+    this.sseSub = this.api.streamJobStatus(job.job_id).subscribe({
+      next: (event: BlogJobStreamEvent) => {
+        if (this.selectedBlogJob?.job_id !== job.job_id) return;
+        this.applyStreamEvent(event, job.job_id);
+      },
+      error: () => {
+        // SSE failed — fall back to polling
+        if (this.selectedBlogJob?.job_id === job.job_id) {
+          this.startPollingFallback(job.job_id);
         }
       },
     });
-    if (this.isTerminalStatus(job.status)) this.loadArtifactsList(job.job_id);
+  }
+
+  /** Apply a single SSE event to the component state. */
+  private applyStreamEvent(event: BlogJobStreamEvent, jobId: string): void {
+    if (event.type === 'snapshot') {
+      // Full state — treat like a polling response
+      this.selectedJobStatus = event as unknown as BlogJobStatusResponse;
+      if (this.isTerminalStatus(event.status ?? '')) {
+        this.loadArtifactsList(jobId);
+      }
+      return;
+    }
+
+    if (event.type === 'done') {
+      // Final fetch to get the full terminal state (title_choices, outline, etc.)
+      this.api.getJobStatus(jobId).subscribe({
+        next: (status) => {
+          if (this.selectedBlogJob?.job_id === jobId) {
+            this.selectedJobStatus = status;
+            this.loadArtifactsList(jobId);
+          }
+        },
+      });
+      return;
+    }
+
+    if (event.type === 'update' && this.selectedJobStatus) {
+      // Merge incremental fields into existing status
+      const patch: Record<string, unknown> = { ...event };
+      delete patch['type'];
+      delete patch['ts'];
+      Object.assign(this.selectedJobStatus, patch);
+    }
   }
 
   private loadArtifactsList(jobId: string): void {
@@ -497,6 +571,28 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   allQaAnswered(): boolean {
     const questions = this.selectedJobStatus?.pending_questions ?? [];
     return questions.every((q) => !q.required || (this.qaAnswers[q.id] ?? '').trim().length > 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Collaboration: draft review
+  // ---------------------------------------------------------------------------
+
+  submitDraftFeedback(approved: boolean): void {
+    const jobId = this.selectedBlogJob?.job_id;
+    if (!jobId) return;
+    this.draftFeedbackSubmitting = true;
+    this.collaborationError = null;
+    this.api.submitDraftFeedback(jobId, this.draftFeedbackText.trim(), approved).subscribe({
+      next: (status) => {
+        this.selectedJobStatus = status;
+        this.draftFeedbackText = '';
+        this.draftFeedbackSubmitting = false;
+      },
+      error: (err) => {
+        this.collaborationError = err?.error?.detail ?? err?.message ?? 'Failed to submit draft feedback';
+        this.draftFeedbackSubmitting = false;
+      },
+    });
   }
 
 }

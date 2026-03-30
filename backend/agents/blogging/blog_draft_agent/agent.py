@@ -236,7 +236,9 @@ class BlogDraftAgent:
         )
         return "\n".join(parts)
 
-    def _build_refine_plan_prompt(self, inp: PlanningInput, previous: ContentPlan, feedback: str) -> str:
+    def _build_refine_plan_prompt(
+        self, inp: PlanningInput, previous: ContentPlan, feedback: str
+    ) -> str:
         base = self._build_generate_plan_prompt(inp)
         prev_json = previous.model_dump(mode="json")
         return (
@@ -570,7 +572,9 @@ class BlogDraftAgent:
         """
         self._assert_guidelines_present()
         provisional_outline = draft_input.outline_for_prompt().strip()
-        provisional_outline = compact_text(provisional_outline, COMPACT_OUTLINE_CHARS, self.llm, "content plan")
+        provisional_outline = compact_text(
+            provisional_outline, COMPACT_OUTLINE_CHARS, self.llm, "content plan"
+        )
         if not provisional_outline:
             logger.warning("Empty content plan; returning minimal draft.")
             return DraftOutput(draft="# Draft\n\nAdd a content plan to generate a draft.")
@@ -979,7 +983,9 @@ class BlogDraftAgent:
         )
         return "\n".join(prompt_parts)
 
-    def _build_revision_plan_prompt(self, draft: str, feedback_items: list[Any], revise_input: ReviseDraftInput) -> str:
+    def _build_revision_plan_prompt(
+        self, draft: str, feedback_items: list[Any], revise_input: ReviseDraftInput
+    ) -> str:
         feedback_lines = [
             self._format_feedback_item_line(item, i)
             for i, item in enumerate(feedback_items, start=1)
@@ -1264,7 +1270,9 @@ class BlogDraftAgent:
             except (LLMJsonParseError, LLMTruncatedError):
                 pass
 
-        logger.info("Revision complete: %s items addressed, final length=%s", num_items, len(current_draft))
+        logger.info(
+            "Revision complete: %s items addressed, final length=%s", num_items, len(current_draft)
+        )
         if draft_output_path:
             _write_draft_to_path(current_draft, draft_output_path)
         return DraftOutput(draft=current_draft)
@@ -1445,17 +1453,13 @@ class BlogDraftAgent:
             claims_text = "\n".join(
                 f"- [CLAIM:{c.get('id', '')}] {c.get('text', '')}" for c in claims_list
             )
-            prompt_parts.extend(
-                ["---", "ALLOWED CLAIMS:", "---", claims_text, ""]
-            )
+            prompt_parts.extend(["---", "ALLOWED CLAIMS:", "---", claims_text, ""])
         if selected_title:
             prompt_parts.extend(
                 ["---", f"AUTHOR-CHOSEN TITLE (preserve this exact H1): {selected_title}", ""]
             )
         if elicited_stories:
-            prompt_parts.extend(
-                ["---", "AUTHOR'S PERSONAL STORIES:\n" + elicited_stories, ""]
-            )
+            prompt_parts.extend(["---", "AUTHOR'S PERSONAL STORIES:\n" + elicited_stories, ""])
         if audience:
             prompt_parts.append(f"Audience: {audience}")
         if tone_or_purpose:
@@ -1500,7 +1504,9 @@ class BlogDraftAgent:
                     current_draft = revised.strip()
                     break
             except LLMTemporaryError:
-                logger.warning("User-feedback revision transient error (attempt %s/3); retrying.", attempt + 1)
+                logger.warning(
+                    "User-feedback revision transient error (attempt %s/3); retrying.", attempt + 1
+                )
                 time.sleep(2.0 * (2**attempt))
             except (LLMJsonParseError, LLMTruncatedError) as e:
                 logger.warning("User-feedback revision failed (attempt %s/3): %s", attempt + 1, e)
@@ -1535,10 +1541,14 @@ class BlogDraftAgent:
             f"- [{getattr(item, 'severity', 'unknown')}] {getattr(item, 'category', '')}: {getattr(item, 'issue', '')}"
             for item in latest_feedback_items
         )
-        persistent_text = "\n".join(
-            f"- [{getattr(item, 'severity', 'unknown')}] {getattr(item, 'category', '')} (flagged {getattr(item, 'occurrence_count', '?')} times): {getattr(item, 'issue', '')}"
-            for item in persistent_issues
-        ) if persistent_issues else "None"
+        persistent_text = (
+            "\n".join(
+                f"- [{getattr(item, 'severity', 'unknown')}] {getattr(item, 'category', '')} (flagged {getattr(item, 'occurrence_count', '?')} times): {getattr(item, 'issue', '')}"
+                for item in persistent_issues
+            )
+            if persistent_issues
+            else "None"
+        )
 
         prompt = ESCALATION_SUMMARY_PROMPT.format(
             revision_count=revision_count,

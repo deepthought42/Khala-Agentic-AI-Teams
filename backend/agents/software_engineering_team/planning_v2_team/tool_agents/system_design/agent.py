@@ -307,7 +307,9 @@ class SystemDesignToolAgent:
                 len(design_issues),
             )
 
-        existing_design = (inp.current_files or {}).get(planning_asset_path("system_design.md")) or read_section(
+        existing_design = (inp.current_files or {}).get(
+            planning_asset_path("system_design.md")
+        ) or read_section(
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
         )
         if existing_design and not design_issues:
@@ -327,7 +329,10 @@ class SystemDesignToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
         )
         if blackboard_context:
-            logger.info("SystemDesign: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "SystemDesign: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         content_parts = ["# System Design\n"]
         content_parts.append("## Components\n")
@@ -439,9 +444,13 @@ class SystemDesignToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get(planning_asset_path("system_design.md"), "") or read_section(
-            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
-        ) or ""
+        current_artifact = (
+            inp.current_files.get(planning_asset_path("system_design.md"), "")
+            or read_section(
+                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
+            )
+            or ""
+        )
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "system" in path.lower() or "design" in path.lower():
@@ -572,9 +581,13 @@ class SystemDesignToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get(planning_asset_path("system_design.md"), "") or read_section(
-            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
-        ) or ""
+        current_artifact = (
+            inp.current_files.get(planning_asset_path("system_design.md"), "")
+            or read_section(
+                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.SYSTEM_DESIGN]
+            )
+            or ""
+        )
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "system" in path.lower() or "design" in path.lower():

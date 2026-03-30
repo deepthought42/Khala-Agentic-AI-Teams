@@ -8,6 +8,7 @@ Supports synchronous and asynchronous execution with job polling for UI integrat
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import tempfile
 import threading
@@ -26,7 +27,7 @@ from blog_medium_stats_agent.agent import BlogMediumStatsAgent  # noqa: E402
 from blog_medium_stats_agent.models import MediumStatsReport, MediumStatsRunConfig  # noqa: E402
 from blog_research_agent.models import ResearchBriefInput  # noqa: E402
 from fastapi import FastAPI, HTTPException, Query  # noqa: E402
-from fastapi.responses import Response  # noqa: E402
+from fastapi.responses import Response, StreamingResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 from shared.brand_spec import brand_spec_prompt_configured  # noqa: E402
 from shared.content_plan import (  # noqa: E402
@@ -113,8 +114,14 @@ class _HealthCheckFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
-# Base directory for run artifacts (when work_dir is requested)
-RUN_ARTIFACTS_BASE = Path(tempfile.gettempdir()) / "blogging_runs"
+# Base directory for run artifacts (when work_dir is requested).
+# Honour BLOGGING_RUN_ARTIFACTS_ROOT so Docker can mount a persistent volume.
+_custom_artifacts_root = os.environ.get("BLOGGING_RUN_ARTIFACTS_ROOT")
+RUN_ARTIFACTS_BASE = (
+    Path(_custom_artifacts_root).expanduser().resolve()
+    if _custom_artifacts_root
+    else Path(tempfile.gettempdir()) / "blogging_runs"
+)
 
 app = FastAPI(
     title="Blog Research & Review API",
@@ -863,6 +870,16 @@ def _run_medium_stats_async_job(job_id: str, payload: MediumStatsRequest) -> Non
             fail_blog_job(job_id, error=str(e), failed_phase="medium_stats")
 
 
+def _publish_terminal_event(job_id: str, event_type: str, **kwargs: Any) -> None:
+    """Publish a terminal SSE event and clean up subscribers."""
+    try:
+        from shared.job_event_bus import cleanup_job, publish
+        publish(job_id, kwargs, event_type=event_type)
+        cleanup_job(job_id)
+    except Exception:
+        pass
+
+
 def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> None:
     """Run the full pipeline in a background thread with job tracking."""
     try:
@@ -890,12 +907,17 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
         )
 
         def job_updater(**kwargs: Any) -> None:
-            """Update job status in the job store."""
+            """Update job status in the job store and broadcast to SSE subscribers."""
             if update_blog_job is not None:
                 try:
                     update_blog_job(job_id, **kwargs)
                 except Exception as e:
                     logger.warning("Failed to update job %s: %s", job_id, e)
+            try:
+                from shared.job_event_bus import publish
+                publish(job_id, kwargs, event_type="update")
+            except Exception:
+                pass
 
         # Mark job as started
         if start_blog_job is not None:
@@ -942,6 +964,7 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
                     parse_retry_count=planning_phase_result.parse_retry_count,
                     planning_wall_ms_total=planning_phase_result.planning_wall_ms_total,
                 )
+            _publish_terminal_event(job_id, "complete", status=final_status)
 
         except PlanningError as e:
             logger.exception("Pipeline planning failed for job %s", job_id)
@@ -952,18 +975,22 @@ def _run_pipeline_with_tracking(job_id: str, request: FullPipelineRequest) -> No
                     failed_phase="planning",
                     planning_failure_reason=getattr(e, "failure_reason", None),
                 )
+            _publish_terminal_event(job_id, "error", error=str(e), failed_phase="planning")
         except BloggingError as e:
             logger.exception("Pipeline failed for job %s", job_id)
             if fail_blog_job is not None:
                 fail_blog_job(job_id, error=str(e), failed_phase=getattr(e, "phase", None))
+            _publish_terminal_event(job_id, "error", error=str(e))
         except Exception as e:
             logger.exception("Unexpected error in pipeline for job %s", job_id)
             if fail_blog_job is not None:
                 fail_blog_job(job_id, error=str(e))
+            _publish_terminal_event(job_id, "error", error=str(e))
     except Exception as e:
         logger.exception("Pipeline failed for job %s", job_id)
         if fail_blog_job is not None:
             fail_blog_job(job_id, error=str(e))
+        _publish_terminal_event(job_id, "error", error=str(e))
 
 
 @app.post(
@@ -1133,6 +1160,77 @@ def get_job_status(job_id: str) -> BlogJobStatusResponse:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     return _blog_job_dict_to_status_response(job, job_id)
+
+
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "needs_human_review"})
+
+
+@app.get(
+    "/job/{job_id}/stream",
+    summary="Stream job status via SSE",
+    description=(
+        "Server-Sent Events stream for real-time job updates. "
+        "Emits an initial 'snapshot' event with full status, then incremental 'update' events, "
+        "and a terminal event ('complete', 'error', or 'cancelled') before closing."
+    ),
+)
+def stream_job_status(job_id: str) -> StreamingResponse:
+    """SSE stream for a pipeline job. Falls back gracefully if job is already terminal."""
+    import time
+
+    from shared.job_event_bus import subscribe, unsubscribe
+
+    if get_blog_job is None:
+        raise HTTPException(status_code=501, detail="Job store not available")
+
+    job = get_blog_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    def _sse_line(data: dict) -> str:
+        return f"data: {json_module.dumps(data, default=str)}\n\n"
+
+    def _snapshot_event() -> dict:
+        current = get_blog_job(job_id) or {}
+        resp = _blog_job_dict_to_status_response(current, job_id)
+        return {"type": "snapshot", **resp.model_dump(mode="json")}
+
+    # If the job is already terminal, send a snapshot + done and close immediately.
+    if job.get("status") in _TERMINAL_STATUSES:
+        def _terminal_gen():
+            yield _sse_line(_snapshot_event())
+            yield _sse_line({"type": "done"})
+        return StreamingResponse(_terminal_gen(), media_type="text/event-stream")
+
+    def event_generator():
+        sub = subscribe(job_id)
+        try:
+            # Initial snapshot so the client has the full current state
+            yield _sse_line(_snapshot_event())
+
+            deadline = time.monotonic() + 4 * 3600  # 4-hour max connection
+            while time.monotonic() < deadline:
+                # Drain all queued events
+                sent_terminal = False
+                while sub.events:
+                    event = sub.events.popleft()
+                    yield _sse_line(event)
+                    if event.get("type") in ("complete", "error", "cancelled"):
+                        sent_terminal = True
+                if sent_terminal:
+                    yield _sse_line({"type": "done"})
+                    return
+
+                # Keepalive (SSE comment — keeps proxies from closing idle connections)
+                yield ": keepalive\n\n"
+
+                # Wait for notification or timeout after 1s
+                sub.notify.wait(timeout=1.0)
+                sub.notify.clear()
+        finally:
+            unsubscribe(job_id, sub)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 class CancelJobResponse(BaseModel):

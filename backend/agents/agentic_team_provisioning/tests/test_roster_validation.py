@@ -34,8 +34,8 @@ def _process(name: str, step_agents: list[str], process_id: str = "p1") -> Proce
         trigger=ProcessTrigger(trigger_type=TriggerType.MESSAGE, description="go"),
         steps=[
             ProcessStep(
-                step_id=f"s{i+1}",
-                name=f"Step {i+1}",
+                step_id=f"s{i + 1}",
+                name=f"Step {i + 1}",
                 agents=[ProcessStepAgent(agent_name=a, role="does stuff")],
             )
             for i, a in enumerate(step_agents)
@@ -47,7 +47,10 @@ def _process(name: str, step_agents: list[str], process_id: str = "p1") -> Proce
 
 def _team(agents: list[AgenticTeamAgent], processes: list[ProcessDefinition]) -> AgenticTeam:
     return AgenticTeam(
-        team_id="t1", name="T", agents=agents, processes=processes,
+        team_id="t1",
+        name="T",
+        agents=agents,
+        processes=processes,
     )
 
 
@@ -128,8 +131,6 @@ def test_agents_but_no_processes():
 
 
 def test_processes_but_no_agents():
-    result = validate_roster(
-        _team(agents=[], processes=[_process("P1", ["A"])])
-    )
+    result = validate_roster(_team(agents=[], processes=[_process("P1", ["A"])]))
     assert result.is_fully_staffed is False
     assert "no agents" in result.summary

@@ -20,6 +20,7 @@ import logging
 
 import httpx
 from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,8 @@ async def proxy_request(request: Request, target_base_url: str, path: str) -> Re
     body = await request.body()
 
     try:
-        resp = await client.request(
-            method=request.method,
-            url=url,
-            headers=headers,
-            content=body,
-        )
+        req = client.build_request(method=request.method, url=url, headers=headers, content=body)
+        resp = await client.send(req, stream=True)
     except httpx.ConnectError as exc:
         logger.error("Proxy connect error: %s %s -> %s", request.method, request.url.path, url)
         raise exc
@@ -72,5 +69,23 @@ async def proxy_request(request: Request, target_base_url: str, path: str) -> Re
         raise exc
 
     resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP_RESPONSE}
+    content_type = resp.headers.get("content-type", "")
 
+    # Stream SSE responses through without buffering.
+    if "text/event-stream" in content_type:
+
+        async def _stream():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await resp.aclose()
+
+        return StreamingResponse(
+            _stream(), status_code=resp.status_code, headers=resp_headers, media_type="text/event-stream"
+        )
+
+    # Non-streaming: read full body and return.
+    await resp.aread()
+    await resp.aclose()
     return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)

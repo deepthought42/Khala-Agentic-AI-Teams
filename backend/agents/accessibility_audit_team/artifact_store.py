@@ -118,7 +118,12 @@ class FileSystemBackend(StorageBackend):
     Stores artifacts in a local directory with JSON metadata files.
     """
 
-    def __init__(self, base_path: str = "/tmp/accessibility_audit_artifacts"):
+    def __init__(self, base_path: str | None = None):
+        if base_path is None:
+            import os
+
+            cache_root = os.environ.get("AGENT_CACHE", ".agent_cache")
+            base_path = str(Path(cache_root) / "accessibility_audit_team" / "artifacts")
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
         self._metadata_cache: Dict[str, ArtifactMetadata] = {}

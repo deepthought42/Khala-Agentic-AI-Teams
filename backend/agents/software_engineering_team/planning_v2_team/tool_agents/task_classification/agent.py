@@ -235,7 +235,9 @@ class TaskClassificationToolAgent:
             if result.files:
                 for rel_path, content in result.files.items():
                     repo = Path(inp.repo_path or ".")
-                    write_section(repo, AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION], content)
+                    write_section(
+                        repo, AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION], content
+                    )
                     logger.info(
                         "TaskClassification: applied fix — writing to shared doc (%d chars)",
                         len(content),
@@ -250,8 +252,11 @@ class TaskClassificationToolAgent:
             )
 
         existing_doc = (
-            (inp.current_files.get(planning_asset_path("task_classification.md")) if inp.current_files else None)
-            or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION])
+            inp.current_files.get(planning_asset_path("task_classification.md"))
+            if inp.current_files
+            else None
+        ) or read_section(
+            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
         )
         if existing_doc and not classification_issues:
             return ToolAgentPhaseOutput(
@@ -293,7 +298,10 @@ class TaskClassificationToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
         )
         if blackboard_context:
-            logger.info("TaskClassification: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "TaskClassification: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         prompt = TASK_CLASSIFICATION_PROMPT.format(tasks=tasks_text)
         raw_text = complete_text_with_continuation(
@@ -369,9 +377,12 @@ class TaskClassificationToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
-            ) or ""
+            current_artifact = (
+                read_section(
+                    Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
+                )
+                or ""
+            )
 
         prompt = TASK_CLASSIFICATION_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -516,9 +527,12 @@ class TaskClassificationToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
-            ) or ""
+            current_artifact = (
+                read_section(
+                    Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.TASK_CLASSIFICATION]
+                )
+                or ""
+            )
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = TASK_CLASSIFICATION_FIX_ALL_ISSUES_PROMPT.format(

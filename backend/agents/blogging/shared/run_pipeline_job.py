@@ -15,10 +15,15 @@ from temporalio.exceptions import CancelledError
 logger = logging.getLogger(__name__)
 
 
-# Base directory for run artifacts (must match api/main.py RUN_ARTIFACTS_BASE when used from API)
+# Base directory for run artifacts (must match api/main.py RUN_ARTIFACTS_BASE when used from API).
+# Honour BLOGGING_RUN_ARTIFACTS_ROOT so Docker can mount a persistent volume.
 def _get_run_artifacts_base() -> Path:
+    import os
     import tempfile
 
+    custom = os.environ.get("BLOGGING_RUN_ARTIFACTS_ROOT")
+    if custom:
+        return Path(custom).expanduser().resolve()
     return Path(tempfile.gettempdir()) / "blogging_runs"
 
 
@@ -139,6 +144,19 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
                 raise
             except Exception as e:
                 logger.warning("Failed to update job %s: %s", job_id, e)
+        # Broadcast to SSE subscribers
+        try:
+            from blogging.shared.job_event_bus import publish
+        except ImportError:
+            try:
+                from shared.job_event_bus import publish
+            except ImportError:
+                publish = None  # type: ignore[assignment]
+        if publish is not None:
+            try:
+                publish(job_id, kwargs, event_type="update")
+            except Exception:
+                pass
 
     if start_blog_job is not None:
         start_blog_job(job_id)
@@ -196,6 +214,7 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
                 parse_retry_count=planning_phase_result.parse_retry_count,
                 planning_wall_ms_total=planning_phase_result.planning_wall_ms_total,
             )
+        _publish_terminal(job_id, "complete", status=final_status)
     except CancelledError:
         raise
     except PlanningError as e:
@@ -206,9 +225,11 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
             failed_phase="planning",
             planning_failure_reason=getattr(e, "failure_reason", None),
         )
+        _publish_terminal(job_id, "error", error=str(e), failed_phase="planning")
     except BloggingError as e:
         logger.exception("Pipeline failed for job %s", job_id)
         _fail_job(job_id, str(e), failed_phase=getattr(e, "phase", None))
+        _publish_terminal(job_id, "error", error=str(e), failed_phase=getattr(e, "phase", None))
     except Exception as e:
         if _is_external_cancellation(e):
             logger.info("Pipeline cancelled for job %s", job_id)
@@ -222,13 +243,31 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
                     )
                 except Exception:
                     pass
+            _publish_terminal(job_id, "cancelled")
             return
         logger.exception("Unexpected error in pipeline for job %s", job_id)
         _fail_job(job_id, str(e))
+        _publish_terminal(job_id, "error", error=str(e))
     finally:
         stop_heartbeat.set()
         if hb_thread is not None:
             hb_thread.join(timeout=2.0)
+
+
+def _publish_terminal(job_id: str, event_type: str, **kwargs: Any) -> None:
+    """Publish a terminal SSE event and clean up subscribers."""
+    try:
+        from blogging.shared.job_event_bus import cleanup_job, publish
+    except ImportError:
+        try:
+            from shared.job_event_bus import cleanup_job, publish
+        except ImportError:
+            return
+    try:
+        publish(job_id, kwargs, event_type=event_type)
+        cleanup_job(job_id)
+    except Exception:
+        pass
 
 
 def _fail_job(

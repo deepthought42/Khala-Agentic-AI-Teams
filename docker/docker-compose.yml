@@ -128,8 +128,12 @@ services:
       BLOG_PLANNING_MAX_ITERATIONS: ${BLOG_PLANNING_MAX_ITERATIONS:-5}
       BLOG_PLANNING_MAX_PARSE_RETRIES: ${BLOG_PLANNING_MAX_PARSE_RETRIES:-3}
       BLOG_PLANNING_MODEL: ${BLOG_PLANNING_MODEL:-}
-      BLOGGING_MEDIUM_STATS_ROOT: ${BLOGGING_MEDIUM_STATS_ROOT:-}
-      INTEGRATIONS_BROWSER_SESSION_ROOT: ${INTEGRATIONS_BROWSER_SESSION_ROOT:-}
+      AGENT_CACHE: /data/agents
+      BLOGGING_RUN_ARTIFACTS_ROOT: /data/agents/blogging_team/runs
+      BLOGGING_MEDIUM_STATS_ROOT: ${BLOGGING_MEDIUM_STATS_ROOT:-/data/agents/blogging_team/medium_stats}
+      INTEGRATIONS_BROWSER_SESSION_ROOT: ${INTEGRATIONS_BROWSER_SESSION_ROOT:-/data/agents/blogging_team/sessions}
+    volumes:
+      - agents_data:/data/agents
     extra_hosts: &team-extra-hosts
       - "postgres:172.28.0.2"
       - "temporal:172.28.0.3"
@@ -167,11 +171,15 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
       TEMPORAL_ADDRESS: temporal:7233
       JOB_SERVICE_URL: http://job-service:8085
+      AGENT_CACHE: /data/agents
       TEAM_MODULE: software_engineering_team.api.main
       TEAM_NAME: software_engineering_team
       TEAM_PORT: "8091"
       TEAM_TEMPORAL_WORKER_MODULE: software_engineering_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_se_temporal_worker_thread
+      SE_WORKSPACE_DIR: /data/agents/software_engineering_team/workspaces
+    volumes: &team-volumes
+      - agents_data:/data/agents
     extra_hosts: *team-extra-hosts
     ports: ["8091:8091"]
     networks:
@@ -201,6 +209,7 @@ services:
       TEAM_PORT: "8092"
       TEAM_TEMPORAL_WORKER_MODULE: personal_assistant_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_pa_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8092:8092"]
     networks:
@@ -229,6 +238,7 @@ services:
       TEAM_PORT: "8093"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8093:8093"]
     networks:
@@ -258,6 +268,7 @@ services:
       TEAM_PORT: "8094"
       TEAM_TEMPORAL_WORKER_MODULE: soc2_compliance_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_soc2_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8094:8094"]
     networks:
@@ -287,6 +298,7 @@ services:
       TEAM_PORT: "8095"
       TEAM_TEMPORAL_WORKER_MODULE: social_media_marketing_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_social_marketing_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8095:8095"]
     networks:
@@ -315,6 +327,7 @@ services:
       TEAM_PORT: "8096"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8096:8096"]
     networks:
@@ -344,6 +357,7 @@ services:
       TEAM_PORT: "8097"
       TEAM_TEMPORAL_WORKER_MODULE: agent_provisioning_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_agent_provisioning_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8097:8097"]
     networks:
@@ -373,6 +387,7 @@ services:
       TEAM_PORT: "8098"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8098:8098"]
     networks:
@@ -402,6 +417,7 @@ services:
       TEAM_PORT: "8099"
       TEAM_TEMPORAL_WORKER_MODULE: ai_systems_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_ai_systems_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8099:8099"]
     networks:
@@ -430,6 +446,7 @@ services:
       TEAM_PORT: "8100"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8100:8100"]
     networks:
@@ -459,6 +476,7 @@ services:
       TEAM_PORT: "8101"
       TEAM_TEMPORAL_WORKER_MODULE: nutrition_meal_planning_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_nutrition_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8101:8101"]
     networks:
@@ -488,6 +506,7 @@ services:
       TEAM_PORT: "8102"
       TEAM_TEMPORAL_WORKER_MODULE: planning_v3_team.temporal.worker
       TEAM_TEMPORAL_WORKER_FUNC: start_planning_v3_temporal_worker_thread
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8102:8102"]
     networks:
@@ -516,6 +535,7 @@ services:
       TEAM_PORT: "8103"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8103:8103"]
     networks:
@@ -544,6 +564,7 @@ services:
       TEAM_PORT: "8104"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8104:8104"]
     networks:
@@ -572,6 +593,7 @@ services:
       TEAM_PORT: "8105"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8105:8105"]
     networks:
@@ -600,6 +622,7 @@ services:
       TEAM_PORT: "8106"
       TEAM_TEMPORAL_WORKER_MODULE: ""
       TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
     extra_hosts: *team-extra-hosts
     ports: ["8106:8106"]
     networks:
@@ -642,6 +665,7 @@ services:
       road-trip-service: { condition: service_healthy }
     volumes:
       - agents_workspace:/workspace
+      - agents_data:/data/agents
     ports:
       - "8888:8080"
     deploy:
@@ -663,6 +687,7 @@ services:
       ENABLE_LOG_API: ${ENABLE_LOG_API:-0}
       TEMPORAL_ADDRESS: temporal:7233
       JOB_SERVICE_URL: http://job-service:8085
+      AGENT_CACHE: /data/agents
       # Team service URLs — proxy requests to team containers
       BLOGGING_SERVICE_URL: http://blogging-service:8090
       SOFTWARE_ENGINEERING_SERVICE_URL: http://se-service:8091
@@ -741,3 +766,4 @@ networks:
 volumes:
   postgres_data:
   agents_workspace:
+  agents_data:

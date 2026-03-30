@@ -105,7 +105,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   readonly SOURCE_DISPLAY = SOURCE_DISPLAY;
 
   private pollSub: Subscription | null = null;
-  private readonly POLL_INTERVAL = 10000;
+  private readonly POLL_INTERVAL = 20000;
 
   ngOnInit(): void {
     this.startPolling();

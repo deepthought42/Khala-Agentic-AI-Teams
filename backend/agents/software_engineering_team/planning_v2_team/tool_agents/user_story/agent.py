@@ -551,7 +551,10 @@ class UserStoryToolAgent:
                 Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]
             )
             if blackboard_context:
-                logger.info("UserStory: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+                logger.info(
+                    "UserStory: read %d chars of cross-agent context from blackboard",
+                    len(blackboard_context),
+                )
 
             content = _hierarchy_to_markdown(hierarchy)
             repo = Path(inp.repo_path or ".")
@@ -655,7 +658,12 @@ class UserStoryToolAgent:
                     current_artifact = content
                     break
         if not current_artifact:
-            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]) or ""
+            current_artifact = (
+                read_section(
+                    Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]
+                )
+                or ""
+            )
 
         prompt = USER_STORY_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -789,7 +797,12 @@ class UserStoryToolAgent:
                     current_artifact = content
                     break
         if not current_artifact:
-            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]) or ""
+            current_artifact = (
+                read_section(
+                    Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.USER_STORY]
+                )
+                or ""
+            )
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = USER_STORY_FIX_ALL_ISSUES_PROMPT.format(

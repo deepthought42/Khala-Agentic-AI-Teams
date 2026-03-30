@@ -363,9 +363,9 @@ class ArchitectureToolAgent:
                 len(arch_issues),
             )
 
-        existing_arch = (inp.current_files or {}).get(planning_asset_path("architecture.md")) or read_section(
-            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
-        )
+        existing_arch = (inp.current_files or {}).get(
+            planning_asset_path("architecture.md")
+        ) or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE])
         if existing_arch and not arch_issues:
             return ToolAgentPhaseOutput(
                 summary="Architecture artifacts unchanged (file exists, no review issues).",
@@ -384,7 +384,10 @@ class ArchitectureToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
         )
         if blackboard_context:
-            logger.info("Architecture: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "Architecture: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         content_parts = ["# Architecture\n"]
 
@@ -500,9 +503,13 @@ class ArchitectureToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get(planning_asset_path("architecture.md"), "") or read_section(
-            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
-        ) or ""
+        current_artifact = (
+            inp.current_files.get(planning_asset_path("architecture.md"), "")
+            or read_section(
+                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
+            )
+            or ""
+        )
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "architect" in path.lower():
@@ -633,9 +640,13 @@ class ArchitectureToolAgent:
                 resolved=False,
             )
 
-        current_artifact = inp.current_files.get(planning_asset_path("architecture.md"), "") or read_section(
-            Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
-        ) or ""
+        current_artifact = (
+            inp.current_files.get(planning_asset_path("architecture.md"), "")
+            or read_section(
+                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.ARCHITECTURE]
+            )
+            or ""
+        )
         if not current_artifact:
             for path, content in inp.current_files.items():
                 if "architect" in path.lower():

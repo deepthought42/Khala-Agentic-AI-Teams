@@ -249,9 +249,10 @@ class UIDesignToolAgent:
             )
 
         existing_doc = (
-            (inp.current_files.get(planning_asset_path("ui_design.md")) if inp.current_files else None)
-            or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN])
-        )
+            inp.current_files.get(planning_asset_path("ui_design.md"))
+            if inp.current_files
+            else None
+        ) or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN])
         if existing_doc and not ui_issues:
             return ToolAgentPhaseOutput(
                 summary="UI Design artifacts unchanged (file exists, no review issues).",
@@ -281,7 +282,10 @@ class UIDesignToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN]
         )
         if blackboard_context:
-            logger.info("UIDesign: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "UIDesign: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         content_parts = ["# UI Design Plan\n\n"]
 
@@ -357,9 +361,10 @@ class UIDesignToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN]
-            ) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN])
+                or ""
+            )
 
         prompt = UI_DESIGN_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -494,9 +499,10 @@ class UIDesignToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN]
-            ) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UI_DESIGN])
+                or ""
+            )
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = UI_DESIGN_FIX_ALL_ISSUES_PROMPT.format(

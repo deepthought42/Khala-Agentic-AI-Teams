@@ -138,9 +138,10 @@ class UXDesignToolAgent:
         current_files: Dict[str, str] = dict(inp.current_files or {})
 
         existing_doc = (
-            (inp.current_files.get(planning_asset_path("ux_design.md")) if inp.current_files else None)
-            or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN])
-        )
+            inp.current_files.get(planning_asset_path("ux_design.md"))
+            if inp.current_files
+            else None
+        ) or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN])
         ux_issues = [
             i
             for i in inp.review_issues
@@ -212,7 +213,10 @@ class UXDesignToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN]
         )
         if blackboard_context:
-            logger.info("UXDesign: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "UXDesign: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         spec_content = inp.spec_content or ""
         prompt = UX_DESIGN_IMPLEMENTATION_PROMPT.format(
@@ -282,9 +286,10 @@ class UXDesignToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN]
-            ) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN])
+                or ""
+            )
 
         prompt = UX_DESIGN_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -419,9 +424,10 @@ class UXDesignToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(
-                Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN]
-            ) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.UX_DESIGN])
+                or ""
+            )
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = UX_DESIGN_FIX_ALL_ISSUES_PROMPT.format(

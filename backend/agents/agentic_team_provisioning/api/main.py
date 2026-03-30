@@ -251,8 +251,7 @@ def send_message(conversation_id: str, req: SendMessageRequest):
     current_process = _store.get_process(process_id) if process_id else None
 
     existing_agents = [
-        {"agent_name": a.agent_name, "role": a.role}
-        for a in _store.list_team_agents(team_id)
+        {"agent_name": a.agent_name, "role": a.role} for a in _store.list_team_agents(team_id)
     ] or None
 
     existing_messages = _store.get_messages(conversation_id)

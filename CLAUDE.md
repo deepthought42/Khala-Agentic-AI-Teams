@@ -73,6 +73,10 @@ docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
 # Ports: UI=4200, Agents=8888, Temporal UI=8080, Ollama=11434
 ```
 
+### Docker Volumes
+
+All agent team containers share a single `agents_data` named volume mounted at `/data/agents`. Every service sets `AGENT_CACHE=/data/agents`, so all team artifacts (job state, caches, profiles, workspaces) persist across container restarts. Teams naturally namespace via `{team_name}/` subdirectories under `AGENT_CACHE`. Blogging-specific paths (`BLOGGING_RUN_ARTIFACTS_ROOT`, `BLOGGING_MEDIUM_STATS_ROOT`, `INTEGRATIONS_BROWSER_SESSION_ROOT`) and SE workspaces (`SE_WORKSPACE_DIR`) also point into this volume.
+
 ## Architecture
 
 ### Execution Model
@@ -135,6 +139,7 @@ Environment variables for LLM: `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL`
 | `TEMPORAL_TASK_QUEUE` | Temporal task queue name |
 | `SECURITY_GATEWAY_ENABLED` | Security gateway toggle (default: true) |
 | `ENABLE_LOG_API` | Exposes HTTP log endpoint |
+| `BLOGGING_RUN_ARTIFACTS_ROOT` | Optional root for pipeline run artifacts (default: `{tempdir}/blogging_runs`; Docker sets `/data/blogging/runs`) |
 | `BLOGGING_MEDIUM_STATS_ROOT` | Optional base dir for Medium stats job `work_dir` (default: `{AGENT_CACHE}/blogging_team/medium_stats_runs`) |
 | `MEDIUM_GOOGLE_REDIRECT_URI` | Optional; fixed OAuth redirect for Medium’s Google identity link (`…/api/integrations/medium/oauth/google/callback`) when the API is behind a proxy |
 | `BLOG_PLANNING_MAX_ITERATIONS` | Blog planning refine loop cap (default 5) |

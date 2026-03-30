@@ -172,6 +172,33 @@ export interface BlogJobStatusResponse {
   waiting_for_answers?: boolean;
 }
 
+/** SSE event from GET /job/{job_id}/stream. */
+export interface BlogJobStreamEvent {
+  type: 'snapshot' | 'update' | 'complete' | 'error' | 'cancelled' | 'done';
+  /** Present on snapshot events — full job status. */
+  job_id?: string;
+  status?: string;
+  phase?: string;
+  progress?: number;
+  status_text?: string;
+  error?: string;
+  failed_phase?: string;
+  // Collaboration fields may appear on updates
+  waiting_for_title_selection?: boolean;
+  waiting_for_story_input?: boolean;
+  waiting_for_answers?: boolean;
+  waiting_for_draft_feedback?: boolean;
+  title_choices?: TitleChoiceResponse[];
+  story_gaps?: BlogStoryGap[];
+  current_story_gap_index?: number;
+  story_chat_history?: BlogStoryChatMessage[];
+  pending_questions?: BlogPendingQuestion[];
+  draft_for_review?: string;
+  draft_review_revision?: number;
+  draft_review_questions?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
 /** Metadata for a single artifact (from GET /job/{id}/artifacts). */
 export interface ArtifactMeta {
   name: string;

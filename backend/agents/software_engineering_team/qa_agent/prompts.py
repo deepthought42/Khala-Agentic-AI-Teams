@@ -2,7 +2,8 @@
 
 from software_engineering_team.shared.prompt_utils import JSON_OUTPUT_INSTRUCTION
 
-QA_PROMPT = """You are a Software Quality Assurance Expert. Your job is to review code and produce a list of well-defined QA issues for the coding agent to fix. You do NOT write fixes yourself – the coding agent implements them.
+QA_PROMPT = (
+    """You are a Software Quality Assurance Expert. Your job is to review code and produce a list of well-defined QA issues for the coding agent to fix. You do NOT write fixes yourself – the coding agent implements them.
 
 **Your expertise:**
 - Unit testing, integration testing, E2E testing
@@ -70,7 +71,9 @@ Return a single JSON object with:
 **IMPORTANT**: The issues you identify will be sent to a coding agent to fix. Make your descriptions so thorough and detailed that the coding agent can understand and fix the problem without seeing any other context.
 
 Be thorough. Each recommendation must be actionable -- the coding agent should know exactly what to implement.
-""" + JSON_OUTPUT_INSTRUCTION
+"""
+    + JSON_OUTPUT_INSTRUCTION
+)
 
 QA_PROMPT_FIX_BUILD = """
 **MODE: fix_build** – The code below FAILED to build. Build/compiler output is provided.

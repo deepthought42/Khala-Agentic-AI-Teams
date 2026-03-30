@@ -169,8 +169,7 @@ def _build_messages(
     state_parts: list[str] = []
     if current_agents:
         state_parts.append(
-            "Current team agents pool:\n"
-            f"```json\n{json.dumps(current_agents, indent=2)}\n```"
+            f"Current team agents pool:\n```json\n{json.dumps(current_agents, indent=2)}\n```"
         )
     if current_process and current_process.name:
         process_json = current_process.model_dump(mode="json")

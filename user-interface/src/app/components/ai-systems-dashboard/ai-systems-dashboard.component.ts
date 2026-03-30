@@ -145,7 +145,7 @@ export class AISystemsDashboardComponent implements OnInit, OnDestroy {
   private startJobPolling(jobId: string): void {
     this.jobPollSub?.unsubscribe();
 
-    this.jobPollSub = interval(2000)
+    this.jobPollSub = interval(20000)
       .pipe(
         switchMap(() => this.api.getJobStatus(jobId)),
         takeWhile((status) => status.status === 'running' || status.status === 'pending', true)

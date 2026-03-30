@@ -257,9 +257,8 @@ class DevOpsToolAgent:
             )
 
         existing_doc = (
-            (inp.current_files.get(planning_asset_path("devops.md")) if inp.current_files else None)
-            or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS])
-        )
+            inp.current_files.get(planning_asset_path("devops.md")) if inp.current_files else None
+        ) or read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS])
         if existing_doc and not devops_issues:
             return ToolAgentPhaseOutput(
                 summary="DevOps artifacts unchanged (file exists, no review issues).",
@@ -289,7 +288,10 @@ class DevOpsToolAgent:
             Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS]
         )
         if blackboard_context:
-            logger.info("DevOps: read %d chars of cross-agent context from blackboard", len(blackboard_context))
+            logger.info(
+                "DevOps: read %d chars of cross-agent context from blackboard",
+                len(blackboard_context),
+            )
 
         content_parts = ["# DevOps Plan\n\n"]
 
@@ -357,7 +359,10 @@ class DevOpsToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS]) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS])
+                or ""
+            )
 
         prompt = DEVOPS_FIX_SINGLE_ISSUE_PROMPT.format(
             issue=issue,
@@ -492,7 +497,10 @@ class DevOpsToolAgent:
                         current_artifact = content
                         break
         if not current_artifact:
-            current_artifact = read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS]) or ""
+            current_artifact = (
+                read_section(Path(inp.repo_path or "."), AGENT_SECTION_MAP[ToolAgentKind.DEVOPS])
+                or ""
+            )
 
         issues_list = "\n".join(f"{i + 1}. {issue}" for i, issue in enumerate(issues))
         prompt = DEVOPS_FIX_ALL_ISSUES_PROMPT.format(

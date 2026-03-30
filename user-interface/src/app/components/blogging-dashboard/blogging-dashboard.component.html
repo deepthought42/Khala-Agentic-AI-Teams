@@ -15,6 +15,419 @@
   ]"
 />
 
+<!-- ── Error Banner ─────────────────────────────────────────────────────── -->
+@if (error) {
+  <app-error-message [message]="error" />
+}
+
+<!-- ── Dashboard Layout ─────────────────────────────────────────────────── -->
+<div class="dashboard-layout">
+  <div class="main-content">
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- Collaboration Panels (shown when the pipeline is waiting for input) -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+
+    <!-- Title Selection ──────────────────────────────────────────────── -->
+    @if (selectedJobStatus?.waiting_for_title_selection && selectedJobStatus.title_choices?.length) {
+      <mat-card class="collaboration-card title-selection-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>spellcheck</mat-icon>
+          <mat-card-title>Select a Title</mat-card-title>
+          <mat-card-subtitle>Choose the title that best fits your vision for this post</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          @if (collaborationError) {
+            <app-error-message [message]="collaborationError" />
+          }
+          <div class="title-candidates">
+            @for (choice of selectedJobStatus.title_choices; track choice.title) {
+              <button class="title-candidate-btn" mat-stroked-button
+                      (click)="selectTitle(choice.title)">
+                <span class="title-text">{{ choice.title }}</span>
+                <span class="title-prob">{{ (choice.probability_of_success * 100) | number:'1.0-0' }}%</span>
+              </button>
+            }
+          </div>
+        </mat-card-content>
+      </mat-card>
+    }
+
+    <!-- Story Elicitation ────────────────────────────────────────────── -->
+    @if (selectedJobStatus?.waiting_for_story_input) {
+      <mat-card class="collaboration-card story-elicitation-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>chat</mat-icon>
+          <mat-card-title>Tell Us Your Story</mat-card-title>
+          @if (getCurrentStoryGap(); as gap) {
+            <mat-card-subtitle>{{ gap.section_title }}</mat-card-subtitle>
+          }
+        </mat-card-header>
+        <mat-card-content>
+          @if (collaborationError) {
+            <app-error-message [message]="collaborationError" />
+          }
+
+          @if (getCurrentStoryGap(); as gap) {
+            <p style="margin: 0 0 var(--kh-space-3) 0; color: var(--kh-text-tertiary); font-size: var(--kh-text-sm);">
+              {{ gap.seed_question }}
+            </p>
+          }
+
+          <!-- Chat history -->
+          @if (getStoryAgentMessages().length) {
+            <div class="story-chat">
+              @for (msg of getStoryAgentMessages(); track $index) {
+                <div class="story-message"
+                     [class.story-message-agent]="msg.role === 'agent'"
+                     [class.story-message-user]="msg.role === 'user'">
+                  <span class="story-role">{{ msg.role }}</span>
+                  <p class="story-content">{{ msg.content }}</p>
+                </div>
+              }
+            </div>
+          }
+
+          <div class="story-input-row">
+            <mat-form-field class="story-input-field">
+              <mat-label>Share your story here...</mat-label>
+              <textarea matInput
+                        [(ngModel)]="storyResponseText"
+                        rows="4"></textarea>
+            </mat-form-field>
+            <div class="story-input-actions">
+              <button mat-raised-button color="primary"
+                      (click)="submitStoryResponse()"
+                      [disabled]="storySubmitting || !storyResponseText.trim()">
+                {{ storySubmitting ? 'Sending...' : 'Send' }}
+              </button>
+              <button mat-stroked-button
+                      (click)="skipStoryGap()"
+                      [disabled]="storySubmitting">
+                Skip this story
+              </button>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    }
+
+    <!-- Q&A Questions ────────────────────────────────────────────────── -->
+    @if (selectedJobStatus?.waiting_for_answers && selectedJobStatus.pending_questions?.length) {
+      <mat-card class="collaboration-card qa-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>help_outline</mat-icon>
+          <mat-card-title>Questions From the Team</mat-card-title>
+          <mat-card-subtitle>{{ selectedJobStatus.pending_questions.length }} question{{ selectedJobStatus.pending_questions.length === 1 ? '' : 's' }} need your input</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          @if (collaborationError) {
+            <app-error-message [message]="collaborationError" />
+          }
+
+          @for (q of selectedJobStatus.pending_questions; track q.id) {
+            <div class="qa-question">
+              <p class="qa-question-text">
+                {{ q.question_text }}
+                @if (q.required) {
+                  <span class="qa-required">*</span>
+                }
+              </p>
+
+              @if (q.context) {
+                <p class="qa-context">{{ q.context }}</p>
+              }
+
+              @if (q.options?.length) {
+                <div class="qa-options">
+                  @for (opt of q.options; track opt.id) {
+                    <button mat-stroked-button
+                            class="qa-option-btn"
+                            [class.qa-option-selected]="qaAnswers[q.id] === opt.id"
+                            (click)="qaAnswers[q.id] = opt.id">
+                      {{ opt.label }}
+                      @if (opt.description) {
+                        <span style="display: block; font-size: var(--kh-text-xs); color: var(--kh-text-muted); font-weight: 400;">
+                          {{ opt.description }}
+                        </span>
+                      }
+                    </button>
+                  }
+                </div>
+              } @else {
+                <mat-form-field class="qa-free-text">
+                  <mat-label>Your answer</mat-label>
+                  <input matInput [(ngModel)]="qaAnswers[q.id]">
+                </mat-form-field>
+              }
+            </div>
+          }
+
+          <div class="qa-submit-row">
+            <button mat-raised-button color="primary"
+                    (click)="submitQaAnswers()"
+                    [disabled]="qaSubmitting || !allQaAnswered()">
+              {{ qaSubmitting ? 'Submitting...' : 'Submit Answers' }}
+            </button>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    }
+
+    <!-- Draft Review ─────────────────────────────────────────────────── -->
+    @if (selectedJobStatus?.waiting_for_draft_feedback) {
+      <mat-card class="collaboration-card qa-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>rate_review</mat-icon>
+          <mat-card-title>Review Draft (Revision {{ selectedJobStatus.draft_review_revision }})</mat-card-title>
+          <mat-card-subtitle>The draft agent is waiting for your feedback</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          @if (collaborationError) {
+            <app-error-message [message]="collaborationError" />
+          }
+
+          @if (selectedJobStatus.draft_escalation_summary) {
+            <div style="padding: var(--kh-space-3); margin-bottom: var(--kh-space-3); background: var(--kh-error-subtle); border-radius: var(--kh-radius-md); color: var(--kh-error); font-size: var(--kh-text-sm);">
+              {{ selectedJobStatus.draft_escalation_summary }}
+            </div>
+          }
+
+          @if (selectedJobStatus.draft_for_review) {
+            <details class="content-plan-detail" open>
+              <summary>Draft content</summary>
+              <pre class="content-plan-pre">{{ selectedJobStatus.draft_for_review }}</pre>
+            </details>
+          }
+
+          @if (selectedJobStatus.draft_review_questions?.length) {
+            <h4 class="detail-section-title" style="margin-top: var(--kh-space-4);">Agent uncertainty questions</h4>
+            @for (dq of selectedJobStatus.draft_review_questions; track $index) {
+              <p style="font-size: var(--kh-text-sm); color: var(--kh-text-secondary); margin: var(--kh-space-1) 0;">
+                {{ $index + 1 }}. {{ dq['question'] ?? dq['text'] ?? (dq | json) }}
+              </p>
+            }
+          }
+
+          <div class="story-input-row" style="margin-top: var(--kh-space-4);">
+            <mat-form-field class="story-input-field">
+              <mat-label>Your feedback on this draft...</mat-label>
+              <textarea matInput
+                        [(ngModel)]="draftFeedbackText"
+                        rows="4"></textarea>
+            </mat-form-field>
+            <div class="story-input-actions">
+              <button mat-raised-button color="primary"
+                      (click)="submitDraftFeedback(false)"
+                      [disabled]="draftFeedbackSubmitting">
+                {{ draftFeedbackSubmitting ? 'Sending...' : 'Request Revision' }}
+              </button>
+              <button mat-raised-button style="background: var(--kh-success); color: #000;"
+                      (click)="submitDraftFeedback(true)"
+                      [disabled]="draftFeedbackSubmitting">
+                Approve Draft
+              </button>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    }
+
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!-- Jobs Panel (Right Sidebar)                                         -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <div class="jobs-panel">
+
+    <!-- Running Jobs ───────────────────────────────────────────────── -->
+    @if (runningJobs.length) {
+      <div class="jobs-list-section">
+        <h3 class="list-section-title">Running</h3>
+        <div class="jobs-list">
+          @for (job of runningJobs; track job.job_id) {
+            <div class="job-item"
+                 [class.selected]="selectedBlogJob?.job_id === job.job_id"
+                 (click)="selectJob(job)"
+                 role="button" tabindex="0" (keydown.enter)="selectJob(job)">
+              <span class="job-brief">{{ job.brief }}</span>
+              <span class="job-id">{{ job.job_id }}</span>
+              @if (job.job_type) {
+                <span class="job-type-tag">{{ job.job_type }}</span>
+              }
+              <span class="job-status-pill status-{{ job.status }}">{{ job.status }}</span>
+            </div>
+          }
+        </div>
+      </div>
+    }
+
+    <!-- Completed Jobs ─────────────────────────────────────────────── -->
+    @if (completedJobs.length) {
+      <div class="jobs-list-section">
+        <h3 class="list-section-title">Completed</h3>
+        <div class="jobs-list">
+          @for (job of completedJobs; track job.job_id) {
+            <div class="job-item"
+                 [class.selected]="selectedBlogJob?.job_id === job.job_id"
+                 (click)="selectJob(job)"
+                 role="button" tabindex="0" (keydown.enter)="selectJob(job)">
+              <span class="job-brief">{{ job.brief }}</span>
+              <span class="job-id">{{ job.job_id }}</span>
+              @if (job.job_type) {
+                <span class="job-type-tag">{{ job.job_type }}</span>
+              }
+              <span class="job-status-pill status-{{ job.status }}">{{ job.status }}</span>
+            </div>
+          }
+        </div>
+      </div>
+    }
+
+    @if (!allJobs.length) {
+      <p class="no-jobs">No pipeline jobs yet</p>
+    }
+
+    <!-- ── Selected Job Detail ──────────────────────────────────────── -->
+    @if (selectedJobStatus) {
+      <div class="panel-divider"></div>
+      <div class="job-detail">
+
+        <!-- Header -->
+        <div class="job-detail-header">
+          <div class="job-detail-info">
+            <mat-icon>article</mat-icon>
+            <span class="job-detail-label">Job</span>
+            <span class="job-detail-id">{{ selectedJobStatus.job_id }}</span>
+            <span class="job-status-pill status-{{ selectedJobStatus.status }}">{{ selectedJobStatus.status }}</span>
+          </div>
+
+          <!-- Progress bar -->
+          @if (!isTerminalStatus(selectedJobStatus.status)) {
+            <mat-progress-bar mode="determinate" [value]="selectedJobStatus.progress"></mat-progress-bar>
+          }
+
+          <!-- Action buttons -->
+          <div class="job-detail-buttons">
+            @if (canStopSelectedJob()) {
+              <button mat-stroked-button (click)="cancelSelectedJob()" matTooltip="Cancel this job">
+                <mat-icon>stop</mat-icon> Cancel
+              </button>
+            }
+            @if (canApproveJob() && !canUnapproveJob()) {
+              <button mat-stroked-button (click)="approveSelectedJob()" matTooltip="Approve this job">
+                <mat-icon>check_circle</mat-icon> Approve
+              </button>
+            }
+            @if (canUnapproveJob()) {
+              <button mat-stroked-button (click)="unapproveSelectedJob()" matTooltip="Remove approval">
+                <mat-icon>undo</mat-icon> Unapprove
+              </button>
+            }
+            <button mat-stroked-button (click)="deleteSelectedJob()" matTooltip="Delete this job" style="color: var(--kh-error);">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Detail grid -->
+        <h4 class="detail-section-title">Status</h4>
+        <div class="detail-grid">
+          @if (selectedJobStatus.phase) {
+            <p class="detail-row"><strong>Phase</strong> {{ selectedJobStatus.phase }}</p>
+          }
+          <p class="detail-row"><strong>Progress</strong> {{ selectedJobStatus.progress }}%</p>
+          @if (selectedJobStatus.status_text) {
+            <p class="detail-row"><strong>Activity</strong> {{ selectedJobStatus.status_text }}</p>
+          }
+          @if (selectedJobStatus.research_sources_count) {
+            <p class="detail-row"><strong>Sources</strong> {{ selectedJobStatus.research_sources_count }}</p>
+          }
+          @if (selectedJobStatus.selected_title) {
+            <p class="detail-row detail-row-full"><strong>Title</strong> {{ selectedJobStatus.selected_title }}</p>
+          }
+          @if (selectedJobStatus.approved_at) {
+            <p class="detail-row"><strong>Approved</strong> {{ jobApprovedLabel() }}</p>
+          }
+          @if (selectedJobStatus.error) {
+            <p class="detail-row error"><strong>Error</strong> {{ selectedJobStatus.error }}</p>
+          }
+          @if (selectedJobStatus.created_at) {
+            <p class="detail-row"><strong>Created</strong> {{ selectedJobStatus.created_at }}</p>
+          }
+        </div>
+
+        <!-- Content plan detail -->
+        @if (selectedJobStatus.content_plan_detail) {
+          <details class="content-plan-detail">
+            <summary>Content Plan</summary>
+            <pre class="content-plan-pre">{{ selectedJobStatus.content_plan_detail }}</pre>
+          </details>
+        }
+
+        <!-- Content plan summary -->
+        @if (selectedJobStatus.content_plan_summary && !selectedJobStatus.content_plan_detail) {
+          <div class="draft-preview">
+            <strong>Plan Summary</strong>
+            <p>{{ selectedJobStatus.content_plan_summary }}</p>
+          </div>
+        }
+
+        <!-- Draft preview -->
+        @if (selectedJobStatus.draft_preview) {
+          <div class="draft-preview">
+            <strong>Draft Preview</strong>
+            <p>{{ selectedJobStatus.draft_preview }}</p>
+          </div>
+        }
+
+        <!-- Produced assets -->
+        @if (selectedJobArtifacts.length || artifactsLoading) {
+          <div class="produced-assets">
+            <h4 class="detail-section-title">Produced Assets</h4>
+            @if (artifactsLoading) {
+              <p class="assets-loading">Loading artifacts...</p>
+            } @else if (artifactsError) {
+              <p class="assets-error">{{ artifactsError }}</p>
+            } @else {
+              @for (artifact of selectedJobArtifacts; track artifact.name) {
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>{{ artifactLabel(artifact.name) }}</mat-panel-title>
+                    @if (artifact.producer_phase) {
+                      <mat-panel-description>{{ artifact.producer_phase }}</mat-panel-description>
+                    }
+                  </mat-expansion-panel-header>
+                  <div class="artifact-body">
+                    @if (!artifactContent[artifact.name] && !artifactContentLoading[artifact.name]) {
+                      <button mat-stroked-button (click)="loadArtifactContent(artifact.name)">Load content</button>
+                    }
+                    @if (artifactContentLoading[artifact.name]) {
+                      <p class="assets-loading">Loading...</p>
+                    }
+                    @if (artifactContent[artifact.name] !== undefined) {
+                      <pre>{{ getArtifactContentDisplay(artifact.name) }}</pre>
+                    }
+                    <div style="display: flex; gap: var(--kh-space-2); margin-top: var(--kh-space-2);">
+                      <button mat-stroked-button (click)="openViewModal(artifact.name)">
+                        <mat-icon>open_in_new</mat-icon> Full view
+                      </button>
+                      <a mat-stroked-button [href]="getArtifactDownloadUrl(artifact.name)" target="_blank">
+                        <mat-icon>download</mat-icon> Download
+                      </a>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+              }
+            }
+          </div>
+        }
+      </div>
+    }
+  </div>
+</div>
+
+<!-- ── Artifact View Modal ──────────────────────────────────────────────── -->
 @if (viewArtifactModal !== null || viewArtifactLoading || viewArtifactError) {
   <div class="artifact-view-overlay" (click)="closeViewModal()" role="button" tabindex="0" (keydown.escape)="closeViewModal()">
     <div class="artifact-view-modal" tabindex="0" (click)="$event.stopPropagation()" (keydown.enter)="$event.stopPropagation()" role="dialog" aria-label="View artifact">
@@ -25,7 +438,7 @@
         </button>
       </div>
       @if (viewArtifactLoading) {
-        <app-loading-spinner message="Loading…" />
+        <app-loading-spinner message="Loading..." />
       } @else if (viewArtifactError) {
         <app-error-message [message]="viewArtifactError" />
       } @else if (viewArtifactModal) {

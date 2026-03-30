@@ -88,11 +88,15 @@ def format_onboarding_summary_prompt(**kwargs: Any) -> str:
 
 
 def format_tool_getting_started_prompt(**kwargs: Any) -> str:
-    return f"{get_anatomy_prompt_preamble()}\n\n---\n\n{_TOOL_GETTING_STARTED_BODY.format(**kwargs)}"
+    return (
+        f"{get_anatomy_prompt_preamble()}\n\n---\n\n{_TOOL_GETTING_STARTED_BODY.format(**kwargs)}"
+    )
 
 
 def format_environment_overview_prompt(**kwargs: Any) -> str:
-    return f"{get_anatomy_prompt_preamble()}\n\n---\n\n{_ENVIRONMENT_OVERVIEW_BODY.format(**kwargs)}"
+    return (
+        f"{get_anatomy_prompt_preamble()}\n\n---\n\n{_ENVIRONMENT_OVERVIEW_BODY.format(**kwargs)}"
+    )
 
 
 def format_ai_agent_create_prompt(requirements: str) -> str:
@@ -100,10 +104,12 @@ def format_ai_agent_create_prompt(requirements: str) -> str:
 
 
 def format_ai_agent_refine_prompt(current_definition: str, refinement_goals: str) -> str:
-    return f"{get_anatomy_prompt_preamble()}\n\n---\n\n{_AI_AGENT_REFINE_BODY.format(
-        current_definition=current_definition,
-        refinement_goals=refinement_goals,
-    )}"
+    return f"{get_anatomy_prompt_preamble()}\n\n---\n\n{
+        _AI_AGENT_REFINE_BODY.format(
+            current_definition=current_definition,
+            refinement_goals=refinement_goals,
+        )
+    }"
 
 
 # Backward-compatible names: full prompt string with .format() placeholders (anatomy applied at access time).

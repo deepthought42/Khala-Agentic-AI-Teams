@@ -22,7 +22,7 @@ from .models import StoryElicitationResult, StoryGap
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 2  # seconds between job-store polls
+POLL_INTERVAL = 20  # seconds between job-store polls
 MAX_ROUNDS = 5  # soft cap for pre-draft interviews (user can still be asked more)
 MAX_ROUNDS_POST_DRAFT = 50  # hard safety cap for post-draft interviews (effectively unlimited)
 

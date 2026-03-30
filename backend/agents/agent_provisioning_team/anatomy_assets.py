@@ -25,8 +25,7 @@ def load_agent_anatomy_text() -> str:
             _anatomy_text_cache = AGENT_ANATOMY_MD.read_text(encoding="utf-8")
         else:
             _anatomy_text_cache = (
-                f"(Missing file: {AGENT_ANATOMY_MD}. "
-                "Restore AGENT_ANATOMY.md next to this module.)"
+                f"(Missing file: {AGENT_ANATOMY_MD}. Restore AGENT_ANATOMY.md next to this module.)"
             )
     return _anatomy_text_cache
 

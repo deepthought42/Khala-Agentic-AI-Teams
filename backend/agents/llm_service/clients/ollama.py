@@ -139,7 +139,7 @@ class OllamaLLMClient(LLMClient):
         model: str = "llama3.1",
         *,
         base_url: str = "https://ollama.com",
-        timeout: float = 600.0,
+        timeout: float = 900.0,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")

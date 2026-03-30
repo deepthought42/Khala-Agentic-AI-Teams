@@ -119,16 +119,16 @@ def resolve_base_url() -> str:
 
 
 def resolve_timeout(agent_key: Optional[str] = None) -> float:
-    """Return timeout in seconds (default 600).
+    """Return timeout in seconds (default 900 — 15 min).
 
-    Large cloud models (e.g. long copy-edit prompts) often exceed 300s per request; override with
-    LLM_TIMEOUT if you need higher.
+    All LLM calls use streaming, so the timeout covers the full streamed response.
+    Override with LLM_TIMEOUT if needed.
     """
-    raw = os.environ.get(ENV_LLM_TIMEOUT) or "600"
+    raw = os.environ.get(ENV_LLM_TIMEOUT) or "900"
     try:
         return float(raw)
     except ValueError:
-        return 600.0
+        return 900.0
 
 
 def resolve_context_size_for_model(model: str) -> Optional[int]:

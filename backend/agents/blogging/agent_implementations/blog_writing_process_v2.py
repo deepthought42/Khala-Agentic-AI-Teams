@@ -604,7 +604,7 @@ def run_pipeline(
                 job_data = get_blog_job(job_id)
                 if job_data and job_data.get("status") in ("failed", "cancelled"):
                     return research_result, planning_phase_result, None, "FAIL"
-                time.sleep(2)
+                time.sleep(20)
 
             job_data = get_blog_job(job_id)
             selected_title = (job_data or {}).get("selected_title")
@@ -759,8 +759,7 @@ def run_pipeline(
             missing_parts.append(f"brand guidelines ({BRAND_SPEC_PROMPT_PATH})")
         missing_msg = ", ".join(missing_parts)
         raise DraftError(
-            "Cannot start drafting without required guideline inputs. "
-            f"Missing: {missing_msg}.",
+            f"Cannot start drafting without required guideline inputs. Missing: {missing_msg}.",
             cause=ValueError(missing_msg),
         )
     allowed_claims_data = (
@@ -915,13 +914,15 @@ def run_pipeline(
                     job_data = get_blog_job(job_id)
                     if job_data and job_data.get("status") in ("failed", "cancelled"):
                         return research_result, planning_phase_result, draft_result, "FAIL"
-                    time.sleep(2)
+                    time.sleep(20)
 
                 # Process user feedback in a loop until approved
                 while True:
                     feedback_data = get_user_draft_feedback(job_id)
                     if not feedback_data:
-                        logger.warning("No user draft feedback found; proceeding with current draft.")
+                        logger.warning(
+                            "No user draft feedback found; proceeding with current draft."
+                        )
                         break
 
                     if feedback_data.get("approved"):

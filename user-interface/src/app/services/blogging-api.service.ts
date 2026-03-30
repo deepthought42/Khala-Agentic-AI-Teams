@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, NgZone } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
@@ -10,6 +10,7 @@ import type {
   BloggingHealthResponse,
   BlogJobListItem,
   BlogJobStatusResponse,
+  BlogJobStreamEvent,
   BlogJobArtifactsResponse,
   BlogJobArtifactContentResponse,
   StartJobResponse,
@@ -23,6 +24,7 @@ import type {
 @Injectable({ providedIn: 'root' })
 export class BloggingApiService {
   private readonly http = inject(HttpClient);
+  private readonly zone = inject(NgZone);
   private readonly baseUrl = environment.bloggingApiUrl;
 
   /**
@@ -216,6 +218,17 @@ export class BloggingApiService {
   }
 
   /**
+   * POST /job/{job_id}/draft-feedback
+   * Submit editor feedback on a draft or approve it.
+   */
+  submitDraftFeedback(jobId: string, feedback: string, approved: boolean): Observable<BlogJobStatusResponse> {
+    return this.http.post<BlogJobStatusResponse>(
+      `${this.baseUrl}/job/${jobId}/draft-feedback`,
+      { feedback, approved }
+    );
+  }
+
+  /**
    * POST /job/{job_id}/answers
    * Submit answers to pipeline Q&A questions.
    */
@@ -224,5 +237,38 @@ export class BloggingApiService {
       `${this.baseUrl}/job/${jobId}/answers`,
       { answers }
     );
+  }
+
+  /**
+   * GET /job/{job_id}/stream — SSE stream for real-time job updates.
+   * Emits BlogJobStreamEvent objects. Completes on terminal event or connection close.
+   */
+  streamJobStatus(jobId: string): Observable<BlogJobStreamEvent> {
+    return new Observable<BlogJobStreamEvent>((subscriber) => {
+      const url = `${this.baseUrl}/job/${encodeURIComponent(jobId)}/stream`;
+      const eventSource = new EventSource(url);
+
+      eventSource.onmessage = (msg) => {
+        this.zone.run(() => {
+          try {
+            const data: BlogJobStreamEvent = JSON.parse(msg.data);
+            subscriber.next(data);
+            if (data.type === 'done') {
+              eventSource.close();
+              subscriber.complete();
+            }
+          } catch {
+            // Ignore unparseable frames (e.g. keepalive comments)
+          }
+        });
+      };
+
+      eventSource.onerror = () => {
+        eventSource.close();
+        this.zone.run(() => subscriber.error(new Error('SSE connection lost')));
+      };
+
+      return () => eventSource.close();
+    });
   }
 }

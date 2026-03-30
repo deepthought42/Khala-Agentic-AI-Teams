@@ -1608,19 +1608,24 @@ class PlanningV2ResultResponse(BaseModel):
 
 class PlanningArtifactMeta(BaseModel):
     """Metadata for a single planning artifact file."""
+
     name: str = Field(..., description="Artifact filename.")
     size_bytes: int = Field(..., description="File size in bytes.")
     modified_at: str = Field(..., description="ISO timestamp of last modification.")
-    sections: List[str] = Field(default_factory=list, description="Section names (for shared planning document only).")
+    sections: List[str] = Field(
+        default_factory=list, description="Section names (for shared planning document only)."
+    )
 
 
 class PlanningArtifactListResponse(BaseModel):
     """Response listing planning artifacts for a job."""
+
     artifacts: List[PlanningArtifactMeta] = Field(default_factory=list)
 
 
 class PlanningArtifactContentResponse(BaseModel):
     """Response with the content of a single planning artifact."""
+
     name: str = Field(..., description="Artifact filename.")
     content: str = Field(..., description="File content (markdown or JSON string).")
     content_type: str = Field(..., description="Content type: 'markdown' or 'json'.")
@@ -2899,6 +2904,7 @@ def list_planning_v2_artifacts(job_id: str) -> PlanningArtifactListResponse:
                     from planning_v2_team.shared_planning_document import (
                         list_sections as _list_sections,
                     )
+
                     sections = _list_sections(Path(repo_path))
                 except Exception:
                     pass
@@ -2919,7 +2925,9 @@ def list_planning_v2_artifacts(job_id: str) -> PlanningArtifactListResponse:
     summary="Get planning-v2 artifact content",
     description="Return the content of a specific planning artifact file.",
 )
-def get_planning_v2_artifact_content(job_id: str, artifact_name: str) -> PlanningArtifactContentResponse:
+def get_planning_v2_artifact_content(
+    job_id: str, artifact_name: str
+) -> PlanningArtifactContentResponse:
     """Get the content of a planning artifact."""
     if ".." in artifact_name or "/" in artifact_name or "\\" in artifact_name:
         raise HTTPException(status_code=400, detail="Invalid artifact name")

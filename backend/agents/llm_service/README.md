@@ -28,7 +28,7 @@ max_ctx = client.get_max_context_tokens()
 | `LLM_MODEL` | Model name |
 | `LLM_MODEL_<agent_key>` | Per-agent model override |
 | `LLM_BASE_URL` | Ollama base URL (default `https://ollama.com`) |
-| `LLM_TIMEOUT` | Request timeout in seconds (default 600; raise for slow cloud models / long prompts) |
+| `LLM_TIMEOUT` | Request timeout in seconds (default 900 / 15 min; all calls use streaming) |
 | `LLM_CONTEXT_SIZE` | Override context size |
 | `LLM_MAX_TOKENS` | Max output tokens |
 | `LLM_MAX_RETRIES` | Retries for transient errors |
