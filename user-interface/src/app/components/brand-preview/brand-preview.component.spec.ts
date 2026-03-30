@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { BrandPreviewComponent } from './brand-preview.component';
 
 describe('BrandPreviewComponent', () => {
@@ -8,6 +9,7 @@ describe('BrandPreviewComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [BrandPreviewComponent],
+      providers: [provideNoopAnimations()],
     }).compileComponents();
 
     fixture = TestBed.createComponent(BrandPreviewComponent);

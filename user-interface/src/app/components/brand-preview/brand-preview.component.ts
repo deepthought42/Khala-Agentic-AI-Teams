@@ -1,4 +1,5 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
+import { trigger, transition, style, animate } from '@angular/animations';
 import { MatCardModule } from '@angular/material/card';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatExpansionModule } from '@angular/material/expansion';
@@ -20,6 +21,14 @@ import type { BrandingMissionSnapshot, BrandingTeamOutput, ColorPalette } from '
   ],
   templateUrl: './brand-preview.component.html',
   styleUrl: './brand-preview.component.scss',
+  animations: [
+    trigger('sectionEnter', [
+      transition(':enter', [
+        style({ opacity: 0, transform: 'translateY(8px)' }),
+        animate('300ms cubic-bezier(0.23, 1, 0.32, 1)', style({ opacity: 1, transform: 'translateY(0)' })),
+      ]),
+    ]),
+  ],
 })
 export class BrandPreviewComponent {
   @Input() mission: BrandingMissionSnapshot | null = null;
@@ -47,6 +56,23 @@ export class BrandPreviewComponent {
   /** True when there is anything to display (mission or output). */
   get hasContent(): boolean {
     return this.hasOutput || this.hasMissionData;
+  }
+
+  /** Rough percentage of mission fields that have meaningful data. */
+  get completionPercent(): number {
+    const m = this.mission;
+    if (!m) return 0;
+    let filled = 0;
+    const total = 8;
+    if (m.company_name && m.company_name !== 'TBD') filled++;
+    if (m.company_description && m.company_description !== 'To be discussed.') filled++;
+    if (m.target_audience && m.target_audience !== 'TBD') filled++;
+    if ((m.values?.length ?? 0) > 0) filled++;
+    if ((m.differentiators?.length ?? 0) > 0) filled++;
+    if (m.desired_voice && m.desired_voice !== 'clear, confident, human') filled++;
+    if ((m.color_palettes?.length ?? 0) > 0 || (m.color_inspiration?.length ?? 0) > 0) filled++;
+    if (m.visual_style || m.typography_preference) filled++;
+    return Math.round((filled / total) * 100);
   }
 
   get missionValues(): string[] {
