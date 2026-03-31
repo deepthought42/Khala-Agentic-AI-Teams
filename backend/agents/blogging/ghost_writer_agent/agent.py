@@ -181,11 +181,11 @@ class GhostWriterElicitationAgent:
         prompt = f"Content plan:\n\n{outline_text}\n\nIdentify story gaps."
 
         try:
-            response = self.llm_client.chat(
-                messages=[{"role": "user", "content": prompt}],
-                system=_FIND_GAPS_SYSTEM,
+            response = self.llm_client.complete(
+                prompt,
+                system_prompt=_FIND_GAPS_SYSTEM,
             )
-            raw = response.strip()
+            raw = (response or "").strip()
             start = raw.find("[")
             end = raw.rfind("]") + 1
             if start == -1 or end == 0:
@@ -343,11 +343,11 @@ class GhostWriterElicitationAgent:
             context_block += f"{role}: {msg['content']}\n"
 
         try:
-            response = self.llm_client.chat(
-                messages=[{"role": "user", "content": context_block}],
-                system=_EVALUATE_SYSTEM,
+            response = self.llm_client.complete(
+                context_block,
+                system_prompt=_EVALUATE_SYSTEM,
             )
-            raw = response.strip()
+            raw = (response or "").strip()
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start == -1 or end == 0:
@@ -379,9 +379,9 @@ class GhostWriterElicitationAgent:
             "Use 'I' voice. Do not invent details or numbers the author did not provide."
         )
         try:
-            return self.llm_client.chat(
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a skilled ghost writer who turns author notes into vivid first-person STAR-format narratives.",
+            return self.llm_client.complete(
+                prompt,
+                system_prompt="You are a skilled ghost writer who turns author notes into vivid first-person STAR-format narratives.",
             )
         except Exception as e:
             logger.warning("Ghost writer compile_from_history failed: %s", e)

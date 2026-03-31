@@ -519,7 +519,7 @@ def run_pipeline(
     plan = planning_phase_result.content_plan
 
     # ------------------------------------------------------------------
-    # Title selection: pause until the author picks a title
+    # Title selection: rating loop until the user loves a title
     # ------------------------------------------------------------------
     selected_title: Optional[str] = None
     if job_id is not None and job_updater is not None:
@@ -534,31 +534,104 @@ def run_pipeline(
                 {"title": tc.title, "probability_of_success": tc.probability_of_success}
                 for tc in plan.title_candidates
             ]
-            update_blog_job(
-                job_id,
-                waiting_for_title_selection=True,
-                title_choices=title_choices,
-            )
-            job_updater(
-                phase="title_selection",
-                progress=25,
-                status_text=f"Waiting for title selection ({len(title_choices)} candidates)...",
-            )
 
-            while is_waiting_for_title_selection(job_id):
-                job_data = get_blog_job(job_id)
-                if job_data and job_data.get("status") in ("failed", "cancelled"):
-                    return planning_phase_result, None, "FAIL"
-                time.sleep(20)
+            all_ratings: list[dict] = []  # accumulated across rounds
+            title_round = 0
 
-            job_data = get_blog_job(job_id)
-            selected_title = (job_data or {}).get("selected_title")
-            logger.info("Title selected: %r", selected_title)
-            job_updater(
-                phase="title_selection",
-                progress=26,
-                status_text=f"Title selected: {selected_title}",
-            )
+            while True:
+                title_round += 1
+                update_blog_job(
+                    job_id,
+                    waiting_for_title_selection=True,
+                    title_choices=title_choices,
+                )
+                job_updater(
+                    phase="title_selection",
+                    progress=25,
+                    status_text=f"Rate titles (round {title_round}, {len(title_choices)} candidates)...",
+                )
+
+                # Block until user submits ratings
+                while is_waiting_for_title_selection(job_id):
+                    job_data = get_blog_job(job_id)
+                    if job_data and job_data.get("status") in ("failed", "cancelled"):
+                        return planning_phase_result, None, "FAIL"
+                    time.sleep(10)
+
+                job_data = get_blog_job(job_id) or {}
+                selected_title = job_data.get("selected_title")
+
+                # If the user loved a title, we're done
+                if selected_title:
+                    logger.info("Title loved (round %s): %r", title_round, selected_title)
+                    job_updater(
+                        phase="title_selection",
+                        progress=26,
+                        status_text=f"Title selected: {selected_title}",
+                    )
+                    break
+
+                # No love — collect ratings and generate new titles
+                round_ratings = job_data.get("title_ratings", [])
+                all_ratings.extend(round_ratings)
+                liked = [r["title"] for r in round_ratings if r.get("rating") == "like"]
+                disliked = [r["title"] for r in round_ratings if r.get("rating") == "dislike"]
+
+                logger.info(
+                    "Title ratings round %s: %s liked, %s disliked — generating new candidates",
+                    title_round, len(liked), len(disliked),
+                )
+                job_updater(
+                    phase="title_selection",
+                    progress=25,
+                    status_text="Generating new title options based on your feedback...",
+                )
+
+                # Ask the LLM to generate better titles based on the feedback
+                feedback_prompt = (
+                    "Generate 5 new blog post title candidates based on this feedback.\n\n"
+                    f"TOPIC: {plan.overarching_topic}\n\n"
+                )
+                if liked:
+                    feedback_prompt += "Titles the user LIKED (generate titles with a similar style/angle):\n"
+                    feedback_prompt += "\n".join(f"- {t}" for t in liked) + "\n\n"
+                if disliked:
+                    feedback_prompt += "Titles the user DISLIKED (avoid this style/angle):\n"
+                    feedback_prompt += "\n".join(f"- {t}" for t in disliked) + "\n\n"
+
+                # Include all previous titles so the LLM doesn't repeat them
+                all_previous = [r["title"] for r in all_ratings]
+                if all_previous:
+                    feedback_prompt += "DO NOT repeat any of these previous titles:\n"
+                    feedback_prompt += "\n".join(f"- {t}" for t in all_previous) + "\n\n"
+
+                feedback_prompt += (
+                    "Return a JSON object with exactly one key: "
+                    '"titles": [{"title": "...", "probability_of_success": 0.0-1.0}, ...]'
+                )
+
+                try:
+                    data = llm_client.complete_json(feedback_prompt, temperature=0.7)
+                    new_titles = data.get("titles", []) if data else []
+                    if new_titles and isinstance(new_titles, list):
+                        title_choices = [
+                            {
+                                "title": t.get("title", ""),
+                                "probability_of_success": float(t.get("probability_of_success", 0.5)),
+                            }
+                            for t in new_titles
+                            if isinstance(t, dict) and t.get("title")
+                        ]
+                    if not title_choices:
+                        logger.warning("LLM returned no new titles; keeping previous set")
+                        title_choices = [
+                            {"title": tc["title"], "probability_of_success": tc.get("probability_of_success", 0.5)}
+                            for tc in round_ratings
+                            if tc.get("rating") == "like"
+                        ] or title_choices
+                except Exception as e:
+                    logger.warning("Failed to generate new titles: %s; re-presenting current set", e)
+
         except CancelledError:
             raise
         except Exception as e:

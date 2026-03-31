@@ -165,13 +165,20 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
     stop_heartbeat = threading.Event()
 
     def _pipeline_heartbeat() -> None:
-        """Keep last_heartbeat_at fresh during long LLM-heavy phases (no phase callback)."""
+        """Keep last_heartbeat_at fresh and send Temporal heartbeats during long phases."""
         while not stop_heartbeat.wait(30.0):
             if update_blog_job is not None:
                 try:
                     update_blog_job(job_id)
                 except Exception:
                     pass
+            # Send Temporal activity heartbeat if running inside a Temporal activity
+            try:
+                from temporalio import activity as _act
+
+                _act.heartbeat()
+            except Exception:
+                pass
 
     hb_thread: Optional[threading.Thread] = None
     if update_blog_job is not None:

@@ -270,23 +270,57 @@
 
     <!-- Collaboration Cards (only when pipeline is waiting) ────────────── -->
 
-    <!-- Title Selection -->
+    <!-- Title Selection — rate each title as dislike / like / love -->
     @if (selectedJobStatus.waiting_for_title_selection && selectedJobStatus.title_choices.length) {
       <mat-card class="collaboration-card title-selection-card">
         <mat-card-header>
           <mat-icon mat-card-avatar>spellcheck</mat-icon>
-          <mat-card-title>Select a Title</mat-card-title>
-          <mat-card-subtitle>Choose the title that best fits your vision for this post</mat-card-subtitle>
+          <mat-card-title>Rate These Titles</mat-card-title>
+          <mat-card-subtitle>Love a title to select it, or rate them all and we'll generate better options</mat-card-subtitle>
         </mat-card-header>
         <mat-card-content>
           @if (collaborationError) { <app-error-message [message]="collaborationError" /> }
           <div class="title-candidates">
             @for (choice of selectedJobStatus.title_choices; track choice.title) {
-              <button class="title-candidate-btn" mat-stroked-button (click)="selectTitle(choice.title)">
+              <div class="title-rating-row" [class.rated]="getTitleRating(choice.title)">
                 <span class="title-text">{{ choice.title }}</span>
-                <span class="title-prob">{{ (choice.probability_of_success * 100) | number:'1.0-0' }}%</span>
-              </button>
+                <div class="title-rating-buttons">
+                  <button mat-icon-button
+                          [class.rating-active]="getTitleRating(choice.title) === 'dislike'"
+                          class="rating-dislike"
+                          (click)="rateTitle(choice.title, 'dislike')"
+                          matTooltip="Dislike">
+                    <mat-icon>thumb_down</mat-icon>
+                  </button>
+                  <button mat-icon-button
+                          [class.rating-active]="getTitleRating(choice.title) === 'like'"
+                          class="rating-like"
+                          (click)="rateTitle(choice.title, 'like')"
+                          matTooltip="Like">
+                    <mat-icon>thumb_up</mat-icon>
+                  </button>
+                  <button mat-icon-button
+                          [class.rating-active]="getTitleRating(choice.title) === 'love'"
+                          class="rating-love"
+                          (click)="rateTitle(choice.title, 'love')"
+                          matTooltip="Love — use this title">
+                    <mat-icon>favorite</mat-icon>
+                  </button>
+                </div>
+              </div>
             }
+          </div>
+          <div class="title-submit-row">
+            <button mat-raised-button color="primary"
+                    (click)="submitTitleRatings()"
+                    [disabled]="titleRatingSubmitting || !canSubmitTitleRatings()">
+              {{ titleRatingSubmitting ? 'Submitting...' : 'Submit Ratings' }}
+            </button>
+            <span class="title-submit-hint">
+              @if (!canSubmitTitleRatings()) {
+                Rate all titles to continue
+              }
+            </span>
           </div>
         </mat-card-content>
       </mat-card>

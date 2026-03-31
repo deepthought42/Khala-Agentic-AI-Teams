@@ -71,6 +71,7 @@ try:
         submit_blog_answers,
         submit_draft_feedback,
         submit_story_user_message,
+        submit_title_ratings,
         submit_title_selection,
         unapprove_blog_job,
         update_blog_job,
@@ -88,6 +89,7 @@ except ImportError:
     unapprove_blog_job = None
     medium_stats_run_dir = None
     submit_title_selection = None
+    submit_title_ratings = None
     submit_story_user_message = None
     skip_current_story_gap = None
     submit_blog_answers = None
@@ -103,16 +105,25 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-class _HealthCheckFilter(logging.Filter):
-    """Suppress /health access logs unless the logger is at DEBUG level."""
+class _QuietAccessFilter(logging.Filter):
+    """Suppress noisy 200 OK access logs for health checks and polling endpoints.
+
+    Only successful (200) requests to /health, /jobs, and /job/{id} are suppressed.
+    Warnings, errors, and non-200 responses are always logged.
+    """
+
+    _QUIET_PATTERNS = ("/health", "/jobs", "/job/")
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.getMessage().find("/health") != -1:
-            return record.levelno <= logging.DEBUG
+        if record.levelno >= logging.WARNING:
+            return True
+        msg = record.getMessage()
+        if "200" in msg and any(p in msg for p in self._QUIET_PATTERNS):
+            return False
         return True
 
 
-logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+logging.getLogger("uvicorn.access").addFilter(_QuietAccessFilter())
 
 # Base directory for run artifacts (when work_dir is requested).
 # Honour BLOGGING_RUN_ARTIFACTS_ROOT so Docker can mount a persistent volume.
@@ -1111,6 +1122,55 @@ def select_title(job_id: str, request: SelectTitleRequest) -> BlogJobStatusRespo
     updated = get_blog_job(job_id)
     if updated is None:
         raise HTTPException(status_code=500, detail="Job not found after title selection")
+    return _blog_job_dict_to_status_response(updated, job_id)
+
+
+class TitleRatingItem(BaseModel):
+    """A single title rating."""
+
+    title: str
+    rating: str = Field(..., description="One of: dislike, like, love")
+
+
+class RateTitlesRequest(BaseModel):
+    """Request body for title ratings."""
+
+    ratings: List[TitleRatingItem]
+
+
+@app.post(
+    "/job/{job_id}/rate-titles",
+    response_model=BlogJobStatusResponse,
+    summary="Rate title candidates",
+    description=(
+        "Rate each title as dislike, like, or love. "
+        "If any title is loved, it becomes the selected title. "
+        "Otherwise the pipeline generates new candidates based on the feedback."
+    ),
+)
+def rate_titles(job_id: str, request: RateTitlesRequest) -> BlogJobStatusResponse:
+    """Submit title ratings. Love = select that title. Like/Dislike = generate more."""
+    if get_blog_job is None or submit_title_ratings is None:
+        raise HTTPException(status_code=501, detail="Job store not available")
+    job = get_blog_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if not job.get("waiting_for_title_selection"):
+        raise HTTPException(
+            status_code=400, detail="Job is not currently waiting for title selection"
+        )
+    if not request.ratings:
+        raise HTTPException(status_code=422, detail="At least one rating is required")
+    for r in request.ratings:
+        if r.rating not in ("dislike", "like", "love"):
+            raise HTTPException(status_code=422, detail=f"Invalid rating: {r.rating}")
+
+    ratings_dicts = [{"title": r.title, "rating": r.rating} for r in request.ratings]
+    submit_title_ratings(job_id, ratings_dicts)
+
+    updated = get_blog_job(job_id)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Job not found after rating submission")
     return _blog_job_dict_to_status_response(updated, job_id)
 
 

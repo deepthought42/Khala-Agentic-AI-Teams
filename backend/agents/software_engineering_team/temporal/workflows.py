@@ -80,6 +80,57 @@ class RetryFailedWorkflow:
         )
 
 
+@workflow.defn(name="RunTeamWorkflowV2")
+class RunTeamWorkflowV2:
+    """Multi-step orchestration: each pipeline phase is a separate Temporal activity.
+
+    Phases: spec parsing + PRA → Planning V3 → Coding Team execution.
+    Each activity can fail and retry independently.
+    """
+
+    @workflow.run
+    async def run(
+        self,
+        job_id: str,
+        repo_path: str,
+        spec_content_override: Optional[str] = None,
+        resolved_questions_override: Optional[List[Dict[str, Any]]] = None,
+        planning_only: bool = False,
+    ) -> None:
+        # Phase 1: Spec parsing + Product Requirements Analysis
+        spec_result = await workflow.execute_activity(
+            _activities.parse_spec_activity,
+            args=[job_id, repo_path, spec_content_override],
+            task_queue=TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(hours=4),
+            heartbeat_timeout=timedelta(minutes=5),
+            retry_policy=DEFAULT_RETRY_POLICY,
+        )
+
+        # Phase 2: Planning V3
+        plan_result = await workflow.execute_activity(
+            _activities.plan_project_activity,
+            args=[job_id, repo_path, spec_result],
+            task_queue=TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(hours=4),
+            heartbeat_timeout=timedelta(minutes=5),
+            retry_policy=DEFAULT_RETRY_POLICY,
+        )
+
+        if planning_only:
+            return
+
+        # Phase 3: Coding Team execution
+        await workflow.execute_activity(
+            _activities.execute_coding_team_activity,
+            args=[job_id, repo_path, plan_result, resolved_questions_override],
+            task_queue=TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(hours=36),
+            heartbeat_timeout=timedelta(minutes=10),
+            retry_policy=DEFAULT_RETRY_POLICY,
+        )
+
+
 @workflow.defn(name="StandaloneJobWorkflow")
 class StandaloneJobWorkflow:
     """Runs a standalone job (frontend-code-v2, backend-code-v2, planning-v2, product-analysis)."""

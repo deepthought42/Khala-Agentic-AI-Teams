@@ -892,6 +892,72 @@
     margin-top: var(--kh-space-3);
   }
 
+  .title-rating-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--kh-space-3);
+    padding: var(--kh-space-3) var(--kh-space-4);
+    border: 1px solid var(--kh-border);
+    border-radius: var(--kh-radius-md);
+    transition: all var(--kh-transition);
+
+    &.rated {
+      border-color: var(--kh-border-strong);
+    }
+
+    .title-text {
+      flex: 1;
+      word-break: break-word;
+      color: var(--kh-text-primary);
+      font-size: var(--kh-text-sm);
+      line-height: 1.5;
+    }
+
+    .title-rating-buttons {
+      display: flex;
+      gap: var(--kh-space-1);
+      flex-shrink: 0;
+    }
+  }
+
+  .rating-dislike {
+    color: var(--kh-text-muted) !important;
+    &.rating-active {
+      color: var(--kh-error) !important;
+      background: var(--kh-error-subtle) !important;
+    }
+  }
+
+  .rating-like {
+    color: var(--kh-text-muted) !important;
+    &.rating-active {
+      color: var(--kh-accent-text) !important;
+      background: var(--kh-accent-subtle) !important;
+    }
+  }
+
+  .rating-love {
+    color: var(--kh-text-muted) !important;
+    &.rating-active {
+      color: var(--kh-error) !important;
+      background: rgba(239, 68, 68, 0.15) !important;
+    }
+  }
+
+  .title-submit-row {
+    display: flex;
+    align-items: center;
+    gap: var(--kh-space-3);
+    margin-top: var(--kh-space-4);
+
+    .title-submit-hint {
+      font-size: var(--kh-text-xs);
+      color: var(--kh-text-muted);
+    }
+  }
+
+  // Legacy button style (kept for backward compat)
   .title-candidate-btn {
     width: 100%;
     text-align: left;
