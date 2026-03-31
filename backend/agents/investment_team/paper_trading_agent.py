@@ -222,7 +222,7 @@ class PaperTradingAgent:
         open_positions: Dict[str, Dict[str, Any]] = {}  # symbol -> position info
         trades: List[TradeRecord] = []
         decisions: List[Dict[str, Any]] = []
-        cost_pct = (transaction_cost_bps + slippage_bps) / 10_000.0
+        cost_pct = transaction_cost_bps / 10_000.0
         trade_num = 0
         cumulative_pnl = 0.0
 
@@ -322,6 +322,47 @@ class PaperTradingAgent:
 
             if len(trades) >= min_trades:
                 break
+
+        # Force-close any remaining open positions on the last available bar
+        for symbol, pos in list(open_positions.items()):
+            if symbol in symbol_history and symbol_history[symbol]:
+                last_bar = symbol_history[symbol][-1]
+                trade_num += 1
+                exit_price = round(
+                    last_bar.close * (1.0 - slippage_bps / 10_000.0),
+                    4 if last_bar.close < 10 else 2,
+                )
+                gross_pnl = round(pos["shares"] * (exit_price - pos["entry_price"]), 2)
+                if pos["side"] == "short":
+                    gross_pnl = -gross_pnl
+                tx_cost = round(pos["position_value"] * cost_pct * 2, 2)
+                net_pnl = round(gross_pnl - tx_cost, 2)
+                cumulative_pnl = round(cumulative_pnl + net_pnl, 2)
+                return_pct = round((exit_price - pos["entry_price"]) / pos["entry_price"] * 100, 3)
+                if pos["side"] == "short":
+                    return_pct = -return_pct
+                hold_days = self._date_diff_days(pos["entry_date"], last_bar.date)
+                capital += round(pos["shares"] * exit_price, 2)
+
+                trades.append(
+                    TradeRecord(
+                        trade_num=trade_num,
+                        entry_date=pos["entry_date"],
+                        exit_date=last_bar.date,
+                        symbol=symbol,
+                        side=pos["side"],
+                        entry_price=pos["entry_price"],
+                        exit_price=exit_price,
+                        shares=pos["shares"],
+                        position_value=pos["position_value"],
+                        gross_pnl=gross_pnl,
+                        net_pnl=net_pnl,
+                        return_pct=return_pct,
+                        hold_days=hold_days,
+                        outcome="win" if net_pnl > 0 else "loss",
+                        cumulative_pnl=cumulative_pnl,
+                    )
+                )
 
         # Compute session metrics
         session.trades = trades

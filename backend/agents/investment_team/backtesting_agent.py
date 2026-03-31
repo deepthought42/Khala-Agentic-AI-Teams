@@ -112,7 +112,7 @@ class BacktestingAgent:
         Returns (BacktestResult, trade_ledger).
         """
         capital = config.initial_capital
-        cost_pct = (config.transaction_cost_bps + config.slippage_bps) / 10_000.0
+        cost_pct = config.transaction_cost_bps / 10_000.0
         slippage_bps = config.slippage_bps
 
         # Build a unified timeline: merge all symbols' bars sorted by date

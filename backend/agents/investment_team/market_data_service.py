@@ -103,22 +103,45 @@ class MarketDataService:
         return bars
 
     def _fetch_crypto(self, symbol: str, start_date: str, end_date: str) -> List[OHLCVBar]:
-        """Fetch crypto OHLCV data via CoinGecko free API for a date range."""
+        """Fetch crypto OHLCV data via CoinGecko free API for an arbitrary date range.
+
+        Uses the ``/coins/{id}/market_chart/range`` endpoint with Unix timestamps
+        so that historical windows (e.g. 2021-2024) work correctly, unlike the
+        ``/ohlc`` endpoint which only returns the most recent N days.
+        """
         coin_id = _COINGECKO_IDS.get(symbol.upper())
         if not coin_id:
             logger.warning("Unknown crypto symbol %s — no CoinGecko mapping", symbol)
             return []
 
-        # CoinGecko OHLC endpoint uses days param; compute from date range
         try:
             start_dt = date.fromisoformat(start_date)
             end_dt = date.fromisoformat(end_date)
-            days = max(1, (end_dt - start_dt).days)
         except ValueError:
-            days = 365
+            logger.error("Invalid date range for crypto fetch: %s - %s", start_date, end_date)
+            return []
 
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-        params = {"vs_currency": "usd", "days": str(min(days, 365))}
+        # Convert to Unix timestamps (start of day UTC)
+        import calendar
+        from datetime import datetime, timezone
+
+        start_ts = int(
+            calendar.timegm(
+                datetime(
+                    start_dt.year, start_dt.month, start_dt.day, tzinfo=timezone.utc
+                ).timetuple()
+            )
+        )
+        end_ts = int(
+            calendar.timegm(
+                datetime(
+                    end_dt.year, end_dt.month, end_dt.day, 23, 59, 59, tzinfo=timezone.utc
+                ).timetuple()
+            )
+        )
+
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+        params = {"vs_currency": "usd", "from": str(start_ts), "to": str(end_ts)}
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
@@ -129,27 +152,28 @@ class MarketDataService:
             logger.error("CoinGecko fetch failed for %s: %s", symbol, exc)
             return []
 
-        if not isinstance(raw, list):
+        if not isinstance(raw, dict) or "prices" not in raw:
             logger.warning("Unexpected CoinGecko response for %s", symbol)
             return []
 
-        bars: List[OHLCVBar] = []
-        for entry in raw:
-            if len(entry) < 5:
-                continue
-            ts_ms, o, h, l_, c = entry[0], entry[1], entry[2], entry[3], entry[4]
+        # market_chart/range returns {prices: [[ts, price], ...], ...}
+        # Group by date to build daily OHLCV bars from the price points
+        daily: Dict[str, List[float]] = {}
+        for ts_ms, price in raw.get("prices", []):
             bar_date = date.fromtimestamp(ts_ms / 1000).isoformat()
-            # Filter to requested date range
-            if bar_date < start_date or bar_date > end_date:
-                continue
+            daily.setdefault(bar_date, []).append(float(price))
+
+        bars: List[OHLCVBar] = []
+        for bar_date in sorted(daily):
+            prices = daily[bar_date]
             bars.append(
                 OHLCVBar(
                     date=bar_date,
-                    open=round(float(o), 4),
-                    high=round(float(h), 4),
-                    low=round(float(l_), 4),
-                    close=round(float(c), 4),
-                    volume=0.0,  # CoinGecko OHLC endpoint doesn't include volume
+                    open=round(prices[0], 4),
+                    high=round(max(prices), 4),
+                    low=round(min(prices), 4),
+                    close=round(prices[-1], 4),
+                    volume=0.0,  # market_chart/range doesn't provide volume per bar
                 )
             )
         return bars
