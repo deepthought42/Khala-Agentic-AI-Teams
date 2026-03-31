@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -36,6 +36,8 @@ from investment_team.models import (
     InvestmentProfile,
     LiquidityNeeds,
     NetWorth,
+    PaperTradingSession,
+    PaperTradingVerdict,
     PortfolioConstraints,
     PortfolioPosition,
     PortfolioProposal,
@@ -129,6 +131,7 @@ _strategies: _PersistentDict = _PersistentDict("strategies")
 _validations: _PersistentDict = _PersistentDict("validations")
 _backtests: _PersistentDict = _PersistentDict("backtests")
 _strategy_lab_records: _PersistentDict = _PersistentDict("strategy_lab_records")
+_paper_trading_sessions: _PersistentDict = _PersistentDict("paper_trading_sessions")
 _advisor_sessions: _PersistentDict = _PersistentDict("advisor_sessions")
 
 _advisor_agent = FinancialAdvisorAgent()
@@ -580,40 +583,15 @@ def validate_strategy(
 
 @app.post("/backtests", response_model=RunBacktestResponse)
 def run_backtest(request: RunBacktestRequest) -> RunBacktestResponse:
-    """Run a deterministic backtest simulation and store the result."""
+    """Run a backtest using real historical market data and LLM-driven trade decisions."""
     with _lock:
         strategy = _strategies.get(request.strategy_id)
 
     if not strategy:
         raise HTTPException(status_code=404, detail=f"Strategy {request.strategy_id} not found")
 
-    def _calc(base: float, factor: float, floor: float = 0.0) -> float:
-        value = round(base + factor, 2)
-        return value if value >= floor else floor
+    strategy = StrategySpec(**strategy) if isinstance(strategy, dict) else strategy
 
-    strategy_signal_score = (
-        len(strategy.entry_rules)
-        + len(strategy.exit_rules)
-        + len(strategy.sizing_rules)
-        + (1 if strategy.speculative else 0)
-    )
-    period_span = max(len(request.start_date) + len(request.end_date), 1)
-
-    total_return = _calc(
-        6.0, (strategy_signal_score % 11) * 0.9 - request.transaction_cost_bps * 0.03, -95.0
-    )
-    annualized_return = _calc(4.0, total_return * 0.35 - request.slippage_bps * 0.02, -95.0)
-    volatility = _calc(10.0, (strategy_signal_score % 7) * 1.4 + (period_span % 5) * 0.7, 0.1)
-    sharpe = round(annualized_return / volatility if volatility else 0.0, 2)
-    max_drawdown = _calc(8.0, (strategy_signal_score % 5) * 1.8 + request.slippage_bps * 0.1, 0.0)
-    win_rate = _calc(
-        45.0, (strategy_signal_score % 9) * 2.2 - request.transaction_cost_bps * 0.1, 1.0
-    )
-    profit_factor = round(
-        max(1.01, 1.05 + (strategy_signal_score % 6) * 0.08 - request.slippage_bps * 0.01), 2
-    )
-
-    backtest_id = f"bt-{uuid.uuid4().hex[:8]}"
     config = BacktestConfig(
         start_date=request.start_date,
         end_date=request.end_date,
@@ -623,15 +601,16 @@ def run_backtest(request: RunBacktestRequest) -> RunBacktestResponse:
         transaction_cost_bps=request.transaction_cost_bps,
         slippage_bps=request.slippage_bps,
     )
-    result = BacktestResult(
-        total_return_pct=total_return,
-        annualized_return_pct=annualized_return,
-        volatility_pct=volatility,
-        sharpe_ratio=sharpe,
-        max_drawdown_pct=max_drawdown,
-        win_rate_pct=win_rate,
-        profit_factor=profit_factor,
-    )
+
+    try:
+        result, trades = _run_real_data_backtest(strategy, config)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Backtest failed for strategy %s: %s", request.strategy_id, exc)
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}") from exc
+
+    backtest_id = f"bt-{uuid.uuid4().hex[:8]}"
     now = _now()
     record = BacktestRecord(
         backtest_id=backtest_id,
@@ -643,6 +622,7 @@ def run_backtest(request: RunBacktestRequest) -> RunBacktestResponse:
         completed_at=now,
         result=result,
         notes=request.notes,
+        trades=trades,
     )
 
     with _lock:
@@ -750,287 +730,50 @@ def create_memo(request: CreateMemoRequest) -> CreateMemoResponse:
 # ---------------------------------------------------------------------------
 
 
-_STOCK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "JPM", "AMD", "SPY"]
-_CRYPTO_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "MATIC", "AVAX", "LINK", "ADA", "DOT"]
-_OTHER_SYMBOLS = ["GLD", "USO", "TLT", "VIX", "QQQ", "IWM", "EEM", "GDX", "XLE", "XLF"]
-_FOREX_SYMBOLS = [
-    "EURUSD",
-    "GBPUSD",
-    "USDJPY",
-    "AUDUSD",
-    "USDCAD",
-    "NZDUSD",
-    "USDCHF",
-    "EURGBP",
-    "EURJPY",
-    "GBPJPY",
-]
-_FUTURES_SYMBOLS = ["ES", "NQ", "CL", "GC", "SI", "ZB", "6E", "NG", "ZM", "ZS"]
-
-_SYMBOL_BASE_PRICES = {
-    "AAPL": 170,
-    "MSFT": 380,
-    "NVDA": 490,
-    "TSLA": 240,
-    "AMZN": 180,
-    "META": 490,
-    "GOOGL": 170,
-    "JPM": 190,
-    "AMD": 170,
-    "SPY": 480,
-    "BTC": 42000,
-    "ETH": 2500,
-    "SOL": 105,
-    "BNB": 380,
-    "XRP": 0.60,
-    "MATIC": 0.90,
-    "AVAX": 38,
-    "LINK": 18,
-    "ADA": 0.55,
-    "DOT": 8,
-    "GLD": 190,
-    "USO": 75,
-    "TLT": 95,
-    "VIX": 18,
-    "QQQ": 425,
-    "IWM": 200,
-    "EEM": 40,
-    "GDX": 29,
-    "XLE": 92,
-    "XLF": 40,
-    "EURUSD": 1.085,
-    "GBPUSD": 1.265,
-    "USDJPY": 149.5,
-    "AUDUSD": 0.655,
-    "USDCAD": 1.355,
-    "NZDUSD": 0.595,
-    "USDCHF": 0.885,
-    "EURGBP": 0.855,
-    "EURJPY": 162.0,
-    "GBPJPY": 189.0,
-    "ES": 5200.0,
-    "NQ": 18200.0,
-    "CL": 78.0,
-    "GC": 2350.0,
-    "SI": 28.5,
-    "ZB": 118.0,
-    "6E": 1.085,
-    "NG": 2.35,
-    "ZM": 440.0,
-    "ZS": 1180.0,
-}
-
-
-def _lcg(seed: int) -> int:
-    """One step of a linear congruential generator — fast deterministic pseudo-random."""
-    return (seed * 1664525 + 1013904223) & 0xFFFFFFFF
-
-
-def _generate_trade_ledger(
-    strategy: StrategySpec,
-    config: BacktestConfig,
-    result: BacktestResult,
-) -> List[TradeRecord]:
-    """
-    Generate a deterministic per-trade ledger consistent with the summary BacktestResult.
-
-    All values are derived from the strategy hash, so the same strategy always
-    produces the same trade list.  No randomness — fully reproducible.
-    """
-    strat_hash = int(
-        hashlib.md5((strategy.hypothesis + strategy.signal_definition).encode()).hexdigest()[:8],
-        16,
-    )
-
-    # Symbol universe based on asset class
-    asset = strategy.asset_class.lower()
-    if asset in ("equities", "equity", "stock"):
-        asset = "stocks"
-    if asset in ("fx",):
-        asset = "forex"
-    if asset == "crypto":
-        symbols = _CRYPTO_SYMBOLS
-    elif asset in ("stocks",):
-        symbols = _STOCK_SYMBOLS
-    elif asset in ("forex",):
-        symbols = _FOREX_SYMBOLS
-    elif asset == "futures":
-        symbols = _FUTURES_SYMBOLS
-    elif asset == "options":
-        symbols = _STOCK_SYMBOLS
-    elif asset in ("commodities",):
-        symbols = _OTHER_SYMBOLS
-    else:
-        symbols = _OTHER_SYMBOLS
-
-    # Date range
-    try:
-        start_dt = date.fromisoformat(config.start_date)
-        end_dt = date.fromisoformat(config.end_date)
-    except ValueError:
-        start_dt = date(2021, 1, 1)
-        end_dt = date(2024, 12, 31)
-
-    total_days = max((end_dt - start_dt).days, 1)
-
-    # Trade count: ~50-80 trades/year for swing trading
-    trades_per_year = 50 + (strat_hash % 31)  # 50-80
-    num_trades = max(10, min(200, int(total_days / 365.25 * trades_per_year)))
-
-    # Position size: 5-10% of capital per trade
-    position_pct = 0.05 + (strat_hash % 6) * 0.01  # 5-10%
-    position_value_base = config.initial_capital * position_pct
-    cost_pct = (config.transaction_cost_bps + config.slippage_bps) / 10000.0
-
-    win_rate_dec = result.win_rate_pct / 100.0
-    # Derive average win/loss magnitudes that are consistent with profit_factor & win_rate
-    # profit_factor = (avg_win × win_rate) / (avg_loss × loss_rate)
-    loss_rate = 1.0 - win_rate_dec
-    avg_loss_pct = 1.8 + (strat_hash % 15) * 0.12  # 1.8% to 3.5%
-    if loss_rate > 0:
-        avg_win_pct = result.profit_factor * avg_loss_pct * loss_rate / win_rate_dec
-    else:
-        avg_win_pct = avg_loss_pct * result.profit_factor
-
-    trades: List[TradeRecord] = []
-    cumulative_pnl = 0.0
-    seed = strat_hash
-
-    for i in range(num_trades):
-        seed = _lcg(seed)
-        s2 = _lcg(seed)
-        s3 = _lcg(s2)
-        s4 = _lcg(s3)
-
-        # Entry date — evenly spaced with small jitter
-        base_offset = int(total_days * i / num_trades)
-        jitter = (seed % 5) - 2  # -2 to +2 days
-        entry_offset = max(0, min(total_days - 2, base_offset + jitter))
-        entry_dt = start_dt + timedelta(days=entry_offset)
-
-        # Hold period: 2–13 days
-        hold_days = 2 + (s2 % 12)
-        exit_dt = entry_dt + timedelta(days=hold_days)
-        if exit_dt >= end_dt:
-            exit_dt = end_dt - timedelta(days=1)
-            hold_days = max(1, (exit_dt - entry_dt).days)
-
-        # Symbol selection
-        symbol = symbols[s3 % len(symbols)]
-        base_price = _SYMBOL_BASE_PRICES.get(symbol, 100.0)
-
-        # Entry price: small variation around base (±15%)
-        price_jitter = (s4 % 301 - 150) / 1000.0  # -15% to +15%
-        entry_price = round(base_price * (1.0 + price_jitter), 2 if base_price >= 1 else 6)
-
-        # Win or loss — use modular position within win-rate bands
-        is_win = (seed % 100) < result.win_rate_pct
-
-        # Return magnitude for this trade (varies around average ±40%)
-        mag_var = 1.0 + ((s2 % 81 - 40) / 100.0)  # 0.6× to 1.4× the average
-        if is_win:
-            trade_return_pct = round(avg_win_pct * mag_var, 3)
-        else:
-            trade_return_pct = round(-avg_loss_pct * mag_var, 3)
-
-        exit_price = round(
-            entry_price * (1.0 + trade_return_pct / 100.0), 2 if base_price >= 1 else 6
-        )
-        shares = round(position_value_base / entry_price, 4 if base_price < 10 else 2)
-        position_value = round(entry_price * shares, 2)
-        gross_pnl = round(shares * (exit_price - entry_price), 2)
-        transaction_cost = round(position_value * cost_pct * 2, 2)  # entry + exit
-        net_pnl = round(gross_pnl - transaction_cost, 2)
-        cumulative_pnl = round(cumulative_pnl + net_pnl, 2)
-
-        trades.append(
-            TradeRecord(
-                trade_num=i + 1,
-                entry_date=entry_dt.isoformat(),
-                exit_date=exit_dt.isoformat(),
-                symbol=symbol,
-                side="long",
-                entry_price=entry_price,
-                exit_price=exit_price,
-                shares=shares,
-                position_value=position_value,
-                gross_pnl=gross_pnl,
-                net_pnl=net_pnl,
-                return_pct=trade_return_pct,
-                hold_days=hold_days,
-                outcome="win" if is_win else "loss",
-                cumulative_pnl=cumulative_pnl,
-            )
-        )
-
-    return trades
-
-
-def _strategy_lab_backtest(
+def _run_real_data_backtest(
     strategy: StrategySpec,
     config: BacktestConfig,
 ) -> tuple[BacktestResult, List[TradeRecord]]:
     """
-    Content-aware deterministic backtest for the strategy lab.
+    Run a backtest using real historical market data and LLM-driven trade decisions.
 
-    Returns (BacktestResult, trade_ledger).  Uses a hash of
-    (hypothesis + signal_definition) for reproducible variance across strategies.
+    Fetches OHLCV data from Yahoo Finance (stocks/ETFs) or CoinGecko (crypto)
+    for the backtest period, then walks through bars chronologically with the LLM
+    interpreting the strategy's entry/exit rules to decide trades.
+
+    Returns (BacktestResult, trade_ledger).
     """
-    strat_hash = int(
-        hashlib.md5((strategy.hypothesis + strategy.signal_definition).encode()).hexdigest()[:8],
-        16,
+    # Lazy imports: yfinance is slow to import and the LLM client has side-effects;
+    # deferring keeps application startup fast and avoids loading these until needed.
+    from investment_team.backtesting_agent import BacktestingAgent
+    from investment_team.market_data_service import MarketDataService
+    from llm_service.factory import get_client
+
+    market_service = MarketDataService()
+    symbols = market_service.get_symbols_for_strategy(strategy)
+    # Use top 5 symbols to keep data fetching reasonable
+    symbols = symbols[:5]
+
+    logger.info(
+        "Fetching historical data for %s backtest (%s to %s, %d symbols)...",
+        strategy.asset_class,
+        config.start_date,
+        config.end_date,
+        len(symbols),
+    )
+    market_data = market_service.fetch_multi_symbol_range(
+        symbols, strategy.asset_class, config.start_date, config.end_date
     )
 
-    signal_score = (
-        len(strategy.entry_rules)
-        + len(strategy.exit_rules)
-        + len(strategy.sizing_rules)
-        + (1 if strategy.speculative else 0)
-    )
+    if not market_data:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to fetch historical market data. Please check the date range and try again.",
+        )
 
-    ac = strategy.asset_class.lower()
-    if ac in ("equities", "equity", "stock"):
-        ac = "stocks"
-    if ac in ("fx",):
-        ac = "forex"
-    asset_class_base = {
-        "crypto": 5.5,
-        "stocks": 3.5,
-        "options": 4.5,
-        "forex": 2.5,
-        "commodities": 2.0,
-        "futures": 3.2,
-    }.get(ac, 3.5)
-
-    # hash_factor in range -8.0 to +12.0 (asymmetric — harder to win)
-    hash_factor = (strat_hash % 201 - 80) / 10.0
-    rule_bonus = (signal_score % 6) * 0.7  # 0 to 3.5
-
-    annualized_return = round(
-        asset_class_base + hash_factor + rule_bonus - config.slippage_bps * 0.02,
-        2,
-    )
-    total_return = round(annualized_return * 2.5, 2)
-    volatility = round(12.0 + (strat_hash % 15) * 0.8, 2)
-    sharpe = round(annualized_return / volatility if volatility > 0 else 0.0, 2)
-    max_drawdown = round(10.0 + (strat_hash % 20) * 0.9, 2)
-    win_rate = round(
-        max(20.0, 48.0 + (strat_hash % 25) * 0.6 - config.transaction_cost_bps * 0.1),
-        2,
-    )
-    profit_factor = round(max(0.80, 1.0 + annualized_return * 0.05), 2)
-
-    result = BacktestResult(
-        total_return_pct=total_return,
-        annualized_return_pct=annualized_return,
-        volatility_pct=volatility,
-        sharpe_ratio=sharpe,
-        max_drawdown_pct=max_drawdown,
-        win_rate_pct=win_rate,
-        profit_factor=profit_factor,
-    )
-    trades = _generate_trade_ledger(strategy, config, result)
-    return result, trades
+    llm = get_client("backtesting")
+    agent = BacktestingAgent(llm_client=llm)
+    return agent.run_backtest(strategy, config, market_data)
 
 
 class RunStrategyLabRequest(BaseModel):
@@ -1115,7 +858,7 @@ def _run_one_strategy_lab_cycle(
         speculative=bool(strategy_data.get("speculative", False)),
     )
 
-    result, trades = _strategy_lab_backtest(strategy, config)
+    result, trades = _run_real_data_backtest(strategy, config)
 
     now = _now()
     backtest_id = f"bt-lab-{uuid.uuid4().hex[:8]}"
@@ -1241,9 +984,7 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
                 "market_snapshot_hash": hashlib.sha256(prov_text.encode()).hexdigest()[:16],
                 "market_fetched_at": market_ctx.fetched_at,
                 "market_degraded": market_ctx.degraded,
-                "duration_ms": int(
-                    (datetime.now(tz=timezone.utc) - t0).total_seconds() * 1000
-                ),
+                "duration_ms": int((datetime.now(tz=timezone.utc) - t0).total_seconds() * 1000),
             }
             logger.info(
                 "signal_intelligence brief_version=%s len=%s degraded_market=%s",
@@ -1318,6 +1059,192 @@ def get_strategy_lab_results(winning: Optional[bool] = None) -> StrategyLabResul
         winning_count=winning_count,
         losing_count=losing_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading — simulated live trading with real market data
+# ---------------------------------------------------------------------------
+
+
+class RunPaperTradingRequest(BaseModel):
+    """Start a paper trading session for a winning strategy."""
+
+    lab_record_id: str = Field(..., description="ID of a winning StrategyLabRecord to paper trade")
+    initial_capital: float = Field(default=100000.0, gt=0)
+    transaction_cost_bps: float = Field(default=5.0, ge=0)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    min_trades: int = Field(default=50, ge=10, description="Minimum trades before evaluation")
+    lookback_days: int = Field(default=365, ge=30, description="Days of historical data to fetch")
+    max_evaluations: int = Field(
+        default=5000,
+        ge=100,
+        le=50000,
+        description="Cap on LLM evaluations to bound execution time.",
+    )
+
+
+class PaperTradingResponse(BaseModel):
+    session: PaperTradingSession
+    message: str = "Paper trading session completed."
+
+
+class PaperTradingResultsResponse(BaseModel):
+    items: List[PaperTradingSession] = Field(default_factory=list)
+    count: int = 0
+    ready_for_live_count: int = 0
+    not_performant_count: int = 0
+
+
+@app.post("/strategy-lab/paper-trade", response_model=PaperTradingResponse)
+def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
+    """
+    Run a paper trading session for a winning strategy using real market data.
+
+    Fetches live price data, uses the LLM to interpret the strategy's entry/exit rules
+    against each bar, simulates trade execution, and compares performance to the backtest.
+    Strategies that align with backtest expectations are flagged as ready for live testing.
+    Underperforming strategies receive a detailed divergence analysis.
+    """
+    from investment_team.market_data_service import MarketDataService
+    from investment_team.paper_trading_agent import PaperTradingAgent
+    from llm_service.factory import get_client
+
+    # 1 — Look up the winning strategy lab record
+    with _lock:
+        raw_record = _strategy_lab_records.get(request.lab_record_id)
+
+    if raw_record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Strategy lab record '{request.lab_record_id}' not found."
+        )
+
+    lab_record = StrategyLabRecord(**raw_record) if isinstance(raw_record, dict) else raw_record
+
+    if not lab_record.is_winning:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Strategy '{request.lab_record_id}' is not a winning strategy. "
+            "Only winning strategies (>8% annualized return) can be paper traded.",
+        )
+
+    strategy = lab_record.strategy
+    backtest_record = lab_record.backtest
+
+    # 2 — Fetch real market data
+    market_service = MarketDataService()
+    symbols = market_service.get_symbols_for_strategy(strategy)
+    # Use a subset of symbols (top 5) to keep data fetching reasonable
+    symbols = symbols[:5]
+
+    logger.info(
+        "Fetching %d days of market data for %d symbols (%s) ...",
+        request.lookback_days,
+        len(symbols),
+        strategy.asset_class,
+    )
+    market_data = market_service.fetch_multi_symbol(
+        symbols, strategy.asset_class, request.lookback_days
+    )
+
+    if not market_data:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to fetch market data from external sources. Please try again later.",
+        )
+
+    # 3 — Run paper trading session
+    # Lazy imports: yfinance and LLM client are heavy; deferring keeps app startup fast.
+    llm = get_client("paper_trading")
+    agent = PaperTradingAgent(llm_client=llm)
+
+    try:
+        session = agent.run_session(
+            strategy=strategy,
+            backtest_record=backtest_record,
+            market_data=market_data,
+            initial_capital=request.initial_capital,
+            transaction_cost_bps=request.transaction_cost_bps,
+            slippage_bps=request.slippage_bps,
+            min_trades=request.min_trades,
+        )
+    except Exception as exc:
+        logger.error("Paper trading session failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Paper trading session failed: {exc}") from exc
+
+    session.lab_record_id = request.lab_record_id
+
+    # 4 — Persist the session
+    with _lock:
+        _paper_trading_sessions[session.session_id] = session
+
+    # 5 — Build response message (include a warning when min_trades was not reached)
+    trade_count = len(session.trades)
+    shortfall = ""
+    if trade_count < request.min_trades:
+        shortfall = (
+            f" WARNING: Only {trade_count}/{request.min_trades} trades were completed "
+            f"(insufficient data or evaluation budget). Results may be unreliable."
+        )
+
+    if session.verdict == PaperTradingVerdict.READY_FOR_LIVE:
+        message = (
+            f"Paper trading completed with {trade_count} trades. "
+            f"Performance aligns with backtest expectations — strategy is READY FOR LIVE TESTING."
+            f"{shortfall}"
+        )
+    elif session.verdict == PaperTradingVerdict.NOT_PERFORMANT:
+        message = (
+            f"Paper trading completed with {trade_count} trades. "
+            f"Performance does NOT align with backtest expectations — strategy is NOT PERFORMANT "
+            f"with live data. See divergence_analysis for details.{shortfall}"
+        )
+    else:
+        message = f"Paper trading completed with {trade_count} trades.{shortfall}"
+
+    return PaperTradingResponse(session=session, message=message)
+
+
+@app.get("/strategy-lab/paper-trade/results", response_model=PaperTradingResultsResponse)
+def get_paper_trading_results(
+    verdict: Optional[str] = None,
+) -> PaperTradingResultsResponse:
+    """
+    Return all paper trading sessions, sorted newest-first.
+    Filter by verdict with ?verdict=ready_for_live or ?verdict=not_performant.
+    """
+    with _lock:
+        raw = list(_paper_trading_sessions.values())
+
+    items = [PaperTradingSession(**r) if isinstance(r, dict) else r for r in raw]
+    items.sort(key=lambda s: s.completed_at or s.started_at, reverse=True)
+
+    ready_count = sum(1 for s in items if s.verdict == PaperTradingVerdict.READY_FOR_LIVE)
+    not_perf_count = sum(1 for s in items if s.verdict == PaperTradingVerdict.NOT_PERFORMANT)
+
+    if verdict is not None:
+        items = [s for s in items if s.verdict and s.verdict.value == verdict]
+
+    return PaperTradingResultsResponse(
+        items=items,
+        count=len(items),
+        ready_for_live_count=ready_count,
+        not_performant_count=not_perf_count,
+    )
+
+
+@app.get("/strategy-lab/paper-trade/{session_id}", response_model=PaperTradingResponse)
+def get_paper_trading_session(session_id: str) -> PaperTradingResponse:
+    """Return a specific paper trading session by ID."""
+    with _lock:
+        raw = _paper_trading_sessions.get(session_id)
+
+    if raw is None:
+        raise HTTPException(
+            status_code=404, detail=f"Paper trading session '{session_id}' not found."
+        )
+
+    session = PaperTradingSession(**raw) if isinstance(raw, dict) else raw
+    return PaperTradingResponse(session=session)
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from agents.investment_team.models import (
     SavingsRate,
     StrategySpec,
     TaxProfile,
+    TradeRecord,
     UserGoal,
     UserPreferences,
     ValidationCheck,
@@ -570,6 +571,580 @@ def test_agent_catalog_includes_financial_advisor() -> None:
     from agents.investment_team.agent_catalog import CORE_AGENTS
 
     assert any(agent.name == "Financial Advisor Agent" for agent in CORE_AGENTS)
+
+
+# ---------------------------------------------------------------------------
+# Trade Simulator (shared engine) tests
+# ---------------------------------------------------------------------------
+
+
+def test_date_diff_days() -> None:
+    from agents.investment_team.trade_simulator import date_diff_days
+
+    assert date_diff_days("2023-01-01", "2023-12-31") == 364
+    assert date_diff_days("2026-01-01", "2026-01-08") == 7
+    assert date_diff_days("2026-01-01", "2026-01-01") == 1
+    assert date_diff_days("invalid", "invalid") == 1
+
+
+def test_compute_metrics_from_trades() -> None:
+    from agents.investment_team.trade_simulator import compute_metrics
+
+    trades = [
+        TradeRecord(
+            trade_num=1,
+            entry_date="2026-01-05",
+            exit_date="2026-01-12",
+            symbol="AAPL",
+            side="long",
+            entry_price=170.0,
+            exit_price=178.0,
+            shares=50,
+            position_value=8500.0,
+            gross_pnl=400.0,
+            net_pnl=390.0,
+            return_pct=4.71,
+            hold_days=7,
+            outcome="win",
+            cumulative_pnl=390.0,
+        ),
+        TradeRecord(
+            trade_num=2,
+            entry_date="2026-01-15",
+            exit_date="2026-01-22",
+            symbol="MSFT",
+            side="long",
+            entry_price=380.0,
+            exit_price=370.0,
+            shares=20,
+            position_value=7600.0,
+            gross_pnl=-200.0,
+            net_pnl=-210.0,
+            return_pct=-2.63,
+            hold_days=7,
+            outcome="loss",
+            cumulative_pnl=180.0,
+        ),
+        TradeRecord(
+            trade_num=3,
+            entry_date="2026-01-25",
+            exit_date="2026-02-01",
+            symbol="AAPL",
+            side="long",
+            entry_price=175.0,
+            exit_price=182.0,
+            shares=50,
+            position_value=8750.0,
+            gross_pnl=350.0,
+            net_pnl=340.0,
+            return_pct=4.0,
+            hold_days=7,
+            outcome="win",
+            cumulative_pnl=520.0,
+        ),
+    ]
+
+    result = compute_metrics(trades, 100000.0, "2026-01-05", "2026-02-01")
+
+    assert result.win_rate_pct == pytest.approx(66.67, abs=0.1)
+    assert result.total_return_pct == pytest.approx(0.52, abs=0.01)
+    assert result.profit_factor > 1.0
+    assert result.max_drawdown_pct >= 0.0
+
+
+def test_compute_metrics_empty_trades() -> None:
+    from agents.investment_team.trade_simulator import compute_metrics
+
+    result = compute_metrics([], 100000.0, "2023-01-01", "2023-12-31")
+
+    assert result.total_return_pct == 0.0
+    assert result.win_rate_pct == 0.0
+    assert result.sharpe_ratio == 0.0
+
+
+def test_compute_metrics_uses_cagr() -> None:
+    """Verify annualized return uses CAGR, not linear scaling."""
+    from agents.investment_team.trade_simulator import compute_metrics
+
+    # 25% total return over 2.5 years → CAGR ≈ 9.54%, not 10%
+    trades = [
+        TradeRecord(
+            trade_num=1,
+            entry_date="2021-01-01",
+            exit_date="2023-07-01",
+            symbol="SPY",
+            side="long",
+            entry_price=100.0,
+            exit_price=125.0,
+            shares=1000,
+            position_value=100000.0,
+            gross_pnl=25000.0,
+            net_pnl=25000.0,
+            return_pct=25.0,
+            hold_days=912,
+            outcome="win",
+            cumulative_pnl=25000.0,
+        ),
+    ]
+
+    result = compute_metrics(trades, 100000.0, "2021-01-01", "2023-07-01")
+
+    # CAGR for 25% over ~2.5 years should be ~9.5%, NOT 10%
+    assert result.annualized_return_pct < 10.0
+    assert result.annualized_return_pct > 9.0
+
+
+# ---------------------------------------------------------------------------
+# Trade Simulation Engine tests
+# ---------------------------------------------------------------------------
+
+
+def test_simulation_engine_force_closes_open_positions() -> None:
+    """Verify the engine force-closes positions when data runs out."""
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    bars = [
+        OHLCVBar(date="2023-01-01", open=100.0, high=105.0, low=99.0, close=103.0, volume=1e6),
+        OHLCVBar(date="2023-01-02", open=103.0, high=108.0, low=102.0, close=106.0, volume=1e6),
+        OHLCVBar(date="2023-01-03", open=106.0, high=110.0, low=104.0, close=108.0, volume=1e6),
+    ]
+    market_data = {"TEST": bars}
+
+    call_count = 0
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        nonlocal call_count
+        call_count += 1
+        # Enter on first bar, never exit
+        if position is None and call_count == 1:
+            return {"action": "enter_long", "confidence": 0.8, "shares": 10, "reasoning": "test"}
+        return {"action": "hold", "confidence": 0.5, "shares": 0, "reasoning": "hold"}
+
+    engine = TradeSimulationEngine(
+        initial_capital=100_000.0,
+        transaction_cost_bps=5.0,
+        slippage_bps=2.0,
+        min_history_bars=1,
+        pre_filter_pct=0.0,  # disable pre-filter for deterministic test
+    )
+    result = engine.run(market_data, fake_evaluate)
+
+    assert result.forced_close_count == 1
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_date == "2023-01-03"
+    assert result.trades[0].symbol == "TEST"
+
+
+def test_simulation_engine_respects_max_trades() -> None:
+    """Verify the engine stops after max_trades completed trades."""
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    # Generate enough bars for several trades
+    bars = []
+    for i in range(20):
+        price = 100.0 + i * 0.5
+        bars.append(
+            OHLCVBar(
+                date=f"2023-01-{i + 1:02d}",
+                open=price,
+                high=price + 2,
+                low=price - 1,
+                close=price + 1,
+                volume=1e6,
+            )
+        )
+
+    call_count = 0
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        nonlocal call_count
+        call_count += 1
+        # Alternate: enter then exit
+        if position is None:
+            return {"action": "enter_long", "confidence": 0.8, "shares": 5, "reasoning": "enter"}
+        return {"action": "exit", "confidence": 0.8, "shares": 0, "reasoning": "exit"}
+
+    engine = TradeSimulationEngine(
+        initial_capital=100_000.0, min_history_bars=1, pre_filter_pct=0.0
+    )
+    result = engine.run({"SYM": bars}, fake_evaluate, max_trades=3)
+
+    assert len(result.trades) == 3
+
+
+def test_simulation_engine_respects_max_evaluations() -> None:
+    """Verify the engine stops after max_evaluations LLM calls."""
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    bars = [
+        OHLCVBar(
+            date=f"2023-01-{i + 1:02d}", open=100.0, high=105.0, low=95.0, close=100.0, volume=1e6
+        )
+        for i in range(50)
+    ]
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        return {"action": "hold", "confidence": 0.0, "shares": 0, "reasoning": "hold"}
+
+    engine = TradeSimulationEngine(
+        initial_capital=100_000.0,
+        min_history_bars=1,
+        pre_filter_pct=0.0,
+        max_evaluations=10,
+    )
+    result = engine.run({"SYM": bars}, fake_evaluate)
+
+    assert result.evaluations_performed == 10
+
+
+def test_simulation_engine_pre_filter_skips_quiet_bars() -> None:
+    """Verify pre-filter skips bars when price hasn't moved significantly."""
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    # All bars at exactly the same price — no movement
+    bars = [
+        OHLCVBar(
+            date=f"2023-01-{i + 1:02d}", open=100.0, high=100.0, low=100.0, close=100.0, volume=1e6
+        )
+        for i in range(20)
+    ]
+
+    eval_count = 0
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        nonlocal eval_count
+        eval_count += 1
+        return {"action": "hold", "confidence": 0.0, "shares": 0, "reasoning": "hold"}
+
+    engine = TradeSimulationEngine(
+        initial_capital=100_000.0,
+        min_history_bars=5,
+        pre_filter_pct=1.0,  # require 1% move
+    )
+    result = engine.run({"SYM": bars}, fake_evaluate)
+
+    # All bars are flat, so all should be skipped after the warm-up period
+    assert result.bars_skipped_by_filter > 0
+    assert eval_count == 0
+
+
+def test_simulation_engine_records_decisions() -> None:
+    """Verify decisions are recorded when record_decisions=True."""
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    bars = [
+        OHLCVBar(date="2023-01-10", open=100.0, high=120.0, low=80.0, close=110.0, volume=1e6),
+    ]
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        return {"action": "hold", "confidence": 0.5, "shares": 0, "reasoning": "test"}
+
+    engine = TradeSimulationEngine(min_history_bars=1, pre_filter_pct=0.0)
+    result = engine.run({"A": bars}, fake_evaluate, record_decisions=True)
+
+    assert len(result.decisions) == 1
+    assert result.decisions[0]["symbol"] == "A"
+
+    result_no_record = engine.run({"A": bars}, fake_evaluate, record_decisions=False)
+    assert len(result_no_record.decisions) == 0
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading tests
+# ---------------------------------------------------------------------------
+
+
+def test_paper_trading_session_model_creation() -> None:
+    from agents.investment_team.models import (
+        PaperTradingSession,
+        PaperTradingStatus,
+    )
+
+    session = PaperTradingSession(
+        session_id="pt-test-001",
+        lab_record_id="lab-abc123",
+        strategy=StrategySpec(
+            strategy_id="s-pt",
+            authored_by="test",
+            asset_class="stocks",
+            hypothesis="mean reversion",
+            signal_definition="RSI oversold bounce",
+        ),
+        status=PaperTradingStatus.COMPLETED,
+        initial_capital=100000.0,
+        current_capital=105000.0,
+        symbols_traded=["AAPL", "MSFT"],
+        data_source="yahoo_finance",
+        started_at="2026-01-01T00:00:00Z",
+        completed_at="2026-03-01T00:00:00Z",
+    )
+
+    assert session.session_id == "pt-test-001"
+    assert session.lab_record_id == "lab-abc123"
+    assert session.status == PaperTradingStatus.COMPLETED
+    assert session.initial_capital == 100000.0
+    assert len(session.symbols_traded) == 2
+
+
+def test_compare_performance_aligned() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=25.0,
+        annualized_return_pct=10.0,
+        volatility_pct=14.0,
+        sharpe_ratio=0.71,
+        max_drawdown_pct=12.0,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+    )
+    paper = BacktestResult(
+        total_return_pct=22.0,
+        annualized_return_pct=9.0,
+        volatility_pct=13.0,
+        sharpe_ratio=0.69,
+        max_drawdown_pct=14.0,
+        win_rate_pct=53.0,
+        profit_factor=1.3,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+
+    assert comparison.overall_aligned is True
+    assert comparison.win_rate_aligned is True
+    assert comparison.return_aligned is True
+    assert comparison.sharpe_aligned is True
+    assert comparison.drawdown_aligned is True
+
+
+def test_compare_performance_divergent() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=25.0,
+        annualized_return_pct=10.0,
+        volatility_pct=14.0,
+        sharpe_ratio=0.71,
+        max_drawdown_pct=12.0,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+    )
+    paper = BacktestResult(
+        total_return_pct=5.0,
+        annualized_return_pct=2.0,
+        volatility_pct=20.0,
+        sharpe_ratio=0.10,
+        max_drawdown_pct=30.0,
+        win_rate_pct=38.0,
+        profit_factor=0.8,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+
+    assert comparison.overall_aligned is False
+    assert comparison.win_rate_aligned is False
+    assert comparison.return_aligned is False
+
+
+def test_compare_performance_zero_backtest_drawdown() -> None:
+    """When backtest drawdown is 0, paper drawdown up to 5% is aligned."""
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=10.0,
+        annualized_return_pct=10.0,
+        volatility_pct=5.0,
+        sharpe_ratio=2.0,
+        max_drawdown_pct=0.0,
+        win_rate_pct=100.0,
+        profit_factor=100.0,
+    )
+    paper = BacktestResult(
+        total_return_pct=9.0,
+        annualized_return_pct=9.0,
+        volatility_pct=6.0,
+        sharpe_ratio=1.8,
+        max_drawdown_pct=4.0,
+        win_rate_pct=95.0,
+        profit_factor=90.0,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+    assert comparison.drawdown_aligned is True
+
+    # Paper drawdown > 5% when backtest is 0 → not aligned
+    paper_bad = BacktestResult(
+        total_return_pct=9.0,
+        annualized_return_pct=9.0,
+        volatility_pct=6.0,
+        sharpe_ratio=1.8,
+        max_drawdown_pct=6.0,
+        win_rate_pct=95.0,
+        profit_factor=90.0,
+    )
+    comparison_bad = PaperTradingAgent.compare_performance(paper_bad, backtest)
+    assert comparison_bad.drawdown_aligned is False
+
+
+def test_compare_performance_small_return_uses_absolute_tolerance() -> None:
+    """When backtest return is ≤5%, use ±3pp absolute tolerance."""
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=12.0,
+        annualized_return_pct=5.0,
+        volatility_pct=10.0,
+        sharpe_ratio=0.5,
+        max_drawdown_pct=10.0,
+        win_rate_pct=55.0,
+        profit_factor=1.2,
+    )
+    paper = BacktestResult(
+        total_return_pct=7.0,
+        annualized_return_pct=2.5,
+        volatility_pct=11.0,
+        sharpe_ratio=0.23,
+        max_drawdown_pct=12.0,
+        win_rate_pct=52.0,
+        profit_factor=1.1,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+    # |2.5 - 5.0| = 2.5 < 3.0 → aligned
+    assert comparison.return_aligned is True
+
+
+def test_paper_trading_verdict_enum_values() -> None:
+    from agents.investment_team.models import PaperTradingVerdict
+
+    assert PaperTradingVerdict.READY_FOR_LIVE.value == "ready_for_live"
+    assert PaperTradingVerdict.NOT_PERFORMANT.value == "not_performant"
+
+
+# ---------------------------------------------------------------------------
+# Market Data Service tests
+# ---------------------------------------------------------------------------
+
+
+def test_market_data_service_get_symbols_for_strategy() -> None:
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+
+    stock_strategy = StrategySpec(
+        strategy_id="s1",
+        authored_by="test",
+        asset_class="stocks",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(stock_strategy)
+    assert "AAPL" in symbols
+    assert "BTC" not in symbols
+
+    crypto_strategy = StrategySpec(
+        strategy_id="s2",
+        authored_by="test",
+        asset_class="crypto",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(crypto_strategy)
+    assert "BTC" in symbols
+    assert "AAPL" not in symbols
+
+
+def test_market_data_service_get_symbols_for_forex() -> None:
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+    strategy = StrategySpec(
+        strategy_id="s-fx",
+        authored_by="test",
+        asset_class="forex",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(strategy)
+    assert any("=X" in s for s in symbols)
+
+
+def test_market_data_service_get_symbols_for_futures() -> None:
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+    strategy = StrategySpec(
+        strategy_id="s-fut",
+        authored_by="test",
+        asset_class="futures",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(strategy)
+    assert any("=F" in s for s in symbols)
+
+
+def test_market_data_service_get_symbols_for_commodities() -> None:
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+    strategy = StrategySpec(
+        strategy_id="s-com",
+        authored_by="test",
+        asset_class="commodities",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(strategy)
+    assert "GLD" in symbols
+
+
+def test_market_data_service_fetch_ohlcv_range_routes_by_asset_class() -> None:
+    """Verify fetch_ohlcv_range dispatches to the right internal method based on asset class."""
+    from unittest.mock import patch
+
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+
+    with patch.object(service, "_fetch_stock", return_value=[]) as mock_stock:
+        service.fetch_ohlcv_range("AAPL", "stocks", "2023-01-01", "2023-12-31")
+        mock_stock.assert_called_once_with("AAPL", "2023-01-01", "2023-12-31")
+
+    with patch.object(service, "_fetch_crypto", return_value=[]) as mock_crypto:
+        service.fetch_ohlcv_range("BTC", "crypto", "2023-01-01", "2023-12-31")
+        mock_crypto.assert_called_once_with("BTC", "2023-01-01", "2023-12-31")
+
+    # Forex routes through _fetch_stock (yfinance)
+    with patch.object(service, "_fetch_stock", return_value=[]) as mock_stock:
+        service.fetch_ohlcv_range("EURUSD=X", "forex", "2023-01-01", "2023-12-31")
+        mock_stock.assert_called_once_with("EURUSD=X", "2023-01-01", "2023-12-31")
+
+
+def test_market_data_service_fetch_multi_symbol_range() -> None:
+    from unittest.mock import patch
+
+    from agents.investment_team.market_data_service import MarketDataService, OHLCVBar
+
+    service = MarketDataService()
+    sample_bar = OHLCVBar(
+        date="2023-06-01", open=150.0, high=155.0, low=148.0, close=153.0, volume=1000000
+    )
+
+    with patch.object(service, "fetch_ohlcv_range", return_value=[sample_bar]):
+        result = service.fetch_multi_symbol_range(
+            ["AAPL", "MSFT"], "stocks", "2023-01-01", "2023-12-31"
+        )
+
+    assert "AAPL" in result
+    assert "MSFT" in result
+    assert len(result["AAPL"]) == 1
+    assert result["AAPL"][0].close == 153.0
 
 
 def test_agent_catalog_includes_signal_intelligence_expert() -> None:
