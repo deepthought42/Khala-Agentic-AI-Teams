@@ -88,12 +88,15 @@ class TeamAssistantConversationStore:
     def _init_file_schema(self) -> None:
         conn = sqlite3.connect(self._file_path, timeout=15)  # type: ignore[arg-type]
         conn.execute("PRAGMA journal_mode=WAL")
+        # Migration: add job_id column BEFORE running schema (so the index creation succeeds)
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+            if cols and "job_id" not in cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN job_id TEXT DEFAULT NULL")
+                conn.commit()
+        except Exception:
+            pass  # table may not exist yet; schema script will create it
         conn.executescript(_SCHEMA)
-        # Migration: add job_id column if missing (existing databases)
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
-        if "job_id" not in cols:
-            conn.execute("ALTER TABLE conversations ADD COLUMN job_id TEXT DEFAULT NULL")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_job_id ON conversations(job_id)")
         conn.commit()
         conn.close()
 

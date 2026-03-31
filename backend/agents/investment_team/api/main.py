@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +18,11 @@ from investment_team.agents import (
     FinancialAdvisorAgent,
     InvestmentCommitteeAgent,
     PolicyGuardianAgent,
+)
+from investment_team.market_lab_data import (
+    FreeTierMarketDataProvider,
+    MarketLabContext,
+    StrategyLabDataRequest,
 )
 from investment_team.models import (
     IPS,
@@ -49,6 +56,8 @@ from investment_team.models import (
     WorkflowMode,
 )
 from investment_team.orchestrator import InvestmentTeamOrchestrator, WorkflowState
+from investment_team.signal_intelligence_agent import SignalIntelligenceExpert
+from investment_team.signal_intelligence_models import SignalIntelligenceBriefV1
 from investment_team.strategy_ideation_agent import StrategyIdeationAgent
 
 logging.basicConfig(level=logging.INFO)
@@ -766,7 +775,7 @@ def _run_real_data_backtest(
 
 
 class RunStrategyLabRequest(BaseModel):
-    """Run one ideation + backtest + analysis cycle."""
+    """Run one or more sequential ideation + backtest + analysis cycles."""
 
     start_date: str = Field(default="2021-01-01", description="Backtest start date")
     end_date: str = Field(default="2024-12-31", description="Backtest end date")
@@ -774,10 +783,17 @@ class RunStrategyLabRequest(BaseModel):
     benchmark_symbol: str = Field(default="SPY")
     transaction_cost_bps: float = Field(default=5.0, ge=0)
     slippage_bps: float = Field(default=2.0, ge=0)
+    batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=25,
+        description="Strategies to generate this run (one per sequential step; each step sees all prior results).",
+    )
 
 
 class StrategyLabRunResponse(BaseModel):
-    record: StrategyLabRecord
+    records: List[StrategyLabRecord] = Field(default_factory=list)
+    count: int = 0
     message: str = "Strategy ideated, backtested, and analysed successfully."
 
 
@@ -788,34 +804,49 @@ class StrategyLabResultsResponse(BaseModel):
     losing_count: int = 0
 
 
-@app.post("/strategy-lab/run", response_model=StrategyLabRunResponse)
-def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
-    """
-    Ideate a novel swing trading strategy using the LLM, backtest it, then generate
-    an analysis narrative. Records the result with a winning/losing label (>8% annual).
-    """
-    from llm_service.factory import get_client
+def _normalize_strategy_lab_asset_class(raw: object) -> str:
+    """Map LLM output to canonical labels used by the simulated ledger."""
+    x = str(raw or "stocks").lower().strip()
+    if x in ("equities", "equity", "stock"):
+        return "stocks"
+    if x in ("fx",):
+        return "forex"
+    if x in ("commodity", "metal", "energy"):
+        return "commodities"
+    allowed = frozenset({"stocks", "crypto", "forex", "options", "futures", "commodities"})
+    if x in allowed:
+        return x
+    return "stocks"
 
+
+def _run_one_strategy_lab_cycle(
+    agent: StrategyIdeationAgent,
+    config: BacktestConfig,
+    *,
+    precomputed_signal_brief: Optional[SignalIntelligenceBriefV1] = None,
+    signal_brief_storage: Optional[Dict[str, Any]] = None,
+) -> StrategyLabRecord:
+    """Single ideation → backtest → analysis; persists to store so the next cycle sees full history."""
     with _lock:
         raw_prior = list(_strategy_lab_records.values())
 
     prior_records = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
-    llm = get_client("strategy_ideation")
-    agent = StrategyIdeationAgent(llm_client=llm)
+    prior_records.sort(key=lambda r: r.created_at)
 
-    # 1 — Ideate strategy
     try:
-        strategy_data, rationale = agent.ideate_strategy(prior_results=prior_records)
+        strategy_data, rationale = agent.ideate_strategy(
+            prior_results=prior_records,
+            precomputed_signal_brief=precomputed_signal_brief,
+        )
     except Exception as exc:
         logger.error("Strategy ideation failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Strategy ideation failed: {exc}") from exc
 
-    # 2 — Build StrategySpec
     strategy_id = f"strat-lab-{uuid.uuid4().hex[:8]}"
     strategy = StrategySpec(
         strategy_id=strategy_id,
         authored_by="strategy_ideation_agent",
-        asset_class=str(strategy_data.get("asset_class", "stocks")),
+        asset_class=_normalize_strategy_lab_asset_class(strategy_data.get("asset_class")),
         hypothesis=str(strategy_data.get("hypothesis", "")),
         signal_definition=str(strategy_data.get("signal_definition", "")),
         entry_rules=[str(r) for r in (strategy_data.get("entry_rules") or [])],
@@ -825,15 +856,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         speculative=bool(strategy_data.get("speculative", False)),
     )
 
-    # 3 — Run content-aware backtest
-    config = BacktestConfig(
-        start_date=request.start_date,
-        end_date=request.end_date,
-        initial_capital=request.initial_capital,
-        benchmark_symbol=request.benchmark_symbol,
-        transaction_cost_bps=request.transaction_cost_bps,
-        slippage_bps=request.slippage_bps,
-    )
     result, trades = _run_real_data_backtest(strategy, config)
 
     now = _now()
@@ -853,7 +875,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
 
     is_winning = result.annualized_return_pct > 8.0
 
-    # 4 — Build provisional record (needed by analysis agent)
     lab_record_id = f"lab-{uuid.uuid4().hex[:8]}"
     provisional_record = StrategyLabRecord(
         lab_record_id=lab_record_id,
@@ -861,11 +882,10 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         backtest=backtest,
         is_winning=is_winning,
         strategy_rationale=rationale,
-        analysis_narrative="",  # filled in next step
+        analysis_narrative="",
         created_at=now,
     )
 
-    # 5 — Generate analysis narrative
     try:
         narrative = agent.analyze_result(provisional_record, rationale)
     except Exception as exc:
@@ -876,7 +896,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
             f"Sharpe ratio: {result.sharpe_ratio:.2f}, max drawdown: {result.max_drawdown_pct:.1f}%."
         )
 
-    # 6 — Finalise record
     record = StrategyLabRecord(
         lab_record_id=lab_record_id,
         strategy=strategy,
@@ -885,6 +904,7 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         strategy_rationale=rationale,
         analysis_narrative=narrative,
         created_at=now,
+        signal_intelligence_brief=signal_brief_storage,
     )
 
     with _lock:
@@ -892,7 +912,125 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         _strategies[strategy_id] = strategy
         _backtests[backtest_id] = backtest
 
-    return StrategyLabRunResponse(record=record)
+    return record
+
+
+def _strategy_lab_signal_expert_enabled() -> bool:
+    return os.environ.get("STRATEGY_LAB_SIGNAL_EXPERT_ENABLED", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+
+@app.post("/strategy-lab/run", response_model=StrategyLabRunResponse)
+def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
+    """
+    Ideate novel swing trading strategies using the LLM (one per step), backtest each,
+    then generate an analysis narrative. Each step sees all prior lab records including
+    metrics, outcomes, and post-backtest narratives. Default batch size is 10 per run.
+
+    Policy B: one Signal Intelligence brief + one market snapshot per batch; reused for each cycle.
+    """
+    from llm_service.factory import get_client
+
+    llm = get_client("strategy_ideation")
+    agent = StrategyIdeationAgent(llm_client=llm)
+
+    config = BacktestConfig(
+        start_date=request.start_date,
+        end_date=request.end_date,
+        initial_capital=request.initial_capital,
+        benchmark_symbol=request.benchmark_symbol,
+        transaction_cost_bps=request.transaction_cost_bps,
+        slippage_bps=request.slippage_bps,
+    )
+
+    precomputed_brief: Optional[SignalIntelligenceBriefV1] = None
+    signal_brief_storage: Optional[Dict[str, Any]] = None
+    provider: Optional[FreeTierMarketDataProvider] = None
+
+    if _strategy_lab_signal_expert_enabled():
+        provider = FreeTierMarketDataProvider()
+        try:
+            market_ctx = provider.fetch_context(
+                StrategyLabDataRequest(benchmark_symbol=request.benchmark_symbol)
+            )
+        except Exception as exc:
+            logger.warning("Market data fetch failed: %s", exc)
+            market_ctx = MarketLabContext(
+                fetched_at=_now(),
+                degraded=True,
+                degraded_reason=str(exc),
+                sources_used=[],
+            )
+        with _lock:
+            raw_prior = list(_strategy_lab_records.values())
+        prior_for_brief = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
+        prior_for_brief.sort(key=lambda r: r.created_at)
+
+        llm_signal = get_client("signal_intelligence")
+        expert = SignalIntelligenceExpert(llm_signal)
+        t0 = datetime.now(tz=timezone.utc)
+        try:
+            brief = expert.produce_signal_brief(prior_for_brief, market_ctx)
+            precomputed_brief = brief
+            signal_brief_storage = brief.model_dump(mode="json")
+            prov_text = market_ctx.as_prompt_text()
+            signal_brief_storage["brief_provenance"] = {
+                "expert": "signal_intelligence_v1",
+                "market_snapshot_hash": hashlib.sha256(prov_text.encode()).hexdigest()[:16],
+                "market_fetched_at": market_ctx.fetched_at,
+                "market_degraded": market_ctx.degraded,
+                "duration_ms": int((datetime.now(tz=timezone.utc) - t0).total_seconds() * 1000),
+            }
+            logger.info(
+                "signal_intelligence brief_version=%s len=%s degraded_market=%s",
+                signal_brief_storage.get("brief_version"),
+                len(str(signal_brief_storage)),
+                market_ctx.degraded,
+            )
+        except Exception as exc:
+            logger.warning("Signal intelligence expert failed: %s", exc)
+            precomputed_brief = None
+            signal_brief_storage = {
+                "skipped": True,
+                "skipped_reason": "expert_failed",
+                "error": str(exc)[:500],
+            }
+        finally:
+            if provider is not None:
+                provider.close()
+    else:
+        signal_brief_storage = {
+            "skipped": True,
+            "skipped_reason": "signal_expert_disabled",
+        }
+
+    records: List[StrategyLabRecord] = []
+    for i in range(request.batch_size):
+        try:
+            record = _run_one_strategy_lab_cycle(
+                agent,
+                config,
+                precomputed_signal_brief=precomputed_brief,
+                signal_brief_storage=signal_brief_storage,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Strategy lab cycle %d/%d failed", i + 1, request.batch_size)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Strategy lab cycle {i + 1}/{request.batch_size} failed: {exc}",
+            ) from exc
+        records.append(record)
+
+    return StrategyLabRunResponse(
+        records=records,
+        count=len(records),
+        message=f"Completed {len(records)} strategy lab cycle(s).",
+    )
 
 
 @app.get("/strategy-lab/results", response_model=StrategyLabResultsResponse)
