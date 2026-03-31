@@ -54,26 +54,31 @@ class MarketDataService:
         self._timeout = http_timeout
 
     def fetch_ohlcv(self, symbol: str, asset_class: str, days: int = 365) -> List[OHLCVBar]:
-        """Route to best data source for the asset class."""
+        """Route to best data source for the asset class (recent N days)."""
+        end_dt = date.today()
+        start_dt = end_dt - timedelta(days=days)
+        return self.fetch_ohlcv_range(symbol, asset_class, start_dt.isoformat(), end_dt.isoformat())
+
+    def fetch_ohlcv_range(
+        self, symbol: str, asset_class: str, start_date: str, end_date: str
+    ) -> List[OHLCVBar]:
+        """Fetch OHLCV data for an explicit date range. Routes by asset class."""
         asset = asset_class.lower()
         if asset == "crypto":
-            return self._fetch_crypto(symbol, days)
-        return self._fetch_stock(symbol, days)
+            return self._fetch_crypto(symbol, start_date, end_date)
+        return self._fetch_stock(symbol, start_date, end_date)
 
-    def _fetch_stock(self, symbol: str, days: int) -> List[OHLCVBar]:
-        """Fetch stock/ETF OHLCV data via yfinance."""
+    def _fetch_stock(self, symbol: str, start_date: str, end_date: str) -> List[OHLCVBar]:
+        """Fetch stock/ETF OHLCV data via yfinance for an arbitrary date range."""
         try:
             import yfinance as yf
         except ImportError:
             logger.warning("yfinance not installed — falling back to empty data for %s", symbol)
             return []
 
-        end_dt = date.today()
-        start_dt = end_dt - timedelta(days=days)
-
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_dt.isoformat(), end=end_dt.isoformat(), interval="1d")
+            df = ticker.history(start=start_date, end=end_date, interval="1d")
         except Exception as exc:
             logger.error("yfinance fetch failed for %s: %s", symbol, exc)
             return []
@@ -97,12 +102,20 @@ class MarketDataService:
             )
         return bars
 
-    def _fetch_crypto(self, symbol: str, days: int) -> List[OHLCVBar]:
-        """Fetch crypto OHLCV data via CoinGecko free API."""
+    def _fetch_crypto(self, symbol: str, start_date: str, end_date: str) -> List[OHLCVBar]:
+        """Fetch crypto OHLCV data via CoinGecko free API for a date range."""
         coin_id = _COINGECKO_IDS.get(symbol.upper())
         if not coin_id:
             logger.warning("Unknown crypto symbol %s — no CoinGecko mapping", symbol)
             return []
+
+        # CoinGecko OHLC endpoint uses days param; compute from date range
+        try:
+            start_dt = date.fromisoformat(start_date)
+            end_dt = date.fromisoformat(end_date)
+            days = max(1, (end_dt - start_dt).days)
+        except ValueError:
+            days = 365
 
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
         params = {"vs_currency": "usd", "days": str(min(days, 365))}
@@ -126,6 +139,9 @@ class MarketDataService:
                 continue
             ts_ms, o, h, l_, c = entry[0], entry[1], entry[2], entry[3], entry[4]
             bar_date = date.fromtimestamp(ts_ms / 1000).isoformat()
+            # Filter to requested date range
+            if bar_date < start_date or bar_date > end_date:
+                continue
             bars.append(
                 OHLCVBar(
                     date=bar_date,
@@ -150,10 +166,21 @@ class MarketDataService:
     def fetch_multi_symbol(
         self, symbols: List[str], asset_class: str, days: int = 365
     ) -> Dict[str, List[OHLCVBar]]:
-        """Fetch OHLCV data for multiple symbols."""
+        """Fetch OHLCV data for multiple symbols (recent N days)."""
         result: Dict[str, List[OHLCVBar]] = {}
         for sym in symbols:
             bars = self.fetch_ohlcv(sym, asset_class, days)
+            if bars:
+                result[sym] = bars
+        return result
+
+    def fetch_multi_symbol_range(
+        self, symbols: List[str], asset_class: str, start_date: str, end_date: str
+    ) -> Dict[str, List[OHLCVBar]]:
+        """Fetch OHLCV data for multiple symbols over an explicit date range."""
+        result: Dict[str, List[OHLCVBar]] = {}
+        for sym in symbols:
+            bars = self.fetch_ohlcv_range(sym, asset_class, start_date, end_date)
             if bars:
                 result[sym] = bars
         return result

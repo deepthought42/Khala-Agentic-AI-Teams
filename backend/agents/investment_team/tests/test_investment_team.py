@@ -812,3 +812,112 @@ def test_compute_session_metrics_empty_trades() -> None:
     assert result.total_return_pct == 0.0
     assert result.win_rate_pct == 0.0
     assert result.sharpe_ratio == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Backtesting Agent tests (real data backtesting)
+# ---------------------------------------------------------------------------
+
+
+def test_backtesting_agent_compute_metrics_from_trades() -> None:
+    from agents.investment_team.backtesting_agent import BacktestingAgent
+
+    trades = [
+        TradeRecord(
+            trade_num=1,
+            entry_date="2023-03-01",
+            exit_date="2023-03-08",
+            symbol="AAPL",
+            side="long",
+            entry_price=150.0,
+            exit_price=157.5,
+            shares=40,
+            position_value=6000.0,
+            gross_pnl=300.0,
+            net_pnl=290.0,
+            return_pct=5.0,
+            hold_days=7,
+            outcome="win",
+            cumulative_pnl=290.0,
+        ),
+        TradeRecord(
+            trade_num=2,
+            entry_date="2023-03-15",
+            exit_date="2023-03-22",
+            symbol="MSFT",
+            side="long",
+            entry_price=280.0,
+            exit_price=272.0,
+            shares=20,
+            position_value=5600.0,
+            gross_pnl=-160.0,
+            net_pnl=-170.0,
+            return_pct=-2.86,
+            hold_days=7,
+            outcome="loss",
+            cumulative_pnl=120.0,
+        ),
+    ]
+
+    result = BacktestingAgent._compute_metrics(trades, 100000.0, "2023-01-01", "2023-12-31")
+
+    assert result.win_rate_pct == 50.0
+    assert result.total_return_pct == pytest.approx(0.12, abs=0.01)
+    assert result.profit_factor > 1.0
+    assert result.max_drawdown_pct >= 0.0
+
+
+def test_backtesting_agent_compute_metrics_empty() -> None:
+    from agents.investment_team.backtesting_agent import BacktestingAgent
+
+    result = BacktestingAgent._compute_metrics([], 100000.0, "2023-01-01", "2023-12-31")
+
+    assert result.total_return_pct == 0.0
+    assert result.win_rate_pct == 0.0
+    assert result.sharpe_ratio == 0.0
+
+
+def test_backtesting_agent_date_diff() -> None:
+    from agents.investment_team.backtesting_agent import BacktestingAgent
+
+    assert BacktestingAgent._date_diff_days("2023-01-01", "2023-12-31") == 364
+    assert BacktestingAgent._date_diff_days("2023-01-01", "2023-01-01") == 1
+    assert BacktestingAgent._date_diff_days("bad", "date") == 1
+
+
+def test_market_data_service_fetch_ohlcv_range_routes_by_asset_class() -> None:
+    """Verify fetch_ohlcv_range dispatches to the right internal method based on asset class."""
+    from unittest.mock import patch
+
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+
+    with patch.object(service, "_fetch_stock", return_value=[]) as mock_stock:
+        service.fetch_ohlcv_range("AAPL", "stocks", "2023-01-01", "2023-12-31")
+        mock_stock.assert_called_once_with("AAPL", "2023-01-01", "2023-12-31")
+
+    with patch.object(service, "_fetch_crypto", return_value=[]) as mock_crypto:
+        service.fetch_ohlcv_range("BTC", "crypto", "2023-01-01", "2023-12-31")
+        mock_crypto.assert_called_once_with("BTC", "2023-01-01", "2023-12-31")
+
+
+def test_market_data_service_fetch_multi_symbol_range() -> None:
+    from unittest.mock import patch
+
+    from agents.investment_team.market_data_service import MarketDataService, OHLCVBar
+
+    service = MarketDataService()
+    sample_bar = OHLCVBar(
+        date="2023-06-01", open=150.0, high=155.0, low=148.0, close=153.0, volume=1000000
+    )
+
+    with patch.object(service, "fetch_ohlcv_range", return_value=[sample_bar]):
+        result = service.fetch_multi_symbol_range(
+            ["AAPL", "MSFT"], "stocks", "2023-01-01", "2023-12-31"
+        )
+
+    assert "AAPL" in result
+    assert "MSFT" in result
+    assert len(result["AAPL"]) == 1
+    assert result["AAPL"][0].close == 153.0
