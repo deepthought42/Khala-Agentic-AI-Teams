@@ -9,7 +9,7 @@ use placeholders for testing.
 import logging
 from pathlib import Path
 
-from blog_draft_agent import BlogDraftAgent, DraftInput
+from blog_writer_agent import BlogWriterAgent, WriterInput
 from shared.style_loader import load_style_file
 
 from llm_service import get_client  # or DummyLLMClient for quick test
@@ -29,21 +29,21 @@ def main() -> None:
 
     writing_style_content = load_style_file(STYLE_GUIDE_PATH, "writing style guide")
     brand_spec_content = load_style_file(BRAND_SPEC_PROMPT_PATH, "brand spec prompt")
-    agent = BlogDraftAgent(
+    agent = BlogWriterAgent(
         llm_client=llm_client,
         writing_style_guide_content=writing_style_content,
         brand_spec_content=brand_spec_content,
     )
 
-    # Example: use your research document and outline (e.g. from research + review agents)
-    research_document = """
+    # Example research document and outline (e.g. from research + review agents)
+    _research_document = """
 Compiled Research: Most Relevant Sources
 Topic: Building an AI Agent with Strands
 
 1. https://example.com/strands-docs - Strands is a model-driven SDK. Summary: Reduces boilerplate...
 2. https://example.com/agents-guide - Beginner-friendly. Key points: Setup, run, deploy.
 """
-    outline = """
+    _outline = """
 # Introduction to AI Agents and Strands
 Explain agentic AI and Strands as a beginner-friendly SDK.
 
@@ -57,7 +57,7 @@ Minimal code example for a simple agent.
 Recap and one practical next step.
 """
 
-    draft_input = DraftInput(
+    draft_input = WriterInput(
         content_plan=None,  # type: ignore[arg-type]  # test harness — provide a real ContentPlan
         audience="Beginners to AI Agents",
         tone_or_purpose="Educational",

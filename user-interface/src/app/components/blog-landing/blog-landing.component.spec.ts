@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BlogLandingComponent } from './blog-landing.component';
 import { Router } from '@angular/router';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { provideHttpClient } from '@angular/common/http';
 
 describe('BlogLandingComponent', () => {
   let component: BlogLandingComponent;
@@ -12,6 +13,7 @@ describe('BlogLandingComponent', () => {
     await TestBed.configureTestingModule({
       imports: [BlogLandingComponent, NoopAnimationsModule],
       providers: [
+        provideHttpClient(),
         {
           provide: Router,
           useValue: { navigate: vi.fn() },
