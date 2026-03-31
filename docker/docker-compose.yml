@@ -634,6 +634,35 @@ services:
       timeout: 5s
       retries: 5
 
+  startup-advisor-service:
+    build:
+      context: ../backend
+      dockerfile: team_service/Dockerfile
+      args: { TEAM_PORT: "8107" }
+    image: strands-startup-advisor-service
+    container_name: strands-startup-advisor-service
+    depends_on:
+      postgres: { condition: service_healthy }
+      job-service: { condition: service_healthy }
+    environment:
+      <<: *team-env-base
+      TEAM_MODULE: startup_advisor.api.main
+      TEAM_NAME: startup_advisor_team
+      TEAM_PORT: "8107"
+      TEAM_TEMPORAL_WORKER_MODULE: ""
+      TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
+    extra_hosts: *team-extra-hosts
+    ports: ["8107:8107"]
+    networks:
+      stack: { ipv4_address: 172.28.0.25, aliases: [startup-advisor-service] }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8107/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   # ── Unified API (router/proxy) ──────────────────────────────────────────────
 
   strands-agents:
@@ -663,6 +692,7 @@ services:
       studio-grid-service: { condition: service_healthy }
       sales-service: { condition: service_healthy }
       road-trip-service: { condition: service_healthy }
+      startup-advisor-service: { condition: service_healthy }
     volumes:
       - agents_workspace:/workspace
       - agents_data:/data/agents
@@ -706,6 +736,7 @@ services:
       STUDIO_GRID_SERVICE_URL: http://studio-grid-service:8104
       SALES_TEAM_SERVICE_URL: http://sales-service:8105
       ROAD_TRIP_PLANNING_SERVICE_URL: http://road-trip-service:8106
+      STARTUP_ADVISOR_SERVICE_URL: http://startup-advisor-service:8107
     extra_hosts:
       - "postgres:172.28.0.2"
       - "temporal:172.28.0.3"
@@ -727,6 +758,7 @@ services:
       - "studio-grid-service:172.28.0.22"
       - "sales-service:172.28.0.23"
       - "road-trip-service:172.28.0.24"
+      - "startup-advisor-service:172.28.0.25"
     networks:
       stack:
         ipv4_address: 172.28.0.6
