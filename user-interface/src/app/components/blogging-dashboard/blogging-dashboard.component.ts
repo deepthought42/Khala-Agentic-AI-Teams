@@ -431,13 +431,18 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   /** Fall back to the original timer-based polling for a job. */
   private startPollingFallback(jobId: string): void {
     this.statusPollSub?.unsubscribe();
+    let lastPhase: string | undefined;
     this.statusPollSub = timer(0, POLL_STATUS_MS).pipe(
       switchMap(() => this.api.getJobStatus(jobId))
     ).subscribe({
       next: (status) => {
         this.selectedJobStatus = status;
-        if (this.isTerminalStatus(status.status) && this.selectedBlogJob?.job_id === jobId) {
-          this.loadArtifactsList(jobId);
+        // Refresh artifacts when phase changes or job finishes
+        if (status.phase !== lastPhase || this.isTerminalStatus(status.status)) {
+          lastPhase = status.phase;
+          if (this.selectedBlogJob?.job_id === jobId) {
+            this.loadArtifactsList(jobId);
+          }
         }
       },
     });
@@ -459,12 +464,14 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
       error: () => { this.currentConversationId = null; }, // No conversation for this job
     });
 
+    // Always load artifacts immediately (they accumulate as the pipeline runs)
+    this.loadArtifactsList(job.job_id);
+
     // For terminal jobs, just fetch once — no need for streaming or polling.
     if (this.isTerminalStatus(job.status)) {
       this.api.getJobStatus(job.job_id).subscribe({
         next: (status) => { this.selectedJobStatus = status; },
       });
-      this.loadArtifactsList(job.job_id);
       return;
     }
 
@@ -486,16 +493,12 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   /** Apply a single SSE event to the component state. */
   private applyStreamEvent(event: BlogJobStreamEvent, jobId: string): void {
     if (event.type === 'snapshot') {
-      // Full state — treat like a polling response
       this.selectedJobStatus = event as unknown as BlogJobStatusResponse;
-      if (this.isTerminalStatus(event.status ?? '')) {
-        this.loadArtifactsList(jobId);
-      }
+      this.loadArtifactsList(jobId);
       return;
     }
 
     if (event.type === 'done') {
-      // Final fetch to get the full terminal state (title_choices, outline, etc.)
       this.api.getJobStatus(jobId).subscribe({
         next: (status) => {
           if (this.selectedBlogJob?.job_id === jobId) {
@@ -508,29 +511,42 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     }
 
     if (event.type === 'update' && this.selectedJobStatus) {
-      // Merge incremental fields into existing status
       const patch: Record<string, unknown> = { ...event };
       delete patch['type'];
       delete patch['ts'];
       Object.assign(this.selectedJobStatus, patch);
+
+      // Refresh artifacts when the phase changes (new artifacts may have been created)
+      if (event.phase) {
+        this.loadArtifactsList(jobId);
+      }
     }
   }
 
+  private _artifactsLoadPending = false;
+
   private loadArtifactsList(jobId: string): void {
     if (this.selectedBlogJob?.job_id !== jobId) return;
-    this.artifactsLoading = true;
+    // Debounce: skip if a load is already in flight
+    if (this._artifactsLoadPending) return;
+    this._artifactsLoadPending = true;
+    // Only show loading spinner if we have no artifacts yet
+    if (!this.selectedJobArtifacts.length) {
+      this.artifactsLoading = true;
+    }
     this.artifactsError = null;
     this.api.getJobArtifacts(jobId).subscribe({
       next: (res) => {
+        this._artifactsLoadPending = false;
         if (this.selectedBlogJob?.job_id === jobId) {
           this.selectedJobArtifacts = res.artifacts ?? [];
           this.artifactsLoading = false;
         }
       },
       error: (err) => {
+        this._artifactsLoadPending = false;
         if (this.selectedBlogJob?.job_id === jobId) {
           this.artifactsError = err?.error?.detail ?? err?.message ?? 'Failed to load artifacts';
-          this.selectedJobArtifacts = [];
           this.artifactsLoading = false;
         }
       },
@@ -677,9 +693,49 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
   }
 
   // ---------------------------------------------------------------------------
-  // Collaboration: title selection
+  // Collaboration: title selection (dislike / like / love)
   // ---------------------------------------------------------------------------
 
+  titleRatings: Record<string, 'dislike' | 'like' | 'love'> = {};
+  titleRatingSubmitting = false;
+
+  rateTitle(title: string, rating: 'dislike' | 'like' | 'love'): void {
+    this.titleRatings[title] = rating;
+  }
+
+  getTitleRating(title: string): string | undefined {
+    return this.titleRatings[title];
+  }
+
+  canSubmitTitleRatings(): boolean {
+    const choices = this.selectedJobStatus?.title_choices ?? [];
+    return choices.length > 0 && choices.every((c) => !!this.titleRatings[c.title]);
+  }
+
+  submitTitleRatings(): void {
+    const jobId = this.selectedBlogJob?.job_id;
+    if (!jobId) return;
+    const choices = this.selectedJobStatus?.title_choices ?? [];
+    const ratings = choices.map((c) => ({
+      title: c.title,
+      rating: this.titleRatings[c.title] ?? ('like' as const),
+    }));
+    this.titleRatingSubmitting = true;
+    this.collaborationError = null;
+    this.api.rateTitles(jobId, ratings).subscribe({
+      next: (status) => {
+        this.selectedJobStatus = status;
+        this.titleRatings = {};
+        this.titleRatingSubmitting = false;
+      },
+      error: (err) => {
+        this.collaborationError = err?.error?.detail ?? err?.message ?? 'Failed to submit title ratings';
+        this.titleRatingSubmitting = false;
+      },
+    });
+  }
+
+  /** Legacy: direct title selection (kept for backward compat). */
   selectTitle(title: string): void {
     const jobId = this.selectedBlogJob?.job_id;
     if (!jobId) return;

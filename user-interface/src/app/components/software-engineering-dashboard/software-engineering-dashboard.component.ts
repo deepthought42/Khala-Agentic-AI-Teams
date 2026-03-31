@@ -100,9 +100,10 @@ export class SoftwareEngineeringDashboardComponent implements OnInit, OnDestroy 
         this.launchError = null;
         this.activeView = 'jobs';
       },
-      error: (err: { error?: { detail?: string }; message?: string }) => {
+      error: (err: unknown) => {
         this.launching = false;
-        this.launchError = err?.error?.detail ?? err?.message ?? 'Failed to start project';
+        const e = err as { error?: { detail?: string }; message?: string };
+        this.launchError = e?.error?.detail ?? e?.message ?? 'Failed to start project';
       },
     });
   }

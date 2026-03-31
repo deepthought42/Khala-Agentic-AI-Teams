@@ -1,5 +1,8 @@
 """
 Coding team orchestrator: plan → Task Graph → assign → implement → review → merge.
+
+Uses a swarm pattern: a Coordinator (Tech Lead) assigns tasks from the graph
+to Workers (Senior SWEs). Quality gate tools run after each implementation.
 Exposes run_coding_team_orchestrator for in-process call from software_engineering_team.
 """
 
@@ -18,6 +21,7 @@ from coding_team.job_store import (
 from coding_team.models import (
     CodingTeamPlanInput,
     StackSpec,
+    Task,
     TaskStatus,
 )
 from coding_team.senior_software_engineer_agent import SeniorSWEAgent
@@ -27,6 +31,7 @@ from coding_team.tech_lead_agent import TechLeadAgent
 logger = logging.getLogger(__name__)
 
 CANCEL_KEY = "cancel_requested"
+MAX_TASK_REVISIONS = 3  # max times a task can be returned for revision before accepting
 
 
 def _read_repo_context(repo_path: Path, max_chars: int = 4000) -> str:
@@ -136,59 +141,170 @@ def run_coding_team_orchestrator(
     status_text = "Assigning and implementing tasks"
     _update(phase=phase, status_text=status_text, status="running")
 
-    # Loop: assign → implement → review → merge
-    repo_context = _read_repo_context(path)
-    max_rounds = 500
-    for round_num in range(max_rounds):
-        if _check_cancel():
-            _update(status="cancelled", status_text="Cancelled by user")
+    # Run the swarm: coordinator (Tech Lead) + workers (Senior SWEs)
+    swarm = CodingTeamSwarm(
+        tech_lead=tech_lead,
+        workers=senior_swes,
+        graph=graph,
+        path=path,
+        agent_ids=agent_ids,
+        llm_getter=llm_getter,
+    )
+    swarm.run(
+        check_cancel=_check_cancel,
+        persist_fn=_persist_graph,
+        update_fn=_update,
+    )
+
+    merged_count = sum(1 for t in graph.get_tasks() if t.status == TaskStatus.MERGED)
+    _update(
+        status="completed",
+        phase="completed",
+        status_text=f"Completed: {merged_count} tasks merged",
+    )
+
+
+class CodingTeamSwarm:
+    """Coordinator (Tech Lead) + Workers (Senior SWEs) swarm pattern.
+
+    The coordinator assigns ready tasks to free workers. Each worker implements
+    the task, runs quality gates (build, lint, code review), and signals
+    completion. The coordinator reviews and merges approved tasks.
+    """
+
+    def __init__(
+        self,
+        tech_lead: TechLeadAgent,
+        workers: List[SeniorSWEAgent],
+        graph: TaskGraphService,
+        path: Path,
+        agent_ids: List[str],
+        llm_getter: Callable[[str], Any],
+    ) -> None:
+        self.tech_lead = tech_lead
+        self.workers = workers
+        self.graph = graph
+        self.path = path
+        self.agent_ids = agent_ids
+        self.llm_getter = llm_getter
+        self.repo_context = _read_repo_context(path)
+
+    def _find_ready_tasks(self) -> List[Task]:
+        return [
+            t for t in self.graph.get_tasks()
+            if t.status == TaskStatus.TO_DO and self.graph._dependencies_satisfied(t.id)
+        ]
+
+    def _find_free_agents(self) -> List[str]:
+        return [aid for aid in self.agent_ids if self.graph.get_task_for_agent(aid) is None]
+
+    def _assign_tasks(self, ready: List[Task], free_agents: List[str]) -> None:
+        """Coordinator decides which tasks go to which workers."""
+        if not free_agents or not ready:
+            return
+        assignments = self.tech_lead.run_assignments(
+            agent_ids=self.agent_ids,
+            ready_tasks=[
+                {"id": t.id, "title": t.title, "assignee": t.assigned_agent_id or "unassigned"}
+                for t in ready
+            ],
+            free_agents=free_agents,
+        )
+        for a in assignments.get("assignments") or []:
+            agent_id = a.get("agent_id")
+            task_id = a.get("task_id")
+            if agent_id and task_id:
+                self.graph.assign_task_to_agent(task_id, agent_id)
+
+    def _implement_and_verify(self, swe: SeniorSWEAgent, update_fn: Callable) -> None:
+        """Worker implements its assigned task, then runs quality gate tools."""
+        task = self.graph.get_task_for_agent(swe.agent_id)
+        if not task:
             return
 
-        # Ready tasks: status TO_DO and dependencies satisfied
-        all_tasks = graph.get_tasks()
-        ready = [
-            t
-            for t in all_tasks
-            if t.status == TaskStatus.TO_DO and graph._dependencies_satisfied(t.id)
-        ]
-        free_agents = [aid for aid in agent_ids if graph.get_task_for_agent(aid) is None]
-        if free_agents and ready:
-            assignments = tech_lead.run_assignments(
-                agent_ids=agent_ids,
-                ready_tasks=[
-                    {"id": t.id, "title": t.title, "assignee": t.assigned_agent_id or "unassigned"}
-                    for t in ready
-                ],
-                free_agents=free_agents,
+        update_fn(status_text=f"Implementing: {task.title}")
+        result = swe.run_implement(task, self.path, repo_context=self.repo_context)
+
+        if result.get("status") == "in_review":
+            # Run quality gates as tools
+            if not self._run_quality_gates(swe, task, result, update_fn):
+                return  # task returned to TODO for revision
+            self.graph.update_task(task.id, feature_branch=result.get("feature_branch"))
+            self.graph.set_task_in_review(task.id)
+        elif result.get("status") == "failed":
+            logger.warning("Worker %s task %s failed: %s", swe.agent_id, task.id, result.get("error"))
+
+    def _run_quality_gates(
+        self, swe: SeniorSWEAgent, task: Task, result: Dict[str, Any], update_fn: Callable
+    ) -> bool:
+        """Run build, lint, code review. Returns True if passed, False if returned for revision."""
+        try:
+            from software_engineering_team.quality_gate_tools import (
+                run_build_verification,
+                run_code_review,
+                run_linting,
             )
-            for a in assignments.get("assignments") or []:
-                agent_id = a.get("agent_id")
-                task_id = a.get("task_id")
-                if agent_id and task_id:
-                    graph.assign_task_to_agent(task_id, agent_id)
-        _persist_graph()
 
-        # Senior SWEs: implement assigned tasks
-        for swe in senior_swes:
-            task = graph.get_task_for_agent(swe.agent_id)
-            if not task:
-                continue
-            status_text = f"Implementing: {task.title}"
-            _update(status_text=status_text)
-            result = swe.run_implement(task, path, repo_context=repo_context)
-            if result.get("status") == "in_review":
-                graph.update_task(task.id, feature_branch=result.get("feature_branch"))
-                graph.set_task_in_review(task.id)
-            elif result.get("status") == "failed":
-                logger.warning(
-                    "Senior SWE %s task %s failed: %s", swe.agent_id, task.id, result.get("error")
+            agent_type = swe.stack_spec.name or "backend"
+
+            # Build verification
+            update_fn(status_text=f"Build verification: {task.title}")
+            build = run_build_verification(self.path, agent_type, task.id)
+            if not build.success:
+                logger.warning("[%s] Build failed for task %s: %s", swe.agent_id, task.id, build.error[:200])
+                return self._return_for_revision(task, [{"type": "build", "error": build.error}])
+
+            # Linting
+            update_fn(status_text=f"Linting: {task.title}")
+            run_linting(self.path, task.id, llm_getter=self.llm_getter)
+
+            # Code review
+            update_fn(status_text=f"Code review: {task.title}")
+            review = run_code_review(
+                code=result.get("changes_summary", ""),
+                spec_content="",
+                task_description=task.description or task.title,
+                language="python" if agent_type == "backend" else "typescript",
+                acceptance_criteria=task.acceptance_criteria or [],
+                llm_getter=self.llm_getter,
+            )
+            if not review.approved:
+                logger.info(
+                    "[%s] Code review rejected task %s (%d issues); returning for revision",
+                    swe.agent_id, task.id, len(review.issues),
                 )
-        _persist_graph()
+                return self._return_for_revision(task, review.issues)
 
-        # Tech Lead: review in_review tasks and merge if approved
-        in_review_tasks = [t for t in graph.get_tasks() if t.status == TaskStatus.IN_REVIEW]
-        for task in in_review_tasks:
-            review = tech_lead.run_code_review(
+        except ImportError:
+            logger.debug("Quality gate tools not available; skipping")
+        except Exception as e:
+            logger.warning("Quality gate tools error for task %s: %s; proceeding", task.id, e)
+
+        return True
+
+    def _return_for_revision(self, task: Task, feedback: List[Dict[str, Any]]) -> bool:
+        """Return a task to TODO for revision. Returns False (task not ready for review)."""
+        revision_count = task.revision_count + 1
+        if revision_count >= MAX_TASK_REVISIONS:
+            logger.warning(
+                "Task %s exceeded max revisions (%d); accepting as-is", task.id, MAX_TASK_REVISIONS
+            )
+            return True  # accept despite issues
+        self.graph.update_task(
+            task.id,
+            status=TaskStatus.TO_DO,
+            assigned_agent_id=None,
+            revision_count=revision_count,
+            revision_feedback=feedback,
+        )
+        return False
+
+    def _review_and_merge(self, update_fn: Callable) -> None:
+        """Coordinator reviews completed tasks and merges approved ones."""
+        in_review = [t for t in self.graph.get_tasks() if t.status == TaskStatus.IN_REVIEW]
+        for task in in_review:
+            update_fn(status_text=f"Tech Lead reviewing: {task.title}")
+            review = self.tech_lead.run_code_review(
                 task_title=task.title,
                 task_description=task.description,
                 acceptance_criteria=task.acceptance_criteria,
@@ -200,28 +316,51 @@ def run_coding_team_orchestrator(
                         DEVELOPMENT_BRANCH,
                         merge_branch,
                     )
-
                     branch = task.feature_branch or f"feature/{task.id}"
-                    ok, _ = merge_branch(path, branch, DEVELOPMENT_BRANCH)
+                    ok, _ = merge_branch(self.path, branch, DEVELOPMENT_BRANCH)
                     if ok:
-                        graph.mark_branch_merged(task.id)
+                        self.graph.mark_branch_merged(task.id)
                 except Exception as e:
-                    logger.warning(
-                        "Merge failed for %s: %s; marking merged in graph anyway", task.id, e
-                    )
-                    graph.mark_branch_merged(task.id)
-        _persist_graph()
+                    logger.warning("Merge failed for %s: %s; marking merged anyway", task.id, e)
+                    self.graph.mark_branch_merged(task.id)
 
-        # Done when no more TO_DO and no agent has active task and no in_review
-        remaining_todo = [t for t in graph.get_tasks() if t.status == TaskStatus.TO_DO]
-        active = sum(1 for aid in agent_ids if graph.get_task_for_agent(aid) is not None)
-        still_in_review = [t for t in graph.get_tasks() if t.status == TaskStatus.IN_REVIEW]
-        if not remaining_todo and active == 0 and not still_in_review:
-            break
+    def _is_complete(self) -> bool:
+        tasks = self.graph.get_tasks()
+        remaining = [t for t in tasks if t.status == TaskStatus.TO_DO]
+        active = sum(1 for aid in self.agent_ids if self.graph.get_task_for_agent(aid) is not None)
+        in_review = [t for t in tasks if t.status == TaskStatus.IN_REVIEW]
+        return not remaining and active == 0 and not in_review
 
-    merged_count = sum(1 for t in graph.get_tasks() if t.status == TaskStatus.MERGED)
-    _update(
-        status="completed",
-        phase="completed",
-        status_text=f"Completed: {merged_count} tasks merged",
-    )
+    def run(
+        self,
+        max_rounds: int = 500,
+        check_cancel: Optional[Callable[[], bool]] = None,
+        persist_fn: Optional[Callable] = None,
+        update_fn: Optional[Callable] = None,
+    ) -> None:
+        """Main swarm loop: assign → implement + quality gates → review → merge."""
+        _update = update_fn or (lambda **kw: None)
+        _persist = persist_fn or (lambda: None)
+
+        for round_num in range(max_rounds):
+            if check_cancel and check_cancel():
+                _update(status="cancelled", status_text="Cancelled by user")
+                return
+
+            # Coordinator: assign ready tasks to free workers
+            ready = self._find_ready_tasks()
+            free = self._find_free_agents()
+            self._assign_tasks(ready, free)
+            _persist()
+
+            # Workers: implement + quality gates
+            for swe in self.workers:
+                self._implement_and_verify(swe, _update)
+            _persist()
+
+            # Coordinator: review and merge
+            self._review_and_merge(_update)
+            _persist()
+
+            if self._is_complete():
+                break

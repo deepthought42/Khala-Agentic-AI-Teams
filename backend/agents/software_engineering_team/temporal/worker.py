@@ -16,6 +16,9 @@ from typing import Optional
 from temporalio.worker import Worker
 
 from software_engineering_team.temporal.activities import (
+    execute_coding_team_activity,
+    parse_spec_activity,
+    plan_project_activity,
     retry_failed_activity,
     run_backend_code_v2_activity,
     run_frontend_code_v2_activity,
@@ -33,6 +36,7 @@ from software_engineering_team.temporal.constants import TASK_QUEUE
 from software_engineering_team.temporal.workflows import (
     RetryFailedWorkflow,
     RunTeamWorkflow,
+    RunTeamWorkflowV2,
     StandaloneJobWorkflow,
 )
 
@@ -60,9 +64,12 @@ def create_se_worker(client: Optional[object] = None) -> Optional[Worker]:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[RunTeamWorkflow, RetryFailedWorkflow, StandaloneJobWorkflow],
+        workflows=[RunTeamWorkflow, RunTeamWorkflowV2, RetryFailedWorkflow, StandaloneJobWorkflow],
         activities=[
             run_orchestrator_activity,
+            parse_spec_activity,
+            plan_project_activity,
+            execute_coding_team_activity,
             retry_failed_activity,
             run_frontend_code_v2_activity,
             run_backend_code_v2_activity,

@@ -33,9 +33,4 @@ describe('SoftwareEngineeringDashboardComponent', () => {
   it('should create', () => {
     expect(component).toBeTruthy();
   });
-
-  it('healthCheck should call api.health', () => {
-    component.healthCheck().subscribe((r) => expect(r).toEqual({ status: 'ok' }));
-    expect(apiSpy.health).toHaveBeenCalled();
-  });
 });

@@ -150,7 +150,7 @@ export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewC
         this.context = res.context ?? this.context;
         this.checkReadiness();
       },
-      error: () => { /* ignored – context update is best-effort */ },
+      error: () => { /* context fetch is best-effort */ },
     });
   }
 

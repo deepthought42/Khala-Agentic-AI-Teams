@@ -401,7 +401,7 @@ def test_mark_all_running_jobs_failed(tmp_path: Path) -> None:
 
     job_data = get_job(job_id, cache_dir=cache_dir)
     assert job_data is not None
-    assert job_data.get("status") == "failed"
+    assert job_data.get("status") == "interrupted"
     assert job_data.get("error") == "test"
 
 

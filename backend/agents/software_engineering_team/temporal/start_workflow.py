@@ -23,6 +23,7 @@ from software_engineering_team.temporal.constants import (
 from software_engineering_team.temporal.workflows import (
     RetryFailedWorkflow,
     RunTeamWorkflow,
+    RunTeamWorkflowV2,
     StandaloneJobWorkflow,
 )
 
@@ -49,14 +50,20 @@ def start_run_team_workflow(
     resolved_questions_override: Optional[List[Dict[str, Any]]] = None,
     planning_only: bool = False,
 ) -> None:
-    """Start RunTeamWorkflow. Idempotent for same workflow_id (new run after terminal)."""
+    """Start RunTeamWorkflow (V1 or V2). Idempotent for same workflow_id."""
+    import os
+
     workflow_id = f"{WORKFLOW_ID_PREFIX_RUN_TEAM}{job_id}"
     client = get_temporal_client()
     if client is None:
         raise RuntimeError("Temporal client not available")
+
+    use_v2 = os.environ.get("SE_WORKFLOW_V2", "").lower() in ("1", "true", "yes")
+    workflow_cls = RunTeamWorkflowV2 if use_v2 else RunTeamWorkflow
+
     _run_async(
         client.start_workflow(
-            RunTeamWorkflow.run,
+            workflow_cls.run,
             args=[
                 job_id,
                 repo_path,
@@ -68,7 +75,7 @@ def start_run_team_workflow(
             task_queue=TASK_QUEUE,
         )
     )
-    logger.info("Started RunTeamWorkflow id=%s", workflow_id)
+    logger.info("Started %s id=%s", workflow_cls.__name__, workflow_id)
 
 
 def start_retry_failed_workflow(job_id: str) -> None:

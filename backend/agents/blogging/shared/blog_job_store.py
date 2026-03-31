@@ -318,6 +318,37 @@ def submit_title_selection(
     )
 
 
+def submit_title_ratings(
+    job_id: str,
+    ratings: list[dict],
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Store title ratings and resume the pipeline so it can generate new titles.
+
+    Each rating is ``{"title": str, "rating": "dislike"|"like"|"love"}``.
+    If any title is rated "love", it becomes the selected title and the pipeline proceeds.
+    Otherwise the pipeline will use the ratings to generate better candidates.
+    """
+    loved = [r for r in ratings if r.get("rating") == "love"]
+    if loved:
+        _client(cache_dir).atomic_update(
+            job_id,
+            merge_fields={
+                "selected_title": loved[0]["title"],
+                "waiting_for_title_selection": False,
+                "title_ratings": ratings,
+            },
+        )
+    else:
+        _client(cache_dir).atomic_update(
+            job_id,
+            merge_fields={
+                "waiting_for_title_selection": False,
+                "title_ratings": ratings,
+            },
+        )
+
+
 def is_waiting_for_title_selection(
     job_id: str,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,

@@ -83,6 +83,14 @@ class Task(BaseModel):
         default_factory=list,
         description="Well-defined subtasks with optional dependencies between them",
     )
+    revision_count: int = Field(
+        default=0,
+        description="Number of times returned for revision after quality gate rejection",
+    )
+    revision_feedback: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Quality gate feedback from prior revision rounds",
+    )
 
 
 class SeniorEngineerSpec(BaseModel):
