@@ -25,4 +25,5 @@ export const environment = {
   salesApiUrl: `${apiBase}/api/sales`,
   agenticTeamProvisioningApiUrl: `${apiBase}/api/agentic-team-provisioning`,
   startupAdvisorApiUrl: `${apiBase}/api/startup-advisor`,
+  personaTestingApiUrl: `${apiBase}/api/user-agent-founder`,
 };

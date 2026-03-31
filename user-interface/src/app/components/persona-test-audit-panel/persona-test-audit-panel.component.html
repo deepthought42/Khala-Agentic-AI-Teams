@@ -1,0 +1,203 @@
+<div class="page-header">
+  <a routerLink="/persona-testing" class="back-link">
+    <mat-icon>arrow_back</mat-icon> Back to Persona Testing
+  </a>
+  <h1>Test Run Audit</h1>
+  @if (run) {
+    <div class="run-meta">
+      <span class="run-id">{{ run.run_id }}</span>
+      <span class="run-status" [class]="statusClass">{{ formatStatus(run.status) }}</span>
+    </div>
+  }
+</div>
+
+@if (loading) {
+  <div class="loading-state">
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    <p>Loading run details...</p>
+  </div>
+}
+
+@if (error) {
+  <div class="error-state">
+    <mat-icon>error_outline</mat-icon>
+    <p>{{ error }}</p>
+  </div>
+}
+
+@if (run) {
+  <mat-tab-group animationDuration="200ms">
+
+    <!-- ═══════════ Overview Tab ═══════════ -->
+    <mat-tab label="Overview">
+      <div class="tab-content">
+        <mat-card appearance="outlined">
+          <mat-card-header>
+            <mat-card-title>Run Details</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="detail-grid">
+              <div class="detail-item">
+                <span class="detail-label">Run ID</span>
+                <span class="detail-value mono">{{ run.run_id }}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Status</span>
+                <span class="detail-value">
+                  <span class="run-status" [class]="statusClass">{{ formatStatus(run.status) }}</span>
+                </span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Created</span>
+                <span class="detail-value">{{ run.created_at }}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Updated</span>
+                <span class="detail-value">{{ run.updated_at }}</span>
+              </div>
+              @if (run.se_job_id) {
+                <div class="detail-item">
+                  <span class="detail-label">SE Job ID</span>
+                  <span class="detail-value mono">{{ run.se_job_id }}</span>
+                </div>
+              }
+              @if (run.analysis_job_id) {
+                <div class="detail-item">
+                  <span class="detail-label">Analysis Job ID</span>
+                  <span class="detail-value mono">{{ run.analysis_job_id }}</span>
+                </div>
+              }
+              @if (run.repo_path) {
+                <div class="detail-item">
+                  <span class="detail-label">Repository Path</span>
+                  <span class="detail-value mono">{{ run.repo_path }}</span>
+                </div>
+              }
+              @if (run.error) {
+                <div class="detail-item detail-item-full">
+                  <span class="detail-label">Error</span>
+                  <span class="detail-value error-text">{{ run.error }}</span>
+                </div>
+              }
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        @if (!isTerminal) {
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p class="muted-text">Test is still running. This page auto-refreshes every 10 seconds.</p>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════ Spec Tab ═══════════ -->
+    <mat-tab label="Generated Spec">
+      <div class="tab-content">
+        @if (run.spec_content) {
+          <mat-card appearance="outlined" class="spec-card">
+            <mat-card-content>
+              <div class="spec-content markdown-content">
+                <pre class="spec-pre">{{ run.spec_content }}</pre>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        } @else {
+          <div class="empty-tab">
+            <mat-icon>description</mat-icon>
+            <p>No spec generated yet. The persona will generate a product specification as the first step.</p>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════ Decisions Tab ═══════════ -->
+    <mat-tab label="Decisions ({{ decisions.length }})">
+      <div class="tab-content">
+        @if (decisions.length) {
+          <mat-accordion>
+            @for (d of decisions; track d.decision_id) {
+              <mat-expansion-panel>
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    {{ d.question_text | slice:0:80 }}@if (d.question_text.length > 80) {... }
+                  </mat-panel-title>
+                  <mat-panel-description>
+                    {{ d.timestamp }}
+                  </mat-panel-description>
+                </mat-expansion-panel-header>
+                <div class="decision-detail">
+                  <div class="decision-field">
+                    <span class="field-label">Question</span>
+                    <p>{{ d.question_text }}</p>
+                  </div>
+                  <div class="decision-field">
+                    <span class="field-label">Answer</span>
+                    <p class="answer-text">{{ d.answer_text }}</p>
+                  </div>
+                  @if (d.rationale) {
+                    <div class="decision-field">
+                      <span class="field-label">Rationale</span>
+                      <p class="rationale-text">{{ d.rationale }}</p>
+                    </div>
+                  }
+                </div>
+              </mat-expansion-panel>
+            }
+          </mat-accordion>
+        } @else {
+          <div class="empty-tab">
+            <mat-icon>question_answer</mat-icon>
+            <p>No decisions recorded yet. The persona will answer questions from the SE team as they arise.</p>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════ Artifacts Tab ═══════════ -->
+    <mat-tab label="Artifacts">
+      <div class="tab-content">
+        @if (artifacts?.se_job_status) {
+          <mat-card appearance="outlined">
+            <mat-card-header>
+              <mat-card-title>SE Team Pipeline</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              @if (seJobProgress !== null) {
+                <div class="detail-item">
+                  <span class="detail-label">Progress</span>
+                  <mat-progress-bar mode="determinate" [value]="seJobProgress"></mat-progress-bar>
+                  <span class="progress-pct">{{ seJobProgress }}%</span>
+                </div>
+              }
+
+              @if (artifacts?.repo_path) {
+                <div class="detail-item">
+                  <span class="detail-label">Output Repository</span>
+                  <span class="detail-value mono">{{ artifacts!.repo_path }}</span>
+                </div>
+              }
+
+              @if (seJobTaskIds.length) {
+                <h4 class="tasks-heading">Tasks</h4>
+                <div class="tasks-list">
+                  @for (taskId of seJobTaskIds; track taskId) {
+                    <div class="task-item">
+                      <span class="task-status" [class]="'status-' + getTaskStatus(taskId)">{{ getTaskStatus(taskId) }}</span>
+                      <span class="task-title">{{ getTaskTitle(taskId) }}</span>
+                    </div>
+                  }
+                </div>
+              }
+            </mat-card-content>
+          </mat-card>
+        } @else {
+          <div class="empty-tab">
+            <mat-icon>inventory_2</mat-icon>
+            <p>No artifacts available yet. Artifacts will appear once the SE team begins processing.</p>
+          </div>
+        }
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+}
