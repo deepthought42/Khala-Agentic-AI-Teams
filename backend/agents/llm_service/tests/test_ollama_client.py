@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from llm_service.clients.ollama import OllamaLLMClient
-from llm_service.interface import LLMPermanentError, LLMRateLimitError, LLMTemporaryError
+from llm_service.interface import LLMPermanentError, LLMRateLimitError
 
 
 def test_ollama_get_max_context_tokens_known_model(monkeypatch: pytest.MonkeyPatch) -> None:
