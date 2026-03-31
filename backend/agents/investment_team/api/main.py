@@ -30,6 +30,8 @@ from investment_team.models import (
     InvestmentProfile,
     LiquidityNeeds,
     NetWorth,
+    PaperTradingSession,
+    PaperTradingVerdict,
     PortfolioConstraints,
     PortfolioPosition,
     PortfolioProposal,
@@ -121,6 +123,7 @@ _strategies: _PersistentDict = _PersistentDict("strategies")
 _validations: _PersistentDict = _PersistentDict("validations")
 _backtests: _PersistentDict = _PersistentDict("backtests")
 _strategy_lab_records: _PersistentDict = _PersistentDict("strategy_lab_records")
+_paper_trading_sessions: _PersistentDict = _PersistentDict("paper_trading_sessions")
 _advisor_sessions: _PersistentDict = _PersistentDict("advisor_sessions")
 
 _advisor_agent = FinancialAdvisorAgent()
@@ -1128,6 +1131,176 @@ def get_strategy_lab_results(winning: Optional[bool] = None) -> StrategyLabResul
         winning_count=winning_count,
         losing_count=losing_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading — simulated live trading with real market data
+# ---------------------------------------------------------------------------
+
+
+class RunPaperTradingRequest(BaseModel):
+    """Start a paper trading session for a winning strategy."""
+
+    lab_record_id: str = Field(..., description="ID of a winning StrategyLabRecord to paper trade")
+    initial_capital: float = Field(default=100000.0, gt=0)
+    transaction_cost_bps: float = Field(default=5.0, ge=0)
+    slippage_bps: float = Field(default=2.0, ge=0)
+    min_trades: int = Field(default=50, ge=10, description="Minimum trades before evaluation")
+    lookback_days: int = Field(default=365, ge=30, description="Days of historical data to fetch")
+
+
+class PaperTradingResponse(BaseModel):
+    session: PaperTradingSession
+    message: str = "Paper trading session completed."
+
+
+class PaperTradingResultsResponse(BaseModel):
+    items: List[PaperTradingSession] = Field(default_factory=list)
+    count: int = 0
+    ready_for_live_count: int = 0
+    not_performant_count: int = 0
+
+
+@app.post("/strategy-lab/paper-trade", response_model=PaperTradingResponse)
+def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
+    """
+    Run a paper trading session for a winning strategy using real market data.
+
+    Fetches live price data, uses the LLM to interpret the strategy's entry/exit rules
+    against each bar, simulates trade execution, and compares performance to the backtest.
+    Strategies that align with backtest expectations are flagged as ready for live testing.
+    Underperforming strategies receive a detailed divergence analysis.
+    """
+    from investment_team.market_data_service import MarketDataService
+    from investment_team.paper_trading_agent import PaperTradingAgent
+    from llm_service.factory import get_client
+
+    # 1 — Look up the winning strategy lab record
+    with _lock:
+        raw_record = _strategy_lab_records.get(request.lab_record_id)
+
+    if raw_record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Strategy lab record '{request.lab_record_id}' not found."
+        )
+
+    lab_record = StrategyLabRecord(**raw_record) if isinstance(raw_record, dict) else raw_record
+
+    if not lab_record.is_winning:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Strategy '{request.lab_record_id}' is not a winning strategy. "
+            "Only winning strategies (>8% annualized return) can be paper traded.",
+        )
+
+    strategy = lab_record.strategy
+    backtest_record = lab_record.backtest
+
+    # 2 — Fetch real market data
+    market_service = MarketDataService()
+    symbols = market_service.get_symbols_for_strategy(strategy)
+    # Use a subset of symbols (top 5) to keep data fetching reasonable
+    symbols = symbols[:5]
+
+    logger.info(
+        "Fetching %d days of market data for %d symbols (%s) ...",
+        request.lookback_days,
+        len(symbols),
+        strategy.asset_class,
+    )
+    market_data = market_service.fetch_multi_symbol(
+        symbols, strategy.asset_class, request.lookback_days
+    )
+
+    if not market_data:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to fetch market data from external sources. Please try again later.",
+        )
+
+    # 3 — Run paper trading session
+    llm = get_client("paper_trading")
+    agent = PaperTradingAgent(llm_client=llm)
+
+    try:
+        session = agent.run_session(
+            strategy=strategy,
+            backtest_record=backtest_record,
+            market_data=market_data,
+            initial_capital=request.initial_capital,
+            transaction_cost_bps=request.transaction_cost_bps,
+            slippage_bps=request.slippage_bps,
+            min_trades=request.min_trades,
+        )
+    except Exception as exc:
+        logger.error("Paper trading session failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Paper trading session failed: {exc}") from exc
+
+    session.lab_record_id = request.lab_record_id
+
+    # 4 — Persist the session
+    with _lock:
+        _paper_trading_sessions[session.session_id] = session
+
+    # 5 — Build response message
+    if session.verdict == PaperTradingVerdict.READY_FOR_LIVE:
+        message = (
+            f"Paper trading completed with {len(session.trades)} trades. "
+            f"Performance aligns with backtest expectations — strategy is READY FOR LIVE TESTING."
+        )
+    elif session.verdict == PaperTradingVerdict.NOT_PERFORMANT:
+        message = (
+            f"Paper trading completed with {len(session.trades)} trades. "
+            f"Performance does NOT align with backtest expectations — strategy is NOT PERFORMANT "
+            f"with live data. See divergence_analysis for details."
+        )
+    else:
+        message = f"Paper trading completed with {len(session.trades)} trades."
+
+    return PaperTradingResponse(session=session, message=message)
+
+
+@app.get("/strategy-lab/paper-trade/results", response_model=PaperTradingResultsResponse)
+def get_paper_trading_results(
+    verdict: Optional[str] = None,
+) -> PaperTradingResultsResponse:
+    """
+    Return all paper trading sessions, sorted newest-first.
+    Filter by verdict with ?verdict=ready_for_live or ?verdict=not_performant.
+    """
+    with _lock:
+        raw = list(_paper_trading_sessions.values())
+
+    items = [PaperTradingSession(**r) if isinstance(r, dict) else r for r in raw]
+    items.sort(key=lambda s: s.completed_at or s.started_at, reverse=True)
+
+    ready_count = sum(1 for s in items if s.verdict == PaperTradingVerdict.READY_FOR_LIVE)
+    not_perf_count = sum(1 for s in items if s.verdict == PaperTradingVerdict.NOT_PERFORMANT)
+
+    if verdict is not None:
+        items = [s for s in items if s.verdict and s.verdict.value == verdict]
+
+    return PaperTradingResultsResponse(
+        items=items,
+        count=len(items),
+        ready_for_live_count=ready_count,
+        not_performant_count=not_perf_count,
+    )
+
+
+@app.get("/strategy-lab/paper-trade/{session_id}", response_model=PaperTradingResponse)
+def get_paper_trading_session(session_id: str) -> PaperTradingResponse:
+    """Return a specific paper trading session by ID."""
+    with _lock:
+        raw = _paper_trading_sessions.get(session_id)
+
+    if raw is None:
+        raise HTTPException(
+            status_code=404, detail=f"Paper trading session '{session_id}' not found."
+        )
+
+    session = PaperTradingSession(**raw) if isinstance(raw, dict) else raw
+    return PaperTradingResponse(session=session)
 
 
 # ---------------------------------------------------------------------------

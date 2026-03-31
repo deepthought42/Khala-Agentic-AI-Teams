@@ -356,6 +356,65 @@ class StrategyLabRecord(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Paper Trading models
+# ---------------------------------------------------------------------------
+
+
+class PaperTradingStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PaperTradingVerdict(str, Enum):
+    READY_FOR_LIVE = "ready_for_live"
+    NOT_PERFORMANT = "not_performant"
+
+
+class PaperTradingComparison(BaseModel):
+    """Side-by-side comparison of paper trading vs backtest metrics."""
+
+    backtest_win_rate_pct: float
+    paper_win_rate_pct: float
+    backtest_annualized_return_pct: float
+    paper_annualized_return_pct: float
+    backtest_sharpe_ratio: float
+    paper_sharpe_ratio: float
+    backtest_max_drawdown_pct: float
+    paper_max_drawdown_pct: float
+    backtest_profit_factor: float
+    paper_profit_factor: float
+    win_rate_aligned: bool
+    return_aligned: bool
+    sharpe_aligned: bool
+    drawdown_aligned: bool
+    overall_aligned: bool
+
+
+class PaperTradingSession(BaseModel):
+    """Full state of a paper trading session."""
+
+    session_id: str
+    lab_record_id: str
+    strategy: StrategySpec
+    status: PaperTradingStatus
+    initial_capital: float
+    current_capital: float
+    trades: List[TradeRecord] = Field(default_factory=list)
+    trade_decisions: List[Dict[str, Any]] = Field(default_factory=list)
+    result: Optional[BacktestResult] = None
+    comparison: Optional[PaperTradingComparison] = None
+    verdict: Optional[PaperTradingVerdict] = None
+    divergence_analysis: Optional[str] = None
+    symbols_traded: List[str] = Field(default_factory=list)
+    data_source: str = ""
+    data_period_start: str = ""
+    data_period_end: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Financial Advisor chatbot models
 # ---------------------------------------------------------------------------
 

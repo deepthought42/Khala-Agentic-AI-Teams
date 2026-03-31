@@ -26,6 +26,7 @@ from agents.investment_team.models import (
     SavingsRate,
     StrategySpec,
     TaxProfile,
+    TradeRecord,
     UserGoal,
     UserPreferences,
     ValidationCheck,
@@ -570,3 +571,244 @@ def test_agent_catalog_includes_financial_advisor() -> None:
     from agents.investment_team.agent_catalog import CORE_AGENTS
 
     assert any(agent.name == "Financial Advisor Agent" for agent in CORE_AGENTS)
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading tests
+# ---------------------------------------------------------------------------
+
+
+def test_paper_trading_session_model_creation() -> None:
+    from agents.investment_team.models import (
+        PaperTradingSession,
+        PaperTradingStatus,
+    )
+
+    session = PaperTradingSession(
+        session_id="pt-test-001",
+        lab_record_id="lab-abc123",
+        strategy=StrategySpec(
+            strategy_id="s-pt",
+            authored_by="test",
+            asset_class="stocks",
+            hypothesis="mean reversion",
+            signal_definition="RSI oversold bounce",
+        ),
+        status=PaperTradingStatus.COMPLETED,
+        initial_capital=100000.0,
+        current_capital=105000.0,
+        symbols_traded=["AAPL", "MSFT"],
+        data_source="yahoo_finance",
+        started_at="2026-01-01T00:00:00Z",
+        completed_at="2026-03-01T00:00:00Z",
+    )
+
+    assert session.session_id == "pt-test-001"
+    assert session.lab_record_id == "lab-abc123"
+    assert session.status == PaperTradingStatus.COMPLETED
+    assert session.initial_capital == 100000.0
+    assert len(session.symbols_traded) == 2
+
+
+def test_paper_trading_comparison_alignment_flags() -> None:
+    from agents.investment_team.models import PaperTradingComparison
+
+    # All aligned
+    comparison = PaperTradingComparison(
+        backtest_win_rate_pct=55.0,
+        paper_win_rate_pct=52.0,
+        backtest_annualized_return_pct=12.0,
+        paper_annualized_return_pct=10.0,
+        backtest_sharpe_ratio=0.8,
+        paper_sharpe_ratio=0.7,
+        backtest_max_drawdown_pct=15.0,
+        paper_max_drawdown_pct=18.0,
+        backtest_profit_factor=1.5,
+        paper_profit_factor=1.3,
+        win_rate_aligned=True,
+        return_aligned=True,
+        sharpe_aligned=True,
+        drawdown_aligned=True,
+        overall_aligned=True,
+    )
+
+    assert comparison.overall_aligned is True
+    assert comparison.win_rate_aligned is True
+
+
+def test_compute_session_metrics_from_trades() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    trades = [
+        TradeRecord(
+            trade_num=1,
+            entry_date="2026-01-05",
+            exit_date="2026-01-12",
+            symbol="AAPL",
+            side="long",
+            entry_price=170.0,
+            exit_price=178.0,
+            shares=50,
+            position_value=8500.0,
+            gross_pnl=400.0,
+            net_pnl=390.0,
+            return_pct=4.71,
+            hold_days=7,
+            outcome="win",
+            cumulative_pnl=390.0,
+        ),
+        TradeRecord(
+            trade_num=2,
+            entry_date="2026-01-15",
+            exit_date="2026-01-22",
+            symbol="MSFT",
+            side="long",
+            entry_price=380.0,
+            exit_price=370.0,
+            shares=20,
+            position_value=7600.0,
+            gross_pnl=-200.0,
+            net_pnl=-210.0,
+            return_pct=-2.63,
+            hold_days=7,
+            outcome="loss",
+            cumulative_pnl=180.0,
+        ),
+        TradeRecord(
+            trade_num=3,
+            entry_date="2026-01-25",
+            exit_date="2026-02-01",
+            symbol="AAPL",
+            side="long",
+            entry_price=175.0,
+            exit_price=182.0,
+            shares=50,
+            position_value=8750.0,
+            gross_pnl=350.0,
+            net_pnl=340.0,
+            return_pct=4.0,
+            hold_days=7,
+            outcome="win",
+            cumulative_pnl=520.0,
+        ),
+    ]
+
+    result = PaperTradingAgent._compute_session_metrics(trades, initial_capital=100000.0)
+
+    assert result.win_rate_pct == pytest.approx(66.67, abs=0.1)
+    assert result.total_return_pct == pytest.approx(0.52, abs=0.01)
+    assert result.profit_factor > 1.0
+    assert result.max_drawdown_pct >= 0.0
+
+
+def test_compare_performance_aligned() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=25.0,
+        annualized_return_pct=10.0,
+        volatility_pct=14.0,
+        sharpe_ratio=0.71,
+        max_drawdown_pct=12.0,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+    )
+    paper = BacktestResult(
+        total_return_pct=22.0,
+        annualized_return_pct=9.0,
+        volatility_pct=13.0,
+        sharpe_ratio=0.69,
+        max_drawdown_pct=14.0,
+        win_rate_pct=53.0,
+        profit_factor=1.3,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+
+    assert comparison.overall_aligned is True
+    assert comparison.win_rate_aligned is True
+    assert comparison.return_aligned is True
+    assert comparison.sharpe_aligned is True
+    assert comparison.drawdown_aligned is True
+
+
+def test_compare_performance_divergent() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    backtest = BacktestResult(
+        total_return_pct=25.0,
+        annualized_return_pct=10.0,
+        volatility_pct=14.0,
+        sharpe_ratio=0.71,
+        max_drawdown_pct=12.0,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+    )
+    paper = BacktestResult(
+        total_return_pct=5.0,
+        annualized_return_pct=2.0,
+        volatility_pct=20.0,
+        sharpe_ratio=0.10,
+        max_drawdown_pct=30.0,
+        win_rate_pct=38.0,
+        profit_factor=0.8,
+    )
+
+    comparison = PaperTradingAgent.compare_performance(paper, backtest)
+
+    assert comparison.overall_aligned is False
+    assert comparison.win_rate_aligned is False
+    assert comparison.return_aligned is False
+
+
+def test_market_data_service_get_symbols_for_strategy() -> None:
+    from agents.investment_team.market_data_service import MarketDataService
+
+    service = MarketDataService()
+
+    stock_strategy = StrategySpec(
+        strategy_id="s1",
+        authored_by="test",
+        asset_class="stocks",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(stock_strategy)
+    assert "AAPL" in symbols
+    assert "BTC" not in symbols
+
+    crypto_strategy = StrategySpec(
+        strategy_id="s2",
+        authored_by="test",
+        asset_class="crypto",
+        hypothesis="h",
+        signal_definition="s",
+    )
+    symbols = service.get_symbols_for_strategy(crypto_strategy)
+    assert "BTC" in symbols
+    assert "AAPL" not in symbols
+
+
+def test_paper_trading_date_diff() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    assert PaperTradingAgent._date_diff_days("2026-01-01", "2026-01-08") == 7
+    assert PaperTradingAgent._date_diff_days("2026-01-01", "2026-01-01") == 1
+    assert PaperTradingAgent._date_diff_days("invalid", "invalid") == 1
+
+
+def test_paper_trading_verdict_enum_values() -> None:
+    from agents.investment_team.models import PaperTradingVerdict
+
+    assert PaperTradingVerdict.READY_FOR_LIVE.value == "ready_for_live"
+    assert PaperTradingVerdict.NOT_PERFORMANT.value == "not_performant"
+
+
+def test_compute_session_metrics_empty_trades() -> None:
+    from agents.investment_team.paper_trading_agent import PaperTradingAgent
+
+    result = PaperTradingAgent._compute_session_metrics([], initial_capital=100000.0)
+
+    assert result.total_return_pct == 0.0
+    assert result.win_rate_pct == 0.0
+    assert result.sharpe_ratio == 0.0
