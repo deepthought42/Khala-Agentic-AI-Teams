@@ -743,6 +743,8 @@ def _run_real_data_backtest(
 
     Returns (BacktestResult, trade_ledger).
     """
+    # Lazy imports: yfinance is slow to import and the LLM client has side-effects;
+    # deferring keeps application startup fast and avoids loading these until needed.
     from investment_team.backtesting_agent import BacktestingAgent
     from investment_team.market_data_service import MarketDataService
     from llm_service.factory import get_client
@@ -1073,6 +1075,12 @@ class RunPaperTradingRequest(BaseModel):
     slippage_bps: float = Field(default=2.0, ge=0)
     min_trades: int = Field(default=50, ge=10, description="Minimum trades before evaluation")
     lookback_days: int = Field(default=365, ge=30, description="Days of historical data to fetch")
+    max_evaluations: int = Field(
+        default=5000,
+        ge=100,
+        le=50000,
+        description="Cap on LLM evaluations to bound execution time.",
+    )
 
 
 class PaperTradingResponse(BaseModel):
@@ -1145,6 +1153,7 @@ def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
         )
 
     # 3 — Run paper trading session
+    # Lazy imports: yfinance and LLM client are heavy; deferring keeps app startup fast.
     llm = get_client("paper_trading")
     agent = PaperTradingAgent(llm_client=llm)
 
@@ -1168,20 +1177,29 @@ def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
     with _lock:
         _paper_trading_sessions[session.session_id] = session
 
-    # 5 — Build response message
+    # 5 — Build response message (include a warning when min_trades was not reached)
+    trade_count = len(session.trades)
+    shortfall = ""
+    if trade_count < request.min_trades:
+        shortfall = (
+            f" WARNING: Only {trade_count}/{request.min_trades} trades were completed "
+            f"(insufficient data or evaluation budget). Results may be unreliable."
+        )
+
     if session.verdict == PaperTradingVerdict.READY_FOR_LIVE:
         message = (
-            f"Paper trading completed with {len(session.trades)} trades. "
+            f"Paper trading completed with {trade_count} trades. "
             f"Performance aligns with backtest expectations — strategy is READY FOR LIVE TESTING."
+            f"{shortfall}"
         )
     elif session.verdict == PaperTradingVerdict.NOT_PERFORMANT:
         message = (
-            f"Paper trading completed with {len(session.trades)} trades. "
+            f"Paper trading completed with {trade_count} trades. "
             f"Performance does NOT align with backtest expectations — strategy is NOT PERFORMANT "
-            f"with live data. See divergence_analysis for details."
+            f"with live data. See divergence_analysis for details.{shortfall}"
         )
     else:
-        message = f"Paper trading completed with {len(session.trades)} trades."
+        message = f"Paper trading completed with {trade_count} trades.{shortfall}"
 
     return PaperTradingResponse(session=session, message=message)
 
