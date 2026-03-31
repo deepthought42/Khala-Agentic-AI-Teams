@@ -489,10 +489,13 @@ export interface RunStrategyLabRequest {
   benchmark_symbol?: string;
   transaction_cost_bps?: number;
   slippage_bps?: number;
+  /** Strategies to generate this run (sequential; default 10). */
+  batch_size?: number;
 }
 
 export interface StrategyLabRunResponse {
-  record: StrategyLabRecord;
+  records: StrategyLabRecord[];
+  count: number;
   message: string;
 }
 

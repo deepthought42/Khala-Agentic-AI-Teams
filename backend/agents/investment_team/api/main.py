@@ -975,7 +975,7 @@ def _strategy_lab_backtest(
 
 
 class RunStrategyLabRequest(BaseModel):
-    """Run one ideation + backtest + analysis cycle."""
+    """Run one or more sequential ideation + backtest + analysis cycles."""
 
     start_date: str = Field(default="2021-01-01", description="Backtest start date")
     end_date: str = Field(default="2024-12-31", description="Backtest end date")
@@ -983,10 +983,17 @@ class RunStrategyLabRequest(BaseModel):
     benchmark_symbol: str = Field(default="SPY")
     transaction_cost_bps: float = Field(default=5.0, ge=0)
     slippage_bps: float = Field(default=2.0, ge=0)
+    batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=25,
+        description="Strategies to generate this run (one per sequential step; each step sees all prior results).",
+    )
 
 
 class StrategyLabRunResponse(BaseModel):
-    record: StrategyLabRecord
+    records: List[StrategyLabRecord] = Field(default_factory=list)
+    count: int = 0
     message: str = "Strategy ideated, backtested, and analysed successfully."
 
 
@@ -997,29 +1004,23 @@ class StrategyLabResultsResponse(BaseModel):
     losing_count: int = 0
 
 
-@app.post("/strategy-lab/run", response_model=StrategyLabRunResponse)
-def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
-    """
-    Ideate a novel swing trading strategy using the LLM, backtest it, then generate
-    an analysis narrative. Records the result with a winning/losing label (>8% annual).
-    """
-    from llm_service.factory import get_client
-
+def _run_one_strategy_lab_cycle(
+    agent: StrategyIdeationAgent,
+    config: BacktestConfig,
+) -> StrategyLabRecord:
+    """Single ideation → backtest → analysis; persists to store so the next cycle sees full history."""
     with _lock:
         raw_prior = list(_strategy_lab_records.values())
 
     prior_records = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
-    llm = get_client("strategy_ideation")
-    agent = StrategyIdeationAgent(llm_client=llm)
+    prior_records.sort(key=lambda r: r.created_at)
 
-    # 1 — Ideate strategy
     try:
         strategy_data, rationale = agent.ideate_strategy(prior_results=prior_records)
     except Exception as exc:
         logger.error("Strategy ideation failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Strategy ideation failed: {exc}") from exc
 
-    # 2 — Build StrategySpec
     strategy_id = f"strat-lab-{uuid.uuid4().hex[:8]}"
     strategy = StrategySpec(
         strategy_id=strategy_id,
@@ -1034,15 +1035,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         speculative=bool(strategy_data.get("speculative", False)),
     )
 
-    # 3 — Run content-aware backtest
-    config = BacktestConfig(
-        start_date=request.start_date,
-        end_date=request.end_date,
-        initial_capital=request.initial_capital,
-        benchmark_symbol=request.benchmark_symbol,
-        transaction_cost_bps=request.transaction_cost_bps,
-        slippage_bps=request.slippage_bps,
-    )
     result, trades = _strategy_lab_backtest(strategy, config)
 
     now = _now()
@@ -1062,7 +1054,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
 
     is_winning = result.annualized_return_pct > 8.0
 
-    # 4 — Build provisional record (needed by analysis agent)
     lab_record_id = f"lab-{uuid.uuid4().hex[:8]}"
     provisional_record = StrategyLabRecord(
         lab_record_id=lab_record_id,
@@ -1070,11 +1061,10 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         backtest=backtest,
         is_winning=is_winning,
         strategy_rationale=rationale,
-        analysis_narrative="",  # filled in next step
+        analysis_narrative="",
         created_at=now,
     )
 
-    # 5 — Generate analysis narrative
     try:
         narrative = agent.analyze_result(provisional_record, rationale)
     except Exception as exc:
@@ -1085,7 +1075,6 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
             f"Sharpe ratio: {result.sharpe_ratio:.2f}, max drawdown: {result.max_drawdown_pct:.1f}%."
         )
 
-    # 6 — Finalise record
     record = StrategyLabRecord(
         lab_record_id=lab_record_id,
         strategy=strategy,
@@ -1101,7 +1090,49 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
         _strategies[strategy_id] = strategy
         _backtests[backtest_id] = backtest
 
-    return StrategyLabRunResponse(record=record)
+    return record
+
+
+@app.post("/strategy-lab/run", response_model=StrategyLabRunResponse)
+def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
+    """
+    Ideate novel swing trading strategies using the LLM (one per step), backtest each,
+    then generate an analysis narrative. Each step sees all prior lab records including
+    metrics, outcomes, and post-backtest narratives. Default batch size is 10 per run.
+    """
+    from llm_service.factory import get_client
+
+    llm = get_client("strategy_ideation")
+    agent = StrategyIdeationAgent(llm_client=llm)
+
+    config = BacktestConfig(
+        start_date=request.start_date,
+        end_date=request.end_date,
+        initial_capital=request.initial_capital,
+        benchmark_symbol=request.benchmark_symbol,
+        transaction_cost_bps=request.transaction_cost_bps,
+        slippage_bps=request.slippage_bps,
+    )
+
+    records: List[StrategyLabRecord] = []
+    for i in range(request.batch_size):
+        try:
+            record = _run_one_strategy_lab_cycle(agent, config)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Strategy lab cycle %d/%d failed", i + 1, request.batch_size)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Strategy lab cycle {i + 1}/{request.batch_size} failed: {exc}",
+            ) from exc
+        records.append(record)
+
+    return StrategyLabRunResponse(
+        records=records,
+        count=len(records),
+        message=f"Completed {len(records)} strategy lab cycle(s).",
+    )
 
 
 @app.get("/strategy-lab/results", response_model=StrategyLabResultsResponse)

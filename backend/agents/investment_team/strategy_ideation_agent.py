@@ -29,11 +29,12 @@ Generate a novel swing trading strategy for stocks or cryptocurrency.
 Swing trading targets holding periods of 2–14 days, capturing short-term price swings.
 Goal: exceed 8% annualized return with controlled drawdown.
 
-## Prior Strategy Results (last {n_prior} tested)
+## Prior Strategy Results ({n_prior} tested so far, chronological)
 {prior_results_text}
 
 ## Instructions
-Generate a strategy that DIFFERS from the prior strategies above — explore under-tested approaches.
+Each prior entry includes: outcome (WINNING/LOSING vs 8% annual), key metrics, the ideation rationale, and the post-backtest analysis (why it succeeded or failed).
+Generate ONE new strategy that DIFFERS from all of the above — explore under-tested approaches and learn from those outcomes.
 Return ONLY a JSON object with no markdown:
 {{
   "asset_class": "stocks" or "crypto",
@@ -82,17 +83,33 @@ Return ONLY a JSON object with no markdown:
 """
 
 
-def _format_prior_results(records: List[StrategyLabRecord]) -> str:
+def _format_prior_results(records: List[StrategyLabRecord], *, max_records: int = 50) -> str:
     if not records:
         return "None yet — this is the first strategy."
+    ordered = sorted(records, key=lambda x: x.created_at)
+    if len(ordered) > max_records:
+        ordered = ordered[-max_records:]
     lines = []
-    for r in records[-10:]:  # show last 10 at most
+    for i, r in enumerate(ordered, start=1):
         label = "WINNING" if r.is_winning else "LOSING"
+        hyp = r.strategy.hypothesis.replace("\n", " ").strip()
+        if len(hyp) > 160:
+            hyp = hyp[:157] + "..."
+        analysis = (r.analysis_narrative or "").replace("\n", " ").strip()
+        if len(analysis) > 420:
+            analysis = analysis[:417] + "..."
+        rationale = (r.strategy_rationale or "").replace("\n", " ").strip()
+        if len(rationale) > 220:
+            rationale = rationale[:217] + "..."
+        res = r.backtest.result
         lines.append(
-            f"- [{label}] {r.strategy.asset_class} | {r.strategy.hypothesis[:80]} "
-            f"| Annual: {r.backtest.result.annualized_return_pct:.1f}%"
+            f"{i}. [{label}] {r.strategy.asset_class} | {hyp}\n"
+            f"   Metrics: annual {res.annualized_return_pct:.1f}%, Sharpe {res.sharpe_ratio:.2f}, "
+            f"max DD {res.max_drawdown_pct:.1f}%, win rate {res.win_rate_pct:.1f}%\n"
+            f"   Ideation rationale: {rationale}\n"
+            f"   Post-backtest analysis: {analysis}"
         )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

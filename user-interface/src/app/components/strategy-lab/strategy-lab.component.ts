@@ -92,7 +92,7 @@ export class StrategyLabComponent implements OnInit {
   runNewStrategy(): void {
     this.running = true;
     this.error = null;
-    this.api.runStrategyLab().subscribe({
+    this.api.runStrategyLab({ batch_size: 10 }).subscribe({
       next: () => {
         this.loadResults();
         this.running = false;
