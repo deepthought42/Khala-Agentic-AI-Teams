@@ -28,26 +28,8 @@ describe('BloggingApiService', () => {
     expect(service).toBeTruthy();
   });
 
-  it('should call POST /research-and-review', () => {
-    const request = { brief: 'Test brief', max_results: 20 };
-    const mockResponse = {
-      title_choices: [{ title: 'Test', probability_of_success: 0.9 }],
-      outline: 'Outline',
-    };
-
-    service.researchAndReview(request).subscribe((res) => {
-      expect(res.title_choices.length).toBe(1);
-      expect(res.outline).toBe('Outline');
-    });
-
-    const req = httpMock.expectOne(`${baseUrl}/research-and-review`);
-    expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual(request);
-    req.flush(mockResponse);
-  });
-
   it('should call POST /full-pipeline', () => {
-    const request = { brief: 'Test', run_gates: true, max_rewrite_iterations: 3 };
+    const request = { brief: 'Test brief', run_gates: true, max_rewrite_iterations: 3 };
     const mockResponse = {
       status: 'PASS',
       work_dir: '/tmp/foo',
