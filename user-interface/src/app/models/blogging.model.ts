@@ -152,7 +152,7 @@ export interface BlogJobStatusResponse {
   waiting_for_draft_feedback?: boolean;
   draft_for_review?: string;
   draft_review_revision?: number;
-  draft_review_questions?: Array<Record<string, unknown>>;
+  draft_review_questions?: Record<string, unknown>[];
   draft_escalation_summary?: string;
 }
 
@@ -179,7 +179,7 @@ export interface BlogJobStreamEvent {
   pending_questions?: BlogPendingQuestion[];
   draft_for_review?: string;
   draft_review_revision?: number;
-  draft_review_questions?: Array<Record<string, unknown>>;
+  draft_review_questions?: Record<string, unknown>[];
   [key: string]: unknown;
 }
 

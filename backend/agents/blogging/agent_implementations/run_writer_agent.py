@@ -35,15 +35,15 @@ def main() -> None:
         brand_spec_content=brand_spec_content,
     )
 
-    # Example: use your research document and outline (e.g. from research + review agents)
-    research_document = """
+    # Example research document and outline (e.g. from research + review agents)
+    _research_document = """
 Compiled Research: Most Relevant Sources
 Topic: Building an AI Agent with Strands
 
 1. https://example.com/strands-docs - Strands is a model-driven SDK. Summary: Reduces boilerplate...
 2. https://example.com/agents-guide - Beginner-friendly. Key points: Setup, run, deploy.
 """
-    outline = """
+    _outline = """
 # Introduction to AI Agents and Strands
 Explain agentic AI and Strands as a beginner-friendly SDK.
 
