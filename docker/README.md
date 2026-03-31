@@ -102,9 +102,12 @@ Data in these volumes survives `docker compose down` and container restarts. To 
 | 8080  | Temporal UI    |
 | 4201  | Angular UI (proxies /api to agents) |
 | 8888  | Agents API (direct) |
+| 8108  | Agentic Team Provisioning API (direct; also proxied at `/api/agentic-team-provisioning` on 8888) |
 | 11434 | Ollama (optional) |
 
 Agents direct ports (when needed): 18000–18005 map to APIs 8000–8005.
+
+The Unified API (`strands-agents` on 8888) only registers each team’s `/api/...` route when the matching `*_SERVICE_URL` is set (see `docker-compose.yml`). **Agentic Team Provisioning** requires `AGENTIC_TEAM_PROVISIONING_SERVICE_URL` pointing at the `agentic-team-provisioning-service` container (included in the full stack).
 
 ## Resource limits (strands-agents / Podman)
 
