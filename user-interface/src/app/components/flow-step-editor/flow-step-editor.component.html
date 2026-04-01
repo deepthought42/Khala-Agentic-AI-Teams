@@ -1,0 +1,223 @@
+<div class="step-editor-panel">
+  <div class="editor-header">
+    <h3>
+      <mat-icon>edit</mat-icon>
+      Edit Step
+    </h3>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="onClose()" matTooltip="Close editor">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Step Details Form -->
+  <div class="editor-section">
+    <form [formGroup]="form" class="step-form">
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Step Name</mat-label>
+        <input matInput formControlName="name" (blur)="onSave()" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Description</mat-label>
+        <textarea matInput formControlName="description" rows="2" (blur)="onSave()"></textarea>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Step Type</mat-label>
+        <mat-select formControlName="step_type" (selectionChange)="onSave()">
+          @for (t of stepTypes; track t.value) {
+            <mat-option [value]="t.value">{{ t.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      @if (form.get('step_type')?.value === 'decision') {
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Condition</mat-label>
+          <input matInput formControlName="condition" placeholder="e.g. approval_status == 'approved'" (blur)="onSave()" />
+        </mat-form-field>
+      }
+    </form>
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Assigned Agents -->
+  <div class="editor-section">
+    <h4>
+      <mat-icon>people</mat-icon>
+      Assigned Agents
+      <span class="count-badge">{{ assignedAgents().length }}</span>
+    </h4>
+
+    @if (assignedAgents().length === 0) {
+      <p class="empty-text">No agents assigned yet. Search or use recommendations below.</p>
+    } @else {
+      <div class="assigned-list">
+        @for (agent of assignedAgents(); track agent.agent_name) {
+          <div class="assigned-agent">
+            <mat-icon class="agent-icon">smart_toy</mat-icon>
+            <div class="agent-info">
+              <span class="agent-name">{{ agent.agent_name }}</span>
+              <span class="agent-role">{{ agent.role }}</span>
+            </div>
+            <button mat-icon-button (click)="removeAgent(agent.agent_name)" matTooltip="Remove agent" class="remove-btn">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        }
+      </div>
+    }
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Agent Search -->
+  <div class="editor-section">
+    <h4>
+      <mat-icon>search</mat-icon>
+      Search Agents
+    </h4>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Search by skill, tool, or keyword...</mat-label>
+      <input matInput [value]="agentSearchTerm()" (input)="onSearchInput($event)" />
+      <mat-icon matSuffix>search</mat-icon>
+    </mat-form-field>
+
+    @if (searchLoading()) {
+      <mat-progress-bar mode="indeterminate" class="search-progress"></mat-progress-bar>
+    }
+
+    @if (agentSearchResults().length > 0) {
+      <div class="agent-results">
+        @for (agent of agentSearchResults(); track agent.agent_id) {
+          <div class="result-card" [class.already-assigned]="isAgentAssigned(agent.agent_id)">
+            <div class="result-header">
+              <mat-icon>smart_toy</mat-icon>
+              <span class="result-name">{{ agent.agent_id }}</span>
+              @if (!isAgentAssigned(agent.agent_id)) {
+                <button mat-stroked-button class="assign-btn" (click)="assignAgent(agent.agent_id, '')">
+                  <mat-icon>add</mat-icon> Assign
+                </button>
+              } @else {
+                <mat-chip class="assigned-chip">
+                  <mat-icon matChipAvatar>check</mat-icon>
+                  Assigned
+                </mat-chip>
+              }
+            </div>
+            @if (agent.skills && agent.skills.length > 0) {
+              <div class="result-tags">
+                @for (s of agent.skills; track s) {
+                  <span class="tag skill">{{ s }}</span>
+                }
+              </div>
+            }
+            @if (agent.tools && agent.tools.length > 0) {
+              <div class="result-tags">
+                @for (t of agent.tools; track t) {
+                  <span class="tag tool">{{ t }}</span>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    }
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Recommended Agents -->
+  <div class="editor-section">
+    <h4>
+      <mat-icon>auto_awesome</mat-icon>
+      Recommended Agents
+    </h4>
+
+    @if (recommendationsLoading()) {
+      <mat-progress-bar mode="indeterminate" class="search-progress"></mat-progress-bar>
+      <p class="loading-text">Analyzing step requirements...</p>
+    } @else if (recommendations().length === 0) {
+      <p class="empty-text">No recommendations available for this step.</p>
+    } @else {
+      <div class="agent-results">
+        @for (rec of recommendations(); track rec.agent_name) {
+          <div class="result-card recommendation" [class.already-assigned]="isAgentAssigned(rec.agent_name)">
+            <div class="result-header">
+              <mat-icon>{{ rec.source === 'roster' ? 'badge' : 'smart_toy' }}</mat-icon>
+              <span class="result-name">{{ rec.agent_name }}</span>
+              <span class="source-badge" [class]="rec.source">{{ rec.source }}</span>
+              @if (!isAgentAssigned(rec.agent_name)) {
+                <button mat-stroked-button class="assign-btn" (click)="assignAgent(rec.agent_name, rec.role)">
+                  <mat-icon>add</mat-icon> Assign
+                </button>
+              } @else {
+                <mat-chip class="assigned-chip">
+                  <mat-icon matChipAvatar>check</mat-icon>
+                  Assigned
+                </mat-chip>
+              }
+            </div>
+            @if (rec.role) {
+              <p class="rec-role">{{ rec.role }}</p>
+            }
+            @if (rec.skills.length > 0) {
+              <div class="result-tags">
+                @for (s of rec.skills; track s) {
+                  <span class="tag skill">{{ s }}</span>
+                }
+              </div>
+            }
+            <div class="match-score">
+              <mat-icon>trending_up</mat-icon>
+              <span>Match: {{ rec.match_score | number:'1.0-0' }}</span>
+            </div>
+          </div>
+        }
+      </div>
+    }
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Next Steps -->
+  <div class="editor-section">
+    <h4>
+      <mat-icon>arrow_forward</mat-icon>
+      Connects To
+    </h4>
+
+    @if (otherSteps().length === 0) {
+      <p class="empty-text">No other steps to connect to.</p>
+    } @else {
+      <div class="next-steps-list">
+        @for (s of otherSteps(); track s.step_id) {
+          <div
+            class="next-step-option"
+            [class.selected]="isNextStep(s.step_id)"
+            (click)="toggleNextStep(s.step_id)"
+            role="checkbox"
+            tabindex="0"
+            [attr.aria-checked]="isNextStep(s.step_id)"
+            (keydown.enter)="toggleNextStep(s.step_id)"
+            (keydown.space)="$event.preventDefault(); toggleNextStep(s.step_id)"
+          >
+            <mat-icon>{{ isNextStep(s.step_id) ? 'check_box' : 'check_box_outline_blank' }}</mat-icon>
+            <span>{{ s.name }}</span>
+          </div>
+        }
+      </div>
+    }
+  </div>
+
+  <!-- Actions -->
+  <div class="editor-actions">
+    <button mat-raised-button color="warn" (click)="onDelete()" matTooltip="Delete this step">
+      <mat-icon>delete</mat-icon>
+      Delete Step
+    </button>
+  </div>
+</div>

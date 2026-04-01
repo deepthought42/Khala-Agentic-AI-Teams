@@ -20,14 +20,19 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
 import { AgenticTeamApiService } from '../../services/agentic-team-api.service';
+import { FlowStepEditorComponent } from '../flow-step-editor/flow-step-editor.component';
 import type {
   AgenticTeam,
   AgenticTeamAgent,
   AgenticConversationMessage,
   ProcessDefinition,
+  ProcessStep,
   RosterValidationResult,
 } from '../../models';
+
+let _stepCounter = 0;
 
 @Component({
   selector: 'app-process-designer-chat',
@@ -42,6 +47,8 @@ import type {
     MatIconModule,
     MatChipsModule,
     MatTooltipModule,
+    MatMenuModule,
+    FlowStepEditorComponent,
   ],
   templateUrl: './process-designer-chat.component.html',
   styleUrl: './process-designer-chat.component.scss',
@@ -50,6 +57,7 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
   @Input() team!: AgenticTeam;
 
   @ViewChild('messagesContainer') messagesContainer!: ElementRef<HTMLDivElement>;
+  @ViewChild('flowchartContainer') flowchartContainer!: ElementRef<HTMLDivElement>;
 
   private readonly api = inject(AgenticTeamApiService);
   private readonly fb = inject(FormBuilder);
@@ -59,8 +67,16 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
   currentProcess = signal<ProcessDefinition | null>(null);
   suggestedQuestions = signal<string[]>([]);
   loading = signal(false);
+  saving = signal(false);
   error = signal<string | null>(null);
   flowchartSvg = signal<SafeHtml | null>(null);
+
+  // Interactive diagram state
+  selectedStepId = signal<string | null>(null);
+  selectedStep = signal<ProcessStep | null>(null);
+  editingProcessMeta = signal(false);
+  processNameEdit = signal('');
+  processDescEdit = signal('');
 
   rosterAgents = signal<AgenticTeamAgent[]>([]);
   rosterValidation = signal<RosterValidationResult | null>(null);
@@ -85,6 +101,7 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
 
   ngAfterViewChecked(): void {
     this.scrollToBottom();
+    this.attachFlowchartClickHandlers();
   }
 
   private scrollToBottom(): void {
@@ -94,12 +111,28 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     }
   }
 
+  private attachFlowchartClickHandlers(): void {
+    if (!this.flowchartContainer?.nativeElement) return;
+    const nodes = this.flowchartContainer.nativeElement.querySelectorAll('[data-step-id]');
+    nodes.forEach((node: Element) => {
+      if ((node as HTMLElement).dataset['bound']) return;
+      (node as HTMLElement).dataset['bound'] = '1';
+      node.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const stepId = (node as HTMLElement).dataset['stepId'];
+        if (stepId) this.onStepClick(stepId);
+      });
+    });
+  }
+
   private startConversation(): void {
     this.error.set(null);
     this.conversationId = null;
     this.messages.set([]);
     this.currentProcess.set(null);
     this.suggestedQuestions.set([]);
+    this.selectedStepId.set(null);
+    this.selectedStep.set(null);
 
     this.api.createConversation(this.team.team_id).subscribe({
       next: (res) => this.applyState(res),
@@ -119,6 +152,19 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     this.suggestedQuestions.set(res.suggested_questions);
     this.buildFlowchart(res.current_process);
     this.refreshRoster();
+    // Refresh selected step if editor is open; clear if process is gone
+    if (this.selectedStepId()) {
+      if (res.current_process) {
+        const step = res.current_process.steps.find((s) => s.step_id === this.selectedStepId());
+        this.selectedStep.set(step ?? null);
+        if (!step) {
+          this.selectedStepId.set(null);
+        }
+      } else {
+        this.selectedStepId.set(null);
+        this.selectedStep.set(null);
+      }
+    }
   }
 
   refreshRoster(): void {
@@ -193,9 +239,157 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Interactive diagram: process CRUD
+  // ---------------------------------------------------------------------------
+
+  createNewProcess(): void {
+    this.saving.set(true);
+    this.api.createProcess(this.team.team_id).subscribe({
+      next: (process) => {
+        this.currentProcess.set(process);
+        this.buildFlowchart(process);
+        this.saving.set(false);
+        // Link the new process to the active conversation so chat stays in sync
+        if (this.conversationId) {
+          this.api.setConversationProcess(this.conversationId, process.process_id).subscribe();
+        }
+      },
+      error: (err) => {
+        this.error.set(err?.error?.detail ?? 'Failed to create process');
+        this.saving.set(false);
+      },
+    });
+  }
+
+  addStep(stepType: 'action' | 'decision' = 'action'): void {
+    const process = this.currentProcess();
+    if (!process) return;
+
+    _stepCounter++;
+    const newStep: ProcessStep = {
+      step_id: `step_${Date.now()}_${_stepCounter}`,
+      name: stepType === 'decision' ? 'New Decision' : 'New Step',
+      description: '',
+      step_type: stepType,
+      agents: [],
+      next_steps: [],
+      condition: null,
+    };
+
+    // Wire up: last step → new step
+    const updatedSteps = [...process.steps];
+    if (updatedSteps.length > 0) {
+      const lastStep = { ...updatedSteps[updatedSteps.length - 1] };
+      if (lastStep.next_steps.length === 0) {
+        lastStep.next_steps = [newStep.step_id];
+        updatedSteps[updatedSteps.length - 1] = lastStep;
+      }
+    }
+    updatedSteps.push(newStep);
+
+    const updated = { ...process, steps: updatedSteps };
+    this.currentProcess.set(updated);
+    this.buildFlowchart(updated);
+    this.saveProcess(updated);
+    this.onStepClick(newStep.step_id);
+  }
+
+  onStepClick(stepId: string): void {
+    const process = this.currentProcess();
+    if (!process) return;
+    const step = process.steps.find((s) => s.step_id === stepId);
+    if (!step) return;
+    this.selectedStepId.set(stepId);
+    this.selectedStep.set({ ...step });
+    this.buildFlowchart(process); // re-render to highlight selected
+  }
+
+  onStepUpdated(updatedStep: ProcessStep): void {
+    const process = this.currentProcess();
+    if (!process) return;
+
+    const updatedSteps = process.steps.map((s) =>
+      s.step_id === updatedStep.step_id ? updatedStep : s,
+    );
+    const updated = { ...process, steps: updatedSteps };
+    this.currentProcess.set(updated);
+    this.selectedStep.set({ ...updatedStep });
+    this.buildFlowchart(updated);
+    this.saveProcess(updated);
+  }
+
+  onStepDeleted(stepId: string): void {
+    const process = this.currentProcess();
+    if (!process) return;
+
+    // Remove step and clean up references
+    const updatedSteps = process.steps
+      .filter((s) => s.step_id !== stepId)
+      .map((s) => ({
+        ...s,
+        next_steps: s.next_steps.filter((ns) => ns !== stepId),
+      }));
+    const updated = { ...process, steps: updatedSteps };
+    this.currentProcess.set(updated);
+    this.selectedStepId.set(null);
+    this.selectedStep.set(null);
+    this.buildFlowchart(updated);
+    this.saveProcess(updated);
+  }
+
+  onStepEditorClosed(): void {
+    this.selectedStepId.set(null);
+    this.selectedStep.set(null);
+    this.buildFlowchart(this.currentProcess());
+  }
+
+  startEditProcessMeta(): void {
+    const process = this.currentProcess();
+    if (!process) return;
+    this.processNameEdit.set(process.name);
+    this.processDescEdit.set(process.description);
+    this.editingProcessMeta.set(true);
+  }
+
+  saveProcessMeta(): void {
+    const process = this.currentProcess();
+    if (!process) return;
+    const updated = {
+      ...process,
+      name: this.processNameEdit(),
+      description: this.processDescEdit(),
+    };
+    this.currentProcess.set(updated);
+    this.editingProcessMeta.set(false);
+    this.saveProcess(updated);
+  }
+
+  cancelEditProcessMeta(): void {
+    this.editingProcessMeta.set(false);
+  }
+
+  private saveProcess(process: ProcessDefinition): void {
+    this.saving.set(true);
+    this.api.updateProcess(process.process_id, process).subscribe({
+      next: () => {
+        this.saving.set(false);
+        this.refreshRoster();
+      },
+      error: (err) => {
+        this.error.set(err?.error?.detail ?? 'Failed to save process');
+        this.saving.set(false);
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Flowchart SVG builder
+  // ---------------------------------------------------------------------------
+
   /**
    * Build a Mermaid-style flowchart as inline SVG from the process definition.
-   * We generate the SVG directly to avoid requiring an external Mermaid runtime.
+   * Nodes are interactive — clicking them opens the step editor.
    */
   private buildFlowchart(process: ProcessDefinition | null): void {
     if (!process || process.steps.length === 0) {
@@ -209,6 +403,7 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     const nodeHeight = 50;
     const padding = 40;
     const svgWidth = nodeWidth + padding * 2;
+    const selectedId = this.selectedStepId();
 
     // Build a map from step_id to index for layout
     const idxMap = new Map<string, number>();
@@ -224,6 +419,13 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
       <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
         <polygon points="0 0, 10 3.5, 0 7" fill="#58a6ff"/>
       </marker>
+      <filter id="glow">
+        <feGaussianBlur stdDeviation="3" result="blur"/>
+        <feMerge>
+          <feMergeNode in="blur"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
     </defs>`;
 
     // Helper: node Y position
@@ -232,7 +434,7 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     // Draw trigger node (rounded rect, green tint)
     const trigY = nodeY(0);
     svg += `<rect x="${cx - nodeWidth / 2}" y="${trigY}" width="${nodeWidth}" height="${nodeHeight}" rx="25" ry="25" fill="#1a3a2a" stroke="#3fb950" stroke-width="1.5"/>`;
-    svg += `<text x="${cx}" y="${trigY + nodeHeight / 2 + 5}" text-anchor="middle" fill="#3fb950" font-size="12" font-family="sans-serif">${this.escSvg(process.trigger.trigger_type.toUpperCase())}: ${this.truncate(process.trigger.description, 20)}</text>`;
+    svg += `<text x="${cx}" y="${trigY + nodeHeight / 2 + 5}" text-anchor="middle" fill="#3fb950" font-size="12" font-family="sans-serif">${this.escSvg(process.trigger.trigger_type.toUpperCase())}: ${this.truncate(process.trigger.description || 'Trigger', 20)}</text>`;
 
     // Arrow from trigger to first step
     if (steps.length > 0) {
@@ -243,6 +445,11 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     steps.forEach((step, i) => {
       const y = nodeY(i + 1);
       const isDecision = step.step_type === 'decision';
+      const isSelected = step.step_id === selectedId;
+      const hasNoAgents = step.agents.length === 0;
+
+      // Clickable group
+      svg += `<g data-step-id="${this.escSvg(step.step_id)}" class="flowchart-node" style="cursor:pointer">`;
 
       if (isDecision) {
         // Diamond shape
@@ -250,10 +457,16 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
         const hh = nodeHeight / 2;
         const dmx = cx;
         const dmy = y + hh;
-        svg += `<polygon points="${dmx},${y} ${dmx + hw},${dmy} ${dmx},${y + nodeHeight} ${dmx - hw},${dmy}" fill="#2d1b3d" stroke="#bc8cff" stroke-width="1.5"/>`;
+        const strokeColor = isSelected ? '#f0f6fc' : '#bc8cff';
+        const strokeWidth = isSelected ? '2.5' : '1.5';
+        const filter = isSelected ? ' filter="url(#glow)"' : '';
+        svg += `<polygon points="${dmx},${y} ${dmx + hw},${dmy} ${dmx},${y + nodeHeight} ${dmx - hw},${dmy}" fill="#2d1b3d" stroke="${strokeColor}" stroke-width="${strokeWidth}"${filter}/>`;
         svg += `<text x="${cx}" y="${dmy + 4}" text-anchor="middle" fill="#bc8cff" font-size="11" font-family="sans-serif">${this.escSvg(this.truncate(step.name, 22))}</text>`;
       } else {
-        svg += `<rect x="${cx - nodeWidth / 2}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" rx="8" ry="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>`;
+        const strokeColor = isSelected ? '#f0f6fc' : '#58a6ff';
+        const strokeWidth = isSelected ? '2.5' : '1.5';
+        const filter = isSelected ? ' filter="url(#glow)"' : '';
+        svg += `<rect x="${cx - nodeWidth / 2}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" rx="8" ry="8" fill="#161b22" stroke="${strokeColor}" stroke-width="${strokeWidth}"${filter}/>`;
         svg += `<text x="${cx}" y="${y + 20}" text-anchor="middle" fill="#f0f6fc" font-size="12" font-family="sans-serif">${this.escSvg(this.truncate(step.name, 22))}</text>`;
 
         // Show agent names below step name
@@ -263,7 +476,15 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
         }
       }
 
-      // Arrows to next steps (simplified: straight down to next sequential node)
+      // Warning indicator for steps with no agents
+      if (hasNoAgents) {
+        svg += `<circle cx="${cx + nodeWidth / 2 - 8}" cy="${y + 8}" r="6" fill="#d29922"/>`;
+        svg += `<text x="${cx + nodeWidth / 2 - 8}" y="${y + 12}" text-anchor="middle" fill="#0d1117" font-size="9" font-weight="bold" font-family="sans-serif">!</text>`;
+      }
+
+      svg += `</g>`;
+
+      // Arrows to next steps
       for (const nextId of step.next_steps) {
         const nextIdx = idxMap.get(nextId);
         if (nextIdx !== undefined) {

@@ -199,6 +199,14 @@ class AgenticTeamStore:
                 return None
         return ProcessDefinition(**json.loads(row["data_json"]))
 
+    def get_process_team_id(self, process_id: str) -> Optional[str]:
+        """Return the team_id that owns a given process."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT team_id FROM processes WHERE process_id = ?", (process_id,)
+            ).fetchone()
+        return row["team_id"] if row else None
+
     def _load_processes(self, conn: sqlite3.Connection, team_id: str) -> list[ProcessDefinition]:
         rows = conn.execute(
             "SELECT data_json FROM processes WHERE team_id = ? ORDER BY created_at", (team_id,)

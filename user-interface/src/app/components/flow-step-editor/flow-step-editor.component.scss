@@ -1,0 +1,362 @@
+.step-editor-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  background: #161b22;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 16px 8px;
+  position: sticky;
+  top: 0;
+  background: #161b22;
+  z-index: 1;
+
+  h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 1rem;
+    color: #f0f6fc;
+
+    mat-icon {
+      color: #58a6ff;
+    }
+  }
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+.editor-section {
+  padding: 12px 16px;
+
+  h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #c9d1d9;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+
+    mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      color: #8b949e;
+    }
+  }
+}
+
+.count-badge {
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  font-size: 0.6875rem;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-left: 6px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.step-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.empty-text {
+  color: #484f58;
+  font-size: 0.8125rem;
+  font-style: italic;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.loading-text {
+  color: #8b949e;
+  font-size: 0.8125rem;
+  margin: 8px 0 0;
+}
+
+// Assigned agents list
+.assigned-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assigned-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+
+  .agent-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #d2a8ff;
+  }
+
+  .agent-info {
+    flex: 1;
+    min-width: 0;
+
+    .agent-name {
+      display: block;
+      color: #f0f6fc;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-role {
+      display: block;
+      color: #8b949e;
+      font-size: 0.6875rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
+  .remove-btn {
+    color: #484f58;
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+
+    mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+    }
+
+    &:hover {
+      color: #f85149;
+    }
+  }
+}
+
+// Search progress
+.search-progress {
+  margin-bottom: 8px;
+}
+
+// Agent results (search + recommendations)
+.agent-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.result-card {
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  transition: border-color 0.2s;
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  &.already-assigned {
+    opacity: 0.6;
+    border-color: rgba(63, 185, 80, 0.2);
+  }
+
+  &.recommendation {
+    border-left: 3px solid #d2a8ff;
+  }
+}
+
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #58a6ff;
+  }
+
+  .result-name {
+    flex: 1;
+    color: #f0f6fc;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.assign-btn {
+  font-size: 0.6875rem !important;
+  line-height: 24px !important;
+  padding: 0 10px !important;
+  min-width: 0 !important;
+  border-color: rgba(88, 166, 255, 0.4) !important;
+  color: #58a6ff !important;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    margin-right: 2px;
+  }
+
+  &:hover {
+    background: rgba(88, 166, 255, 0.1) !important;
+  }
+}
+
+.assigned-chip {
+  font-size: 0.6875rem !important;
+  --mdc-chip-label-text-color: #3fb950;
+  --mdc-chip-elevated-container-color: rgba(63, 185, 80, 0.1);
+}
+
+.source-badge {
+  font-size: 0.625rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+
+  &.registry {
+    background: rgba(88, 166, 255, 0.1);
+    color: #58a6ff;
+  }
+
+  &.roster {
+    background: rgba(210, 168, 255, 0.1);
+    color: #d2a8ff;
+  }
+}
+
+.rec-role {
+  color: #8b949e;
+  font-size: 0.75rem;
+  margin: 0 0 6px;
+  line-height: 1.4;
+}
+
+.result-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 0.625rem;
+  font-weight: 500;
+
+  &.skill {
+    background: rgba(88, 166, 255, 0.1);
+    color: #58a6ff;
+    border: 1px solid rgba(88, 166, 255, 0.2);
+  }
+
+  &.tool {
+    background: rgba(210, 153, 34, 0.1);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.2);
+  }
+}
+
+.match-score {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  color: #8b949e;
+  font-size: 0.6875rem;
+
+  mat-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    color: #3fb950;
+  }
+}
+
+// Next steps
+.next-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.next-step-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  color: #c9d1d9;
+  font-size: 0.8125rem;
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+    color: #484f58;
+  }
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  &.selected {
+    border-color: rgba(88, 166, 255, 0.3);
+    background: rgba(88, 166, 255, 0.05);
+
+    mat-icon {
+      color: #58a6ff;
+    }
+  }
+}
+
+// Actions bar
+.editor-actions {
+  padding: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  position: sticky;
+  bottom: 0;
+  background: #161b22;
+}

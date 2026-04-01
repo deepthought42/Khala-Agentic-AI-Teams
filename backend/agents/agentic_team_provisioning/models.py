@@ -291,6 +291,26 @@ class RosterValidationResult(BaseModel):
     summary: str = Field(default="", description="Human-readable summary of the validation")
 
 
+class RecommendedAgent(BaseModel):
+    """An agent recommended for a process step."""
+
+    agent_name: str = Field(..., description="Agent identifier")
+    source: str = Field(..., description="Where the recommendation came from: 'registry' or 'roster'")
+    role: str = Field(default="", description="Suggested role for this agent")
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    match_score: float = Field(default=0.0, description="Relevance score (higher is better)")
+
+
+class RecommendAgentsResponse(BaseModel):
+    """Response for agent recommendation requests."""
+
+    step_id: str
+    step_name: str
+    recommended_agents: list[RecommendedAgent] = Field(default_factory=list)
+
+
 class AgentEnvProvisionSummary(BaseModel):
     """Status of an Agent Provisioning run for a process step agent."""
 

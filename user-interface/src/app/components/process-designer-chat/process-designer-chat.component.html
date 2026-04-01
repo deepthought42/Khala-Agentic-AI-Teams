@@ -1,4 +1,4 @@
-<div class="designer-layout">
+<div class="designer-layout" [class.editor-open]="selectedStep()">
   <!-- Chat panel -->
   <div class="chat-panel">
     <mat-card class="chat-card">
@@ -224,33 +224,80 @@
           <mat-icon>account_tree</mat-icon>
           Process Diagram
         </mat-card-title>
+        <span class="spacer"></span>
+        @if (saving()) {
+          <mat-chip class="saving-badge">Saving...</mat-chip>
+        }
       </mat-card-header>
 
       <mat-card-content>
         @if (currentProcess(); as process) {
+          <!-- Process meta (editable) -->
           <div class="process-meta">
-            <h3 class="process-name">{{ process.name || 'Untitled Process' }}</h3>
-            @if (process.description) {
-              <p class="process-description">{{ process.description }}</p>
+            @if (editingProcessMeta()) {
+              <div class="meta-edit-form">
+                <mat-form-field appearance="outline" class="meta-field">
+                  <mat-label>Process Name</mat-label>
+                  <input matInput [value]="processNameEdit()" (input)="processNameEdit.set($any($event.target).value)" />
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="meta-field">
+                  <mat-label>Description</mat-label>
+                  <input matInput [value]="processDescEdit()" (input)="processDescEdit.set($any($event.target).value)" />
+                </mat-form-field>
+                <div class="meta-edit-actions">
+                  <button mat-raised-button color="primary" (click)="saveProcessMeta()">
+                    <mat-icon>check</mat-icon> Save
+                  </button>
+                  <button mat-stroked-button (click)="cancelEditProcessMeta()">Cancel</button>
+                </div>
+              </div>
+            } @else {
+              <div class="meta-display" (click)="startEditProcessMeta()" role="button" tabindex="0" (keydown.enter)="startEditProcessMeta()">
+                <h3 class="process-name">
+                  {{ process.name || 'Untitled Process' }}
+                  <mat-icon class="edit-hint">edit</mat-icon>
+                </h3>
+                @if (process.description) {
+                  <p class="process-description">{{ process.description }}</p>
+                }
+              </div>
+              <mat-chip-set class="process-chips">
+                <mat-chip>
+                  <mat-icon matChipAvatar>play_arrow</mat-icon>
+                  {{ process.trigger.trigger_type }}
+                </mat-chip>
+                <mat-chip>{{ process.steps.length }} step{{ process.steps.length !== 1 ? 's' : '' }}</mat-chip>
+                <mat-chip [class]="'status-' + process.status">{{ process.status }}</mat-chip>
+              </mat-chip-set>
             }
-            <mat-chip-set class="process-chips">
-              <mat-chip>
-                <mat-icon matChipAvatar>play_arrow</mat-icon>
-                {{ process.trigger.trigger_type }}
-              </mat-chip>
-              <mat-chip>{{ process.steps.length }} step{{ process.steps.length !== 1 ? 's' : '' }}</mat-chip>
-              <mat-chip [class]="'status-' + process.status">{{ process.status }}</mat-chip>
-            </mat-chip-set>
+          </div>
+
+          <!-- Toolbar -->
+          <div class="diagram-toolbar">
+            <button mat-stroked-button (click)="addStep('action')" matTooltip="Add a new action step">
+              <mat-icon>add</mat-icon> Add Step
+            </button>
+            <button mat-stroked-button (click)="addStep('decision')" matTooltip="Add a decision point">
+              <mat-icon>call_split</mat-icon> Add Decision
+            </button>
           </div>
 
           @if (flowchartSvg()) {
-            <div class="flowchart-container" [innerHTML]="flowchartSvg()"></div>
+            <div class="flowchart-container" #flowchartContainer [innerHTML]="flowchartSvg()"></div>
+            <p class="flowchart-hint">Click a step to edit it and assign agents</p>
           }
 
           <!-- Step details list -->
           <div class="step-list">
             @for (step of process.steps; track step.step_id) {
-              <div class="step-detail">
+              <div
+                class="step-detail"
+                [class.selected]="selectedStepId() === step.step_id"
+                (click)="onStepClick(step.step_id)"
+                role="button"
+                tabindex="0"
+                (keydown.enter)="onStepClick(step.step_id)"
+              >
                 <div class="step-header">
                   @if (step.step_type === 'decision') {
                     <mat-icon class="step-icon decision">call_split</mat-icon>
@@ -262,6 +309,9 @@
                     <mat-icon class="step-icon action">play_circle</mat-icon>
                   }
                   <span class="step-name">{{ step.name }}</span>
+                  @if (step.agents.length === 0) {
+                    <mat-icon class="no-agent-warning" matTooltip="No agents assigned">warning</mat-icon>
+                  }
                 </div>
                 @if (step.description) {
                   <p class="step-description">{{ step.description }}</p>
@@ -295,10 +345,28 @@
         } @else {
           <div class="empty-process">
             <mat-icon class="empty-icon">account_tree</mat-icon>
-            <p>The process diagram will appear here as you define it through the chat.</p>
+            <p>No process defined yet. Use the chat to describe a process, or create one manually.</p>
+            <button mat-raised-button color="primary" (click)="createNewProcess()" [disabled]="saving()" class="create-process-btn">
+              <mat-icon>add</mat-icon>
+              Create New Process
+            </button>
           </div>
         }
       </mat-card-content>
     </mat-card>
   </div>
+
+  <!-- Step Editor slide-in panel -->
+  @if (selectedStep(); as step) {
+    <div class="step-editor-panel-wrapper">
+      <app-flow-step-editor
+        [step]="step"
+        [process]="currentProcess()!"
+        [allSteps]="currentProcess()!.steps"
+        (stepUpdated)="onStepUpdated($event)"
+        (stepDeleted)="onStepDeleted($event)"
+        (closed)="onStepEditorClosed()"
+      />
+    </div>
+  }
 </div>
