@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from ..models import ClientProfile
+
+logger = logging.getLogger(__name__)
 
 
 def _default_storage_dir() -> Path:
@@ -35,20 +39,36 @@ def get_profile(client_id: str, storage_dir: Optional[Path] = None) -> Optional[
         profile = ClientProfile.model_validate(data)
         profile.client_id = client_id
         return profile
+    except json.JSONDecodeError:
+        logger.warning("Corrupt profile JSON for %s at %s", client_id, path)
+        return None
     except Exception:
+        logger.warning("Failed to load profile for %s at %s", client_id, path, exc_info=True)
         return None
 
 
 def save_profile(
     client_id: str, profile: ClientProfile, storage_dir: Optional[Path] = None
 ) -> None:
-    """Save client profile. Creates directory if needed."""
+    """Save client profile atomically. Creates directory if needed."""
     directory = storage_dir or _default_storage_dir()
     directory.mkdir(parents=True, exist_ok=True)
     profile.client_id = client_id
     profile.updated_at = _now()
     path = _profile_path(directory, client_id)
-    path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    # Atomic write: write to temp file in same directory, then rename
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(profile.model_dump_json(indent=2))
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def create_profile(client_id: str, storage_dir: Optional[Path] = None) -> ClientProfile:

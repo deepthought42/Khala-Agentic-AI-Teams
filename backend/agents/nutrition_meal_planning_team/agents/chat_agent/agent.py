@@ -144,9 +144,10 @@ You MUST respond with valid JSON (no markdown fences):
 }
 
 Rules for the JSON:
-- "extracted_profile": include ONLY fields the user has explicitly mentioned
-  in this message or earlier in the conversation.  Omit fields you don't have
-  info for (don't guess allergies).  This gets merged into the stored profile.
+- "extracted_profile": include ALL fields the user has mentioned across the
+  ENTIRE conversation (not just this turn).  Omit fields you truly have no
+  info for (don't guess allergies).  This gets merged into the stored profile
+  — omitted fields are preserved, included fields overwrite.
 - "meal_plan_params": only needed when action is "generate_meals".
 - "feedback_data": only needed when action is "submit_feedback".
 - "action": set to "none" if you're just asking questions or chatting.

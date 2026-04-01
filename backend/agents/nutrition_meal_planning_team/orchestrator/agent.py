@@ -1,28 +1,34 @@
-"""Orchestrator: routes profile/plan/meals/feedback to the right agents and stores."""
+"""Orchestrator: routes profile/plan/meals/feedback/chat to the right agents and stores."""
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
-from llm_service import get_client
+from llm_service import LLMClient, get_client
 
+from ..agents.chat_agent import NutritionChatAgent
 from ..agents.intake_profile_agent import IntakeProfileAgent
 from ..agents.meal_planning_agent import MealPlanningAgent
 from ..agents.nutritionist_agent import NutritionistAgent
 from ..models import (
+    ChatRequest,
+    ChatResponse,
     ClientProfile,
     FeedbackRequest,
     FeedbackResponse,
     MealHistoryResponse,
     MealPlanRequest,
     MealPlanResponse,
+    MealRecommendationWithId,
+    NutritionPlan,
     NutritionPlanRequest,
     NutritionPlanResponse,
     ProfileUpdateRequest,
 )
 from ..shared.client_profile_store import ClientProfileStore
 from ..shared.meal_feedback_store import MealFeedbackStore
+from ..shared.nutrition_plan_store import NutritionPlanStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +36,26 @@ logger = logging.getLogger(__name__)
 class NutritionMealPlanningOrchestrator:
     """
     Single entry point: load profile/history as needed, delegate to intake/nutritionist/meal_planning agents.
-    API routes can call orchestrator methods or wire stores/agents directly.
+    All API routes should delegate to this class.
     """
 
     def __init__(
         self,
         profile_store: Optional[ClientProfileStore] = None,
         meal_feedback_store: Optional[MealFeedbackStore] = None,
+        nutrition_plan_store: Optional[NutritionPlanStore] = None,
+        llm: Optional[LLMClient] = None,
     ) -> None:
         self.profile_store = profile_store or ClientProfileStore()
         self.meal_feedback_store = meal_feedback_store or MealFeedbackStore()
-        llm = get_client("nutrition_meal_planning")
+        self.nutrition_plan_store = nutrition_plan_store or NutritionPlanStore()
+        llm = llm or get_client("nutrition_meal_planning")
         self.intake_agent = IntakeProfileAgent(llm)
         self.nutritionist_agent = NutritionistAgent(llm)
         self.meal_planning_agent = MealPlanningAgent(llm)
+        self.chat_agent = NutritionChatAgent(
+            llm, self.intake_agent, self.nutritionist_agent, self.meal_planning_agent
+        )
 
     def get_profile(self, client_id: str) -> Optional[ClientProfile]:
         """Get client profile or None if not found."""
@@ -58,22 +70,29 @@ class NutritionMealPlanningOrchestrator:
         self.profile_store.save_profile(client_id, profile)
         return profile
 
+    def _get_or_generate_nutrition_plan(self, profile: ClientProfile) -> NutritionPlan:
+        """Return cached nutrition plan if profile unchanged, otherwise generate and cache."""
+        cached = self.nutrition_plan_store.get_cached_plan(profile.client_id, profile)
+        if cached is not None:
+            return cached
+        plan = self.nutritionist_agent.run(profile)
+        self.nutrition_plan_store.save_plan(profile.client_id, profile, plan)
+        return plan
+
     def get_nutrition_plan(self, request: NutritionPlanRequest) -> NutritionPlanResponse:
         """Load profile, run nutritionist agent, return plan."""
         profile = self.profile_store.get_profile(request.client_id)
         if profile is None:
             raise ValueError("Profile not found")
-        plan = self.nutritionist_agent.run(profile)
+        plan = self._get_or_generate_nutrition_plan(profile)
         return NutritionPlanResponse(client_id=request.client_id, plan=plan)
 
     def get_meal_plan(self, request: MealPlanRequest) -> MealPlanResponse:
-        """Load profile, nutrition plan, meal history; run meal planning agent; record each suggestion; return with recommendation_ids."""
-        from ..models import MealRecommendationWithId
-
+        """Load profile, nutrition plan, meal history; run meal planning agent; record each suggestion."""
         profile = self.profile_store.get_profile(request.client_id)
         if profile is None:
             raise ValueError("Profile not found")
-        nutrition_plan = self.nutritionist_agent.run(profile)
+        nutrition_plan = self._get_or_generate_nutrition_plan(profile)
         meal_history = self.meal_feedback_store.get_meal_history(request.client_id, limit=50)
         suggestions = self.meal_planning_agent.run(
             profile,
@@ -82,12 +101,7 @@ class NutritionMealPlanningOrchestrator:
             period_days=request.period_days,
             meal_types=request.meal_types,
         )
-        with_ids: list[MealRecommendationWithId] = []
-        for s in suggestions:
-            rec_id = self.meal_feedback_store.record_recommendation(
-                request.client_id, s.model_dump()
-            )
-            with_ids.append(MealRecommendationWithId(**s.model_dump(), recommendation_id=rec_id))
+        with_ids = self._record_suggestions(request.client_id, suggestions)
         return MealPlanResponse(client_id=request.client_id, suggestions=with_ids)
 
     def submit_feedback(self, request: FeedbackRequest) -> FeedbackResponse:
@@ -104,3 +118,142 @@ class NutritionMealPlanningOrchestrator:
         """Return past recommendations and feedback for the client."""
         entries = self.meal_feedback_store.get_meal_history(client_id, limit=limit)
         return MealHistoryResponse(client_id=client_id, entries=entries)
+
+    # --- Chat ---
+
+    def handle_chat(self, body: ChatRequest) -> ChatResponse:
+        """Process one chat turn: run chat agent, then execute any triggered action."""
+        client_id = body.client_id.strip()
+        profile = self.profile_store.get_profile(client_id)
+
+        # Only load nutrition plan and history when profile exists and has meaningful data
+        nutrition_plan: Optional[NutritionPlan] = None
+        meal_history: List = []
+        if profile is not None:
+            try:
+                nutrition_plan = self._get_or_generate_nutrition_plan(profile)
+            except Exception:
+                nutrition_plan = None
+            meal_history = self.meal_feedback_store.get_meal_history(client_id, limit=50)
+
+        history_dicts = [{"role": m.role, "content": m.content} for m in body.conversation_history]
+
+        result = self.chat_agent.run(
+            client_id=client_id,
+            user_message=body.message,
+            conversation_history=history_dicts,
+            profile=profile,
+            nutrition_plan=nutrition_plan,
+            meal_suggestions=None,
+            meal_history=meal_history or None,
+        )
+
+        action = result.get("action", "none")
+        response = ChatResponse(
+            message=result.get("message", ""),
+            phase=result.get("phase", "intake"),
+            action=action,
+        )
+
+        if action == "save_profile":
+            response.profile = self._handle_save_profile(client_id, result, profile)
+        elif action == "generate_nutrition_plan":
+            response.nutrition_plan = self._handle_generate_nutrition_plan(client_id, profile)
+        elif action == "generate_meals":
+            response.meal_suggestions = self._handle_generate_meals(client_id, result, profile)
+        elif action == "submit_feedback":
+            response.feedback_recorded = self._handle_submit_feedback(result, meal_history)
+
+        return response
+
+    # --- Private helpers ---
+
+    def _record_suggestions(
+        self, client_id: str, suggestions: list
+    ) -> list[MealRecommendationWithId]:
+        """Record each suggestion in the store and attach recommendation IDs."""
+        with_ids: list[MealRecommendationWithId] = []
+        for s in suggestions:
+            rec_id = self.meal_feedback_store.record_recommendation(client_id, s.model_dump())
+            with_ids.append(MealRecommendationWithId(**s.model_dump(), recommendation_id=rec_id))
+        return with_ids
+
+    def _handle_save_profile(
+        self, client_id: str, result: Dict[str, Any], profile: Optional[ClientProfile]
+    ) -> Optional[ClientProfile]:
+        extracted = result.get("extracted_profile") or {}
+        update_data: dict = {}
+        for key in (
+            "household",
+            "dietary_needs",
+            "allergies_and_intolerances",
+            "lifestyle",
+            "preferences",
+            "goals",
+        ):
+            if key in extracted:
+                update_data[key] = extracted[key]
+
+        if update_data:
+            update_req = ProfileUpdateRequest.model_validate(update_data)
+            current = self.profile_store.get_profile(client_id)
+            if current is None:
+                current = self.profile_store.create_profile(client_id)
+            saved_profile = self.intake_agent.run(
+                client_id, update=update_req, current_profile=current
+            )
+            self.profile_store.save_profile(client_id, saved_profile)
+            return saved_profile
+        return profile
+
+    def _handle_generate_nutrition_plan(
+        self, client_id: str, profile: Optional[ClientProfile]
+    ) -> Optional[NutritionPlan]:
+        p = profile or self.profile_store.get_profile(client_id)
+        if p:
+            try:
+                return self.nutritionist_agent.run(p)
+            except Exception as e:
+                logger.warning("Nutrition plan generation failed during chat: %s", e)
+        return None
+
+    def _handle_generate_meals(
+        self, client_id: str, result: Dict[str, Any], profile: Optional[ClientProfile]
+    ) -> list[MealRecommendationWithId]:
+        p = profile or self.profile_store.get_profile(client_id)
+        if not p:
+            return []
+        try:
+            params = result.get("meal_plan_params") or {}
+            period_days = params.get("period_days", 7)
+            meal_types = params.get("meal_types", ["lunch", "dinner"])
+            np = self._get_or_generate_nutrition_plan(p)
+            mh = self.meal_feedback_store.get_meal_history(client_id, limit=50)
+            suggestions = self.meal_planning_agent.run(
+                p, np, mh, period_days=period_days, meal_types=meal_types
+            )
+            return self._record_suggestions(client_id, suggestions)
+        except Exception as e:
+            logger.warning("Meal plan generation failed during chat: %s", e)
+            return []
+
+    def _handle_submit_feedback(self, result: Dict[str, Any], meal_history: list) -> bool:
+        fb = result.get("feedback_data") or {}
+        meal_name = fb.get("meal_name", "").strip().lower()
+        rating = fb.get("rating")
+        would_make_again = fb.get("would_make_again")
+        notes = fb.get("notes", "")
+
+        if meal_name and meal_history:
+            for entry in meal_history:
+                snap = entry.meal_snapshot or {}
+                name = (snap.get("name") or "").strip().lower()
+                if name and (meal_name in name or name in meal_name):
+                    self.meal_feedback_store.record_feedback(
+                        entry.recommendation_id,
+                        rating=rating,
+                        would_make_again=would_make_again,
+                        notes=notes,
+                    )
+                    return True
+        return False
