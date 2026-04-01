@@ -24,7 +24,7 @@ DEFAULT_RETRY_POLICY = RetryPolicy(
 
 @workflow.defn(name="NutritionMealPlanWorkflow")
 class NutritionMealPlanWorkflow:
-    """Runs one meal plan job as an activity."""
+    """Runs one meal plan job as an activity with heartbeating."""
 
     @workflow.run
     async def run(self, job_id: str, request_dict: Dict[str, Any]) -> None:
@@ -33,5 +33,6 @@ class NutritionMealPlanWorkflow:
             args=[job_id, request_dict],
             task_queue=TASK_QUEUE,
             schedule_to_close_timeout=MEAL_PLAN_TIMEOUT,
+            heartbeat_timeout=timedelta(minutes=5),
             retry_policy=DEFAULT_RETRY_POLICY,
         )

@@ -129,7 +129,7 @@ class FeedbackRecord(BaseModel):
     """User feedback on a recommended meal."""
 
     recommendation_id: str = ""
-    rating: Optional[int] = None  # e.g. 1-5
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
     would_make_again: Optional[bool] = None
     notes: str = ""
     submitted_at: Optional[str] = None
@@ -197,7 +197,7 @@ class FeedbackRequest(BaseModel):
 
     client_id: str
     recommendation_id: str
-    rating: Optional[int] = None  # 1-5
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
     would_make_again: Optional[bool] = None
     notes: Optional[str] = None
 
