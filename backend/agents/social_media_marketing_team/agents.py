@@ -437,6 +437,18 @@ class ExperimentDesignAgent:
         return ExperimentPlan(campaign_name=campaign_name, arms=arms)
 
 
+def _word_boundary_pattern(term: str) -> str:
+    """Build a regex that matches *term* as a whole token.
+
+    ``\\b`` only works between word (``\\w``) and non-word characters.  For
+    terms that end with non-word characters (e.g. ``100%``) the trailing
+    ``\\b`` silently fails.  This helper uses lookarounds that work
+    regardless of character class at the edges.
+    """
+    escaped = re.escape(term)
+    return rf"(?<!\w){escaped}(?!\w)"
+
+
 @dataclass
 class RiskComplianceAgent:
     """Reviews concepts for risk and compliance issues."""
@@ -455,27 +467,25 @@ class RiskComplianceAgent:
 
         banned_terms = ["guarantee", "guaranteed", "instant", "overnight", "no risk"]
         for term in banned_terms:
-            # Use word-boundary matching to avoid false positives (e.g. "there is no risk"
-            # matching inside unrelated sentences like "no risk-free approach").
-            if re.search(rf"\b{re.escape(term)}\b", lowered):
+            if re.search(_word_boundary_pattern(term), lowered):
                 risk_reasons.append(f"Contains risky claim term: {term} (overclaim)")
 
         if goals.brand_guidelines:
             guidelines_lower = goals.brand_guidelines.lower()
             if "do not mention competitors" in guidelines_lower and re.search(
-                r"\bcompetitor\b", lowered
+                _word_boundary_pattern("competitor"), lowered
             ):
                 risk_reasons.append(
                     "Mentions competitors despite guidelines (brand_guideline_violation)"
                 )
             if "avoid absolute claims" in guidelines_lower and any(
-                re.search(rf"\b{re.escape(t)}\b", lowered) for t in ("never", "always", "100%")
+                re.search(_word_boundary_pattern(t), lowered) for t in ("never", "always", "100%")
             ):
                 risk_reasons.append("Uses absolute language discouraged by guidelines (regulatory)")
 
         if risk_reasons:
             risk_level = "high"
-        elif any(re.search(rf"\b{re.escape(t)}\b", lowered) for t in ("might", "could", "may")):
+        elif any(re.search(_word_boundary_pattern(t), lowered) for t in ("might", "could", "may")):
             risk_level = "medium"
 
         if risk_level == "low" and not risk_reasons:
