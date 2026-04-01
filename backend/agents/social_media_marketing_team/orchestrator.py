@@ -35,6 +35,7 @@ class SocialMediaMarketingOrchestrator:
 
     CONSENSUS_THRESHOLD = 0.75
     MIN_COLLAB_ROUNDS = 2
+    MAX_COLLAB_ROUNDS = 10
     RUBRIC_MINIMUM = 0.7
 
     def __init__(self, llm_model_name: str = "") -> None:
@@ -118,7 +119,7 @@ class SocialMediaMarketingOrchestrator:
 
     def _reach_consensus(self, proposal: CampaignProposal) -> CampaignProposal:
         round_number = 0
-        while True:
+        while round_number < self.MAX_COLLAB_ROUNDS:
             round_number += 1
             scores: List[float] = []
             rubric_results: List[bool] = []
@@ -147,6 +148,12 @@ class SocialMediaMarketingOrchestrator:
                 "Consensus not reached yet: refining objective and metrics for next round."
             )
             proposal.success_metrics.append(f"Refined metric checkpoint round {round_number}")
+
+        proposal.communication_log.append(
+            f"Max collaboration rounds ({self.MAX_COLLAB_ROUNDS}) reached; proceeding with current proposal "
+            f"(score={proposal.consensus_score:.2f})."
+        )
+        return proposal
 
     @staticmethod
     def _calibrate_probabilities(
@@ -205,13 +212,20 @@ class SocialMediaMarketingOrchestrator:
             if idea.estimated_engagement_probability >= 0.70 and idea.risk_level != "high"
         ]
 
-        idx = 1
-        while len(approved) < required_posts:
-            seed = (
-                approved[(idx - 1) % len(approved)]
-                if approved
-                else risk_reviewed[(idx - 1) % len(risk_reviewed)]
+        if not approved and not risk_reviewed:
+            return ContentPlan(
+                campaign_name=proposal.campaign_name,
+                cadence_posts_per_day=goals.cadence_posts_per_day,
+                duration_days=goals.duration_days,
+                total_required_posts=required_posts,
+                approved_ideas=[],
             )
+
+        seed_pool = approved if approved else risk_reviewed
+        idx = 1
+        max_expansion = required_posts * 2
+        while len(approved) < required_posts and idx <= max_expansion:
+            seed = seed_pool[(idx - 1) % len(seed_pool)]
             clone = seed.model_copy(deep=True)
             clone.title = f"{seed.title} variant {idx}"
             clone.concept = f"{seed.concept} Variant angle {idx} tuned for daypart testing."

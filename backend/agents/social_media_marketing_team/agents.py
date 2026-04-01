@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -17,6 +18,66 @@ from .models import (
 
 
 @dataclass
+class _PlatformConfig:
+    """Per-platform guidelines, KPIs, and schedule templates."""
+
+    guideline_templates: List[str]
+    kpis_lead: List[str]
+    kpis_engagement: List[str]
+    schedule_suffix: str
+
+
+_PLATFORM_CONFIGS: Dict[Platform, _PlatformConfig] = {
+    Platform.LINKEDIN: _PlatformConfig(
+        guideline_templates=[
+            "Write in a {voice} voice tailored to {audience}.",
+            "Lead with a sharp business pain point or outcome in the first two lines.",
+            "Use short paragraphs, scannable formatting, and one clear CTA per post.",
+        ],
+        kpis_lead=["qualified inbound messages", "demo or meeting requests", "profile visits"],
+        kpis_engagement=["comments", "reactions", "profile visits"],
+        schedule_suffix=(
+            "(thought-leadership post, tactical carousel, and comment strategy) "
+            "mapped to priority messaging pillars."
+        ),
+    ),
+    Platform.FACEBOOK: _PlatformConfig(
+        guideline_templates=[
+            "Use community-oriented framing and relatable storytelling for {audience}.",
+            "Pair each post with a strong visual and one direct question to spark replies.",
+            "Optimize copy for mobile-first scanning with short paragraphs and emojis used sparingly.",
+        ],
+        kpis_lead=["link clicks", "outbound site sessions", "lead form starts"],
+        kpis_engagement=["shares", "comments", "time on post"],
+        schedule_suffix="(story-led post plus at least one discussion prompt) that invites comments and shares.",
+    ),
+    Platform.INSTAGRAM: _PlatformConfig(
+        guideline_templates=[
+            "Use a strong visual hook aligned with {voice}.",
+            "Keep captions concise, skimmable, and front-load the value in the first sentence.",
+            "Prioritize carousel- and reels-friendly concepts with clear narrative arcs.",
+        ],
+        kpis_lead=["profile visits", "link-in-bio taps", "DM replies"],
+        kpis_engagement=["saves", "reel plays", "follows"],
+        schedule_suffix=(
+            "(mix of carousels, reels, and stories) sourced from the approved concept pool, "
+            "including at least one experimental creative angle."
+        ),
+    ),
+    Platform.X: _PlatformConfig(
+        guideline_templates=[
+            "Lead with a concise opinion or insight in < 240 characters, using a {voice} tone.",
+            "Use threads for nuanced ideas and quote-post interaction.",
+            "Tie posts to timely conversations or trends when relevant to the brand.",
+        ],
+        kpis_lead=["link clicks", "profile visits", "high-intent replies"],
+        kpis_engagement=["reposts", "replies", "follower growth"],
+        schedule_suffix="(short posts or threads) that test at least one strong hook and one follow-up insight.",
+    ),
+}
+
+
+@dataclass
 class PlatformSpecialistAgent:
     """Specialist for one social network platform."""
 
@@ -28,78 +89,20 @@ class PlatformSpecialistAgent:
         campaign_name: str,
         ideas_count: int,
     ) -> PlatformExecutionPlan:
-        """
-        Build a platform execution plan that is aware of brand goals, audience,
-        and tone, not just the raw platform choice.
-        """
+        """Build a platform execution plan aware of brand goals, audience, and tone."""
+        cfg = _PLATFORM_CONFIGS[self.platform]
+
         objective = (goals.brand_objectives or "").lower()
         high_intent_goals = {"demo", "trial", "signup", "lead", "pipeline"}
-        is_lead_or_conversion_focused = any(term in objective for term in high_intent_goals)
+        is_lead_focused = any(term in objective for term in high_intent_goals)
 
-        if self.platform == Platform.LINKEDIN:
-            guidelines = [
-                f"Write in a {goals.voice_and_tone} voice tailored to {goals.target_audience}.",
-                "Lead with a sharp business pain point or outcome in the first two lines.",
-                "Use short paragraphs, scannable formatting, and one clear CTA per post.",
-            ]
-            kpis = (
-                ["qualified inbound messages", "demo or meeting requests", "profile visits"]
-                if is_lead_or_conversion_focused
-                else ["comments", "reactions", "profile visits"]
-            )
-        elif self.platform == Platform.FACEBOOK:
-            guidelines = [
-                f"Use community-oriented framing and relatable storytelling for {goals.target_audience}.",
-                "Pair each post with a strong visual and one direct question to spark replies.",
-                "Optimize copy for mobile-first scanning with short paragraphs and emojis used sparingly.",
-            ]
-            kpis = (
-                ["link clicks", "outbound site sessions", "lead form starts"]
-                if is_lead_or_conversion_focused
-                else ["shares", "comments", "time on post"]
-            )
-        elif self.platform == Platform.INSTAGRAM:
-            guidelines = [
-                f"Use a strong visual hook aligned with {goals.voice_and_tone}.",
-                "Keep captions concise, skimmable, and front-load the value in the first sentence.",
-                "Prioritize carousel- and reels-friendly concepts with clear narrative arcs.",
-            ]
-            kpis = (
-                ["profile visits", "link-in-bio taps", "DM replies"]
-                if is_lead_or_conversion_focused
-                else ["saves", "reel plays", "follows"]
-            )
-        else:
-            guidelines = [
-                f"Lead with a concise opinion or insight in < 240 characters, using a {goals.voice_and_tone} tone.",
-                "Use threads for nuanced ideas and quote-post interaction.",
-                "Tie posts to timely conversations or trends when relevant to the brand.",
-            ]
-            kpis = (
-                ["link clicks", "profile visits", "high-intent replies"]
-                if is_lead_or_conversion_focused
-                else ["reposts", "replies", "follower growth"]
-            )
+        fmt = {"voice": goals.voice_and_tone, "audience": goals.target_audience}
+        guidelines = [t.format(**fmt) for t in cfg.guideline_templates]
+        kpis = cfg.kpis_lead if is_lead_focused else cfg.kpis_engagement
 
         schedule: List[str] = []
         for day in range(1, min(8, goals.duration_days + 1)):
-            base = f"Day {day}: {goals.cadence_posts_per_day} posts"
-            if self.platform == Platform.INSTAGRAM:
-                detail = (
-                    f"{base} (mix of carousels, reels, and stories) sourced from the approved concept pool, "
-                    "including at least one experimental creative angle."
-                )
-            elif self.platform == Platform.LINKEDIN:
-                detail = (
-                    f"{base} (thought-leadership post, tactical carousel, and comment strategy) "
-                    "mapped to priority messaging pillars."
-                )
-            elif self.platform == Platform.FACEBOOK:
-                detail = f"{base} (story-led post plus at least one discussion prompt) that invites comments and shares."
-            else:
-                detail = f"{base} (short posts or threads) that test at least one strong hook and one follow-up insight."
-            schedule.append(detail)
-
+            schedule.append(f"Day {day}: {goals.cadence_posts_per_day} posts {cfg.schedule_suffix}")
         schedule.append(
             f"Week-1 coverage target: adapt at least {ideas_count} approved concepts for {self.platform.value}, "
             "ensuring every goal in BrandGoals.goals is represented across the content mix."
@@ -113,16 +116,55 @@ class PlatformSpecialistAgent:
         )
 
 
+_ROLE_RUBRIC_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "Campaign Strategist": {
+        "measurability": 1.10,
+        "audience_specificity": 0.95,
+        "platform_differentiation": 1.08,
+        "traceability": 1.0,
+        "feasibility": 0.92,
+    },
+    "Audience Research Lead": {
+        "measurability": 0.92,
+        "audience_specificity": 1.15,
+        "platform_differentiation": 0.95,
+        "traceability": 1.0,
+        "feasibility": 1.0,
+    },
+    "Performance Marketing Analyst": {
+        "measurability": 1.15,
+        "audience_specificity": 0.92,
+        "platform_differentiation": 0.95,
+        "traceability": 1.08,
+        "feasibility": 0.95,
+    },
+}
+
+_DEFAULT_RUBRIC_WEIGHTS: Dict[str, float] = {
+    "measurability": 1.0,
+    "audience_specificity": 1.0,
+    "platform_differentiation": 1.0,
+    "traceability": 1.0,
+    "feasibility": 1.0,
+}
+
+
 @dataclass
 class CampaignCollaborationAgent:
-    """A planning specialist who contributes to campaign proposal quality."""
+    """A planning specialist who contributes to campaign proposal quality.
+
+    Each role applies different rubric weights reflecting their area of expertise:
+    - Campaign Strategist: emphasises measurability and platform differentiation
+    - Audience Research Lead: emphasises audience specificity
+    - Performance Marketing Analyst: emphasises measurability and traceability
+    """
 
     role: str
 
     def evaluate_proposal(
         self, proposal: CampaignProposal, round_number: int
     ) -> tuple[float, str, Dict[str, float]]:
-        """Provide a richer, more actionable rubric for proposal quality."""
+        """Provide a role-weighted rubric for proposal quality."""
         objective_lower = proposal.objective.lower()
         audience_lower = proposal.audience_hypothesis.lower()
 
@@ -160,13 +202,17 @@ class CampaignCollaborationAgent:
             feasibility += 0.1
 
         round_lift = min(0.2, 0.04 * round_number)
-        rubric = {
+        raw_rubric = {
             "measurability": min(1.0, measurability + round_lift),
             "audience_specificity": min(1.0, audience_specificity + round_lift),
             "platform_differentiation": min(1.0, platform_differentiation + round_lift),
             "traceability": min(1.0, traceability + round_lift),
             "feasibility": min(1.0, feasibility + round_lift),
         }
+
+        # Apply role-specific weights so each agent emphasises their expertise.
+        weights = _ROLE_RUBRIC_WEIGHTS.get(self.role, _DEFAULT_RUBRIC_WEIGHTS)
+        rubric = {dim: min(1.0, raw_rubric[dim] * weights.get(dim, 1.0)) for dim in raw_rubric}
         score = sum(rubric.values()) / len(rubric)
 
         weak_dimensions = [name for name, value in rubric.items() if value < 0.75]
@@ -205,31 +251,51 @@ class CampaignCollaborationAgent:
         return score, note, rubric
 
 
+_STORYTELLING_ARCHETYPES = [
+    ("Customer story", "Tell a short story showing how someone overcame"),
+    ("Behind-the-scenes", "Reveal behind-the-scenes context that demystifies"),
+    ("Brand origin", "Share the founding insight or pivotal moment behind"),
+    ("Community spotlight", "Highlight a community member or partner experience with"),
+]
+
+_CREATIVE_TESTING_ARCHETYPES = [
+    ("Educational framework", "Share a simple framework or checklist related to"),
+    ("Contrarian take", "Offer a surprising or counter-intuitive perspective on"),
+    ("Data snapshot", "Visualise a compelling data point or trend around"),
+    ("Rapid-fire tips", "Deliver 3 actionable tips in under 60 seconds about"),
+]
+
+
 @dataclass
 class ContentConceptAgent:
-    """Generates candidate post concepts before final filtering."""
+    """Generates candidate post concepts before final filtering.
+
+    The archetype set and scoring biases differ by role:
+    - Brand Storytelling Lead: narrative archetypes, higher brand-fit scores for stories
+    - Creative Testing Lead: experimental archetypes, higher resonance for data-driven content
+    """
 
     role: str
+
+    def _archetypes(self) -> List[tuple[str, str]]:
+        if self.role == "Brand Storytelling Lead":
+            return _STORYTELLING_ARCHETYPES
+        if self.role == "Creative Testing Lead":
+            return _CREATIVE_TESTING_ARCHETYPES
+        # Fallback: combined set (deduped by name)
+        return _STORYTELLING_ARCHETYPES + _CREATIVE_TESTING_ARCHETYPES
 
     def generate_candidates(
         self, proposal: CampaignProposal, goals: BrandGoals
     ) -> List[ConceptIdea]:
-        """
-        Generate a diverse, platform-aware set of candidate concepts.
-        """
+        """Generate a diverse, platform-aware set of candidate concepts."""
         base_topics = proposal.messaging_pillars or [
             "Educational insight",
             "Proof point",
             "Actionable tip",
         ]
         linked_goals = goals.goals or ["engagement"]
-
-        archetypes = [
-            ("Educational framework", "Share a simple framework or checklist related to"),
-            ("Customer story", "Tell a short story showing how someone overcame"),
-            ("Contrarian take", "Offer a surprising or counter-intuitive perspective on"),
-            ("Behind-the-scenes", "Reveal behind-the-scenes context that demystifies"),
-        ]
+        archetypes = self._archetypes()
 
         ideas: List[ConceptIdea] = []
         idx = 0
@@ -237,7 +303,6 @@ class ContentConceptAgent:
             for archetype_name, archetype_prompt in archetypes:
                 idx += 1
 
-                # Decide primary platform mix based on archetype
                 target_platforms = [
                     Platform.LINKEDIN,
                     Platform.FACEBOOK,
@@ -262,6 +327,9 @@ class ContentConceptAgent:
                     brand_fit_score += 0.05
                 if "behind-the-scenes" in topic.lower():
                     brand_fit_score += 0.03
+                # Storytelling role gives extra brand-fit credit for narrative archetypes
+                if self.role == "Brand Storytelling Lead" and "story" in archetype_name.lower():
+                    brand_fit_score += 0.04
 
                 audience_resonance_score = 0.7
                 if any(
@@ -271,6 +339,12 @@ class ContentConceptAgent:
                     audience_resonance_score += 0.05
                 if "story" in archetype_name.lower():
                     audience_resonance_score += 0.03
+                # Creative testing role gives extra resonance for data-driven formats
+                if self.role == "Creative Testing Lead" and archetype_name in (
+                    "Data snapshot",
+                    "Contrarian take",
+                ):
+                    audience_resonance_score += 0.04
 
                 goal_alignment_score = 0.7
                 if goal.lower() in proposal.objective.lower():
@@ -363,6 +437,18 @@ class ExperimentDesignAgent:
         return ExperimentPlan(campaign_name=campaign_name, arms=arms)
 
 
+def _word_boundary_pattern(term: str) -> str:
+    """Build a regex that matches *term* as a whole token.
+
+    ``\\b`` only works between word (``\\w``) and non-word characters.  For
+    terms that end with non-word characters (e.g. ``100%``) the trailing
+    ``\\b`` silently fails.  This helper uses lookarounds that work
+    regardless of character class at the edges.
+    """
+    escaped = re.escape(term)
+    return rf"(?<!\w){escaped}(?!\w)"
+
+
 @dataclass
 class RiskComplianceAgent:
     """Reviews concepts for risk and compliance issues."""
@@ -374,29 +460,32 @@ class RiskComplianceAgent:
         Review a concept for risk and compliance, returning an updated idea with
         risk level and structured reasons.
         """
-        lowered = f"{idea.title} {idea.concept}".lower()
+        text = f"{idea.title} {idea.concept}"
+        lowered = text.lower()
         risk_reasons: List[str] = []
         risk_level = "low"
 
         banned_terms = ["guarantee", "guaranteed", "instant", "overnight", "no risk"]
         for term in banned_terms:
-            if term in lowered:
+            if re.search(_word_boundary_pattern(term), lowered):
                 risk_reasons.append(f"Contains risky claim term: {term} (overclaim)")
 
         if goals.brand_guidelines:
             guidelines_lower = goals.brand_guidelines.lower()
-            if "do not mention competitors" in guidelines_lower and "competitor" in lowered:
+            if "do not mention competitors" in guidelines_lower and re.search(
+                r"(?<!\w)competitors?(?!\w)", lowered
+            ):
                 risk_reasons.append(
                     "Mentions competitors despite guidelines (brand_guideline_violation)"
                 )
             if "avoid absolute claims" in guidelines_lower and any(
-                t in lowered for t in ("never", "always", "100%")
+                re.search(_word_boundary_pattern(t), lowered) for t in ("never", "always", "100%")
             ):
                 risk_reasons.append("Uses absolute language discouraged by guidelines (regulatory)")
 
         if risk_reasons:
             risk_level = "high"
-        elif any(term in lowered for term in ("might", "could", "may")):
+        elif any(re.search(_word_boundary_pattern(t), lowered) for t in ("might", "could", "may")):
             risk_level = "medium"
 
         if risk_level == "low" and not risk_reasons:

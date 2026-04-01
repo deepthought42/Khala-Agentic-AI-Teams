@@ -93,8 +93,10 @@ class TrendDiscoveryAgent:
     """
 
     def __init__(self, llm_client: LLMClient, web_search: OllamaWebSearch) -> None:
-        assert llm_client is not None, "llm_client is required"
-        assert web_search is not None, "web_search is required"
+        if llm_client is None:
+            raise ValueError("llm_client is required")
+        if web_search is None:
+            raise ValueError("web_search is required")
         self.llm = llm_client
         self.web_search = web_search
 
@@ -156,7 +158,7 @@ class TrendDiscoveryAgent:
         topics: List[TrendingTopic] = []
         try:
             data = self.llm.complete_json(prompt, temperature=0.2)
-            raw_topics = data.get("topics") or [] if isinstance(data, dict) else []
+            raw_topics = data.get("topics", []) if isinstance(data, dict) else []
             for item in raw_topics[:3]:
                 if not isinstance(item, dict):
                     continue
