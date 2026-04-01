@@ -242,6 +242,10 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
         this.currentProcess.set(process);
         this.buildFlowchart(process);
         this.saving.set(false);
+        // Link the new process to the active conversation so chat stays in sync
+        if (this.conversationId) {
+          this.api.setConversationProcess(this.conversationId, process.process_id).subscribe();
+        }
       },
       error: (err) => {
         this.error.set(err?.error?.detail ?? 'Failed to create process');

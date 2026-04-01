@@ -400,6 +400,22 @@ def send_message(conversation_id: str, req: SendMessageRequest):
     return _build_state_response(conversation_id, team_id, effective_process, suggestions)
 
 
+@app.put("/conversations/{conversation_id}/process")
+def set_conversation_process(conversation_id: str, body: dict):
+    """Link a process to the active conversation so chat stays in sync with the visual editor."""
+    team_id = _store.get_conversation_team_id(conversation_id)
+    if not team_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    process_id = body.get("process_id")
+    if not process_id:
+        raise HTTPException(status_code=400, detail="process_id is required")
+    process = _store.get_process(process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Process not found")
+    _store.set_conversation_process(conversation_id, process_id)
+    return {"conversation_id": conversation_id, "process_id": process_id}
+
+
 @app.get("/conversations/{conversation_id}", response_model=ConversationStateResponse)
 def get_conversation(conversation_id: str):
     team_id = _store.get_conversation_team_id(conversation_id)

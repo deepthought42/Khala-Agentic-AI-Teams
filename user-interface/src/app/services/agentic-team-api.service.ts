@@ -81,6 +81,14 @@ export class AgenticTeamApiService {
     return this.http.get<AgenticConversationSummary[]>(`${this.base}/teams/${teamId}/conversations`);
   }
 
+  /** Link a process to a conversation so chat stays in sync with the visual editor. */
+  setConversationProcess(conversationId: string, processId: string): Observable<{ conversation_id: string; process_id: string }> {
+    return this.http.put<{ conversation_id: string; process_id: string }>(
+      `${this.base}/conversations/${conversationId}/process`,
+      { process_id: processId },
+    );
+  }
+
   /** Create a new blank process for a team. */
   createProcess(teamId: string): Observable<ProcessDefinition> {
     return this.http.post<ProcessDefinition>(`${this.base}/teams/${teamId}/processes`, {});
