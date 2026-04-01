@@ -137,6 +137,24 @@ export interface AgenticConversationSummary {
   message_count: number;
 }
 
+/** An agent recommended for a process step. */
+export interface RecommendedAgent {
+  agent_name: string;
+  source: 'registry' | 'roster';
+  role: string;
+  skills: string[];
+  tools: string[];
+  keywords: string[];
+  match_score: number;
+}
+
+/** Response from the recommend-agents endpoint. */
+export interface RecommendAgentsResponse {
+  step_id: string;
+  step_name: string;
+  recommended_agents: RecommendedAgent[];
+}
+
 /** Per-step agent sandbox status (Agent Provisioning team). */
 export interface AgentEnvProvisionSummary {
   stable_key: string;

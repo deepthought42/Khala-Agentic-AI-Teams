@@ -12,6 +12,7 @@ import type {
   AgenticConversationSummary,
   AgentEnvProvisionSummary,
   ProcessDefinition,
+  RecommendAgentsResponse,
   RosterValidationResult,
 } from '../models';
 
@@ -78,6 +79,24 @@ export class AgenticTeamApiService {
 
   listConversations(teamId: string): Observable<AgenticConversationSummary[]> {
     return this.http.get<AgenticConversationSummary[]>(`${this.base}/teams/${teamId}/conversations`);
+  }
+
+  /** Create a new blank process for a team. */
+  createProcess(teamId: string): Observable<ProcessDefinition> {
+    return this.http.post<ProcessDefinition>(`${this.base}/teams/${teamId}/processes`, {});
+  }
+
+  /** Update a process definition (visual editor saves). */
+  updateProcess(processId: string, process: ProcessDefinition): Observable<ProcessDefinition> {
+    return this.http.put<ProcessDefinition>(`${this.base}/processes/${processId}`, process);
+  }
+
+  /** Get agent recommendations for a specific process step. */
+  recommendAgentsForStep(processId: string, stepId: string): Observable<RecommendAgentsResponse> {
+    return this.http.post<RecommendAgentsResponse>(
+      `${this.base}/processes/${processId}/steps/${stepId}/recommend-agents`,
+      {},
+    );
   }
 
   /** Sandbox provisioning status for each process step agent (Agent Provisioning team). */

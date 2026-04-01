@@ -3,15 +3,30 @@
   grid-template-columns: 1fr minmax(300px, 380px) 1fr;
   gap: 20px;
   min-height: 600px;
+  transition: grid-template-columns 0.3s ease;
+
+  &.editor-open {
+    grid-template-columns: 1fr minmax(260px, 320px) 1fr minmax(320px, 380px);
+  }
 
   @media (max-width: 1280px) {
     grid-template-columns: 1fr 1fr;
     .roster-panel { order: 3; grid-column: 1 / -1; }
+
+    &.editor-open {
+      grid-template-columns: 1fr 1fr;
+      .step-editor-panel-wrapper { order: 4; grid-column: 1 / -1; }
+    }
   }
 
   @media (max-width: 960px) {
     grid-template-columns: 1fr;
     .roster-panel { order: 3; grid-column: auto; }
+
+    &.editor-open {
+      grid-template-columns: 1fr;
+      .step-editor-panel-wrapper { order: 4; grid-column: auto; }
+    }
   }
 }
 
@@ -493,6 +508,9 @@
   overflow-y: auto;
 
   mat-card-header {
+    display: flex;
+    align-items: center;
+
     mat-card-title {
       display: flex;
       align-items: center;
@@ -503,7 +521,15 @@
         color: #3fb950;
       }
     }
+
+    .spacer { flex: 1; }
   }
+}
+
+.saving-badge {
+  font-size: 0.6875rem !important;
+  --mdc-chip-label-text-color: #58a6ff;
+  --mdc-chip-elevated-container-color: rgba(88, 166, 255, 0.1);
 }
 
 .process-meta {
@@ -513,6 +539,33 @@
     margin: 0 0 4px;
     color: #f0f6fc;
     font-size: 1.125rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .edit-hint {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    color: #484f58;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .meta-display {
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 8px;
+    transition: background 0.2s;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.03);
+
+      .edit-hint {
+        opacity: 1;
+      }
+    }
   }
 
   .process-description {
@@ -531,13 +584,69 @@
   }
 }
 
+.meta-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  .meta-field {
+    width: 100%;
+  }
+
+  .meta-edit-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+}
+
+// Diagram toolbar
+.diagram-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+
+  button {
+    font-size: 0.8125rem;
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #c9d1d9;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: #58a6ff;
+      color: #58a6ff;
+    }
+  }
+}
+
 .flowchart-container {
   background: #0d1117;
   border-radius: 8px;
   padding: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   overflow: auto;
   max-height: 400px;
+
+  ::ng-deep .flowchart-node {
+    &:hover {
+      opacity: 0.85;
+    }
+  }
+}
+
+.flowchart-hint {
+  text-align: center;
+  color: #484f58;
+  font-size: 0.6875rem;
+  margin: 0 0 16px;
+  font-style: italic;
 }
 
 .step-list {
@@ -552,6 +661,17 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
   padding: 12px 16px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  &.selected {
+    border-color: #58a6ff;
+    background: rgba(88, 166, 255, 0.05);
+  }
 
   .step-header {
     display: flex;
@@ -573,6 +693,14 @@
       color: #f0f6fc;
       font-weight: 500;
       font-size: 0.9375rem;
+      flex: 1;
+    }
+
+    .no-agent-warning {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      color: #d29922;
     }
   }
 
@@ -650,5 +778,37 @@
     color: #8b949e;
     max-width: 280px;
     line-height: 1.5;
+    margin-bottom: 20px;
+  }
+
+  .create-process-btn {
+    mat-icon {
+      margin-right: 4px;
+    }
+  }
+}
+
+// -------------------------------------------------------
+// Step editor panel (4th column)
+// -------------------------------------------------------
+
+.step-editor-panel-wrapper {
+  display: flex;
+  flex-direction: column;
+  max-height: 800px;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  animation: slideIn 0.25s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }

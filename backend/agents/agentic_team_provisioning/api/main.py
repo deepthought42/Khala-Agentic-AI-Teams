@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -26,6 +27,12 @@ from agentic_team_provisioning.models import (
     CreateTeamResponse,
     FormRecord,
     ProcessDefinition,
+    ProcessOutput,
+    ProcessStatus,
+    ProcessStep,
+    ProcessTrigger,
+    RecommendAgentsResponse,
+    RecommendedAgent,
     RosterValidationResult,
     SendMessageRequest,
     SubmitTeamAnswersRequest,
@@ -180,6 +187,117 @@ def get_process(process_id: str):
     if not process:
         raise HTTPException(status_code=404, detail="Process not found")
     return process
+
+
+@app.post("/teams/{team_id}/processes", response_model=ProcessDefinition, status_code=201)
+def create_process(team_id: str):
+    """Create a new blank process for the team."""
+    team = _store.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    process = ProcessDefinition(
+        process_id=str(uuid.uuid4()),
+        name="New Process",
+        description="",
+        trigger=ProcessTrigger(),
+        steps=[],
+        output=ProcessOutput(),
+        status=ProcessStatus.DRAFT,
+    )
+    _store.save_process(team_id, process)
+    return process
+
+
+@app.put("/processes/{process_id}", response_model=ProcessDefinition)
+def update_process(process_id: str, process: ProcessDefinition):
+    """Update a process definition (visual editor saves)."""
+    existing = _store.get_process(process_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Process not found")
+    if process.process_id != process_id:
+        raise HTTPException(status_code=400, detail="process_id in body must match URL")
+    # Find team_id from the store
+    team_id = _store.get_process_team_id(process_id)
+    if not team_id:
+        raise HTTPException(status_code=404, detail="Process team not found")
+    _store.save_process(team_id, process)
+    _after_process_saved(team_id, process)
+    return process
+
+
+@app.post(
+    "/processes/{process_id}/steps/{step_id}/recommend-agents",
+    response_model=RecommendAgentsResponse,
+)
+def recommend_agents_for_step(process_id: str, step_id: str):
+    """Recommend agents for a specific process step based on its description."""
+    process = _store.get_process(process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Process not found")
+    step = next((s for s in process.steps if s.step_id == step_id), None)
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+
+    team_id = _store.get_process_team_id(process_id)
+    recommendations: list[RecommendedAgent] = []
+
+    # Try registry-based recommendations via studiogrid
+    try:
+        from studiogrid.runtime.registry_loader import RegistryLoader
+
+        loader = RegistryLoader(Path(__file__).resolve().parents[4] / "studiogrid" / "src" / "studiogrid")
+        search_text = f"{step.name} {step.description}"
+        found = loader.find_assisting_agents(problem_description=search_text, required_skills=[], limit=5)
+        for agent in found:
+            recommendations.append(
+                RecommendedAgent(
+                    agent_name=agent.get("agent_id", ""),
+                    source="registry",
+                    role=agent.get("description", "")[:120],
+                    skills=agent.get("skills", []),
+                    tools=agent.get("resources", []),
+                    keywords=agent.get("match", {}).get("keywords", []),
+                    match_score=float(agent.get("score", 0)),
+                )
+            )
+    except Exception:
+        logger.debug("StudioGrid registry not available for recommendations", exc_info=True)
+
+    # Also recommend matching roster agents
+    if team_id:
+        team = _store.get_team(team_id)
+        if team:
+            search_tokens = {
+                t.lower()
+                for t in f"{step.name} {step.description}".split()
+                if len(t) > 2
+            }
+            for agent in team.agents:
+                agent_tokens = {
+                    t.lower()
+                    for t in (agent.skills + agent.capabilities + agent.tools + agent.expertise)
+                }
+                overlap = len(search_tokens & agent_tokens)
+                if overlap > 0:
+                    recommendations.append(
+                        RecommendedAgent(
+                            agent_name=agent.agent_name,
+                            source="roster",
+                            role=agent.role,
+                            skills=agent.skills,
+                            tools=agent.tools,
+                            match_score=float(overlap),
+                        )
+                    )
+
+    # Sort by score descending
+    recommendations.sort(key=lambda r: -r.match_score)
+
+    return RecommendAgentsResponse(
+        step_id=step_id,
+        step_name=step.name,
+        recommended_agents=recommendations[:10],
+    )
 
 
 # ---------------------------------------------------------------------------
