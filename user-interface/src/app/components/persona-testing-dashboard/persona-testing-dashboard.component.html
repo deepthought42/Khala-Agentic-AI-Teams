@@ -1,0 +1,96 @@
+<div class="page-header">
+  <h1>Persona Testing</h1>
+  <p class="page-subtitle">Test the software engineering team by selecting a project persona and running an autonomous end-to-end build.</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Persona Selector                                                       -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<section class="persona-selector">
+  <h2 class="section-title">Select a Persona</h2>
+  <div class="persona-cards">
+    @for (persona of personas; track persona.id) {
+      <mat-card class="persona-card" appearance="outlined">
+        <mat-card-header>
+          <mat-icon mat-card-avatar class="persona-icon">{{ persona.icon }}</mat-icon>
+          <mat-card-title>{{ persona.name }}</mat-card-title>
+          <mat-card-subtitle>{{ persona.id }}</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <p>{{ persona.description }}</p>
+        </mat-card-content>
+        <mat-card-actions align="end">
+          <button mat-raised-button color="primary" (click)="startTest()" [disabled]="starting">
+            <mat-icon>play_arrow</mat-icon>
+            @if (starting) {
+              Starting...
+            } @else {
+              Start Test
+            }
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    }
+  </div>
+  @if (startError) {
+    <p class="error-text">{{ startError }}</p>
+  }
+  @if (!personas.length) {
+    <p class="muted-text">Loading personas...</p>
+  }
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Running Tests                                                          -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (runningRuns.length) {
+  <section class="runs-section">
+    <h3 class="list-section-title">Running</h3>
+    <div class="runs-list">
+      @for (run of runningRuns; track run.run_id) {
+        <div class="run-item" tabindex="0" role="button" (click)="openAudit(run.run_id)" (keydown.enter)="openAudit(run.run_id)">
+          <div class="run-row">
+            <span class="run-id">{{ run.run_id }}</span>
+            <span class="run-status status-running">{{ formatStatus(run.status) }}</span>
+          </div>
+          <span class="run-date">Started {{ run.created_at }}</span>
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+        </div>
+      }
+    </div>
+  </section>
+}
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Completed Tests                                                        -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (completedRuns.length) {
+  <section class="runs-section">
+    <h3 class="list-section-title">Completed</h3>
+    <div class="runs-list">
+      @for (run of completedRuns; track run.run_id) {
+        <div class="run-item" tabindex="0" role="button" (click)="openAudit(run.run_id)" (keydown.enter)="openAudit(run.run_id)">
+          <div class="run-row">
+            <span class="run-id">{{ run.run_id }}</span>
+            <span class="run-status" [class]="'status-' + run.status">{{ formatStatus(run.status) }}</span>
+          </div>
+          <span class="run-date">{{ run.updated_at }}</span>
+          @if (run.error) {
+            <span class="run-error">{{ run.error }}</span>
+          }
+        </div>
+      }
+    </div>
+  </section>
+}
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- Empty State                                                            -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+@if (!runningRuns.length && !completedRuns.length && personas.length) {
+  <div class="empty-state">
+    <mat-icon class="empty-state-icon">science</mat-icon>
+    <h2>No test runs yet</h2>
+    <p>Select a persona above and click "Start Test" to begin an autonomous test of the software engineering team.</p>
+  </div>
+}

@@ -24,6 +24,8 @@ import { NutritionDashboardComponent } from './components/nutrition-dashboard/nu
 import { StartupAdvisorDashboardComponent } from './components/startup-advisor-dashboard/startup-advisor-dashboard.component';
 import { AgenticTeamDashboardComponent } from './components/agentic-team-dashboard/agentic-team-dashboard.component';
 import { PlanningArtifactDetailComponent } from './components/planning-artifact-detail/planning-artifact-detail.component';
+import { PersonaTestingDashboardComponent } from './components/persona-testing-dashboard/persona-testing-dashboard.component';
+import { PersonaTestAuditPanelComponent } from './components/persona-test-audit-panel/persona-test-audit-panel.component';
 
 export const routes: Routes = [
   {
@@ -60,6 +62,8 @@ export const routes: Routes = [
       { path: 'nutrition', component: NutritionDashboardComponent },
       { path: 'agentic-teams', component: AgenticTeamDashboardComponent },
       { path: 'startup-advisor', component: StartupAdvisorDashboardComponent },
+      { path: 'persona-testing', component: PersonaTestingDashboardComponent },
+      { path: 'persona-testing/audit/:runId', component: PersonaTestAuditPanelComponent },
     ],
   },
   { path: '**', redirectTo: '/dashboard' },

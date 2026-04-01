@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -177,6 +179,83 @@ def get_decisions(run_id: str) -> list[DecisionResponse]:
         )
         for d in decisions
     ]
+
+
+class PersonaInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    icon: str
+
+
+class PersonaListResponse(BaseModel):
+    personas: list[PersonaInfo]
+
+
+class RunArtifactsResponse(BaseModel):
+    run_id: str
+    se_job_id: Optional[str] = None
+    se_job_status: Optional[dict[str, Any]] = None
+    repo_path: Optional[str] = None
+    spec_content: Optional[str] = None
+
+
+UNIFIED_API_BASE = os.environ.get("UNIFIED_API_BASE_URL", "http://localhost:8080")
+SE_PREFIX = "/api/software-engineering"
+_HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
+
+@app.get("/personas", response_model=PersonaListResponse)
+def list_personas() -> PersonaListResponse:
+    """Return the list of available project personas for SE team testing."""
+    return PersonaListResponse(
+        personas=[
+            PersonaInfo(
+                id="startup-founder",
+                name="Startup Founder",
+                description=(
+                    "Alex Chen — a bootstrapped startup founder building TaskFlow. "
+                    "Budget-conscious, speed-first, UX-obsessed. Generates a task management "
+                    "product spec and drives the SE team autonomously."
+                ),
+                icon="rocket_launch",
+            ),
+        ]
+    )
+
+
+@app.get("/runs/{run_id}/artifacts", response_model=RunArtifactsResponse)
+def get_run_artifacts(run_id: str) -> RunArtifactsResponse:
+    """Get artifacts produced during a persona test run.
+
+    Proxies to the SE team job status to retrieve task results,
+    task states, and other pipeline outputs.
+    """
+    store = get_founder_store()
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    se_job_status: dict[str, Any] | None = None
+    if run.se_job_id:
+        try:
+            with httpx.Client() as client:
+                resp = client.get(
+                    f"{UNIFIED_API_BASE}{SE_PREFIX}/run-team/{run.se_job_id}",
+                    timeout=_HTTP_TIMEOUT,
+                )
+                if resp.status_code < 400:
+                    se_job_status = resp.json()
+        except httpx.HTTPError:
+            logger.warning("Failed to fetch SE job status for %s", run.se_job_id)
+
+    return RunArtifactsResponse(
+        run_id=run.run_id,
+        se_job_id=run.se_job_id,
+        se_job_status=se_job_status,
+        repo_path=run.repo_path,
+        spec_content=run.spec_content,
+    )
 
 
 @app.get("/health")
