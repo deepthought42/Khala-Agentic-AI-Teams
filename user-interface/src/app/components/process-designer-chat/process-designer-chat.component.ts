@@ -152,10 +152,18 @@ export class ProcessDesignerChatComponent implements OnInit, OnChanges, AfterVie
     this.suggestedQuestions.set(res.suggested_questions);
     this.buildFlowchart(res.current_process);
     this.refreshRoster();
-    // Refresh selected step if editor is open
-    if (this.selectedStepId() && res.current_process) {
-      const step = res.current_process.steps.find((s) => s.step_id === this.selectedStepId());
-      this.selectedStep.set(step ?? null);
+    // Refresh selected step if editor is open; clear if process is gone
+    if (this.selectedStepId()) {
+      if (res.current_process) {
+        const step = res.current_process.steps.find((s) => s.step_id === this.selectedStepId());
+        this.selectedStep.set(step ?? null);
+        if (!step) {
+          this.selectedStepId.set(null);
+        }
+      } else {
+        this.selectedStepId.set(null);
+        this.selectedStep.set(null);
+      }
     }
   }
 
