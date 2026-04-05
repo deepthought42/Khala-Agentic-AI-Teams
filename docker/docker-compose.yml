@@ -692,6 +692,35 @@ services:
       timeout: 5s
       retries: 5
 
+  user-agent-founder-service:
+    build:
+      context: ../backend
+      dockerfile: team_service/Dockerfile
+      args: { TEAM_PORT: "8109" }
+    image: strands-user-agent-founder-service
+    container_name: strands-user-agent-founder-service
+    depends_on:
+      postgres: { condition: service_healthy }
+      job-service: { condition: service_healthy }
+    environment:
+      <<: *team-env-base
+      TEAM_MODULE: user_agent_founder.api.main
+      TEAM_NAME: user_agent_founder
+      TEAM_PORT: "8109"
+      TEAM_TEMPORAL_WORKER_MODULE: ""
+      TEAM_TEMPORAL_WORKER_FUNC: ""
+    volumes: *team-volumes
+    extra_hosts: *team-extra-hosts
+    ports: ["8109:8109"]
+    networks:
+      stack: { ipv4_address: 172.28.0.27, aliases: [user-agent-founder-service] }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8109/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   # ── Unified API (router/proxy) ──────────────────────────────────────────────
 
   strands-agents:
@@ -723,6 +752,7 @@ services:
       road-trip-service: { condition: service_healthy }
       startup-advisor-service: { condition: service_healthy }
       agentic-team-provisioning-service: { condition: service_healthy }
+      user-agent-founder-service: { condition: service_healthy }
     volumes:
       - agents_workspace:/workspace
       - agents_data:/data/agents
@@ -768,6 +798,7 @@ services:
       ROAD_TRIP_PLANNING_SERVICE_URL: http://road-trip-service:8106
       STARTUP_ADVISOR_SERVICE_URL: http://startup-advisor-service:8107
       AGENTIC_TEAM_PROVISIONING_SERVICE_URL: http://agentic-team-provisioning-service:8108
+      USER_AGENT_FOUNDER_SERVICE_URL: http://user-agent-founder-service:8109
     extra_hosts:
       - "postgres:172.28.0.2"
       - "temporal:172.28.0.3"
@@ -791,6 +822,7 @@ services:
       - "road-trip-service:172.28.0.24"
       - "startup-advisor-service:172.28.0.25"
       - "agentic-team-provisioning-service:172.28.0.26"
+      - "user-agent-founder-service:172.28.0.27"
     networks:
       stack:
         ipv4_address: 172.28.0.6

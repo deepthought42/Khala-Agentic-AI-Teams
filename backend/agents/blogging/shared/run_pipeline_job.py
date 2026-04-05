@@ -5,6 +5,7 @@ Accepts a request dict (serializable) so Temporal can pass it to activities.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from pathlib import Path
@@ -172,18 +173,25 @@ def run_blog_full_pipeline_job(job_id: str, request_dict: Dict[str, Any]) -> Non
                     update_blog_job(job_id)
                 except Exception:
                     pass
-            # Send Temporal activity heartbeat if running inside a Temporal activity
+            # Send Temporal activity heartbeat if running inside a Temporal activity.
+            # RuntimeError means we're not in an activity context (e.g. local dev).
             try:
                 from temporalio import activity as _act
 
                 _act.heartbeat()
-            except Exception:
+            except RuntimeError:
                 pass
 
     hb_thread: Optional[threading.Thread] = None
     if update_blog_job is not None:
+        # Copy the current context so the heartbeat thread inherits the Temporal
+        # activity ContextVar.  Without this, activity.heartbeat() silently fails
+        # (ContextVar is not auto-inherited by threading.Thread), and Temporal
+        # cancels the activity after heartbeat_timeout expires.
+        ctx = contextvars.copy_context()
         hb_thread = threading.Thread(
-            target=_pipeline_heartbeat,
+            target=ctx.run,
+            args=(_pipeline_heartbeat,),
             name=f"blog-pipeline-hb-{job_id[:12]}",
             daemon=True,
         )
