@@ -86,7 +86,7 @@ class FreeTierMarketDataProvider:
         # 1) Frankfurter — no API key
         try:
             r = self._client.get(
-                "https://api.frankfurter.app/latest",
+                "https://api.frankfurter.dev/v1/latest",
                 params={"from": "USD", "to": "EUR,GBP,JPY,CHF,CAD,AUD"},
             )
             r.raise_for_status()
