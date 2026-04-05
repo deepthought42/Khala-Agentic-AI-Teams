@@ -192,9 +192,11 @@ class MarketDataService:
     # ------------------------------------------------------------------
 
     def _fetch_crypto(self, symbol: str, start_date: str, end_date: str) -> List[OHLCVBar]:
-        """Fetch crypto OHLCV data via CoinGecko ``/market_chart/range`` endpoint.
+        """Fetch crypto OHLCV data via CoinGecko ``/market_chart`` endpoint.
 
-        Uses Unix timestamps so arbitrary historical windows work correctly.
+        Uses a ``days`` parameter computed from the date range. The free-tier
+        ``/market_chart`` endpoint (unlike ``/market_chart/range``) does not
+        require authentication.
         Includes retry with exponential backoff for rate-limit (429) responses.
         """
         coin_id = COINGECKO_IDS.get(symbol.upper())
@@ -209,25 +211,10 @@ class MarketDataService:
             logger.error("Invalid date range for crypto fetch: %s - %s", start_date, end_date)
             return []
 
-        import calendar
-        from datetime import datetime as dt_cls
-        from datetime import timezone as tz_cls
+        days = max(1, (end_dt - start_dt).days)
 
-        start_ts = int(
-            calendar.timegm(
-                dt_cls(start_dt.year, start_dt.month, start_dt.day, tzinfo=tz_cls.utc).timetuple()
-            )
-        )
-        end_ts = int(
-            calendar.timegm(
-                dt_cls(
-                    end_dt.year, end_dt.month, end_dt.day, 23, 59, 59, tzinfo=tz_cls.utc
-                ).timetuple()
-            )
-        )
-
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
-        params = {"vs_currency": "usd", "from": str(start_ts), "to": str(end_ts)}
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        params = {"vs_currency": "usd", "days": str(days)}
 
         raw = self._coingecko_get(url, params)
         if raw is None:
@@ -238,12 +225,14 @@ class MarketDataService:
             return []
 
         # Group price points by date to build daily OHLCV bars.
-        # The /market_chart/range endpoint returns granularity based on span
-        # (5-min for <1 day, hourly for 1-90 days, daily for >90 days).
+        # The /market_chart endpoint returns granularity based on days
+        # (5-min for 1 day, hourly for 1-90 days, daily for >90 days).
         daily: Dict[str, List[float]] = {}
         for ts_ms, price in raw.get("prices", []):
             bar_date = date.fromtimestamp(ts_ms / 1000).isoformat()
-            daily.setdefault(bar_date, []).append(float(price))
+            # Filter to requested date range since /market_chart counts back from now
+            if start_date <= bar_date <= end_date:
+                daily.setdefault(bar_date, []).append(float(price))
 
         bars: List[OHLCVBar] = []
         for bar_date in sorted(daily):
