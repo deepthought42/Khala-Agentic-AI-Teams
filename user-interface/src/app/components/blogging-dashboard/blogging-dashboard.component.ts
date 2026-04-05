@@ -40,7 +40,6 @@ const POLL_STATUS_MS = 60000;
 /** Pipeline phases in execution order for the phase stepper. */
 const PIPELINE_PHASES = [
   { key: 'planning', label: 'Planning' },
-  { key: 'title_selection', label: 'Title' },
   { key: 'story_elicitation', label: 'Stories' },
   { key: 'draft_initial', label: 'Draft' },
   { key: 'draft_review', label: 'Review' },
@@ -48,6 +47,7 @@ const PIPELINE_PHASES = [
   { key: 'fact_check', label: 'Fact Check' },
   { key: 'compliance', label: 'Compliance' },
   { key: 'rewrite', label: 'Rewrite' },
+  { key: 'title_selection', label: 'Title' },
   { key: 'finalize', label: 'Finalize' },
 ] as const;
 
@@ -712,25 +712,34 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
     return this.titleRatings[title];
   }
 
-  /** Submit a single like/dislike rating to trigger new title generation. */
+  /** Submit a single like/dislike rating. The pipeline generates a replacement title;
+   *  SSE/polling will deliver the updated title_choices. Titles stay visible. */
   submitSingleTitleRating(title: string, rating: 'dislike' | 'like'): void {
     const jobId = this.selectedBlogJob?.job_id;
     if (!jobId || this.titleRatingSubmitting) return;
-    this.submitTitleAction(this.api.rateTitles(jobId, [{ title, rating }]));
+    this.titleRatingSubmitting = true;
+    this.collaborationError = null;
+    this.api.rateTitles(jobId, [{ title, rating }]).subscribe({
+      next: () => {
+        // Don't replace selectedJobStatus — titles stay visible.
+        // The pipeline will generate a replacement and push updated
+        // title_choices via SSE/polling.
+        this.titleRatingSubmitting = false;
+      },
+      error: (err) => {
+        this.collaborationError = err?.error?.detail ?? err?.message ?? 'Failed to submit title rating';
+        this.titleRatingSubmitting = false;
+      },
+    });
   }
 
   /** Select a loved title directly, advancing the pipeline. */
   selectTitle(title: string): void {
     const jobId = this.selectedBlogJob?.job_id;
     if (!jobId || this.titleRatingSubmitting) return;
-    this.submitTitleAction(this.api.selectTitle(jobId, title));
-  }
-
-  /** Shared handler for title selection API calls. */
-  private submitTitleAction(action$: Observable<BlogJobStatusResponse>): void {
     this.titleRatingSubmitting = true;
     this.collaborationError = null;
-    action$.subscribe({
+    this.api.selectTitle(jobId, title).subscribe({
       next: (status) => {
         this.selectedJobStatus = status;
         this.titleRatings = {};
@@ -738,7 +747,6 @@ export class BloggingDashboardComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.collaborationError = err?.error?.detail ?? err?.message ?? 'Failed to submit title rating';
-        // Keep titleRatings so the user can see which title they tried to rate
         this.titleRatingSubmitting = false;
       },
     });

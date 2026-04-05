@@ -421,6 +421,152 @@ def _fill_story_placeholders(
         return WriterOutput(draft=draft_text), elicited_stories_text
 
 
+def _run_title_selection(
+    plan: Any,
+    llm_client: Any,
+    job_id: Optional[str],
+    job_updater: Optional[JobUpdater],
+    _update: Callable,
+) -> Optional[str]:
+    """Run the title selection phase: present candidates, process feedback, return loved title.
+
+    Returns the selected title string, or None if title selection was skipped.
+    """
+    if job_id is None or job_updater is None:
+        return None
+
+    try:
+        from shared.blog_job_store import (
+            clear_pending_title_feedback,
+            get_blog_job,
+            get_pending_title_feedback,
+            is_waiting_for_title_selection,
+        )
+
+        title_choices = [
+            {"title": tc.title, "probability_of_success": tc.probability_of_success}
+            for tc in plan.title_candidates
+        ]
+
+        all_ratings: list[dict] = []
+        title_round = 0
+
+        while True:
+            title_round += 1
+            _update(
+                BlogPhase.TITLE_SELECTION,
+                sub_progress=0.0,
+                status_text=f"Rate titles (round {title_round}, {len(title_choices)} candidates)...",
+                waiting_for_title_selection=True,
+                title_choices=title_choices,
+            )
+
+            while is_waiting_for_title_selection(job_id):
+                job_data = get_blog_job(job_id)
+                if job_data and job_data.get("status") in ("failed", "cancelled"):
+                    return None
+
+                # Check for pending like/dislike feedback
+                pending = get_pending_title_feedback(job_id)
+                if pending:
+                    clear_pending_title_feedback(job_id)
+                    for fb in pending:
+                        all_ratings.append(fb)
+
+                    rated_title = pending[0].get("title", "")
+                    rating_type = pending[0].get("rating", "like")
+                    all_liked = [r["title"] for r in all_ratings if r.get("rating") == "like"]
+                    all_disliked = [r["title"] for r in all_ratings if r.get("rating") == "dislike"]
+                    all_previous = [r["title"] for r in all_ratings]
+
+                    logger.info(
+                        "Title feedback (round %s): %r rated %r — generating replacement",
+                        title_round, rated_title, rating_type,
+                    )
+
+                    feedback_prompt = (
+                        "Generate exactly 1 new blog post title candidate to replace one that was rated.\n\n"
+                        f"TOPIC (the article's core argument — the title MUST align with this): {plan.overarching_topic}\n\n"
+                    )
+                    if plan.target_reader:
+                        feedback_prompt += f"TARGET READER: {plan.target_reader}\n\n"
+                    section_titles = [sec.title for sec in sorted(plan.sections, key=lambda s: s.order)]
+                    if section_titles:
+                        feedback_prompt += "ARTICLE SECTIONS:\n"
+                        feedback_prompt += "\n".join(f"- {t}" for t in section_titles) + "\n\n"
+                    feedback_prompt += (
+                        "REQUIREMENTS:\n"
+                        "- The title MUST accurately reflect the topic above.\n"
+                        "- The title should promise the reader something concrete and valuable.\n"
+                        "- Be specific about what the reader will gain.\n\n"
+                    )
+                    if all_liked:
+                        feedback_prompt += "Titles the user LIKED (generate a title with a similar style/angle):\n"
+                        feedback_prompt += "\n".join(f"- {t}" for t in all_liked) + "\n\n"
+                    if all_disliked:
+                        feedback_prompt += "Titles the user DISLIKED (avoid this style/angle):\n"
+                        feedback_prompt += "\n".join(f"- {t}" for t in all_disliked) + "\n\n"
+                    if all_previous:
+                        feedback_prompt += "DO NOT repeat any of these previous titles:\n"
+                        feedback_prompt += "\n".join(f"- {t}" for t in all_previous) + "\n\n"
+                    feedback_prompt += (
+                        "Return a JSON object with exactly one key: "
+                        '"titles": [{"title": "...", "probability_of_success": 0.0-1.0}]'
+                    )
+
+                    replacement = None
+                    try:
+                        data = llm_client.complete_json(feedback_prompt, temperature=0.7)
+                        new_titles = data.get("titles", []) if data else []
+                        if new_titles and isinstance(new_titles, list):
+                            t = new_titles[0]
+                            if isinstance(t, dict) and t.get("title"):
+                                replacement = {
+                                    "title": t["title"],
+                                    "probability_of_success": float(t.get("probability_of_success", 0.5)),
+                                }
+                    except Exception as e:
+                        logger.warning("Failed to generate replacement title: %s", e)
+
+                    if replacement:
+                        title_choices = [
+                            replacement if tc.get("title") == rated_title else tc
+                            for tc in title_choices
+                        ]
+                    else:
+                        title_choices = [tc for tc in title_choices if tc.get("title") != rated_title]
+
+                    title_round += 1
+                    job_updater(
+                        phase="title_selection",
+                        progress=get_phase_progress(BlogPhase.TITLE_SELECTION, 0.0),
+                        status_text=f"Rate titles (round {title_round}, {len(title_choices)} candidates)...",
+                        waiting_for_title_selection=True,
+                        title_choices=title_choices,
+                    )
+                    continue
+
+                time.sleep(5)
+
+            job_data = get_blog_job(job_id) or {}
+            selected_title = job_data.get("selected_title")
+
+            if selected_title:
+                logger.info("Title loved (round %s): %r", title_round, selected_title)
+                _update(
+                    BlogPhase.TITLE_SELECTION,
+                    sub_progress=1.0,
+                    status_text=f"Title selected: {selected_title}",
+                )
+                return selected_title
+
+    except CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Title selection phase error (skipping): %s", e)
+    return None
+
+
 def run_pipeline(
     brief: ResearchBriefInput,
     *,
@@ -517,138 +663,6 @@ def run_pipeline(
         job_updater=job_updater,
     )
     plan = planning_phase_result.content_plan
-
-    # ------------------------------------------------------------------
-    # Title selection: rating loop until the user loves a title
-    # ------------------------------------------------------------------
-    selected_title: Optional[str] = None
-    if job_id is not None and job_updater is not None:
-        try:
-            from shared.blog_job_store import (
-                get_blog_job,
-                is_waiting_for_title_selection,
-                update_blog_job,
-            )
-
-            title_choices = [
-                {"title": tc.title, "probability_of_success": tc.probability_of_success}
-                for tc in plan.title_candidates
-            ]
-
-            all_ratings: list[dict] = []  # accumulated across rounds
-            title_round = 0
-
-            while True:
-                title_round += 1
-                # Use job_updater for all fields so SSE clients receive the
-                # waiting_for_title_selection and title_choices updates.
-                job_updater(
-                    phase="title_selection",
-                    progress=25,
-                    status_text=f"Rate titles (round {title_round}, {len(title_choices)} candidates)...",
-                    waiting_for_title_selection=True,
-                    title_choices=title_choices,
-                )
-
-                # Block until user submits ratings
-                while is_waiting_for_title_selection(job_id):
-                    job_data = get_blog_job(job_id)
-                    if job_data and job_data.get("status") in ("failed", "cancelled"):
-                        return planning_phase_result, None, "FAIL"
-                    time.sleep(10)
-
-                job_data = get_blog_job(job_id) or {}
-                selected_title = job_data.get("selected_title")
-
-                # If the user loved a title, we're done
-                if selected_title:
-                    logger.info("Title loved (round %s): %r", title_round, selected_title)
-                    job_updater(
-                        phase="title_selection",
-                        progress=26,
-                        status_text=f"Title selected: {selected_title}",
-                    )
-                    break
-
-                # No love — collect ratings and generate new titles
-                round_ratings = job_data.get("title_ratings", [])
-                all_ratings.extend(round_ratings)
-
-                # Build feedback from ALL accumulated ratings for richer signal
-                all_liked = [r["title"] for r in all_ratings if r.get("rating") == "like"]
-                all_disliked = [r["title"] for r in all_ratings if r.get("rating") == "dislike"]
-
-                logger.info(
-                    "Title ratings round %s: %s liked, %s disliked (cumulative) — generating new candidates",
-                    title_round, len(all_liked), len(all_disliked),
-                )
-                job_updater(
-                    phase="title_selection",
-                    progress=25,
-                    status_text="Generating new title options based on your feedback...",
-                )
-
-                # Ask the LLM to generate better titles based on the feedback
-                feedback_prompt = (
-                    "Generate 5 new blog post title candidates based on this feedback.\n\n"
-                    f"TOPIC (the article's core argument — every title MUST align with this): {plan.overarching_topic}\n\n"
-                )
-                if plan.target_reader:
-                    feedback_prompt += f"TARGET READER: {plan.target_reader}\n\n"
-                section_titles = [sec.title for sec in sorted(plan.sections, key=lambda s: s.order)]
-                if section_titles:
-                    feedback_prompt += "ARTICLE SECTIONS:\n"
-                    feedback_prompt += "\n".join(f"- {t}" for t in section_titles) + "\n\n"
-                feedback_prompt += (
-                    "REQUIREMENTS:\n"
-                    "- Each title MUST accurately reflect the topic above. Do NOT generate titles that contradict or misrepresent the article's argument.\n"
-                    "- Each title should promise the reader they will learn something concrete and valuable.\n"
-                    "- Avoid vague or generic titles. Be specific about what the reader will gain.\n\n"
-                )
-                if all_liked:
-                    feedback_prompt += "Titles the user LIKED (generate titles with a similar style/angle):\n"
-                    feedback_prompt += "\n".join(f"- {t}" for t in all_liked) + "\n\n"
-                if all_disliked:
-                    feedback_prompt += "Titles the user DISLIKED (avoid this style/angle):\n"
-                    feedback_prompt += "\n".join(f"- {t}" for t in all_disliked) + "\n\n"
-
-                # Include all previous titles so the LLM doesn't repeat them
-                all_previous = [r["title"] for r in all_ratings]
-                if all_previous:
-                    feedback_prompt += "DO NOT repeat any of these previous titles:\n"
-                    feedback_prompt += "\n".join(f"- {t}" for t in all_previous) + "\n\n"
-
-                feedback_prompt += (
-                    "Return a JSON object with exactly one key: "
-                    '"titles": [{"title": "...", "probability_of_success": 0.0-1.0}, ...]'
-                )
-
-                try:
-                    data = llm_client.complete_json(feedback_prompt, temperature=0.7)
-                    new_titles = data.get("titles", []) if data else []
-                    if new_titles and isinstance(new_titles, list):
-                        title_choices = [
-                            {
-                                "title": t.get("title", ""),
-                                "probability_of_success": float(t.get("probability_of_success", 0.5)),
-                            }
-                            for t in new_titles
-                            if isinstance(t, dict) and t.get("title")
-                        ]
-                    if not title_choices:
-                        logger.warning("LLM returned no new titles; keeping previous set")
-                        title_choices = [
-                            {"title": tc["title"], "probability_of_success": tc.get("probability_of_success", 0.5)}
-                            for tc in round_ratings
-                            if tc.get("rating") == "like"
-                        ] or title_choices
-                except Exception as e:
-                    logger.warning("Failed to generate new titles: %s; re-presenting current set", e)
-
-        except CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("Title selection phase error (skipping): %s", e)
 
     # ------------------------------------------------------------------
     # Story elicitation: ghost writer surfaces personal anecdotes
@@ -941,7 +955,7 @@ def run_pipeline(
                     tone_or_purpose=brief.tone_or_purpose,
                     target_word_count=length_policy.target_word_count,
                     length_guidance=build_draft_length_instruction(length_policy),
-                    selected_title=selected_title or None,
+                    selected_title=None,
                     elicited_stories=elicited_stories_text or None,
                 )
                 draft_output_path = (
@@ -991,7 +1005,7 @@ def run_pipeline(
                         tone_or_purpose=brief.tone_or_purpose,
                         target_word_count=length_policy.target_word_count,
                         length_guidance=build_draft_length_instruction(length_policy),
-                        selected_title=selected_title or None,
+                        selected_title=None,
                     ),
                     work_dir=work_dir,
                     iteration=iteration,
@@ -1081,7 +1095,7 @@ def run_pipeline(
                                 content_plan_text=content_plan_text,
                                 audience=brief.audience,
                                 tone_or_purpose=brief.tone_or_purpose,
-                                selected_title=selected_title or None,
+                                selected_title=None,
                                 elicited_stories=elicited_stories_text or None,
                                 target_word_count=length_policy.target_word_count,
                                 length_guidance=build_draft_length_instruction(length_policy),
@@ -1186,7 +1200,7 @@ def run_pipeline(
                         content_plan_text=content_plan_text,
                         audience=brief.audience,
                         tone_or_purpose=brief.tone_or_purpose,
-                        selected_title=selected_title or None,
+                        selected_title=None,
                         elicited_stories=elicited_stories_text or None,
                         target_word_count=length_policy.target_word_count,
                         length_guidance=build_draft_length_instruction(length_policy),
@@ -1384,7 +1398,7 @@ def run_pipeline(
                             content_plan_text=content_plan_text,
                             audience=brief.audience,
                             tone_or_purpose=brief.tone_or_purpose,
-                            selected_title=selected_title or None,
+                            selected_title=None,
                             elicited_stories=elicited_stories_text or None,
                             target_word_count=length_policy.target_word_count,
                             length_guidance=build_draft_length_instruction(length_policy),
@@ -1417,7 +1431,7 @@ def run_pipeline(
                     tone_or_purpose=brief.tone_or_purpose,
                     target_word_count=length_policy.target_word_count,
                     length_guidance=build_draft_length_instruction(length_policy),
-                    selected_title=selected_title or None,
+                    selected_title=None,
                     elicited_stories=elicited_stories_text or None,
                 )
                 previous_feedback_items = feedback_tracker.get_capped_previous_feedback(
@@ -1527,14 +1541,24 @@ def run_pipeline(
                 status = "PASS"
                 logger.info("All gates PASS on rewrite iteration %s", rewrite_iter + 1)
 
+                # ── Title selection: user picks the final title ─────────
+                selected_title = _run_title_selection(
+                    plan=plan,
+                    llm_client=llm_client,
+                    job_id=job_id,
+                    job_updater=job_updater,
+                    _update=_update,
+                )
+
                 _update(
                     BlogPhase.FINALIZE,
                     sub_progress=0.5,
-                    status_text="All checks passed, finalizing...",
+                    status_text="Finalizing...",
                 )
 
+                title_options = [selected_title] if selected_title else [tc.title for tc in plan.title_candidates[:5]]
                 pack = PublishingPack(
-                    title_options=[tc.title for tc in plan.title_candidates[:5]],
+                    title_options=title_options,
                     meta_description=draft_result.draft[:155].strip() or None,
                     tags=[],
                 )
@@ -1665,7 +1689,7 @@ def run_pipeline(
                     tone_or_purpose=brief.tone_or_purpose,
                     target_word_count=length_policy.target_word_count,
                     length_guidance=build_draft_length_instruction(length_policy),
-                    selected_title=selected_title or None,
+                    selected_title=None,
                     elicited_stories=elicited_stories_text or None,
                 )
                 draft_output_path = Path(work_dir) / f"draft_rewrite_{rewrite_iter + 1}.md"
@@ -1690,7 +1714,14 @@ def run_pipeline(
             write_artifact(work_dir, "final.md", draft_result.draft)
             logger.info("Rewrite iteration %s: applied fixes, re-running gates", rewrite_iter + 1)
     else:
-        # No gates - mark as finalized
+        # No gates — run title selection before finalizing
+        selected_title = _run_title_selection(
+            plan=plan,
+            llm_client=llm_client,
+            job_id=job_id,
+            job_updater=job_updater,
+            _update=_update,
+        )
         _update(
             BlogPhase.FINALIZE,
             sub_progress=1.0,

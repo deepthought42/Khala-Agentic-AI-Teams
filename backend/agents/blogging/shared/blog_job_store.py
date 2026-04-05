@@ -327,7 +327,8 @@ def submit_title_ratings(
 
     Each rating is ``{"title": str, "rating": "dislike"|"like"|"love"}``.
     If any title is rated "love", it becomes the selected title and the pipeline proceeds.
-    Otherwise the pipeline will use the ratings to generate better candidates.
+    Otherwise the rating is queued as pending feedback — the pipeline polling loop picks it
+    up, generates a replacement title for the rated one, and keeps waiting for more input.
     """
     loved = [r for r in ratings if r.get("rating") == "love"]
     if loved:
@@ -340,11 +341,12 @@ def submit_title_ratings(
             },
         )
     else:
+        # Keep waiting_for_title_selection True so the UI stays visible.
+        # Store the rating in pending_title_feedback for the pipeline to pick up.
         _client(cache_dir).atomic_update(
             job_id,
             merge_fields={
-                "waiting_for_title_selection": False,
-                "title_ratings": ratings,
+                "pending_title_feedback": ratings,
             },
         )
 
@@ -356,6 +358,28 @@ def is_waiting_for_title_selection(
     """Return True if the pipeline is paused waiting for a title selection."""
     job = _client(cache_dir).get_job(job_id)
     return bool(job.get("waiting_for_title_selection")) if job else False
+
+
+def get_pending_title_feedback(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> list[dict] | None:
+    """Return pending title feedback ratings if any, otherwise None."""
+    job = _client(cache_dir).get_job(job_id)
+    if not job:
+        return None
+    return job.get("pending_title_feedback") or None
+
+
+def clear_pending_title_feedback(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Clear the pending title feedback field after processing."""
+    _client(cache_dir).atomic_update(
+        job_id,
+        merge_fields={"pending_title_feedback": None},
+    )
 
 
 # ---------------------------------------------------------------------------

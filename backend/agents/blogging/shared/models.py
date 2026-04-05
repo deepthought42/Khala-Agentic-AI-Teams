@@ -23,6 +23,7 @@ class BlogPhase(str, Enum):
     FACT_CHECK = "fact_check"
     COMPLIANCE = "compliance"
     REWRITE_LOOP = "rewrite"
+    TITLE_SELECTION = "title_selection"
     FINALIZE = "finalize"
 
 
@@ -34,8 +35,9 @@ PHASE_PROGRESS_RANGES: Dict[BlogPhase, tuple[int, int]] = {
     BlogPhase.COPY_EDIT_LOOP: (45, 60),
     BlogPhase.FACT_CHECK: (60, 70),
     BlogPhase.COMPLIANCE: (70, 82),
-    BlogPhase.REWRITE_LOOP: (82, 95),
-    BlogPhase.FINALIZE: (95, 100),
+    BlogPhase.REWRITE_LOOP: (82, 90),
+    BlogPhase.TITLE_SELECTION: (90, 96),
+    BlogPhase.FINALIZE: (96, 100),
 }
 
 
@@ -62,6 +64,7 @@ PHASE_ORDER = [
     BlogPhase.FACT_CHECK,
     BlogPhase.COMPLIANCE,
     BlogPhase.REWRITE_LOOP,
+    BlogPhase.TITLE_SELECTION,
     BlogPhase.FINALIZE,
 ]
 
