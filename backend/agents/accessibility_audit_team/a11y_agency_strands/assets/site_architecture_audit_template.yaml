@@ -1,0 +1,722 @@
+# Site Architecture & Navigation Accessibility Audit Template
+# Structured checklist for evaluating information architecture and navigation
+# systems against WCAG 2.2 Level AA criteria.
+
+template_version: "1.0"
+name: Site Architecture & Navigation Accessibility Audit
+description: >
+  Comprehensive audit template for evaluating site information architecture,
+  navigation systems, search and discovery mechanisms, content organization,
+  mobile/responsive patterns, cross-page consistency, and cognitive
+  accessibility against WCAG 2.2 Level AA criteria.
+
+scoring:
+  grading_scale:
+    - grade: Excellent
+      min_pct: 90
+      description: Meets or exceeds WCAG 2.2 AA for navigation
+    - grade: Good
+      min_pct: 75
+      description: Minor issues that should be addressed
+    - grade: Needs Improvement
+      min_pct: 50
+      description: Significant issues affecting navigation accessibility
+    - grade: Poor
+      min_pct: 0
+      description: Critical barriers to navigation access
+
+audit_info:
+  fields:
+    - id: site_name
+      label: Site/Application Name
+    - id: audit_date
+      label: Audit Date
+    - id: auditor
+      label: Auditor
+    - id: conformance_target
+      label: Conformance Target
+      default: WCAG 2.2 Level AA
+    - id: assistive_technologies
+      label: Assistive Technologies Used
+    - id: browsers_tested
+      label: Browsers/Devices Tested
+
+sections:
+  - id: site_structure_mapping
+    name: Site Structure Mapping
+    description: Evaluate overall information architecture complexity and primary navigation structure.
+    subsections:
+      - id: architecture_complexity
+        name: Architecture Complexity Assessment
+        checklist_items:
+          - id: ssm_01
+            label: Total number of unique page templates identified and documented
+            test_method: manual_review
+          - id: ssm_02
+            label: Navigation depth levels mapped (recommended max 3 clicks to any content)
+            test_method: manual_review
+          - id: ssm_03
+            label: Primary user paths identified and tested
+            test_method: journey_walkthrough
+          - id: ssm_04
+            label: Cross-linking patterns documented
+            test_method: manual_review
+          - id: ssm_05
+            label: Orphan pages identified (pages not reachable via navigation)
+            test_method: crawl_analysis
+      - id: primary_navigation_analysis
+        name: Primary Navigation Analysis
+        checklist_items:
+          - id: ssm_06
+            label: Main navigation uses semantic <nav> element with aria-label
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: ssm_07
+            label: Navigation landmark is unique or distinctly labeled
+            wcag_ref: "1.3.1"
+            test_method: screen_reader
+          - id: ssm_08
+            label: Current page/section indicated visually and programmatically (aria-current)
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: ssm_09
+            label: Navigation order matches visual presentation
+            wcag_ref: "1.3.2"
+            test_method: keyboard_tab
+          - id: ssm_10
+            label: Navigation is consistent across all pages
+            wcag_ref: "3.2.3"
+            test_method: multi_page_comparison
+
+  - id: navigation_system_evaluation
+    name: Navigation System Evaluation
+    description: Evaluate global navigation, mega menus, and mobile navigation patterns.
+    subsections:
+      - id: global_navigation
+        name: Global Navigation
+        wcag_criteria:
+          - "2.4.3"
+          - "2.4.1"
+        checklist_items:
+          - id: nse_01
+            label: All navigation items reachable via keyboard (Tab/Arrow keys)
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: nse_02
+            label: Skip navigation link provided and functional
+            wcag_ref: "2.4.1"
+            test_method: keyboard_tab
+          - id: nse_03
+            label: Focus indicator visible on all navigation items (minimum 2px, 3:1 contrast)
+            wcag_ref: "2.4.7"
+            test_method: keyboard_visual
+          - id: nse_04
+            label: Navigation items have sufficient touch target size (minimum 24x24 CSS px)
+            wcag_ref: "2.5.8"
+            test_method: measurement
+          - id: nse_05
+            label: Dropdown/flyout menus operable with keyboard and pointer
+            wcag_ref: "2.1.1"
+            test_method: keyboard_and_pointer
+          - id: nse_06
+            label: Menu state changes announced to screen readers (expanded/collapsed)
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+          - id: nse_07
+            label: Focus management correct when opening/closing submenus
+            wcag_ref: "2.4.3"
+            test_method: keyboard_focus_trace
+          - id: nse_08
+            label: Escape key closes open menus and returns focus to trigger
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+      - id: mega_menus
+        name: Mega Menus (if applicable)
+        checklist_items:
+          - id: nse_09
+            label: Mega menu content organized with headings or groups
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: nse_10
+            label: Arrow key navigation works within mega menu panels
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: nse_11
+            label: Mega menu does not trap keyboard focus
+            wcag_ref: "2.1.2"
+            test_method: keyboard_trap_test
+          - id: nse_12
+            label: Content behind mega menu is inert (aria-hidden or inert attribute)
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+      - id: mobile_navigation
+        name: Mobile Navigation (Hamburger/Drawer)
+        checklist_items:
+          - id: nse_13
+            label: Mobile menu toggle button has accessible name (e.g. Menu)
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+          - id: nse_14
+            label: Menu state communicated (aria-expanded)
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+          - id: nse_15
+            label: Focus moves into mobile menu when opened
+            wcag_ref: "2.4.3"
+            test_method: keyboard_focus_trace
+          - id: nse_16
+            label: Focus trapped within open mobile menu
+            wcag_ref: "2.1.2"
+            test_method: keyboard_only
+          - id: nse_17
+            label: Focus returns to toggle when menu is closed
+            wcag_ref: "2.4.3"
+            test_method: keyboard_focus_trace
+          - id: nse_18
+            label: Touch gestures have accessible alternatives
+            wcag_ref: "2.5.1"
+            test_method: gesture_test
+
+  - id: secondary_navigation
+    name: Secondary Navigation
+    description: Evaluate breadcrumbs, sidebar navigation, and footer navigation.
+    subsections:
+      - id: breadcrumbs
+        name: Breadcrumbs
+        wcag_criteria:
+          - "2.4.8"
+          - "1.3.1"
+        checklist_items:
+          - id: sn_01
+            label: Breadcrumb uses <nav> with aria-label="Breadcrumb"
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_02
+            label: Breadcrumb uses ordered list (<ol>) markup
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_03
+            label: Current page indicated with aria-current="page"
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_04
+            label: Separators are decorative (not read by screen readers via aria-hidden)
+            wcag_ref: "1.3.1"
+            test_method: screen_reader
+          - id: sn_05
+            label: Breadcrumb trail accurately reflects page hierarchy
+            test_method: manual_review
+      - id: sidebar_navigation
+        name: Sidebar Navigation
+        checklist_items:
+          - id: sn_06
+            label: Sidebar uses <nav> with distinct aria-label
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_07
+            label: Expandable sections use aria-expanded
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+          - id: sn_08
+            label: Active page/section visually and programmatically indicated
+            wcag_ref: "1.3.1"
+            test_method: screen_reader
+          - id: sn_09
+            label: Sidebar scrollable content keyboard accessible
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+      - id: footer_navigation
+        name: Footer Navigation
+        checklist_items:
+          - id: sn_10
+            label: Footer uses <footer> landmark or role="contentinfo"
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_11
+            label: Footer links organized with headings or lists
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sn_12
+            label: Footer links have descriptive text (no generic "click here")
+            wcag_ref: "2.4.4"
+            test_method: screen_reader
+
+  - id: search_and_discovery
+    name: Search & Discovery
+    description: Evaluate search UI, results presentation, and filtering/sorting mechanisms.
+    wcag_criteria:
+      - "3.3.2"
+      - "2.4.5"
+    subsections:
+      - id: search_interface
+        name: Search Interface
+        checklist_items:
+          - id: sd_01
+            label: Search input has visible label or accessible name
+            wcag_ref: "3.3.2"
+            test_method: screen_reader
+          - id: sd_02
+            label: Search is available from every page (WCAG 2.4.5 alternative)
+            wcag_ref: "2.4.5"
+            test_method: multi_page_comparison
+          - id: sd_03
+            label: Search suggestions/autocomplete announced to screen readers (aria-live or combobox)
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+          - id: sd_04
+            label: Search suggestions keyboard navigable
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: sd_05
+            label: Search can be submitted via Enter key
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+      - id: search_results
+        name: Search Results
+        checklist_items:
+          - id: sd_06
+            label: Search results count announced
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+          - id: sd_07
+            label: Results use semantic structure (headings, lists)
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: sd_08
+            label: No-results state clearly communicated
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+          - id: sd_09
+            label: Pagination controls accessible and announce current position
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+      - id: filtering_and_sorting
+        name: Filtering & Sorting
+        checklist_items:
+          - id: sd_10
+            label: Filter controls are keyboard accessible
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: sd_11
+            label: Applied filters visually shown and announced
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+          - id: sd_12
+            label: Filter changes communicate updated result count
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+          - id: sd_13
+            label: Sort controls indicate current sort direction
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+
+  - id: content_organization
+    name: Content Organization & Findability
+    description: Evaluate information architecture and wayfinding patterns.
+    subsections:
+      - id: ia_assessment
+        name: Information Architecture Assessment
+        checklist_items:
+          - id: co_01
+            label: Heading hierarchy is logical (h1-h6 without skipping levels)
+            wcag_ref: "1.3.1"
+            test_method: heading_outline
+          - id: co_02
+            label: Landmarks used appropriately (main, nav, aside, footer, etc.)
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: co_03
+            label: Page titles are unique and descriptive
+            wcag_ref: "2.4.2"
+            test_method: multi_page_comparison
+          - id: co_04
+            label: Multiple ways to find content (nav, search, sitemap)
+            wcag_ref: "2.4.5"
+            test_method: manual_review
+          - id: co_05
+            label: Related content is grouped and association communicated
+            wcag_ref: "1.3.1"
+            test_method: screen_reader
+      - id: wayfinding
+        name: Wayfinding
+        checklist_items:
+          - id: co_06
+            label: Users can determine current location within the site
+            wcag_ref: "2.4.8"
+            test_method: manual_review
+          - id: co_07
+            label: Back/forward browser navigation works correctly (especially in SPAs)
+            test_method: manual_review
+          - id: co_08
+            label: Deep-linked pages maintain navigation context
+            test_method: manual_review
+          - id: co_09
+            label: 404/error pages provide helpful navigation options
+            test_method: manual_review
+
+  - id: mobile_responsive_navigation
+    name: Mobile & Responsive Navigation
+    description: Evaluate responsive navigation patterns and progressive disclosure on mobile.
+    subsections:
+      - id: responsive_patterns
+        name: Responsive Patterns
+        checklist_items:
+          - id: mrn_01
+            label: Navigation adapts appropriately across breakpoints
+            wcag_ref: "1.4.10"
+            test_method: responsive_test
+          - id: mrn_02
+            label: No content or functionality lost at mobile breakpoints
+            wcag_ref: "1.4.10"
+            test_method: responsive_test
+          - id: mrn_03
+            label: Touch targets meet minimum size requirements (24x24 CSS px)
+            wcag_ref: "2.5.8"
+            test_method: measurement
+          - id: mrn_04
+            label: No horizontal scrolling required at 320 CSS px width
+            wcag_ref: "1.4.10"
+            test_method: reflow_test
+          - id: mrn_05
+            label: Zoom to 400% does not break navigation
+            wcag_ref: "1.4.4"
+            test_method: zoom_test
+      - id: progressive_disclosure
+        name: Progressive Disclosure
+        checklist_items:
+          - id: mrn_06
+            label: Collapsed content sections clearly indicate expandability
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+          - id: mrn_07
+            label: Show more/less controls accessible and state communicated
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+          - id: mrn_08
+            label: Tab bars/bottom navigation accessible on mobile
+            wcag_ref: "2.1.1"
+            test_method: mobile_test
+
+  - id: cross_page_consistency
+    name: Cross-Page Consistency
+    description: Evaluate visual, functional, and content consistency across pages.
+    wcag_criteria:
+      - "3.2.3"
+      - "3.2.4"
+    subsections:
+      - id: visual_consistency
+        name: Visual Consistency
+        checklist_items:
+          - id: cpc_01
+            label: Navigation position consistent across all page types
+            wcag_ref: "3.2.3"
+            test_method: multi_page_comparison
+          - id: cpc_02
+            label: Navigation labels consistent across all pages
+            wcag_ref: "3.2.3"
+            test_method: multi_page_comparison
+          - id: cpc_03
+            label: Interactive element styling consistent (buttons, links, forms)
+            wcag_ref: "3.2.4"
+            test_method: multi_page_comparison
+      - id: functional_consistency
+        name: Functional Consistency
+        checklist_items:
+          - id: cpc_04
+            label: Same keyboard patterns work throughout the site
+            wcag_ref: "3.2.4"
+            test_method: keyboard_only
+          - id: cpc_05
+            label: Screen reader experience consistent across similar components
+            wcag_ref: "3.2.4"
+            test_method: screen_reader
+          - id: cpc_06
+            label: Form interactions follow the same patterns site-wide
+            wcag_ref: "3.2.4"
+            test_method: keyboard_only
+      - id: content_consistency
+        name: Content Consistency
+        checklist_items:
+          - id: cpc_07
+            label: Error message patterns consistent across the site
+            wcag_ref: "3.3.1"
+            test_method: multi_page_comparison
+          - id: cpc_08
+            label: Help/support access consistent from all pages
+            test_method: multi_page_comparison
+          - id: cpc_09
+            label: Language and terminology consistent across navigation
+            test_method: manual_review
+
+  - id: cognitive_accessibility
+    name: Cognitive Accessibility
+    description: Evaluate mental model alignment, predictability, and cognitive load.
+    subsections:
+      - id: mental_model
+        name: Mental Model Alignment
+        checklist_items:
+          - id: ca_01
+            label: Navigation labels use plain language (no jargon)
+            test_method: manual_review
+          - id: ca_02
+            label: Navigation structure matches user expectations for the domain
+            test_method: manual_review
+          - id: ca_03
+            label: Category names are clear and mutually exclusive
+            test_method: manual_review
+      - id: predictability
+        name: Predictability
+        checklist_items:
+          - id: ca_04
+            label: No unexpected context changes on focus
+            wcag_ref: "3.2.1"
+            test_method: keyboard_focus_trace
+          - id: ca_05
+            label: No unexpected context changes on input
+            wcag_ref: "3.2.2"
+            test_method: interaction_test
+          - id: ca_06
+            label: Navigation changes are predictable and follow conventions
+            wcag_ref: "3.2.3"
+            test_method: manual_review
+      - id: cognitive_load
+        name: Cognitive Load Reduction
+        checklist_items:
+          - id: ca_07
+            label: Number of navigation items per level is manageable (Miller's Law, 7 plus/minus 2)
+            test_method: manual_review
+          - id: ca_08
+            label: Visual hierarchy clearly distinguishes primary from secondary navigation
+            test_method: visual_inspection
+          - id: ca_09
+            label: Icons paired with text labels (not icon-only navigation)
+            wcag_ref: "1.3.3"
+            test_method: visual_inspection
+          - id: ca_10
+            label: Animation/motion in navigation respects prefers-reduced-motion
+            wcag_ref: "2.3.3"
+            test_method: media_query_test
+
+  - id: specialized_navigation
+    name: Specialized Navigation Patterns
+    description: Evaluate faceted navigation, multi-site navigation, and dashboard/app navigation.
+    subsections:
+      - id: faceted_navigation
+        name: Faceted Navigation (if applicable)
+        checklist_items:
+          - id: spn_01
+            label: Facet groups use fieldset/legend or equivalent grouping
+            wcag_ref: "1.3.1"
+            test_method: dom_inspection
+          - id: spn_02
+            label: Selected facets visually and programmatically indicated
+            wcag_ref: "4.1.2"
+            test_method: screen_reader
+          - id: spn_03
+            label: Facet removal is keyboard accessible and announced
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: spn_04
+            label: Real-time facet count updates announced to screen readers
+            wcag_ref: "4.1.3"
+            test_method: screen_reader
+      - id: multi_site_navigation
+        name: Multi-Site/Sub-Site Navigation (if applicable)
+        checklist_items:
+          - id: spn_05
+            label: Site transitions are clearly communicated
+            test_method: screen_reader
+          - id: spn_06
+            label: Consistent global navigation across sub-sites
+            wcag_ref: "3.2.3"
+            test_method: multi_page_comparison
+          - id: spn_07
+            label: Users can easily return to parent/main site
+            test_method: manual_review
+      - id: dashboard_app_navigation
+        name: Dashboard/Application Navigation (if applicable)
+        checklist_items:
+          - id: spn_08
+            label: Tab panels use correct ARIA tab pattern
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+          - id: spn_09
+            label: Tree view navigation uses correct ARIA tree pattern
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+          - id: spn_10
+            label: Data table navigation supports keyboard row/column traversal
+            wcag_ref: "2.1.1"
+            test_method: keyboard_only
+          - id: spn_11
+            label: Toolbar/ribbon navigation follows ARIA toolbar pattern
+            wcag_ref: "4.1.2"
+            test_method: dom_inspection
+
+  - id: wcag_compliance_summary
+    name: WCAG Compliance Summary
+    description: Summary of navigation-related WCAG 2.2 success criteria compliance.
+    subsections:
+      - id: level_a_criteria
+        name: Level A Navigation Criteria
+        checklist_items:
+          - id: wcs_01
+            label: "1.3.1 Info and Relationships - Navigation structure conveyed semantically"
+            wcag_ref: "1.3.1"
+            wcag_level: A
+          - id: wcs_02
+            label: "1.3.2 Meaningful Sequence - Navigation order matches visual order"
+            wcag_ref: "1.3.2"
+            wcag_level: A
+          - id: wcs_03
+            label: "2.1.1 Keyboard - All navigation operable via keyboard"
+            wcag_ref: "2.1.1"
+            wcag_level: A
+          - id: wcs_04
+            label: "2.1.2 No Keyboard Trap - No focus traps in navigation"
+            wcag_ref: "2.1.2"
+            wcag_level: A
+          - id: wcs_05
+            label: "2.4.1 Bypass Blocks - Skip navigation provided"
+            wcag_ref: "2.4.1"
+            wcag_level: A
+          - id: wcs_06
+            label: "2.4.2 Page Titled - Unique, descriptive page titles"
+            wcag_ref: "2.4.2"
+            wcag_level: A
+          - id: wcs_07
+            label: "2.4.3 Focus Order - Logical focus order through navigation"
+            wcag_ref: "2.4.3"
+            wcag_level: A
+          - id: wcs_08
+            label: "2.4.4 Link Purpose (In Context) - Navigation link text is descriptive"
+            wcag_ref: "2.4.4"
+            wcag_level: A
+          - id: wcs_09
+            label: "3.2.1 On Focus - No unexpected changes on navigation focus"
+            wcag_ref: "3.2.1"
+            wcag_level: A
+          - id: wcs_10
+            label: "3.2.2 On Input - No unexpected changes on navigation input"
+            wcag_ref: "3.2.2"
+            wcag_level: A
+          - id: wcs_11
+            label: "4.1.2 Name, Role, Value - Navigation components have proper ARIA"
+            wcag_ref: "4.1.2"
+            wcag_level: A
+      - id: level_aa_criteria
+        name: Level AA Navigation Criteria
+        checklist_items:
+          - id: wcs_12
+            label: "1.4.4 Resize Text - Navigation usable at 200% zoom"
+            wcag_ref: "1.4.4"
+            wcag_level: AA
+          - id: wcs_13
+            label: "1.4.10 Reflow - Navigation reflows at 320px without horizontal scroll"
+            wcag_ref: "1.4.10"
+            wcag_level: AA
+          - id: wcs_14
+            label: "2.4.5 Multiple Ways - Multiple navigation mechanisms available"
+            wcag_ref: "2.4.5"
+            wcag_level: AA
+          - id: wcs_15
+            label: "2.4.7 Focus Visible - Visible focus indicator on all navigation items"
+            wcag_ref: "2.4.7"
+            wcag_level: AA
+          - id: wcs_16
+            label: "2.5.8 Target Size (Minimum) - Navigation targets meet 24x24px minimum"
+            wcag_ref: "2.5.8"
+            wcag_level: AA
+          - id: wcs_17
+            label: "3.2.3 Consistent Navigation - Navigation consistent across pages"
+            wcag_ref: "3.2.3"
+            wcag_level: AA
+          - id: wcs_18
+            label: "3.2.4 Consistent Identification - Same functions identified consistently"
+            wcag_ref: "3.2.4"
+            wcag_level: AA
+          - id: wcs_19
+            label: "4.1.3 Status Messages - Dynamic navigation updates announced"
+            wcag_ref: "4.1.3"
+            wcag_level: AA
+
+  - id: business_impact_assessment
+    name: Business Impact Assessment
+    description: Assess the business impact of navigation accessibility barriers.
+    subsections:
+      - id: barrier_impact
+        name: Barrier Impact Analysis
+        checklist_items:
+          - id: bia_01
+            label: Critical user tasks completable with keyboard only
+            test_method: journey_walkthrough
+          - id: bia_02
+            label: Critical user tasks completable with screen reader
+            test_method: journey_walkthrough
+          - id: bia_03
+            label: Navigation does not prevent task completion on mobile
+            test_method: mobile_test
+          - id: bia_04
+            label: Navigation barriers do not create legal compliance risk
+            test_method: compliance_review
+      - id: strengths_and_opportunities
+        name: Strengths & Opportunities
+        fields:
+          - id: top_strengths
+            label: Top accessibility strengths (items to preserve)
+            field_type: text_list
+          - id: quick_wins
+            label: Quick wins (low-effort, high-impact improvements)
+            field_type: text_list
+          - id: strategic_opportunities
+            label: Strategic opportunities (longer-term improvements)
+            field_type: text_list
+
+  - id: recommendations
+    name: Recommendations & Remediation Roadmap
+    description: Prioritized recommendations for addressing identified issues.
+    priority_levels:
+      - level: critical
+        label: Critical (fix immediately)
+        description: Barriers that block access to core navigation/content for assistive technology users
+        target_timeline: 0-30 days
+      - level: high
+        label: High Priority (fix soon)
+        description: Significant friction that affects navigation usability for multiple user groups
+        target_timeline: 30-90 days
+      - level: medium
+        label: Medium Priority
+        description: Issues causing meaningful friction with workarounds available
+        target_timeline: 90-180 days
+      - level: long_term
+        label: Long-Term Improvements
+        description: Architectural or systemic improvements for sustainable accessibility
+        target_timeline: 180+ days
+    fields:
+      - id: critical_issues
+        label: Critical Issues
+        field_type: finding_list
+      - id: high_priority_issues
+        label: High Priority Issues
+        field_type: finding_list
+      - id: medium_priority_issues
+        label: Medium Priority Issues
+        field_type: finding_list
+      - id: long_term_improvements
+        label: Long-Term Improvements
+        field_type: finding_list
+
+methodology:
+  testing_approach:
+    - Automated scanning with axe-core for ARIA validation and semantic checks
+    - Manual keyboard navigation testing across all navigation patterns
+    - Screen reader testing with NVDA (Windows) and VoiceOver (macOS/iOS)
+    - Responsive testing at key breakpoints (320px, 768px, 1024px, 1920px)
+    - Cognitive walkthrough for navigation predictability and learnability
+  tools:
+    - axe-core
+    - Lighthouse
+    - NVDA
+    - VoiceOver
+    - Browser DevTools (Accessibility Inspector)
+    - Colour Contrast Analyser

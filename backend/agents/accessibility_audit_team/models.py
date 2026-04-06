@@ -11,6 +11,30 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from .a11y_agency_strands.app.models.architecture import (
+    ArchitectureAuditResult as ArchitectureAuditPhaseResult,
+)
+from .a11y_agency_strands.app.models.architecture import (
+    ArchitectureChecklistItem as ArchitectureChecklistItemResult,
+)
+from .a11y_agency_strands.app.models.architecture import (
+    ArchitectureSectionResult as ArchitectureSectionScore,
+)
+from .a11y_agency_strands.app.models.architecture import (
+    BusinessImpact as ArchitectureBusinessImpact,
+)
+from .a11y_agency_strands.app.models.architecture import (
+    WCAGCriterionStatus as ArchitectureWCAGStatus,
+)
+
+__all__ = [
+    "ArchitectureAuditPhaseResult",
+    "ArchitectureBusinessImpact",
+    "ArchitectureChecklistItemResult",
+    "ArchitectureSectionScore",
+    "ArchitectureWCAGStatus",
+]
+
 # ---------------------------------------------------------------------------
 # Phase Enum
 # ---------------------------------------------------------------------------
@@ -408,6 +432,19 @@ class VerificationResult(BaseModel):
     error: Optional[str] = None
 
 
+class CaseStudyResult(BaseModel):
+    """Rendered case study artifact generated from audit findings."""
+
+    artifact_ref: str = Field(default="", description="Reference path to the case study artifact")
+    template_used: str = Field(default="", description="Name of the template applied")
+    template_key: str = Field(default="", description="Key of the template applied")
+    industry: Optional[str] = Field(default=None, description="Industry template used, if any")
+    sections: List[Dict[str, Any]] = Field(default_factory=list, description="Populated sections")
+    metrics: Dict[str, Any] = Field(
+        default_factory=dict, description="Summary metrics from findings"
+    )
+
+
 class ReportPackagingResult(BaseModel):
     """Output of the Report Packaging phase (Phase 3)."""
 
@@ -417,6 +454,9 @@ class ReportPackagingResult(BaseModel):
     executive_summary: str = Field(default="")
     roadmap: List[str] = Field(default_factory=list)
     coverage_matrix: Optional[CoverageMatrix] = None
+    case_study: Optional[CaseStudyResult] = Field(
+        default=None, description="Generated case study artifact from templates"
+    )
     export_refs: Dict[str, str] = Field(
         default_factory=dict, description="References to exported artifacts"
     )
@@ -460,6 +500,7 @@ class AccessibilityAuditResult(BaseModel):
     verification_result: Optional[VerificationResult] = None
     report_packaging_result: Optional[ReportPackagingResult] = None
     retest_result: Optional[RetestResult] = None
+    architecture_audit_result: Optional["ArchitectureAuditPhaseResult"] = None
 
     # Final outputs
     final_findings: List[Finding] = Field(default_factory=list)
