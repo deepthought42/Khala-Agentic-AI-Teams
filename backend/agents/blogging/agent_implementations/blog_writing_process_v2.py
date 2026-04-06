@@ -309,12 +309,14 @@ def _fill_story_placeholders(
         if job_data and job_data.get("status") in ("failed", "cancelled"):
             break
 
-        # Expose only the current gap — one at a time
+        # Expose only the current gap — one at a time.
+        # Clear chat history so prior gap conversations don't bleed through.
         update_blog_job(
             job_id,
             story_gaps=[gap.model_dump()],
             current_story_gap_index=0,
             waiting_for_story_input=False,
+            story_chat_history=[],
         )
         job_updater(
             phase="story_elicitation",
@@ -688,9 +690,13 @@ def run_pipeline(
                     if job_data and job_data.get("status") in ("failed", "cancelled"):
                         break
 
-                    # Expose only the current gap — don't reveal how many stories are needed
+                    # Expose only the current gap — don't reveal how many stories are needed.
+                    # Clear chat history so prior gap conversations don't bleed through.
                     update_blog_job(
-                        job_id, story_gaps=[gap.model_dump()], current_story_gap_index=0
+                        job_id,
+                        story_gaps=[gap.model_dump()],
+                        current_story_gap_index=0,
+                        story_chat_history=[],
                     )
                     job_updater(
                         phase="story_elicitation",
