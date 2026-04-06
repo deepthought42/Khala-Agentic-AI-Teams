@@ -27,69 +27,78 @@ MAX_ROUNDS = 5  # soft cap for pre-draft interviews (user can still be asked mor
 MAX_ROUNDS_POST_DRAFT = 50  # hard safety cap for post-draft interviews (effectively unlimited)
 
 _FIND_GAPS_SYSTEM = """\
-You are an expert ghost writer interviewer who specializes in finding places in a
-blog post outline where a personal anecdote, failure story, or concrete lived
-experience from the author would dramatically strengthen the piece.
+You are a curious, enthusiastic ghost writer who loves hearing people's real stories.
+You're reviewing a blog post outline to find the 1–3 spots where a personal story
+from the author would make the piece come alive — the kind of moment that makes a
+reader think "oh, they've actually been through this."
 
-You receive a content plan (outline + narrative flow) and identify the 1–3 sections
-where adding a real story from the author's experience would:
-  1. Make the teaching more credible ("I learned this the hard way")
-  2. Create an emotional hook that connects to the reader
-  3. Provide concrete evidence for a claim that otherwise reads as generic advice
-
-For each gap you identify, write an opening interview question that:
-  - Asks about a specific event or moment (not a general question)
-  - Is conversational and non-intimidating
-  - Opens with "Tell me about..." or "Walk me through the time when..." or similar
-  - Probes for concrete numbers (team size, timeline, budget, measurable outcome)
+For each spot you find, write an opening question as if you're a friend who just
+heard the topic come up and genuinely wants to hear the story. Your question should:
+  - Sound natural and warm — like you're chatting over coffee, not conducting an interview
+  - Ask about a specific kind of moment or experience (not a vague "tell me about your experience with X")
+  - NOT mention the blog post, the content plan, section titles, or any internal structure
+  - NOT ask for numbers, metrics, or frameworks — just ask for the story
+  - Use phrases like "I'd love to hear about a time you..." or "Have you ever had one
+    of those moments where..." or "What's the story behind..."
 
 Return a JSON array of objects. Each object has:
-  - "section_title": exact title of the section
-  - "section_context": one sentence explaining what the section argues and why a story helps here
-  - "seed_question": the opening interview question
+  - "section_title": exact title of the section (for internal tracking only — the author won't see this)
+  - "section_context": one sentence explaining what the section covers and why a story fits
+  - "seed_question": your friendly opening question
 
 Return [] if no personal story opportunities exist (e.g. purely technical reference post).
-Return at most 3 gaps — prioritise the highest-impact ones.
+Return at most 3 — pick the highest-impact spots.
 """
 
 _EVALUATE_SYSTEM = """\
-You are an expert ghost writer evaluating whether an author's response contains
-enough raw material to write a compelling first-person anecdote for their blog post.
+You are a ghost writer who's been chatting with the author to surface a personal
+story for their blog post. You genuinely enjoy hearing people's stories and you
+have a knack for knowing when there's more to tell.
 
-Use the STAR framework (Situation, Task, Action, Result) to evaluate completeness.
+Your job: decide whether the author has shared enough for you to write a compelling
+first-person narrative, or whether you should keep the conversation going.
 
 There are THREE possible outcomes:
 
-1. **sufficient** — the author has provided enough STAR material:
-  - SITUATION: A specific context or event (not just a general statement) — ideally with a concrete number (team size, timeline, budget, scale)
-  - TASK: What needed to happen or what problem existed
-  - ACTION: What the author specifically did
-  - RESULT: A measurable outcome or clear lesson learned — ideally with a real number (percentage improvement, dollar amount, time saved, error reduction)
+1. **sufficient** — you have what you need for a great story:
+  - A specific moment or situation (not just "I've done that kind of thing")
+  - What actually happened — the key actions, decisions, or turning points
+  - Why it mattered — the outcome, lesson, or how things changed
+  - Enough texture to make a reader feel like they were there
 
-2. **no_experience** — the author explicitly indicates they have no relevant experience:
-  - They said something like "skip", "no experience", "I haven't done that", "n/a", "pass",
-    "I don't have a story for this", or otherwise clearly communicated they cannot provide
-    an anecdote for this topic. Respect this immediately — do not push back or suggest
-    they try harder.
+2. **no_experience** — the author clearly doesn't have a story for this:
+  - They said "skip", "no experience", "pass", "I haven't done that", or similar
+  - Respect this immediately — don't push
 
-3. **insufficient** — the author is trying but hasn't given enough detail yet:
-  - Vague ("yeah I've done that kind of thing")
-  - Only confirms the experience exists without details
-  - Missing the outcome/result or what was learned
-  - Has no concrete numbers anywhere in the story
+3. **insufficient** — the author is sharing but you sense there's more:
+  - They're being vague or general ("yeah I've dealt with that")
+  - The story is missing the juicy parts — what went wrong, how they figured it out, what surprised them
+  - You don't know the context yet (was this a side project? client work? their day job?)
+  - There's no clear ending — what happened as a result?
 
-When asking follow-up questions (insufficient only), specifically probe for:
-  - Missing STAR elements (especially Situation numbers and Result numbers)
-  - "What were the actual numbers?" / "How big was the impact?"
-  - "What specifically did you do differently?" (Action)
-  - "What was the measurable result?" (Result)
+When asking follow-ups (insufficient only), be a curious friend, not an interviewer:
+  - If you don't know the context yet, ask naturally: "Was this something you built on
+    your own, or were you working with a team / for a client?"
+  - Dig for the interesting parts: "Wait, what happened next?" / "No way — how did
+    they react?" / "OK so what made you try that approach?"
+  - If the story is at a company: ask about team dynamics, stakeholders, what leadership thought
+  - If it's a personal/fun project: ask what sparked the idea, what was the most surprising part
+  - If it's client work: ask about the client's reaction, constraints you were working with
+  - Don't ask for numbers or metrics directly — if they come up naturally, great
 
-Given the conversation so far and the section context, respond in JSON:
+Also identify the **story context** when you can tell:
+  - "personal" — a side project, hobby, something done for fun or learning
+  - "client" — work done for a client or customer
+  - "employer" — work done as an employee at a company
+  - null if unclear yet
+
+Respond in JSON:
 {
   "sufficient": true/false,
   "no_experience": true/false,
-  "follow_up": "If insufficient (not no_experience): a single specific follow-up question targeting the weakest STAR element. Otherwise: null.",
-  "narrative": "If sufficient: a 2–5 sentence first-person narrative in STAR format (as if the author wrote it) compiled from what they shared. Lead with the situation, include the action taken, and close with the measurable result. Use real numbers from the author's responses. Otherwise: null."
+  "story_context": "personal" | "client" | "employer" | null,
+  "follow_up": "If insufficient: a single conversational follow-up question. Otherwise: null.",
+  "narrative": "If sufficient: a 2–5 sentence first-person narrative as if the author wrote it. Make it vivid and specific — lead with the moment, include what they did and why, and end with how it turned out. Use only real details from the conversation. Otherwise: null."
 }
 """
 
@@ -160,12 +169,7 @@ class GhostWriterElicitationAgent:
             opp = getattr(sec, "story_opportunity", None)
             if not opp:
                 continue
-            # Generate a seed question from the story opportunity description
-            seed = (
-                f'For the section "{sec.title}", the plan calls for a personal story: {opp}\n\n'
-                f"Do you have a real experience that fits this? Tell me about a specific moment, "
-                f"situation, or incident — even a small one."
-            )
+            seed = self._generate_friendly_seed(opp)
             gaps.append(
                 StoryGap(
                     section_title=sec.title,
@@ -174,6 +178,28 @@ class GhostWriterElicitationAgent:
                 )
             )
         return gaps
+
+    def _generate_friendly_seed(self, story_opportunity: str) -> str:
+        """Use the LLM to turn a story_opportunity description into a warm, conversational question."""
+        prompt = (
+            f"Story opportunity description: {story_opportunity}\n\n"
+            "Write a single, warm opening question to ask the author about this — as if you're a "
+            "friend who just heard the topic come up and genuinely wants to hear the story. "
+            "Do NOT mention the blog post, the section, or any internal structure. "
+            "Keep it casual and specific. One or two sentences max."
+        )
+        try:
+            result = self.llm_client.complete(
+                prompt,
+                system_prompt=(
+                    "You are a friendly ghost writer. Write exactly one conversational question. "
+                    "No preamble, no quotes, just the question."
+                ),
+            )
+            return (result or "").strip().strip('"')
+        except Exception as e:
+            logger.warning("Ghost writer friendly seed generation failed, using fallback: %s", e)
+            return f"I'd love to hear about a time you dealt with {story_opportunity}. What comes to mind?"
 
     def _find_gaps_via_llm(self, content_plan: ContentPlan) -> List[StoryGap]:
         """Fallback: use LLM to identify story gaps when plan lacks story_opportunity fields."""
@@ -240,6 +266,7 @@ class GhostWriterElicitationAgent:
         )
 
         conversation: List[Dict[str, str]] = [{"role": "agent", "content": gap.seed_question}]
+        detected_context: Optional[str] = None
 
         for round_num in range(max_rounds):
             # ── Wait indefinitely for the user to respond ────────────────
@@ -285,6 +312,10 @@ class GhostWriterElicitationAgent:
             # ── Evaluate with LLM ────────────────────────────────────────
             evaluation = self._evaluate_response(gap, conversation)
 
+            # Track story context as it's detected
+            if evaluation.get("story_context"):
+                detected_context = evaluation["story_context"]
+
             # Outcome 1: no_experience flagged by LLM
             if evaluation.get("no_experience"):
                 logger.info("Ghost writer: LLM detected no-experience for '%s'", gap.section_title)
@@ -292,7 +323,7 @@ class GhostWriterElicitationAgent:
                     gap=gap, narrative=None, skipped=True, rounds_used=round_num + 1
                 )
 
-            # Outcome 2: sufficient STAR material
+            # Outcome 2: sufficient material for a compelling story
             if evaluation.get("sufficient"):
                 narrative = evaluation.get("narrative")
                 logger.info(
@@ -301,17 +332,25 @@ class GhostWriterElicitationAgent:
                     round_num + 1,
                 )
                 return StoryElicitationResult(
-                    gap=gap, narrative=narrative, skipped=False, rounds_used=round_num + 1
+                    gap=gap,
+                    narrative=narrative,
+                    skipped=False,
+                    rounds_used=round_num + 1,
+                    story_context=detected_context,
                 )
 
             # Outcome 3: insufficient — ask follow-up (loop continues)
             follow_up = evaluation.get("follow_up")
             if not follow_up:
                 # LLM couldn't generate a follow-up — compile from what we have
-                narrative = self._compile_from_history(gap, conversation)
+                narrative = self._compile_from_history(gap, conversation, detected_context)
                 if narrative:
                     return StoryElicitationResult(
-                        gap=gap, narrative=narrative, skipped=False, rounds_used=round_num + 1
+                        gap=gap,
+                        narrative=narrative,
+                        skipped=False,
+                        rounds_used=round_num + 1,
+                        story_context=detected_context,
                     )
                 break
 
@@ -322,9 +361,9 @@ class GhostWriterElicitationAgent:
         logger.info(
             "Ghost writer: round cap reached for '%s', compiling from history", gap.section_title
         )
-        narrative = self._compile_from_history(gap, conversation)
+        narrative = self._compile_from_history(gap, conversation, detected_context)
         return StoryElicitationResult(
-            gap=gap, narrative=narrative, skipped=False, rounds_used=max_rounds
+            gap=gap, narrative=narrative, skipped=False, rounds_used=max_rounds, story_context=detected_context
         )
 
     def _evaluate_response(
@@ -361,6 +400,7 @@ class GhostWriterElicitationAgent:
         self,
         gap: StoryGap,
         conversation: List[Dict[str, str]],
+        story_context: Optional[str] = None,
     ) -> Optional[str]:
         """Compile a narrative from the conversation even if evaluation didn't produce one."""
         user_content = " ".join(
@@ -368,20 +408,42 @@ class GhostWriterElicitationAgent:
         )
         if not user_content.strip():
             return None
+
+        tone_hint = ""
+        if story_context == "personal":
+            tone_hint = (
+                "This was a personal or side project — keep the tone lighter and enthusiastic. "
+                "Highlight curiosity, experimentation, and what made it fun or interesting. "
+            )
+        elif story_context == "client":
+            tone_hint = (
+                "This was client work — convey professional credibility while keeping it human. "
+                "Highlight the constraints, the client relationship, and the delivered result. "
+            )
+        elif story_context == "employer":
+            tone_hint = (
+                "This happened at the author's company — emphasize the team dynamic, "
+                "organizational context, and the author's specific contribution. "
+            )
+
         prompt = (
             f"Section context: {gap.section_context}\n\n"
             f"Author's raw responses: {user_content}\n\n"
-            "Write a 2–5 sentence first-person narrative using STAR format "
-            "(Situation, Task, Action, Result) as if the author wrote it. "
-            "Lead with the specific situation (include a number if the author gave one: team size, timeline, budget). "
-            "Include the action they took. Close with the measurable result "
-            "(include a real number if the author gave one: percentage, dollar amount, time saved). "
-            "Use 'I' voice. Do not invent details or numbers the author did not provide."
+            f"{tone_hint}"
+            "Write a 2–5 sentence first-person narrative as if the author wrote it. "
+            "Make it vivid and specific — open with the moment or situation, include what "
+            "they actually did and why, and close with how it turned out. "
+            "Use 'I' voice. Include real details and numbers only if the author provided them. "
+            "Do not invent anything."
         )
         try:
             return self.llm_client.complete(
                 prompt,
-                system_prompt="You are a skilled ghost writer who turns author notes into vivid first-person STAR-format narratives.",
+                system_prompt=(
+                    "You are a skilled ghost writer who turns casual conversation into "
+                    "compelling first-person narratives. Write like a great storyteller, "
+                    "not a report generator."
+                ),
             )
         except Exception as e:
             logger.warning("Ghost writer compile_from_history failed: %s", e)
