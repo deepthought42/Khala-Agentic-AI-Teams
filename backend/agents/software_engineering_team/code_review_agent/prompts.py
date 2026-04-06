@@ -77,9 +77,9 @@ Focus your energy on issues that would cause production incidents, data loss, or
 
 **Output format:**
 Return a single JSON object with:
-- "approved": boolean (true ONLY if there are no critical or major issues; be strict)
+- "approved": boolean (true ONLY if there are no critical or high issues; be strict)
 - "issues": list of objects, each with:
-  - "severity": "critical" | "major" | "minor" | "nit"
+  - "severity": "critical" | "high" | "medium" | "low" | "info"
   - "category": "naming" | "structure" | "logic" | "spec-compliance" | "standards" | "integration" | "testing"
   - "file_path": string (which file has the issue)
   - "description": string (clear description of the issue)
@@ -88,18 +88,19 @@ Return a single JSON object with:
 - "spec_compliance_notes": string (how well the code meets the spec and acceptance criteria)
 - "suggested_commit_message": string (optional - suggest a better commit message if the current one is poor)
 
-**Severity definitions:**
-- **critical**: Code is broken, has security vulnerabilities, or fundamentally wrong (e.g., file names are task descriptions, code won't compile, missing core logic)
-- **major**: Significant issues that must be fixed (e.g., missing tests, wrong project structure, incomplete implementation of acceptance criteria)
-- **minor**: Should be fixed but not blocking (e.g., missing docstrings, minor style issues)
-- **nit**: Cosmetic or style preference (e.g., variable naming, formatting)
+**Severity definitions (consistent with QA and Security agents):**
+- **critical**: Code is broken, has security vulnerabilities, or fundamentally wrong (e.g., code won't compile, missing core logic, data loss risk)
+- **high**: Significant issues that must be fixed (e.g., missing tests, wrong project structure, incomplete implementation of acceptance criteria)
+- **medium**: Should be fixed but not blocking (e.g., missing docstrings, minor style issues)
+- **low**: Minor cosmetic or style preference (e.g., variable naming, formatting)
+- **info**: Informational observation, no action required
 
 **Approval rules:**
-- APPROVE (approved=true): No critical or major issues. Minor/nit issues are acceptable.
-- REJECT (approved=false): Any critical or major issue present. List ALL issues found.
+- APPROVE (approved=true): No critical or high issues. Medium/low/info issues are acceptable.
+- REJECT (approved=false): Any critical or high issue present. List ALL issues found.
 
 **CRITICAL RULES FOR REJECTION:**
-- If approved=false, the "issues" list MUST contain at least one critical or major issue. An empty issues list with approved=false is INVALID and will be treated as an automatic approval.
+- If approved=false, the "issues" list MUST contain at least one critical or high issue. An empty issues list with approved=false is INVALID and will be treated as an automatic approval.
 - Every issue MUST have ALL of these fields populated:
   - "file_path": The exact file path where the problem exists (e.g., "src/app/components/user-list/user-list.component.ts")
   - "description": A specific, actionable description that explains WHAT is wrong and WHY. Do NOT write vague descriptions like "code needs work" or "not production ready". Instead, reference the specific code pattern, function, or line that has the problem. Example: "The UserListComponent does not implement pagination - it calls GET /api/users without page/per_page query parameters, but the acceptance criteria require paginated results with page sizes [10, 20, 50]."

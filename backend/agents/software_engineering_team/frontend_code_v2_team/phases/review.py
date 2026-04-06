@@ -29,6 +29,12 @@ from ..prompts import DOCUMENTATION_SELF_REVIEW_PROMPT, REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MAX_REVIEW_CODE_CHARS = 60_000  # Generous limit; review all files, not just first 20
+
 
 def _run_llm_review(
     *,
@@ -37,13 +43,13 @@ def _run_llm_review(
     files: Dict[str, str],
 ) -> List[ReviewIssue]:
     """LLM-based code review when no external review agent is available."""
-    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(files.items())[:20])
+    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(files.items()))
     prompt = REVIEW_PROMPT.format(
         requirements=task.requirements or task.description,
         acceptance_criteria=", ".join(task.acceptance_criteria)
         if task.acceptance_criteria
         else "N/A",
-        code=code_text[:12000],
+        code=code_text[:MAX_REVIEW_CODE_CHARS],
     )
     raw = llm.complete_text(prompt, think=True)
     data = parse_review_template(raw)
@@ -88,6 +94,7 @@ def run_review(
     code_review_agent: Any = None,
     linting_tool_agent: Any = None,
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
+    language: str = "typescript",
 ) -> ReviewResult:
     """Execute the Review phase. Uses passed-in quality agents when available."""
     task_id = task.id
@@ -135,9 +142,9 @@ def run_review(
             logger.warning("[%s] Linting tool agent failed: %s", task_id, exc)
 
     code_text = "\n\n".join(
-        f"--- {p} ---\n{c}" for p, c in list(execution_result.files.items())[:20]
+        f"--- {p} ---\n{c}" for p, c in list(execution_result.files.items())
     )
-    code_text_12k = code_text[:12000]
+    code_text_12k = code_text[:MAX_REVIEW_CODE_CHARS]
     if code_review_agent is not None:
         try:
             from code_review_agent.models import CodeReviewInput as _CRInput
@@ -147,7 +154,7 @@ def run_review(
                 task_description=task.description or "",
                 task_requirements=task.requirements or "",
                 acceptance_criteria=getattr(task, "acceptance_criteria", []) or [],
-                language="typescript",
+                language=language,
             )
             cr_result = code_review_agent.run(cr_input)
             for item in getattr(cr_result, "issues", []):
@@ -176,7 +183,7 @@ def run_review(
 
             qa_input = _QAInput(
                 code=code_text_12k,
-                language="typescript",
+                language=language,
                 task_description=task.description or "",
             )
             qa_result = qa_agent.run(qa_input)
@@ -192,6 +199,16 @@ def run_review(
                 )
         except Exception as exc:
             logger.warning("[%s] QA agent failed: %s", task_id, exc)
+    else:
+        logger.warning("[%s] QA agent not available — QA gate skipped", task_id)
+        issues.append(
+            ReviewIssue(
+                source="qa",
+                severity="high",
+                description="QA agent not available — QA review was skipped. This is a quality risk.",
+                recommendation="Ensure QA agent is configured before running the pipeline.",
+            )
+        )
 
     if security_agent is not None:
         try:
@@ -199,7 +216,7 @@ def run_review(
 
             sec_input = _SecInput(
                 code=code_text_12k,
-                language="typescript",
+                language=language,
                 task_description=task.description or "",
             )
             sec_result = security_agent.run(sec_input)
@@ -215,6 +232,16 @@ def run_review(
                 )
         except Exception as exc:
             logger.warning("[%s] Security agent failed: %s", task_id, exc)
+    else:
+        logger.warning("[%s] Security agent not available — security gate skipped", task_id)
+        issues.append(
+            ReviewIssue(
+                source="security",
+                severity="critical",
+                description="Security agent not available — security review was skipped. This is a critical risk.",
+                recommendation="Ensure security agent is configured before running the pipeline.",
+            )
+        )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -265,6 +292,7 @@ def run_microtask_review(
     linting_tool_agent: Any = None,
     tool_agents: Optional[Dict[ToolAgentKind, Any]] = None,
     detail_callback: Optional[Callable[[str], None]] = None,
+    language: str = "typescript",
 ) -> ReviewResult:
     """
     Run full review on a single microtask's output files.
@@ -337,8 +365,8 @@ def run_microtask_review(
                 "[%s] Linting tool agent failed for microtask %s: %s", task_id, microtask_id, exc
             )
 
-    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(files.items())[:20])
-    code_text_12k = code_text[:12000]
+    code_text = "\n\n".join(f"--- {p} ---\n{c}" for p, c in list(files.items()))
+    code_text_12k = code_text[:MAX_REVIEW_CODE_CHARS]
 
     if code_review_agent is not None:
         if detail_callback:
@@ -351,7 +379,7 @@ def run_microtask_review(
                 task_description=f"Microtask: {microtask.description or microtask.title}",
                 task_requirements=task.requirements or "",
                 acceptance_criteria=getattr(task, "acceptance_criteria", []) or [],
-                language="typescript",
+                language=language,
             )
             cr_result = code_review_agent.run(cr_input)
             for item in getattr(cr_result, "issues", []):
@@ -385,7 +413,7 @@ def run_microtask_review(
 
             qa_input = _QAInput(
                 code=code_text_12k,
-                language="typescript",
+                language=language,
                 task_description=f"Microtask: {microtask.description or microtask.title}",
             )
             qa_result = qa_agent.run(qa_input)
@@ -401,6 +429,16 @@ def run_microtask_review(
                 )
         except Exception as exc:
             logger.warning("[%s] QA agent failed for microtask %s: %s", task_id, microtask_id, exc)
+    else:
+        logger.warning("[%s] QA agent not available for microtask %s — QA gate skipped", task_id, microtask_id)
+        issues.append(
+            ReviewIssue(
+                source="qa",
+                severity="high",
+                description="QA agent not available — QA review was skipped. This is a quality risk.",
+                recommendation="Ensure QA agent is configured before running the pipeline.",
+            )
+        )
 
     if security_agent is not None:
         if detail_callback:
@@ -410,7 +448,7 @@ def run_microtask_review(
 
             sec_input = _SecInput(
                 code=code_text_12k,
-                language="typescript",
+                language=language,
                 task_description=f"Microtask: {microtask.description or microtask.title}",
             )
             sec_result = security_agent.run(sec_input)
@@ -428,6 +466,16 @@ def run_microtask_review(
             logger.warning(
                 "[%s] Security agent failed for microtask %s: %s", task_id, microtask_id, exc
             )
+    else:
+        logger.warning("[%s] Security agent not available for microtask %s — security gate skipped", task_id, microtask_id)
+        issues.append(
+            ReviewIssue(
+                source="security",
+                severity="critical",
+                description="Security agent not available — security review was skipped. This is a critical risk.",
+                recommendation="Ensure security agent is configured before running the pipeline.",
+            )
+        )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -478,7 +526,7 @@ def run_microtask_review(
 # ---------------------------------------------------------------------------
 
 MIN_DOC_SELF_REVIEW_ITERATIONS = 3
-MAX_DOC_SELF_REVIEW_ITERATIONS = 100
+MAX_DOC_SELF_REVIEW_ITERATIONS = 3
 DOC_QUALITY_THRESHOLD = 0.9
 
 
