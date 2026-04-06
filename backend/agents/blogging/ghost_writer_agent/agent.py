@@ -285,7 +285,10 @@ class GhostWriterElicitationAgent:
                         data = data[key]
                         break
             if isinstance(data, list) and len(data) == len(opportunities):
-                return [str(s).strip().strip('"') for s in data]
+                cleaned = [str(s).strip().strip('"') for s in data]
+                # Treat empty/whitespace-only items as failures — fall through to fallback
+                if all(cleaned):
+                    return cleaned
         except (LLMJsonParseError, LLMTruncatedError) as e:
             logger.warning("Ghost writer batch seed generation parse error: %s", e)
         except (LLMTemporaryError, LLMRateLimitError) as e:
@@ -317,11 +320,15 @@ class GhostWriterElicitationAgent:
                 data = json.loads(raw[start:end])
                 gaps = []
                 for item in data[:3]:
+                    ctx = item.get("section_context", "")
+                    seed = (item.get("seed_question") or "").strip()
+                    if not seed:
+                        seed = f"I'd love to hear about a time you dealt with {ctx.lower().rstrip('.')}. What comes to mind?"
                     gaps.append(
                         StoryGap(
                             section_title=item.get("section_title", ""),
-                            section_context=item.get("section_context", ""),
-                            seed_question=item.get("seed_question", ""),
+                            section_context=ctx,
+                            seed_question=seed,
                         )
                     )
                 logger.info("Ghost writer: found %s story gap(s) via LLM", len(gaps))
