@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, HTTPException
@@ -25,8 +23,14 @@ from job_service_client import (
     start_stale_job_monitor,
     validate_job_for_action,
 )
+from social_media_marketing_team.adapters.branding import (
+    BrandContext,
+    BrandIncompleteError,
+    BrandNotFoundError,
+    fetch_brand,
+    validate_brand_for_social_marketing,
+)
 from social_media_marketing_team.models import (
-    BrandGoals,
     CampaignPerformanceSnapshot,
     HumanReview,
 )
@@ -46,21 +50,6 @@ from .request_models import (
     TrendRunResponse,
 )
 from .trend_scheduler import get_latest_digest, run_trend_job, start_scheduler, stop_scheduler
-
-# ---------------------------------------------------------------------------
-# Allowed base directories for brand document file reads.  Paths outside these
-# roots will be rejected to prevent path-traversal attacks.
-# ---------------------------------------------------------------------------
-_ALLOWED_FILE_ROOTS: List[Path] = []
-_agent_cache = os.getenv("AGENT_CACHE", "")
-if _agent_cache:
-    _ALLOWED_FILE_ROOTS.append(Path(_agent_cache).resolve())
-_data_dir = Path("/data")
-if _data_dir.is_dir():
-    _ALLOWED_FILE_ROOTS.append(_data_dir.resolve())
-_tmp_dir = Path("/tmp")
-if _tmp_dir.is_dir():
-    _ALLOWED_FILE_ROOTS.append(_tmp_dir.resolve())
 
 # ---------------------------------------------------------------------------
 # App & lifecycle
@@ -99,35 +88,6 @@ def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _validate_file_path(path: str) -> Path:
-    """Resolve *path* and ensure it exists inside an allowed root directory.
-
-    Raises ``ValueError`` when the path does not exist, or lies outside every
-    configured allowed root.  When no roots are configured, **all** reads are
-    denied to prevent silent bypass of the protection in environments that
-    forgot to set ``AGENT_CACHE``.
-    """
-    fp = Path(path).expanduser().resolve()
-    if not fp.is_file():
-        raise ValueError(f"File not found: {path}")
-    if not _ALLOWED_FILE_ROOTS:
-        raise ValueError(
-            f"Access denied: no allowed file roots configured (set AGENT_CACHE or place files under /data or /tmp). "
-            f"Requested path: {path}"
-        )
-    if not any(fp == root or root in fp.parents for root in _ALLOWED_FILE_ROOTS):
-        raise ValueError(
-            f"Access denied: {path} is outside allowed directories. "
-            f"Allowed roots: {[str(r) for r in _ALLOWED_FILE_ROOTS]}"
-        )
-    return fp
-
-
-def _read_text_file(path: str) -> str:
-    fp = _validate_file_path(path)
-    return fp.read_text(encoding="utf-8", errors="replace")
-
-
 def _update_job(job_id: str, **fields) -> None:
     _job_manager.update_job(job_id, **fields)
 
@@ -142,43 +102,30 @@ def mark_all_running_jobs_failed(reason: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_team_job(job_id: str, request: RunMarketingTeamRequest) -> None:
+def _run_team_job(job_id: str, request: RunMarketingTeamRequest, brand_ctx: BrandContext) -> None:
     try:
         _update_job(
             job_id,
             status="running",
-            current_stage="loading_brand_documents",
-            progress=20,
-            eta_hint="~1-2 minutes",
-        )
-        guidelines_text = _read_text_file(request.brand_guidelines_path)
-        objectives_text = _read_text_file(request.brand_objectives_path)
-
-        _update_job(
-            job_id, current_stage="building_campaign_proposal", progress=50, eta_hint="~1 minute"
+            current_stage="building_campaign_proposal",
+            progress=30,
+            eta_hint="~1 minute",
         )
         orchestrator = SocialMediaMarketingOrchestrator(llm_model_name=request.llm_model_name)
-        goals = BrandGoals(
-            brand_name=request.brand_name,
-            target_audience=request.target_audience,
+        goals = brand_ctx.to_brand_goals(
             goals=request.goals,
-            voice_and_tone=request.voice_and_tone,
             cadence_posts_per_day=request.cadence_posts_per_day,
             duration_days=request.duration_days,
-            brand_guidelines_path=request.brand_guidelines_path,
-            brand_objectives_path=request.brand_objectives_path,
-            brand_guidelines=guidelines_text,
-            brand_objectives=objectives_text,
         )
 
         _update_job(
             job_id,
             current_stage="running_collaboration_and_planning",
-            progress=75,
+            progress=60,
             eta_hint="~30-60 seconds",
         )
         performance = CampaignPerformanceSnapshot(
-            campaign_name=f"{request.brand_name} multi-platform growth sprint",
+            campaign_name=f"{brand_ctx.brand_name} multi-platform growth sprint",
             observations=(_job_manager.get_job(job_id) or {}).get("performance_observations", []),
         )
         result = orchestrator.run(
@@ -209,7 +156,7 @@ def _run_team_job(job_id: str, request: RunMarketingTeamRequest) -> None:
         )
 
 
-def _dispatch_job(job_id: str, request: RunMarketingTeamRequest) -> str:
+def _dispatch_job(job_id: str, request: RunMarketingTeamRequest, brand_ctx: BrandContext) -> str:
     """Start a job via Temporal if enabled, otherwise in a daemon thread.
 
     Returns a human-readable message describing how the job was dispatched.
@@ -224,7 +171,7 @@ def _dispatch_job(job_id: str, request: RunMarketingTeamRequest) -> str:
     except ImportError:
         pass
 
-    thread = threading.Thread(target=_run_team_job, args=(job_id, request), daemon=True)
+    thread = threading.Thread(target=_run_team_job, args=(job_id, request, brand_ctx), daemon=True)
     thread.start()
     return f"Poll GET /social-marketing/status/{job_id} for updates."
 
@@ -234,13 +181,94 @@ def _dispatch_job(job_id: str, request: RunMarketingTeamRequest) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_brand_summary(brand_ctx: BrandContext) -> str:
+    """Build a brief human-readable brand summary for the happy-path response."""
+    header = f"Using brand '{brand_ctx.brand_name}'"
+    if brand_ctx.tagline:
+        header += f" -- '{brand_ctx.tagline}'"
+    detail_parts = []
+    if brand_ctx.voice_and_tone:
+        detail_parts.append(f"Voice: {brand_ctx.voice_and_tone[:80]}")
+    if brand_ctx.target_audience:
+        detail_parts.append(f"Audience: {brand_ctx.target_audience[:100]}")
+    if detail_parts:
+        return f"{header}. {'. '.join(detail_parts)}."
+    return f"{header}."
+
+
+_PHASE_DISPLAY_NAMES = {
+    "strategic_core": "Strategic Core (your positioning, values, and audience)",
+    "narrative_messaging": "Narrative & Messaging (your brand story, voice, and key messages)",
+}
+
+_REQUIRED_PHASES = ["strategic_core", "narrative_messaging"]
+
+
+def _build_brand_not_found_error(client_id: str, brand_id: str) -> dict:
+    """Build a structured error response for a missing brand."""
+    return {
+        "error": "brand_not_found",
+        "message": f"Brand '{brand_id}' was not found for client '{client_id}'.",
+        "user_message": (
+            "Before we can create campaigns for you, we need to understand your brand. "
+            "Here's how to get started:\n\n"
+            f"1. Create a client (if you haven't): POST /api/branding/clients\n"
+            f"2. Create a brand: POST /api/branding/clients/{client_id}/brands\n"
+            f"3. Run the branding pipeline: POST /api/branding/clients/{client_id}"
+            f"/brands/{{brand_id}}/run\n\n"
+            "The branding process covers your strategic positioning and messaging -- "
+            "it takes about 15-20 minutes and ensures your campaigns authentically "
+            "represent who you are."
+        ),
+        "branding_api_base": "/api/branding",
+    }
+
+
+def _build_brand_incomplete_error(exc: BrandIncompleteError) -> dict:
+    """Build a structured error response for an incomplete brand."""
+    missing_display = "\n".join(f"- {_PHASE_DISPLAY_NAMES.get(p, p)}" for p in exc.missing_phases)
+    return {
+        "error": "brand_incomplete",
+        "message": f"Brand '{exc.brand_id}' needs more development before campaigns can be created.",
+        "user_message": (
+            "Your brand is off to a great start, but needs a bit more work before we can build "
+            "campaigns. Here's what's remaining:\n\n"
+            f"{missing_display}\n\n"
+            "This ensures your campaign content sounds authentically like your brand. "
+            f"Continue building your brand: POST /api/branding/clients/{exc.client_id}"
+            f"/brands/{exc.brand_id}/run\n\n"
+            "Once done, come back and we'll build campaigns that bring your brand to life."
+        ),
+        "required_phases": list(_REQUIRED_PHASES),
+        "missing_phases": exc.missing_phases,
+        "current_phase": exc.current_phase,
+        "branding_api_base": "/api/branding",
+    }
+
+
+def _fetch_and_validate_brand(client_id: str, brand_id: str) -> BrandContext:
+    """Fetch a brand and validate it has the required phases.
+
+    Raises ``HTTPException`` with a structured 422 error on failure.
+    """
+    try:
+        brand_data = fetch_brand(client_id, brand_id)
+    except BrandNotFoundError as exc:
+        raise HTTPException(
+            status_code=422, detail=_build_brand_not_found_error(client_id, brand_id)
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        return validate_brand_for_social_marketing(brand_data, client_id, brand_id)
+    except BrandIncompleteError as exc:
+        raise HTTPException(status_code=422, detail=_build_brand_incomplete_error(exc)) from exc
+
+
 @app.post("/social-marketing/run", response_model=RunMarketingTeamResponse)
 def run_marketing_team(request: RunMarketingTeamRequest) -> RunMarketingTeamResponse:
-    for p in (request.brand_guidelines_path, request.brand_objectives_path):
-        try:
-            _validate_file_path(p)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    brand_ctx = _fetch_and_validate_brand(request.client_id, request.brand_id)
 
     job_id = str(uuid.uuid4())
     now = _now()
@@ -251,8 +279,8 @@ def run_marketing_team(request: RunMarketingTeamRequest) -> RunMarketingTeamResp
         current_stage="queued",
         progress=0,
         llm_model_name=request.llm_model_name,
-        brand_guidelines_path=request.brand_guidelines_path,
-        brand_objectives_path=request.brand_objectives_path,
+        client_id=request.client_id,
+        brand_id=request.brand_id,
         result=None,
         error=None,
         eta_hint="queued",
@@ -263,11 +291,12 @@ def run_marketing_team(request: RunMarketingTeamRequest) -> RunMarketingTeamResp
         request_payload=request.model_dump(),
     )
 
-    dispatch_msg = _dispatch_job(job_id, request)
+    dispatch_msg = _dispatch_job(job_id, request, brand_ctx)
     return RunMarketingTeamResponse(
         job_id=job_id,
         status="running",
         message=f"Social marketing team started. {dispatch_msg}",
+        brand_summary=_build_brand_summary(brand_ctx),
     )
 
 
@@ -309,6 +338,8 @@ def revise_marketing_team(
         )
 
     original_request = RunMarketingTeamRequest(**original_payload)
+    brand_ctx = _fetch_and_validate_brand(original_request.client_id, original_request.brand_id)
+
     revised = original_request.model_copy(
         update={
             "human_feedback": request.feedback,
@@ -329,11 +360,12 @@ def revise_marketing_team(
         last_updated_at=_now(),
     )
 
-    dispatch_msg = _dispatch_job(job_id, revised)
+    dispatch_msg = _dispatch_job(job_id, revised, brand_ctx)
     return RunMarketingTeamResponse(
         job_id=job_id,
         status="running",
         message=f"Revision started for {job_id}. {dispatch_msg}",
+        brand_summary=_build_brand_summary(brand_ctx),
     )
 
 
@@ -365,9 +397,26 @@ def get_marketing_job_status(job_id: str) -> MarketingJobStatusResponse:
     job = _job_manager.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return MarketingJobStatusResponse(
-        **{k: v for k, v in job.items() if k in MarketingJobStatusResponse.model_fields}
-    )
+
+    data = {k: v for k, v in job.items() if k in MarketingJobStatusResponse.model_fields}
+
+    # Backfill client_id/brand_id from request_payload for jobs created
+    # before these fields were stored at the top level.
+    if "client_id" not in data or "brand_id" not in data:
+        payload = job.get("request_payload")
+        if isinstance(payload, dict):
+            data.setdefault("client_id", payload.get("client_id"))
+            data.setdefault("brand_id", payload.get("brand_id"))
+    if not data.get("client_id") or not data.get("brand_id"):
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Job {job_id} predates the brand requirement and cannot display "
+                f"brand context. Create a new job with client_id and brand_id."
+            ),
+        )
+
+    return MarketingJobStatusResponse(**data)
 
 
 @app.post("/social-marketing/job/{job_id}/cancel", response_model=CancelMarketingJobResponse)

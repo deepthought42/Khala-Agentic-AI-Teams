@@ -1,10 +1,23 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 
 from shared_job_management import CentralJobManager
+from social_media_marketing_team.adapters.branding import BrandContext, BrandNotFoundError
 from social_media_marketing_team.api import main as api_main
+
+_MOCK_BRAND_CTX = BrandContext(
+    brand_name="Acme",
+    target_audience="operators",
+    voice_and_tone="direct and clear",
+    brand_guidelines="Keep tone direct",
+    brand_objectives="Grow followers",
+    messaging_pillars=["Growth", "Clarity"],
+    brand_story="Acme helps teams grow.",
+    tagline="Grow with clarity",
+)
 
 
 def _seed_job(job_id: str, request: api_main.RunMarketingTeamRequest) -> None:
@@ -14,8 +27,8 @@ def _seed_job(job_id: str, request: api_main.RunMarketingTeamRequest) -> None:
         current_stage="queued",
         progress=0,
         llm_model_name=request.llm_model_name,
-        brand_guidelines_path=request.brand_guidelines_path,
-        brand_objectives_path=request.brand_objectives_path,
+        client_id=request.client_id,
+        brand_id=request.brand_id,
         result=None,
         error=None,
         eta_hint="queued",
@@ -35,20 +48,13 @@ def temp_job_manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return manager
 
 
-def test_read_text_file_and_update_job(tmp_path: Path, temp_job_manager: CentralJobManager) -> None:
-    file_path = tmp_path / "doc.txt"
-    file_path.write_text("hello")
-    assert api_main._read_text_file(str(file_path)) == "hello"
-
-    with pytest.raises(ValueError):
-        api_main._read_text_file(str(tmp_path / "missing.txt"))
-
+def test_update_job(tmp_path: Path, temp_job_manager: CentralJobManager) -> None:
     api_main._update_job("missing", status="running")
     assert temp_job_manager.get_job("missing") is not None
 
     req = api_main.RunMarketingTeamRequest(
-        brand_guidelines_path=str(file_path),
-        brand_objectives_path=str(file_path),
+        client_id="c1",
+        brand_id="b1",
         llm_model_name="x",
     )
     _seed_job("job-1", req)
@@ -59,51 +65,31 @@ def test_read_text_file_and_update_job(tmp_path: Path, temp_job_manager: Central
     assert job["last_heartbeat_at"] >= old_ts
 
 
-def test_run_team_job_success_and_failure(
-    tmp_path: Path, temp_job_manager: CentralJobManager
-) -> None:
-    guidelines = tmp_path / "guidelines.md"
-    objectives = tmp_path / "objectives.md"
-    guidelines.write_text("Keep tone direct")
-    objectives.write_text("Grow followers")
-
+def test_run_team_job_success(tmp_path: Path, temp_job_manager: CentralJobManager) -> None:
     req = api_main.RunMarketingTeamRequest(
-        brand_guidelines_path=str(guidelines),
-        brand_objectives_path=str(objectives),
+        client_id="c1",
+        brand_id="b1",
         llm_model_name="llama3.1",
-        brand_name="Acme",
-        target_audience="operators",
         human_approved_for_testing=True,
     )
     _seed_job("ok", req)
 
-    api_main._run_team_job("ok", req)
+    api_main._run_team_job("ok", req, _MOCK_BRAND_CTX)
     ok_job = temp_job_manager.get_job("ok")
     assert ok_job["status"] == "completed"
     assert ok_job["result"]["llm_model_name"] == "llama3.1"
 
-    bad_req = api_main.RunMarketingTeamRequest(
-        brand_guidelines_path=str(tmp_path / "missing-guidelines.md"),
-        brand_objectives_path=str(objectives),
-        llm_model_name="llama3.1",
-    )
-    _seed_job("bad", bad_req)
-    api_main._run_team_job("bad", bad_req)
-    bad_job = temp_job_manager.get_job("bad")
-    assert bad_job["status"] == "failed"
-    assert bad_job["error"]
 
-
+@patch(
+    "social_media_marketing_team.api.main._fetch_and_validate_brand",
+    return_value=_MOCK_BRAND_CTX,
+)
 def test_run_and_status_functions_with_inline_thread(
+    _mock_brand,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     temp_job_manager: CentralJobManager,
 ) -> None:
-    guidelines = tmp_path / "guidelines.md"
-    objectives = tmp_path / "objectives.md"
-    guidelines.write_text("Voice guide")
-    objectives.write_text("Objective guide")
-
     class InlineThread:
         def __init__(self, target, args, daemon):
             self._target = target
@@ -116,13 +102,14 @@ def test_run_and_status_functions_with_inline_thread(
     monkeypatch.setattr(api_main.threading, "Thread", InlineThread)
 
     request = api_main.RunMarketingTeamRequest(
-        brand_guidelines_path=str(guidelines),
-        brand_objectives_path=str(objectives),
+        client_id="c1",
+        brand_id="b1",
         llm_model_name="mistral",
         human_approved_for_testing=False,
     )
     response = api_main.run_marketing_team(request)
     assert response.status == "running"
+    assert response.brand_summary is not None
 
     status = api_main.get_marketing_job_status(response.job_id)
     assert status.status == "completed"
@@ -143,16 +130,26 @@ def test_run_and_status_functions_with_inline_thread(
         api_main.get_marketing_job_status("missing-job-id")
 
 
-def test_run_marketing_team_validation_and_health(temp_job_manager: CentralJobManager) -> None:
-    with pytest.raises(HTTPException):
+@patch(
+    "social_media_marketing_team.api.main.fetch_brand",
+    side_effect=BrandNotFoundError("c_miss", "b_miss"),
+)
+def test_run_marketing_team_brand_not_found(
+    _mock_fetch, temp_job_manager: CentralJobManager
+) -> None:
+    with pytest.raises(HTTPException) as exc_info:
         api_main.run_marketing_team(
             api_main.RunMarketingTeamRequest(
-                brand_guidelines_path="/tmp/nope-guidelines.md",
-                brand_objectives_path="/tmp/nope-objectives.md",
+                client_id="c_miss",
+                brand_id="b_miss",
                 llm_model_name="model",
             )
         )
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error"] == "brand_not_found"
 
+
+def test_revise_marketing_team_missing_job_and_health(temp_job_manager: CentralJobManager) -> None:
     with pytest.raises(HTTPException):
         api_main.revise_marketing_team(
             "missing",
@@ -160,3 +157,51 @@ def test_run_marketing_team_validation_and_health(temp_job_manager: CentralJobMa
         )
 
     assert api_main.health() == {"status": "ok"}
+
+
+def test_legacy_job_without_brand_ids_returns_410(temp_job_manager: CentralJobManager) -> None:
+    """A job created before the brand requirement has no client_id/brand_id anywhere."""
+    api_main._job_manager.create_job(
+        "legacy-1",
+        status="completed",
+        current_stage="completed",
+        progress=100,
+        llm_model_name="llama3.1",
+        result=None,
+        error=None,
+        eta_hint="done",
+        last_updated_at=api_main._now(),
+        request_payload={
+            "brand_guidelines_path": "/tmp/old.md",
+            "brand_objectives_path": "/tmp/old.md",
+            "llm_model_name": "llama3.1",
+        },
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        api_main.get_marketing_job_status("legacy-1")
+    assert exc_info.value.status_code == 410
+    assert "predates the brand requirement" in exc_info.value.detail
+
+
+def test_job_backfills_brand_ids_from_request_payload(temp_job_manager: CentralJobManager) -> None:
+    """A job that has client_id/brand_id in request_payload but not at top level."""
+    api_main._job_manager.create_job(
+        "backfill-1",
+        status="completed",
+        current_stage="completed",
+        progress=100,
+        llm_model_name="llama3.1",
+        result=None,
+        error=None,
+        eta_hint="done",
+        last_updated_at=api_main._now(),
+        request_payload={
+            "client_id": "c_from_payload",
+            "brand_id": "b_from_payload",
+            "llm_model_name": "llama3.1",
+            "goals": ["engagement"],
+        },
+    )
+    status = api_main.get_marketing_job_status("backfill-1")
+    assert status.client_id == "c_from_payload"
+    assert status.brand_id == "b_from_payload"
