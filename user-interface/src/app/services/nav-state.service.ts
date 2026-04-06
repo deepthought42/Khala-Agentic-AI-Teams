@@ -1,7 +1,7 @@
-import { Injectable, signal, computed } from '@angular/core';
+import { inject, Injectable, signal, computed } from '@angular/core';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
-import { ALL_NAV_ITEMS, NAV_GROUPS, NavItem, findGroupForRoute } from '../models/navigation.model';
+import { ALL_NAV_ITEMS, NavItem, findGroupForRoute } from '../models/navigation.model';
 
 const FAVORITES_KEY = 'kh-nav-favorites';
 const COLLAPSED_KEY = 'kh-nav-collapsed';
@@ -25,7 +25,9 @@ export class NavStateService {
     return ALL_NAV_ITEMS.filter(item => ids.has(item.id));
   });
 
-  constructor(private router: Router) {
+  private readonly router = inject(Router);
+
+  constructor() {
     this.router.events.pipe(
       filter((e): e is NavigationEnd => e instanceof NavigationEnd),
     ).subscribe(e => this.expandGroupForRoute(e.urlAfterRedirects));

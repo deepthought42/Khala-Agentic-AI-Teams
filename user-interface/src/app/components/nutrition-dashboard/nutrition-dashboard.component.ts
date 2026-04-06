@@ -160,9 +160,7 @@ export class NutritionDashboardComponent implements OnInit, AfterViewChecked {
           profile,
         });
       },
-      error: () => {
-        // No existing profile — that's fine
-      },
+      error: () => undefined, // No existing profile — that's fine
     });
   }
 

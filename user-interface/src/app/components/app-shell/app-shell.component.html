@@ -18,7 +18,7 @@
       </div>
     </div>
 
-    <nav class="nav-section" [attr.aria-label]="'Agent features'" (keydown)="onNavKeydown($event)">
+    <nav class="nav-section" aria-label="Agent features">
       <!-- Jobs Dashboard — always visible at top -->
       <a #navFocusable routerLink="/dashboard" routerLinkActive="active" class="nav-link nav-link-primary"
          [attr.aria-current]="isActive('/dashboard') ? 'page' : null">

@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, QueryList, ViewChildren } from '@angular/core';
+import { Component, ElementRef, HostListener, inject, QueryList, ViewChildren } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatToolbarModule } from '@angular/material/toolbar';
@@ -52,6 +52,7 @@ export class AppShellComponent {
   }
 
   /** Keyboard navigation within the sidebar nav (WAI-ARIA disclosure pattern). */
+  @HostListener('keydown', ['$event'])
   onNavKeydown(event: KeyboardEvent): void {
     const focusables = this.navFocusableElements?.toArray().map(el => el.nativeElement);
     if (!focusables?.length) return;
