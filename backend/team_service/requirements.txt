@@ -17,3 +17,4 @@ slack-sdk>=3.27,<4
 APScheduler>=3.10,<4.0
 pytz>=2024.1
 python-dotenv>=1.0,<2.0
+yfinance>=0.2.36,<1.0
