@@ -11,6 +11,16 @@ assets:
       Includes comprehensive, basic audit, premium assessment, enterprise
       analysis, executive summary, and video script templates plus
       industry-specific variants for e-commerce, SaaS, and healthcare.
+  - name: Site Architecture Audit Template
+    file: site_architecture_audit_template.yaml
+    description: >
+      Structured checklist template for evaluating site information
+      architecture and navigation systems against WCAG 2.2 Level AA.
+      Covers 13 scored sections: site structure mapping, navigation
+      systems, secondary navigation, search and discovery, content
+      organization, mobile/responsive patterns, cross-page consistency,
+      cognitive accessibility, specialized navigation, WCAG compliance
+      summary, business impact, and recommendations.
 workflow_phases:
   - discovery
   - inventory_setup

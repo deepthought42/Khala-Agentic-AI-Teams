@@ -1,4 +1,9 @@
 from .approval_tools import request_human_approval
+from .architecture_tools import (
+    build_architecture_audit_report,
+    load_architecture_audit_template,
+    score_architecture_section,
+)
 from .browser_tools import capture_dom_snippet, capture_screenshot
 from .checklist_tools import (
     build_component_inventory,
@@ -46,6 +51,9 @@ __all__ = [
     "crawl_targets",
     "run_axe_scan",
     "run_lighthouse_accessibility",
+    "build_architecture_audit_report",
+    "load_architecture_audit_template",
+    "score_architecture_section",
     "load_artifact",
     "persist_artifact",
 ]

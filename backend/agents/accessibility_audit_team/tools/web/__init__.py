@@ -15,6 +15,11 @@ from .compute_contrast_and_focus import (
     ComputeContrastAndFocusOutput,
     compute_contrast_and_focus,
 )
+from .evaluate_site_architecture import (
+    EvaluateSiteArchitectureInput,
+    EvaluateSiteArchitectureOutput,
+    evaluate_site_architecture,
+)
 from .record_keyboard_flow import (
     RecordKeyboardFlowInput,
     RecordKeyboardFlowOutput,
@@ -42,4 +47,7 @@ __all__ = [
     "compute_contrast_and_focus",
     "ComputeContrastAndFocusInput",
     "ComputeContrastAndFocusOutput",
+    "evaluate_site_architecture",
+    "EvaluateSiteArchitectureInput",
+    "EvaluateSiteArchitectureOutput",
 ]
