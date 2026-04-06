@@ -7,13 +7,15 @@ import type { BlogJobListItem } from './blogging.model';
 import type { AISystemJobSummary } from './ai-systems.model';
 import type { ProvisionJobSummary } from './agent-provisioning.model';
 import type { MarketingJobListItem } from './social-marketing.model';
+import type { InvestmentJobSummary } from './investment.model';
 
 export type JobSource =
   | 'software_engineering'
   | 'blogging'
   | 'ai_systems'
   | 'agent_provisioning'
-  | 'social_marketing';
+  | 'social_marketing'
+  | 'investment';
 
 export interface UnifiedJobSummary {
   jobId: string;
@@ -120,6 +122,18 @@ export function fromSocialMarketingJobListItem(s: MarketingJobListItem): Unified
   };
 }
 
+export function fromInvestmentJobSummary(s: InvestmentJobSummary): UnifiedJobSummary {
+  return {
+    jobId: s.job_id,
+    status: s.status,
+    source: 'investment',
+    label: s.label || 'Strategy Lab',
+    createdAt: s.created_at,
+    progress: s.progress,
+    phase: s.current_phase,
+  };
+}
+
 /** Team display metadata for the Team column and navigation. */
 export const SOURCE_DISPLAY: Record<
   JobSource,
@@ -130,4 +144,5 @@ export const SOURCE_DISPLAY: Record<
   ai_systems: { label: 'AI Systems', icon: 'smart_toy', route: '/ai-systems' },
   agent_provisioning: { label: 'Agent Provisioning', icon: 'settings', route: '/agent-provisioning' },
   social_marketing: { label: 'Social Marketing', icon: 'campaign', route: '/social-marketing' },
+  investment: { label: 'Investment', icon: 'trending_up', route: '/investment/strategy-lab' },
 };

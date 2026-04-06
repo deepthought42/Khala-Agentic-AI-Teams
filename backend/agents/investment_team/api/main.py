@@ -1040,6 +1040,41 @@ def _strategy_lab_signal_expert_enabled() -> bool:
     )
 
 
+def _get_lab_run_job_client():
+    """Return a JobServiceClient scoped to strategy lab runs."""
+    from job_service_client import JobServiceClient
+
+    return JobServiceClient(team="investment_strategy_lab_runs")
+
+
+def _persist_run_state(run_id: str, state: Dict[str, Any], *, create: bool = False) -> None:
+    """Write the run state to the job service so it survives restarts."""
+    try:
+        client = _get_lab_run_job_client()
+        fields = {k: v for k, v in state.items() if k not in ("run_id", "status")}
+        if create:
+            client.create_job(run_id, status=state.get("status", "running"), **fields)
+        else:
+            client.update_job(run_id, status=state.get("status", "running"), **fields)
+    except Exception as exc:
+        logger.warning("Failed to persist run state for %s: %s", run_id, exc)
+
+
+def _load_run_from_job_service(run_id: str) -> Optional[Dict[str, Any]]:
+    """Try to load a run state from the job service (fallback when not in _active_runs)."""
+    try:
+        client = _get_lab_run_job_client()
+        job = client.get_job(run_id)
+        if job:
+            data = job.get("data", job)
+            data["run_id"] = run_id
+            data.setdefault("status", job.get("status", "completed"))
+            return data
+    except Exception:
+        pass
+    return None
+
+
 def _strategy_lab_worker(run_id: str, request: RunStrategyLabRequest) -> None:
     """Background worker that executes the strategy lab batch and publishes progress via SSE."""
     from investment_team.api.job_event_bus import cleanup_job, publish
@@ -1049,6 +1084,7 @@ def _strategy_lab_worker(run_id: str, request: RunStrategyLabRequest) -> None:
             state = _active_runs.get(run_id)
             if state:
                 state.update(updates)
+                _persist_run_state(run_id, state)
 
     def _publish(event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
         payload = data.copy() if data else {}
@@ -1219,18 +1255,20 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunStartRespo
     run_id = f"run-{uuid.uuid4().hex[:8]}"
     now = _now()
 
+    initial_state = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": now,
+        "total_cycles": request.batch_size,
+        "completed_cycles": 0,
+        "skipped_cycles": 0,
+        "current_cycle": None,
+        "completed_record_ids": [],
+        "error": None,
+    }
     with _lock:
-        _active_runs[run_id] = {
-            "run_id": run_id,
-            "status": "running",
-            "started_at": now,
-            "total_cycles": request.batch_size,
-            "completed_cycles": 0,
-            "skipped_cycles": 0,
-            "current_cycle": None,
-            "completed_record_ids": [],
-            "error": None,
-        }
+        _active_runs[run_id] = initial_state
+    _persist_run_state(run_id, initial_state, create=True)
 
     thread = threading.Thread(
         target=_strategy_lab_worker,
@@ -1270,6 +1308,83 @@ def get_strategy_lab_results(winning: Optional[bool] = None) -> StrategyLabResul
 
 
 # ---------------------------------------------------------------------------
+# Strategy Lab: jobs endpoint (for central Jobs Dashboard)
+# ---------------------------------------------------------------------------
+
+
+class InvestmentJobSummary(BaseModel):
+    """Job summary for the central Jobs Dashboard."""
+
+    job_id: str
+    status: str
+    label: str = ""
+    progress: int = 0
+    current_phase: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class InvestmentJobsListResponse(BaseModel):
+    jobs: List[InvestmentJobSummary] = Field(default_factory=list)
+
+
+@app.get("/strategy-lab/jobs", response_model=InvestmentJobsListResponse, summary="List strategy lab runs as jobs")
+def list_strategy_lab_jobs(running_only: bool = False) -> InvestmentJobsListResponse:
+    """Return strategy lab runs in a format compatible with the central Jobs Dashboard."""
+    jobs: List[InvestmentJobSummary] = []
+
+    # Active in-memory runs
+    with _lock:
+        for state in _active_runs.values():
+            cycle = state.get("current_cycle")
+            phase = cycle.get("phase") if cycle else None
+            hypothesis = ""
+            if cycle and cycle.get("strategy"):
+                hypothesis = cycle["strategy"].get("hypothesis", "")[:60]
+            completed = state.get("completed_cycles", 0)
+            total = state.get("total_cycles", 1)
+            progress = int((completed / total) * 100) if total else 0
+            label = hypothesis or f"Strategy batch ({completed}/{total})"
+            jobs.append(InvestmentJobSummary(
+                job_id=state["run_id"],
+                status=state["status"],
+                label=label,
+                progress=progress,
+                current_phase=phase,
+                created_at=state.get("started_at"),
+            ))
+
+    # Persisted runs from job service (completed runs not in memory)
+    try:
+        client = _get_lab_run_job_client()
+        persisted = client.list_jobs() or []
+        in_memory_ids = {s["run_id"] for s in _active_runs.values()}
+        for job in persisted:
+            jid = job.get("job_id", "")
+            if jid in in_memory_ids:
+                continue  # already included from in-memory
+            data = job.get("data", job)
+            completed = data.get("completed_cycles", 0)
+            total = data.get("total_cycles", 1)
+            progress = int((completed / total) * 100) if total else 0
+            jobs.append(InvestmentJobSummary(
+                job_id=jid,
+                status=job.get("status", data.get("status", "completed")),
+                label=f"Strategy batch ({completed}/{total})",
+                progress=progress,
+                current_phase=None,
+                created_at=data.get("started_at"),
+            ))
+    except Exception as exc:
+        logger.warning("Failed to load persisted strategy lab runs: %s", exc)
+
+    if running_only:
+        jobs = [j for j in jobs if j.status in ("running", "pending")]
+
+    jobs.sort(key=lambda j: j.created_at or "", reverse=True)
+    return InvestmentJobsListResponse(jobs=jobs)
+
+
+# ---------------------------------------------------------------------------
 # Strategy Lab: run tracking endpoints (SSE + polling + list)
 # ---------------------------------------------------------------------------
 
@@ -1292,7 +1407,9 @@ def get_strategy_lab_run_status(run_id: str) -> StrategyLabRunStatusResponse:
     with _lock:
         state = _active_runs.get(run_id)
     if not state:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found or already cleaned up")
+        state = _load_run_from_job_service(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return _run_state_to_response(state)
 
 
@@ -1314,6 +1431,8 @@ def stream_strategy_lab_run(run_id: str) -> StreamingResponse:
 
     with _lock:
         state = _active_runs.get(run_id)
+    if not state:
+        state = _load_run_from_job_service(run_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 

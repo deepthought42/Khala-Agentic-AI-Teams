@@ -28,6 +28,7 @@ import type {
   StrategyLabRunStatus,
   ActiveRunsResponse,
   StrategyLabStreamEvent,
+  InvestmentJobsListResponse,
   DeleteStrategyLabRecordResponse,
   ClearStrategyLabStorageResponse,
   StartAdvisorSessionRequest,
@@ -203,6 +204,13 @@ export class InvestmentApiService {
       };
       return () => eventSource.close();
     });
+  }
+
+  listStrategyLabJobs(runningOnly: boolean = false): Observable<InvestmentJobsListResponse> {
+    return this.http.get<InvestmentJobsListResponse>(
+      `${this.baseUrl}/strategy-lab/jobs`,
+      { params: runningOnly ? { running_only: 'true' } : {} }
+    );
   }
 
   getStrategyLabResults(winning?: boolean): Observable<StrategyLabResultsResponse> {

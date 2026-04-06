@@ -560,6 +560,19 @@ export interface ActiveRunsResponse {
   runs: StrategyLabRunStatus[];
 }
 
+export interface InvestmentJobSummary {
+  job_id: string;
+  status: string;
+  label: string;
+  progress: number;
+  current_phase?: string;
+  created_at?: string;
+}
+
+export interface InvestmentJobsListResponse {
+  jobs: InvestmentJobSummary[];
+}
+
 export interface StrategyLabStreamEvent {
   type: 'snapshot' | 'progress' | 'cycle_complete' | 'cycle_skipped' | 'complete' | 'error' | 'done';
   [key: string]: unknown;

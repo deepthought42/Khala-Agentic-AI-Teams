@@ -13,6 +13,7 @@ import { BloggingApiService } from '../../services/blogging-api.service';
 import { AISystemsApiService } from '../../services/ai-systems-api.service';
 import { AgentProvisioningApiService } from '../../services/agent-provisioning-api.service';
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
+import { InvestmentApiService } from '../../services/investment-api.service';
 import type {
   RunningJobSummary,
   JobStatusResponse,
@@ -30,6 +31,7 @@ import {
   fromAISystemJobSummary,
   fromProvisionJobSummary,
   fromSocialMarketingJobListItem,
+  fromInvestmentJobSummary,
 } from '../../models';
 
 /** Job type metadata for SE display. */
@@ -93,6 +95,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   private readonly aiSystemsApi = inject(AISystemsApiService);
   private readonly agentProvisioningApi = inject(AgentProvisioningApiService);
   private readonly socialMarketingApi = inject(SocialMarketingApiService);
+  private readonly investmentApi = inject(InvestmentApiService);
   private readonly router = inject(Router);
 
   jobs: DashboardRow[] = [];
@@ -152,8 +155,9 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       ai: this.aiSystemsApi.listJobs(false).pipe(catchError(() => of({ jobs: [] }))),
       prov: this.agentProvisioningApi.listJobs(false).pipe(catchError(() => of({ jobs: [] }))),
       social: this.socialMarketingApi.listJobs(false).pipe(catchError(() => of([]))),
+      investment: this.investmentApi.listStrategyLabJobs(false).pipe(catchError(() => of({ jobs: [] }))),
     }).pipe(
-      map(({ se, blogging, ai, prov, social }) => {
+      map(({ se, blogging, ai, prov, social, investment }) => {
         this.seFetchError = (se as { _error?: string })._error ?? null;
         const seJobs = (se as { jobs: RunningJobSummary[] }).jobs;
         type RowWithSe = DashboardRow & { seSummary?: RunningJobSummary };
@@ -172,6 +176,9 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
         }
         for (const s of social) {
           rows.push({ unified: fromSocialMarketingJobListItem(s) });
+        }
+        for (const s of investment.jobs ?? []) {
+          rows.push({ unified: fromInvestmentJobSummary(s) });
         }
         rows.sort((a, b) => (b.unified.createdAt ?? '').localeCompare(a.unified.createdAt ?? ''));
         return rows;
