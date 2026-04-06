@@ -58,6 +58,22 @@ export class AISystemsApiService {
     );
   }
 
+  /** Resume an interrupted build job from its last checkpoint. */
+  resumeJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/build/job/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /** Restart a build job from scratch with the same inputs. */
+  restartJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/build/job/${jobId}/restart`,
+      {}
+    );
+  }
+
   /** List all generated blueprints. */
   listBlueprints(): Observable<{ blueprints: string[] }> {
     return this.http.get<{ blueprints: string[] }>(`${this.baseUrl}/blueprints`);

@@ -43,6 +43,11 @@ from shared.errors import BloggingError, PlanningError  # noqa: E402
 from shared.medium_integration_access import medium_stats_integration_eligible  # noqa: E402
 from shared.medium_stats_api import MediumStatsRequest  # noqa: E402
 
+from job_service_client import (  # noqa: E402
+    RESTARTABLE_STATUSES,
+    RESUMABLE_STATUSES,
+    validate_job_for_action,
+)
 from llm_service import OllamaLLMClient  # noqa: E402
 
 try:
@@ -796,13 +801,15 @@ def start_full_pipeline_async(request: FullPipelineRequest) -> StartPipelineResp
     job_id = str(uuid.uuid4())[:8]
     audience_str = _format_audience(request.audience)
 
-    # Create job record
+    # Create job record (store full request payload for resume/restart)
     create_blog_job(
         job_id,
         brief=request.brief[:500],
         audience=audience_str or None,
         tone_or_purpose=request.tone_or_purpose,
     )
+    if update_blog_job is not None:
+        update_blog_job(job_id, request_payload=request.model_dump(mode="json"))
 
     # When Temporal is enabled, start workflow for resumable state; otherwise run in thread
     try:
@@ -1040,6 +1047,107 @@ def delete_job(job_id: str) -> DeleteJobResponse:
     if not delete_blog_job(job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return DeleteJobResponse(job_id=job_id, message="Job deleted.")
+
+
+_BLOG_RESTARTABLE = RESTARTABLE_STATUSES | {"needs_human_review"}
+
+
+@app.post(
+    "/job/{job_id}/resume",
+    response_model=StartPipelineResponse,
+    summary="Resume an interrupted blog pipeline job",
+    description=(
+        "Re-dispatch the pipeline for an interrupted job. The pipeline re-runs with "
+        "the same inputs and work_dir, leveraging existing artifacts (planning cache, "
+        "draft files) to skip completed work where possible."
+    ),
+)
+def resume_blog_job(job_id: str) -> StartPipelineResponse:
+    """Resume a blog job from its last checkpoint."""
+    if get_blog_job is None or update_blog_job is None:
+        raise HTTPException(status_code=501, detail="Job store not available")
+    try:
+        job = validate_job_for_action(get_blog_job(job_id), job_id, RESUMABLE_STATUSES, "resumed")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = job.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available for resume.")
+
+    update_blog_job(job_id, status="running", error=None, failed_phase=None, status_text="Resuming...")
+
+    request = FullPipelineRequest(**payload)
+
+    try:
+        from blogging.temporal.client import is_temporal_enabled
+        from blogging.temporal.start_workflow import start_full_pipeline_workflow
+
+        if is_temporal_enabled():
+            request_dict = request.model_dump(mode="json")
+            audience_str = _format_audience(request.audience)
+            request_dict["audience"] = audience_str or request_dict.get("audience")
+            start_full_pipeline_workflow(job_id, request_dict)
+            return StartPipelineResponse(job_id=job_id, message="Job resumed (Temporal)")
+    except ImportError:
+        pass
+
+    thread = threading.Thread(
+        target=_run_pipeline_with_tracking,
+        args=(job_id, request),
+        daemon=True,
+    )
+    thread.start()
+    return StartPipelineResponse(job_id=job_id, message="Job resumed")
+
+
+@app.post(
+    "/job/{job_id}/restart",
+    response_model=StartPipelineResponse,
+    summary="Restart a blog pipeline job from scratch",
+    description="Reset the job and re-run the full pipeline with the same inputs.",
+)
+def restart_blog_job(job_id: str) -> StartPipelineResponse:
+    """Restart a blog job from the beginning."""
+    if get_blog_job is None or update_blog_job is None:
+        raise HTTPException(status_code=501, detail="Job store not available")
+    try:
+        job = validate_job_for_action(get_blog_job(job_id), job_id, _BLOG_RESTARTABLE, "restarted")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = job.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available for restart.")
+
+    from blogging.shared.blog_job_store import reset_blog_job
+
+    reset_blog_job(job_id)
+
+    request = FullPipelineRequest(**payload)
+
+    try:
+        from blogging.temporal.client import is_temporal_enabled
+        from blogging.temporal.start_workflow import start_full_pipeline_workflow
+
+        if is_temporal_enabled():
+            request_dict = request.model_dump(mode="json")
+            audience_str = _format_audience(request.audience)
+            request_dict["audience"] = audience_str or request_dict.get("audience")
+            start_full_pipeline_workflow(job_id, request_dict)
+            return StartPipelineResponse(job_id=job_id, message="Job restarted (Temporal)")
+    except ImportError:
+        pass
+
+    thread = threading.Thread(
+        target=_run_pipeline_with_tracking,
+        args=(job_id, request),
+        daemon=True,
+    )
+    thread.start()
+    return StartPipelineResponse(job_id=job_id, message="Job restarted from scratch")
 
 
 @app.post(

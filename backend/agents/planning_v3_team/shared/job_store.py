@@ -9,14 +9,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from job_service_client import JobServiceClient
+from job_service_client import (
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PENDING,
+    JOB_STATUS_RUNNING,
+    JobServiceClient,
+)
 
 logger = logging.getLogger(__name__)
-
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
 
 DEFAULT_CACHE_DIR: Path = Path(os.getenv("AGENT_CACHE", ".agent_cache"))
 _client_instance: Optional[JobServiceClient] = None

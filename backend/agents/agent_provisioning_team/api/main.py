@@ -12,6 +12,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from job_service_client import RESTARTABLE_STATUSES, RESUMABLE_STATUSES, validate_job_for_action
+
 from ..models import (
     AccessTier,
     DeprovisionResponse,
@@ -42,6 +44,9 @@ from ..shared.job_store import (
 from ..shared.job_store import (
     delete_job as store_delete_job,
 )
+from ..shared.job_store import (
+    reset_job as store_reset_job,
+)
 
 app = FastAPI(
     title="Agent Provisioning API",
@@ -65,6 +70,8 @@ def _run_provisioning_background(
     agent_id: str,
     manifest_path: str,
     access_tier: AccessTier,
+    skip_phases: Optional[set] = None,
+    prior_results: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Background thread function for running provisioning workflow."""
     try:
@@ -102,6 +109,8 @@ def _run_provisioning_background(
             manifest_path=manifest_path,
             access_tier=access_tier,
             job_updater=job_updater,
+            skip_phases=skip_phases,
+            prior_results=prior_results,
         )
 
         if result.success:
@@ -270,6 +279,76 @@ def delete_provision_job(job_id: str) -> DeleteProvisionJobResponse:
     if not store_delete_job(job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return DeleteProvisionJobResponse(job_id=job_id, message="Job deleted.")
+
+
+@app.post(
+    "/provision/job/{job_id}/resume",
+    response_model=ProvisionJobResponse,
+    summary="Resume an interrupted provisioning job",
+    description="Re-enter the provisioning pipeline at the last completed phase.",
+)
+def resume_provision_job(job_id: str) -> ProvisionJobResponse:
+    """Resume a provisioning job from its last checkpoint."""
+    try:
+        data = validate_job_for_action(get_job(job_id), job_id, RESUMABLE_STATUSES, "resumed")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    agent_id = data.get("agent_id")
+    manifest_path = data.get("manifest_path")
+    if not agent_id or not manifest_path:
+        raise HTTPException(status_code=400, detail="Job is missing agent_id or manifest_path.")
+
+    completed = data.get("completed_phases", [])
+    phase_results = data.get("phase_results", {})
+
+    from ..models import Phase
+
+    skip = {Phase(p) for p in completed if p in {ph.value for ph in Phase}}
+
+    update_job(job_id, status=JOB_STATUS_RUNNING, error=None)
+
+    thread = threading.Thread(
+        target=_run_provisioning_background,
+        args=(job_id, agent_id, manifest_path, data.get("access_tier", "standard")),
+        kwargs={"skip_phases": skip, "prior_results": phase_results},
+        daemon=True,
+    )
+    thread.start()
+
+    return ProvisionJobResponse(job_id=job_id, status="running", message="Job resumed. Skipping completed phases.")
+
+
+@app.post(
+    "/provision/job/{job_id}/restart",
+    response_model=ProvisionJobResponse,
+    summary="Restart a provisioning job from scratch",
+    description="Reset the job and re-run the full pipeline with the same inputs.",
+)
+def restart_provision_job(job_id: str) -> ProvisionJobResponse:
+    """Restart a provisioning job from the beginning."""
+    try:
+        data = validate_job_for_action(get_job(job_id), job_id, RESTARTABLE_STATUSES, "restarted")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    agent_id = data.get("agent_id")
+    manifest_path = data.get("manifest_path")
+    if not agent_id or not manifest_path:
+        raise HTTPException(status_code=400, detail="Job is missing agent_id or manifest_path.")
+
+    store_reset_job(job_id)
+
+    thread = threading.Thread(
+        target=_run_provisioning_background,
+        args=(job_id, agent_id, manifest_path, data.get("access_tier", "standard")),
+        daemon=True,
+    )
+    thread.start()
+
+    return ProvisionJobResponse(job_id=job_id, status="running", message="Job restarted from scratch.")
 
 
 @app.delete(

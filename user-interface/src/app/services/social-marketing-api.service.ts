@@ -78,6 +78,22 @@ export class SocialMarketingApiService {
     );
   }
 
+  /** Resume an interrupted marketing job. */
+  resumeJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/social-marketing/job/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /** Restart a marketing job from scratch. */
+  restartJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/social-marketing/job/${jobId}/restart`,
+      {}
+    );
+  }
+
   /**
    * POST /social-marketing/performance/{job_id}
    */

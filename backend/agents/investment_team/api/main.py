@@ -60,6 +60,7 @@ from investment_team.orchestrator import InvestmentTeamOrchestrator, WorkflowSta
 from investment_team.signal_intelligence_agent import SignalIntelligenceExpert
 from investment_team.signal_intelligence_models import SignalIntelligenceBriefV1
 from investment_team.strategy_ideation_agent import StrategyIdeationAgent
+from job_service_client import RESTARTABLE_STATUSES, RESUMABLE_STATUSES, validate_job_for_action
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1075,7 +1076,9 @@ def _load_run_from_job_service(run_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _strategy_lab_worker(run_id: str, request: RunStrategyLabRequest) -> None:
+def _strategy_lab_worker(
+    run_id: str, request: RunStrategyLabRequest, *, start_cycle_offset: int = 0
+) -> None:
     """Background worker that executes the strategy lab batch and publishes progress via SSE."""
     from investment_team.api.job_event_bus import cleanup_job, publish
 
@@ -1168,7 +1171,9 @@ def _strategy_lab_worker(run_id: str, request: RunStrategyLabRequest) -> None:
 
         completed_ids: List[str] = []
         skipped = 0
-        for i in range(request.batch_size):
+        if start_cycle_offset > 0:
+            logger.info("Strategy lab worker resuming from cycle %d", start_cycle_offset + 1)
+        for i in range(start_cycle_offset, request.batch_size):
             cycle_num = i + 1
 
             def on_phase(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
@@ -1265,6 +1270,7 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunStartRespo
         "current_cycle": None,
         "completed_record_ids": [],
         "error": None,
+        "request_payload": request.model_dump(),
     }
     with _lock:
         _active_runs[run_id] = initial_state
@@ -1387,6 +1393,130 @@ def list_strategy_lab_jobs(running_only: bool = False) -> InvestmentJobsListResp
 # ---------------------------------------------------------------------------
 # Strategy Lab: run tracking endpoints (SSE + polling + list)
 # ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/strategy-lab/runs/{run_id}/resume",
+    response_model=StrategyLabRunStartResponse,
+    summary="Resume an interrupted strategy lab run",
+    description="Resume from the last completed cycle. Skips cycles that already produced records.",
+)
+def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
+    """Resume a strategy lab run at the cycle it was interrupted."""
+    with _lock:
+        state = _active_runs.get(run_id)
+    if not state:
+        state = _load_run_from_job_service(run_id)
+    try:
+        validate_job_for_action(state, run_id, RESUMABLE_STATUSES, "resumed")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = state.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available.")
+
+    completed_cycles = state.get("completed_cycles", 0)
+    total_cycles = state.get("total_cycles", 10)
+
+    with _lock:
+        active = [r for r in _active_runs.values() if r["status"] == "running"]
+        if active:
+            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+
+    # Re-initialize in-memory state
+    resumed_state = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": state.get("started_at", _now()),
+        "total_cycles": total_cycles,
+        "completed_cycles": completed_cycles,
+        "skipped_cycles": state.get("skipped_cycles", 0),
+        "current_cycle": None,
+        "completed_record_ids": state.get("completed_record_ids", []),
+        "error": None,
+        "request_payload": payload,
+    }
+    with _lock:
+        _active_runs[run_id] = resumed_state
+    _persist_run_state(run_id, resumed_state)
+
+    request = RunStrategyLabRequest(**payload)
+    request.batch_size = total_cycles  # keep original total
+
+    thread = threading.Thread(
+        target=_strategy_lab_worker,
+        args=(run_id, request),
+        kwargs={"start_cycle_offset": completed_cycles},
+        name=f"strategy-lab-resume-{run_id}",
+        daemon=True,
+    )
+    thread.start()
+
+    return StrategyLabRunStartResponse(
+        run_id=run_id, total_cycles=total_cycles,
+        message=f"Run resumed from cycle {completed_cycles + 1} of {total_cycles}.",
+    )
+
+
+@app.post(
+    "/strategy-lab/runs/{run_id}/restart",
+    response_model=StrategyLabRunStartResponse,
+    summary="Restart a strategy lab run from scratch",
+    description="Reset the run and re-execute the full batch with the same inputs.",
+)
+def restart_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
+    """Restart a strategy lab run from the beginning."""
+    with _lock:
+        state = _active_runs.get(run_id)
+    if not state:
+        state = _load_run_from_job_service(run_id)
+    try:
+        validate_job_for_action(state, run_id, RESTARTABLE_STATUSES, "restarted")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = state.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available.")
+
+    with _lock:
+        active = [r for r in _active_runs.values() if r["status"] == "running"]
+        if active:
+            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+
+    request = RunStrategyLabRequest(**payload)
+
+    restarted_state = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": _now(),
+        "total_cycles": request.batch_size,
+        "completed_cycles": 0,
+        "skipped_cycles": 0,
+        "current_cycle": None,
+        "completed_record_ids": [],
+        "error": None,
+        "request_payload": payload,
+    }
+    with _lock:
+        _active_runs[run_id] = restarted_state
+    _persist_run_state(run_id, restarted_state)
+
+    thread = threading.Thread(
+        target=_strategy_lab_worker,
+        args=(run_id, request),
+        name=f"strategy-lab-restart-{run_id}",
+        daemon=True,
+    )
+    thread.start()
+
+    return StrategyLabRunStartResponse(
+        run_id=run_id, total_cycles=request.batch_size,
+        message="Run restarted from scratch.",
+    )
 
 
 @app.get("/strategy-lab/runs", response_model=ActiveRunsResponse, summary="List active strategy lab runs")

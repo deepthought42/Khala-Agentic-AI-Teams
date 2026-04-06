@@ -10,15 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from job_service_client import JobServiceClient
+from job_service_client import (
+    JOB_STATUS_CANCELLED,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PENDING,
+    JOB_STATUS_RUNNING,
+    JobServiceClient,
+)
 
 logger = logging.getLogger(__name__)
-
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
-JOB_STATUS_CANCELLED = "cancelled"
 
 DEFAULT_CACHE_DIR: Path = Path(os.environ.get("AGENT_CACHE", ".agent_cache"))
 
@@ -169,6 +170,28 @@ def add_completed_phase(
         phase_results[phase] = phase_result
         updates["phase_results"] = phase_results
     update_job(job_id, cache_dir=cache_dir, **updates)
+
+
+def reset_job(
+    job_id: str,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Reset a job to its initial state for restart (preserves created_at and input params)."""
+    data = get_job(job_id, cache_dir=cache_dir)
+    if not data:
+        return
+    update_job(
+        job_id,
+        cache_dir=cache_dir,
+        status=JOB_STATUS_PENDING,
+        progress=0,
+        current_phase=None,
+        completed_phases=[],
+        phase_results={},
+        blueprint=None,
+        error=None,
+        status_text=None,
+    )
 
 
 def delete_job(

@@ -435,3 +435,108 @@ def start_stale_job_monitor(
     thread = threading.Thread(target=_run, name=f"{client.team}-stale-job-monitor", daemon=True)
     thread.start()
     return stop_event
+
+
+# ---------------------------------------------------------------------------
+# Shared validation helper for resume/restart endpoints
+# ---------------------------------------------------------------------------
+
+# Standard status sets for resume/restart gating.
+RESUMABLE_STATUSES: frozenset[str] = frozenset({
+    JOB_STATUS_PENDING, JOB_STATUS_RUNNING, JOB_STATUS_FAILED,
+    JOB_STATUS_INTERRUPTED, "agent_crash",
+})
+RESTARTABLE_STATUSES: frozenset[str] = frozenset({
+    JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, JOB_STATUS_CANCELLED,
+    JOB_STATUS_INTERRUPTED, "agent_crash",
+})
+
+
+def validate_job_for_action(
+    job_data: Optional[Dict[str, Any]],
+    job_id: str,
+    allowed_statuses: frozenset[str],
+    action_label: str = "action",
+) -> Dict[str, Any]:
+    """Validate a job exists and is in an allowed status.
+
+    Raises ``ValueError`` with a human-readable message on failure.
+    The caller should catch this and convert to an ``HTTPException``.
+
+    Returns the job data dict on success.
+    """
+    if not job_data:
+        raise ValueError(f"Job {job_id} not found")
+    status = job_data.get("status", JOB_STATUS_PENDING)
+    if status not in allowed_statuses:
+        raise ValueError(f"Job cannot be {action_label} (status={status}).")
+    return job_data
+
+
+# ---------------------------------------------------------------------------
+# Base job store — eliminates duplicated CRUD wrappers across teams
+# ---------------------------------------------------------------------------
+
+
+class BaseJobStore:
+    """Shared job store operations that all teams duplicate.
+
+    Subclass and set ``team`` to get create/get/update/delete/list/reset
+    for free.  Override or add team-specific methods as needed.
+
+    Usage::
+
+        class BlogJobStore(BaseJobStore):
+            team = "blogging_team"
+
+            def submit_title_selection(self, job_id, title): ...
+    """
+
+    team: str = ""  # Override in subclass
+
+    def __init__(self, cache_dir: Optional[str] = None) -> None:
+        self._cache_dir = cache_dir or os.environ.get("AGENT_CACHE", ".agent_cache")
+
+    def _client(self) -> JobServiceClient:
+        return JobServiceClient(team=self.team, cache_dir=self._cache_dir)
+
+    def create_job(self, job_id: str, *, status: str = JOB_STATUS_PENDING, **fields: Any) -> None:
+        self._client().create_job(job_id, status=status, **fields)
+
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        return self._client().get_job(job_id)
+
+    def update_job(self, job_id: str, **kwargs: Any) -> None:
+        self._client().update_job(job_id, **kwargs)
+
+    def delete_job(self, job_id: str) -> bool:
+        return self._client().delete_job(job_id)
+
+    def list_jobs(self, *, running_only: bool = False) -> List[Dict[str, Any]]:
+        statuses = [JOB_STATUS_PENDING, JOB_STATUS_RUNNING] if running_only else None
+        return self._client().list_jobs(statuses=statuses) or []
+
+    def mark_job_running(self, job_id: str) -> None:
+        self.update_job(job_id, status=JOB_STATUS_RUNNING, started_at=_now_iso())
+
+    def mark_job_completed(self, job_id: str, **extra: Any) -> None:
+        self.update_job(job_id, status=JOB_STATUS_COMPLETED, progress=100, completed_at=_now_iso(), **extra)
+
+    def mark_job_failed(self, job_id: str, error: str) -> None:
+        self.update_job(job_id, status=JOB_STATUS_FAILED, error=error)
+
+    def mark_all_running_jobs_failed(self, reason: str) -> List[str]:
+        return self._client().mark_all_active_jobs_failed(reason)
+
+    def reset_job(self, job_id: str) -> None:
+        """Reset a job to initial state for restart (preserves input params)."""
+        self.update_job(
+            job_id, status=JOB_STATUS_PENDING, progress=0, error=None,
+            current_phase=None, status_text=None,
+        )
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(tz=timezone.utc).isoformat()

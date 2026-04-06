@@ -12,6 +12,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from job_service_client import RESTARTABLE_STATUSES, RESUMABLE_STATUSES, validate_job_for_action
+
 from ..models import (
     AgentBlueprint,
     AISystemJobResponse,
@@ -39,6 +41,9 @@ from ..shared.job_store import (
 from ..shared.job_store import (
     delete_job as store_delete_job,
 )
+from ..shared.job_store import (
+    reset_job as store_reset_job,
+)
 
 app = FastAPI(
     title="AI Systems API",
@@ -63,6 +68,7 @@ def _run_build_background(
     spec_path: str,
     constraints: Dict[str, Any],
     output_dir: Optional[str],
+    resume_blueprint: Optional[Any] = None,
 ) -> None:
     """Background thread function for running AI system generation workflow."""
     try:
@@ -72,6 +78,7 @@ def _run_build_background(
             current_phase: Optional[str] = None,
             progress: Optional[int] = None,
             status_text: Optional[str] = None,
+            blueprint_snapshot: Optional[Dict[str, Any]] = None,
         ) -> None:
             """Callback to update job status during workflow execution."""
             updates: Dict[str, Any] = {}
@@ -82,6 +89,8 @@ def _run_build_background(
                 updates["progress"] = progress
             if status_text is not None:
                 updates["status_text"] = status_text
+            if blueprint_snapshot is not None:
+                updates["blueprint"] = blueprint_snapshot
 
             if updates:
                 update_job(job_id, **updates)
@@ -92,6 +101,7 @@ def _run_build_background(
             constraints=constraints,
             output_dir=output_dir,
             job_updater=job_updater,
+            resume_blueprint=resume_blueprint,
         )
 
         if blueprint.success:
@@ -264,6 +274,100 @@ def delete_build_job(job_id: str) -> DeleteBuildJobResponse:
     if not store_delete_job(job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return DeleteBuildJobResponse(job_id=job_id, message="Job deleted.")
+
+
+@app.post(
+    "/build/job/{job_id}/resume",
+    response_model=AISystemJobResponse,
+    summary="Resume an interrupted build job",
+    description="Re-enter the build pipeline at the last completed phase. Skips phases that already succeeded.",
+)
+def resume_build_job(job_id: str) -> AISystemJobResponse:
+    """Resume a build job from its last checkpoint."""
+    try:
+        data = validate_job_for_action(get_job(job_id), job_id, RESUMABLE_STATUSES, "resumed")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    project_name = data.get("project_name")
+    spec_path = data.get("spec_path")
+    if not project_name or not spec_path:
+        raise HTTPException(status_code=400, detail="Job is missing project_name or spec_path.")
+
+    # Reconstruct partial blueprint from stored data
+    resume_bp = None
+    stored_bp = data.get("blueprint")
+    if stored_bp and isinstance(stored_bp, dict):
+        try:
+            resume_bp = AgentBlueprint(**stored_bp)
+        except Exception:
+            pass  # corrupt data — will re-run all phases
+
+    update_job(job_id, status=JOB_STATUS_RUNNING, error=None)
+
+    try:
+        from ai_systems_team.temporal.client import is_temporal_enabled
+        from ai_systems_team.temporal.start_workflow import start_build_workflow
+
+        if is_temporal_enabled():
+            # Temporal re-runs the activity; resume_blueprint is passed via job store
+            update_job(job_id, resume_blueprint=stored_bp)
+            start_build_workflow(job_id, project_name, spec_path, data.get("constraints", {}), data.get("output_dir"))
+            return AISystemJobResponse(job_id=job_id, status="running", message="Job resumed (Temporal).")
+    except ImportError:
+        pass
+
+    thread = threading.Thread(
+        target=_run_build_background,
+        args=(job_id, project_name, spec_path, data.get("constraints", {}), data.get("output_dir")),
+        kwargs={"resume_blueprint": resume_bp},
+        daemon=True,
+    )
+    thread.start()
+
+    return AISystemJobResponse(job_id=job_id, status="running", message="Job resumed. Skipping completed phases.")
+
+
+@app.post(
+    "/build/job/{job_id}/restart",
+    response_model=AISystemJobResponse,
+    summary="Restart a build job from scratch",
+    description="Reset the job to initial state and re-run the full pipeline with the same inputs.",
+)
+def restart_build_job(job_id: str) -> AISystemJobResponse:
+    """Restart a build job from the beginning."""
+    try:
+        data = validate_job_for_action(get_job(job_id), job_id, RESTARTABLE_STATUSES, "restarted")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    project_name = data.get("project_name")
+    spec_path = data.get("spec_path")
+    if not project_name or not spec_path:
+        raise HTTPException(status_code=400, detail="Job is missing project_name or spec_path.")
+
+    store_reset_job(job_id)
+
+    try:
+        from ai_systems_team.temporal.client import is_temporal_enabled
+        from ai_systems_team.temporal.start_workflow import start_build_workflow
+
+        if is_temporal_enabled():
+            start_build_workflow(job_id, project_name, spec_path, data.get("constraints", {}), data.get("output_dir"))
+            return AISystemJobResponse(job_id=job_id, status="running", message="Job restarted (Temporal).")
+    except ImportError:
+        pass
+
+    thread = threading.Thread(
+        target=_run_build_background,
+        args=(job_id, project_name, spec_path, data.get("constraints", {}), data.get("output_dir")),
+        daemon=True,
+    )
+    thread.start()
+
+    return AISystemJobResponse(job_id=job_id, status="running", message="Job restarted from scratch.")
 
 
 @app.get(

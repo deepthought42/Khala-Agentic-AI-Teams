@@ -21,18 +21,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from job_service_client import JobServiceClient
+from job_service_client import (
+    JOB_STATUS_CANCELLED,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PENDING,
+    JOB_STATUS_RUNNING,
+    JobServiceClient,
+)
 
 logger = logging.getLogger(__name__)
 
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
-JOB_STATUS_CANCELLED = "cancelled"
-# Agent process crashed (NameError, ImportError, etc.) - distinct from build/LLM failure
+# SE-specific statuses (not in shared job_service_client)
 JOB_STATUS_AGENT_CRASH = "agent_crash"
-# Frontend (or other agent) could not reach LLM after retries; user must confirm connectivity and resume
 JOB_STATUS_PAUSED_LLM_CONNECTIVITY = "paused_llm_connectivity"
 
 # Sentinel failure reason when LLM is unreachable after 3 attempts (frontend team retry + circuit breaker)

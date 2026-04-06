@@ -206,6 +206,20 @@ export class InvestmentApiService {
     });
   }
 
+  resumeRun(runId: string): Observable<StrategyLabRunStartResponse> {
+    return this.http.post<StrategyLabRunStartResponse>(
+      `${this.baseUrl}/strategy-lab/runs/${encodeURIComponent(runId)}/resume`,
+      {}
+    );
+  }
+
+  restartRun(runId: string): Observable<StrategyLabRunStartResponse> {
+    return this.http.post<StrategyLabRunStartResponse>(
+      `${this.baseUrl}/strategy-lab/runs/${encodeURIComponent(runId)}/restart`,
+      {}
+    );
+  }
+
   listStrategyLabJobs(runningOnly: boolean = false): Observable<InvestmentJobsListResponse> {
     return this.http.get<InvestmentJobsListResponse>(
       `${this.baseUrl}/strategy-lab/jobs`,

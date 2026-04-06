@@ -59,6 +59,22 @@ export class AgentProvisioningApiService {
     );
   }
 
+  /** Resume an interrupted provisioning job from its last checkpoint. */
+  resumeJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/provision/job/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /** Restart a provisioning job from scratch with the same inputs. */
+  restartJob(jobId: string): Observable<{ job_id: string; status: string; message: string }> {
+    return this.http.post<{ job_id: string; status: string; message: string }>(
+      `${this.baseUrl}/provision/job/${jobId}/restart`,
+      {}
+    );
+  }
+
   /** Get the status of a provisioned agent environment. */
   getAgentStatus(agentId: string): Observable<AgentStatusResponse> {
     return this.http.get<AgentStatusResponse>(`${this.baseUrl}/environments/${agentId}`);

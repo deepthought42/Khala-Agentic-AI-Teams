@@ -47,6 +47,7 @@ class AISystemsOrchestrator:
         constraints: Optional[Dict[str, Any]] = None,
         output_dir: Optional[str] = None,
         job_updater: Optional[Callable[..., None]] = None,
+        resume_blueprint: Optional[AgentBlueprint] = None,
     ) -> AgentBlueprint:
         """
         Run the complete AI system generation workflow.
@@ -57,6 +58,8 @@ class AISystemsOrchestrator:
             constraints: Additional constraints
             output_dir: Directory to output artifacts
             job_updater: Callback for progress updates
+            resume_blueprint: If provided, skip phases already in its
+                ``completed_phases`` list and reuse their results.
 
         Returns:
             AgentBlueprint with complete system design
@@ -64,101 +67,155 @@ class AISystemsOrchestrator:
         logger.info("Starting AI system workflow for: %s", project_name)
 
         constraints = constraints or {}
+        skip = set(resume_blueprint.completed_phases) if resume_blueprint else set()
+        if skip:
+            logger.info("Resuming workflow — skipping completed phases: %s", [p.value for p in skip])
 
-        blueprint = AgentBlueprint(
+        blueprint = resume_blueprint.model_copy() if resume_blueprint else AgentBlueprint(
             project_name=project_name,
             created_at=datetime.now(timezone.utc),
         )
+        blueprint.error = None
+        blueprint.success = False
+
+        def _checkpoint() -> None:
+            """Persist partial blueprint to job store so resume can recover it."""
+            if job_updater:
+                try:
+                    job_updater(blueprint_snapshot=blueprint.model_dump(mode="json"))
+                except Exception:
+                    pass
 
         try:
-            spec_intake = run_spec_intake(
-                spec_path=spec_path,
-                constraints=constraints,
-                job_updater=job_updater,
-            )
-            blueprint.spec_intake = spec_intake
-            blueprint.current_phase = Phase.SPEC_INTAKE
+            # -- SPEC_INTAKE --
+            if Phase.SPEC_INTAKE in skip and blueprint.spec_intake:
+                spec_intake = blueprint.spec_intake
+                logger.info("Skipping SPEC_INTAKE (already completed)")
+            else:
+                spec_intake = run_spec_intake(
+                    spec_path=spec_path,
+                    constraints=constraints,
+                    job_updater=job_updater,
+                )
+                blueprint.spec_intake = spec_intake
+                blueprint.current_phase = Phase.SPEC_INTAKE
 
-            if not spec_intake.success:
-                blueprint.error = spec_intake.error
-                return blueprint
+                if not spec_intake.success:
+                    blueprint.error = spec_intake.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.SPEC_INTAKE)
+                if Phase.SPEC_INTAKE not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.SPEC_INTAKE)
+                _checkpoint()
 
-            architecture = run_architecture(
-                spec_intake=spec_intake,
-                job_updater=job_updater,
-            )
-            blueprint.architecture = architecture
-            blueprint.current_phase = Phase.ARCHITECTURE
+            # -- ARCHITECTURE --
+            if Phase.ARCHITECTURE in skip and blueprint.architecture:
+                architecture = blueprint.architecture
+                logger.info("Skipping ARCHITECTURE (already completed)")
+            else:
+                architecture = run_architecture(
+                    spec_intake=spec_intake,
+                    job_updater=job_updater,
+                )
+                blueprint.architecture = architecture
+                blueprint.current_phase = Phase.ARCHITECTURE
 
-            if not architecture.success:
-                blueprint.error = architecture.error
-                return blueprint
+                if not architecture.success:
+                    blueprint.error = architecture.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.ARCHITECTURE)
+                if Phase.ARCHITECTURE not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.ARCHITECTURE)
+                _checkpoint()
 
-            capabilities = run_capabilities(
-                spec_intake=spec_intake,
-                architecture=architecture,
-                job_updater=job_updater,
-            )
-            blueprint.capabilities = capabilities
-            blueprint.current_phase = Phase.CAPABILITIES
+            # -- CAPABILITIES --
+            if Phase.CAPABILITIES in skip and blueprint.capabilities:
+                capabilities = blueprint.capabilities
+                logger.info("Skipping CAPABILITIES (already completed)")
+            else:
+                capabilities = run_capabilities(
+                    spec_intake=spec_intake,
+                    architecture=architecture,
+                    job_updater=job_updater,
+                )
+                blueprint.capabilities = capabilities
+                blueprint.current_phase = Phase.CAPABILITIES
 
-            if not capabilities.success:
-                blueprint.error = capabilities.error
-                return blueprint
+                if not capabilities.success:
+                    blueprint.error = capabilities.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.CAPABILITIES)
+                if Phase.CAPABILITIES not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.CAPABILITIES)
+                _checkpoint()
 
-            evaluation = run_evaluation(
-                spec_intake=spec_intake,
-                job_updater=job_updater,
-            )
-            blueprint.evaluation = evaluation
-            blueprint.current_phase = Phase.EVALUATION
+            # -- EVALUATION --
+            if Phase.EVALUATION in skip and blueprint.evaluation:
+                evaluation = blueprint.evaluation
+                logger.info("Skipping EVALUATION (already completed)")
+            else:
+                evaluation = run_evaluation(
+                    spec_intake=spec_intake,
+                    job_updater=job_updater,
+                )
+                blueprint.evaluation = evaluation
+                blueprint.current_phase = Phase.EVALUATION
 
-            if not evaluation.success:
-                blueprint.error = evaluation.error
-                return blueprint
+                if not evaluation.success:
+                    blueprint.error = evaluation.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.EVALUATION)
+                if Phase.EVALUATION not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.EVALUATION)
+                _checkpoint()
 
-            safety = run_safety(
-                spec_intake=spec_intake,
-                architecture=architecture,
-                job_updater=job_updater,
-            )
-            blueprint.safety = safety
-            blueprint.current_phase = Phase.SAFETY
+            # -- SAFETY --
+            if Phase.SAFETY in skip and blueprint.safety:
+                safety = blueprint.safety
+                logger.info("Skipping SAFETY (already completed)")
+            else:
+                safety = run_safety(
+                    spec_intake=spec_intake,
+                    architecture=architecture,
+                    job_updater=job_updater,
+                )
+                blueprint.safety = safety
+                blueprint.current_phase = Phase.SAFETY
 
-            if not safety.success:
-                blueprint.error = safety.error
-                return blueprint
+                if not safety.success:
+                    blueprint.error = safety.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.SAFETY)
+                if Phase.SAFETY not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.SAFETY)
+                _checkpoint()
 
-            build = run_build(
-                project_name=project_name,
-                spec_intake=spec_intake,
-                architecture=architecture,
-                capabilities=capabilities,
-                evaluation=evaluation,
-                safety=safety,
-                output_dir=output_dir,
-                job_updater=job_updater,
-            )
-            blueprint.build = build
-            blueprint.current_phase = Phase.BUILD
+            # -- BUILD --
+            if Phase.BUILD in skip and blueprint.build:
+                logger.info("Skipping BUILD (already completed)")
+            else:
+                build = run_build(
+                    project_name=project_name,
+                    spec_intake=spec_intake,
+                    architecture=architecture,
+                    capabilities=capabilities,
+                    evaluation=evaluation,
+                    safety=safety,
+                    output_dir=output_dir,
+                    job_updater=job_updater,
+                )
+                blueprint.build = build
+                blueprint.current_phase = Phase.BUILD
 
-            if not build.success:
-                blueprint.error = build.error
-                return blueprint
+                if not build.success:
+                    blueprint.error = build.error
+                    return blueprint
 
-            blueprint.completed_phases.append(Phase.BUILD)
+                if Phase.BUILD not in blueprint.completed_phases:
+                    blueprint.completed_phases.append(Phase.BUILD)
+                _checkpoint()
+
             blueprint.success = True
-
             self._blueprints[project_name] = blueprint
 
             logger.info("AI system workflow complete for: %s", project_name)

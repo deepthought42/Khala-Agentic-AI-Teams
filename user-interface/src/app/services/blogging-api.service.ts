@@ -111,6 +111,28 @@ export class BloggingApiService {
   }
 
   /**
+   * POST /job/{job_id}/resume
+   * Resume an interrupted blog pipeline job.
+   */
+  resumeJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.post<{ job_id: string; message: string }>(
+      `${this.baseUrl}/job/${jobId}/resume`,
+      {}
+    );
+  }
+
+  /**
+   * POST /job/{job_id}/restart
+   * Restart a blog pipeline job from scratch.
+   */
+  restartJob(jobId: string): Observable<{ job_id: string; message: string }> {
+    return this.http.post<{ job_id: string; message: string }>(
+      `${this.baseUrl}/job/${jobId}/restart`,
+      {}
+    );
+  }
+
+  /**
    * POST /job/{job_id}/approve
    * Mark a completed or needs_human_review job as approved.
    */

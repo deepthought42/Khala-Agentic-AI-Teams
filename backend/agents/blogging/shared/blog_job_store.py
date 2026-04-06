@@ -49,12 +49,14 @@ def stop_blog_stale_monitor() -> None:
         _blog_stale_monitor_stop.set()
 
 
-# Job status constants
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
-JOB_STATUS_CANCELLED = "cancelled"
+# Job status constants — common ones from shared client, plus blogging-specific
+from job_service_client import (  # noqa: E402
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PENDING,
+    JOB_STATUS_RUNNING,
+)
+
 JOB_STATUS_NEEDS_REVIEW = "needs_human_review"
 
 DEFAULT_CACHE_DIR: Path = Path(os.environ.get("AGENT_CACHE", ".agent_cache")).resolve()
@@ -135,6 +137,45 @@ def create_blog_job(
         "events": [],
     }
     _client(cache_dir).create_job(job_id, status=JOB_STATUS_PENDING, **fields)
+
+
+def reset_blog_job(
+    job_id: str,
+    cache_dir: str | Path = DEFAULT_CACHE_DIR,
+) -> None:
+    """Reset a blog job to initial state for restart (preserves created_at, brief, audience, work_dir)."""
+    update_blog_job(
+        job_id,
+        cache_dir=cache_dir,
+        status=JOB_STATUS_PENDING,
+        phase=None,
+        progress=0,
+        status_text="Restarting...",
+        error=None,
+        failed_phase=None,
+        started_at=None,
+        completed_at=None,
+        title_choices=[],
+        outline=None,
+        draft_preview=None,
+        selected_title=None,
+        waiting_for_title_selection=False,
+        waiting_for_story_input=False,
+        waiting_for_answers=False,
+        waiting_for_draft_feedback=False,
+        pending_questions=[],
+        submitted_answers=[],
+        draft_for_review=None,
+        draft_review_revision=0,
+        user_draft_feedback=None,
+        draft_escalation_summary=None,
+        story_gaps=[],
+        current_story_gap_index=0,
+        story_chat_history=[],
+        elicited_stories=[],
+        draft_iterations=0,
+        rewrite_iterations=0,
+    )
 
 
 def get_blog_job(

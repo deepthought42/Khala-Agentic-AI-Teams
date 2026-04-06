@@ -19,8 +19,11 @@ from job_service_client import (
     JOB_STATUS_FAILED,
     JOB_STATUS_PENDING,
     JOB_STATUS_RUNNING,
+    RESTARTABLE_STATUSES,
+    RESUMABLE_STATUSES,
     JobServiceClient,
     start_stale_job_monitor,
+    validate_job_for_action,
 )
 from social_media_marketing_team.models import (
     BrandGoals,
@@ -392,6 +395,46 @@ def delete_marketing_job(job_id: str) -> DeleteMarketingJobResponse:
     if not _job_manager.delete_job(job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return DeleteMarketingJobResponse(job_id=job_id, message="Job deleted.")
+
+
+@app.post("/social-marketing/job/{job_id}/resume", response_model=RunMarketingTeamResponse)
+def resume_marketing_job(job_id: str) -> RunMarketingTeamResponse:
+    """Resume an interrupted marketing job by re-dispatching with stored inputs."""
+    try:
+        job = validate_job_for_action(_job_manager.get_job(job_id), job_id, RESUMABLE_STATUSES, "resumed")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = job.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available for resume.")
+
+    request = RunMarketingTeamRequest(**payload)
+    _job_manager.update_job(job_id, status=JOB_STATUS_RUNNING, error=None, current_stage="resuming")
+    dispatch_msg = _dispatch_job(job_id, request)
+    return RunMarketingTeamResponse(job_id=job_id, status="running", message=f"Job resumed. {dispatch_msg}")
+
+
+@app.post("/social-marketing/job/{job_id}/restart", response_model=RunMarketingTeamResponse)
+def restart_marketing_job(job_id: str) -> RunMarketingTeamResponse:
+    """Restart a marketing job from scratch with the same inputs."""
+    try:
+        job = validate_job_for_action(_job_manager.get_job(job_id), job_id, RESTARTABLE_STATUSES, "restarted")
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    payload = job.get("request_payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Original request payload not available for restart.")
+
+    request = RunMarketingTeamRequest(**payload)
+    _job_manager.update_job(
+        job_id, status=JOB_STATUS_PENDING, error=None, progress=0, current_stage="restart_queued",
+    )
+    dispatch_msg = _dispatch_job(job_id, request)
+    return RunMarketingTeamResponse(job_id=job_id, status="running", message=f"Job restarted. {dispatch_msg}")
 
 
 # ---------------------------------------------------------------------------
