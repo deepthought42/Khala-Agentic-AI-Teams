@@ -166,35 +166,38 @@ TEAM_ASSISTANT_CONFIGS: dict[str, TeamAssistantConfig] = {
         team_name="Social Media Marketing",
         system_prompt_context=(
             "A social media marketing team that plans cross-platform campaigns with content "
-            "calendars, post copy, and performance tracking. The user needs to describe their "
-            "brand and campaign goals."
+            "calendars, post copy, and performance tracking. The team works from a defined "
+            "brand strategy — the user must provide a client_id and brand_id referencing a "
+            "brand built via the Branding team (with at least Strategic Core and Narrative & "
+            "Messaging phases complete). Brand voice, audience, and messaging are pulled "
+            "automatically from the brand definition."
         ),
         required_fields=[
-            {"key": "brand_name", "description": "Name of the brand or company"},
-            {"key": "target_audience", "description": "Target audience for the campaign"},
+            {"key": "client_id", "description": "Client identifier from the branding team"},
+            {"key": "brand_id", "description": "Brand identifier from the branding team"},
         ],
         optional_fields=[
-            {"key": "brand_guidelines_path", "description": "Path to brand guidelines document"},
-            {"key": "brand_objectives_path", "description": "Path to brand objectives document"},
             {
                 "key": "goals",
                 "description": "Campaign goals (e.g. engagement, follower growth, conversions)",
-            },
-            {
-                "key": "voice_and_tone",
-                "description": "Brand voice and tone (e.g. professional, playful, bold)",
             },
             {"key": "cadence_posts_per_day", "description": "Number of posts per day"},
             {"key": "duration_days", "description": "Campaign duration in days"},
         ],
         welcome_message=(
-            "Welcome! I'm the Social Media Marketing team assistant. I'll help you plan a campaign.\n\n"
-            "What brand are you creating a campaign for, and who is your target audience?"
+            "Welcome! I'm your Social Media Marketing assistant. I help plan campaigns that "
+            "truly reflect your brand -- from content calendars to platform-specific strategies.\n\n"
+            "To create campaigns that resonate, I work from your brand's strategy and messaging. "
+            "If you haven't defined your brand yet, the Branding team can help you set that up "
+            "first -- it covers your strategic positioning and voice, and makes all the difference "
+            "in campaign quality.\n\n"
+            "Ready to get started? Tell me your client ID and brand ID, and I'll pull in your "
+            "brand context."
         ),
         default_suggested_questions=[
-            "I want to plan a 2-week social media campaign.",
-            "Help me create a content calendar for my brand.",
-            "I need to grow engagement on Instagram and LinkedIn.",
+            "I want to plan a 2-week social media campaign for my brand.",
+            "Help me create a content calendar using my brand's voice and messaging.",
+            "I haven't defined my brand yet -- where do I start?",
         ],
     ),
     # -----------------------------------------------------------------------

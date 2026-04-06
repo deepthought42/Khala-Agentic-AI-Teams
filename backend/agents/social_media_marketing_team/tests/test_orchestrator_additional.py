@@ -136,23 +136,25 @@ def test_calibration_changes_probabilities_when_engagement_observations_exist() 
     assert calibrated[0].estimated_engagement_probability > idea.estimated_engagement_probability
 
 
-def test_build_initial_proposal_includes_brand_document_context_and_model() -> None:
+def test_build_initial_proposal_includes_brand_context_and_model() -> None:
     orchestrator = SocialMediaMarketingOrchestrator(llm_model_name="llama3.1")
     goals = BrandGoals(
         brand_name="DocBrand",
         target_audience="professionals",
         goals=["engagement"],
-        brand_guidelines_path="/tmp/guidelines.md",
-        brand_objectives_path="/tmp/objectives.md",
         brand_guidelines="Always include clear CTA",
         brand_objectives="Increase comments by 20%",
+        messaging_pillars=["Developer empowerment", "Simplicity"],
+        brand_story="DocBrand was founded to simplify documentation.",
+        tagline="Docs done right",
     )
 
     proposal = orchestrator._build_initial_proposal(goals)
 
     assert "Ground strategy in brand objectives" in proposal.objective
-    assert any("brand guidelines document" in msg for msg in proposal.communication_log)
-    assert any("brand objectives document" in msg for msg in proposal.communication_log)
+    assert proposal.messaging_pillars == ["Developer empowerment", "Simplicity"]
+    assert any("Brand tagline" in msg for msg in proposal.communication_log)
+    assert any("Brand story context injected" in msg for msg in proposal.communication_log)
     assert any("Guideline context injected" in msg for msg in proposal.communication_log)
     assert any("Objective context injected" in msg for msg in proposal.communication_log)
     assert any("Configured LLM model" in msg for msg in proposal.communication_log)

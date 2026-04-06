@@ -6,7 +6,6 @@ import json
 import logging
 import queue
 import threading
-from typing import Generator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +51,7 @@ def ask(request: DeepthoughtRequest) -> DeepthoughtResponse:
 
 
 @app.post("/deepthought/ask/stream")
-def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
+async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
     """Submit a question and receive SSE events as agents work, then the final result.
 
     Events are sent as ``text/event-stream`` with types:
@@ -61,13 +60,14 @@ def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
     - ``error``: if something goes wrong
     - ``done``: signals the stream is complete
     """
+    import asyncio
+
     event_queue: queue.Queue[AgentEvent | None] = queue.Queue()
     result_holder: list[DeepthoughtResponse | Exception] = []
 
     def _run() -> None:
         try:
             orchestrator = DeepthoughtOrchestrator()
-            # Override the event collector to push to our queue
             original_collect = orchestrator._collect_event
 
             def _push_event(event: AgentEvent) -> None:
@@ -85,9 +85,14 @@ def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
-    def _generate() -> Generator[str, None, None]:
+    async def _generate():
         while True:
-            event = event_queue.get()
+            # Non-blocking check — yields control back to the event loop
+            try:
+                event = event_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.1)
+                continue
             if event is None:
                 break
             yield f"event: agent_event\ndata: {event.model_dump_json()}\n\n"

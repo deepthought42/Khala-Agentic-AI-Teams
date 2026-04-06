@@ -94,13 +94,13 @@ class SocialMediaMarketingOrchestrator:
             experiment_notes="Start with 14-day test window and compare baseline vs campaign uplift.",
         )
 
-        if goals.brand_guidelines_path:
+        if goals.messaging_pillars:
+            proposal.messaging_pillars = goals.messaging_pillars
+        if goals.tagline:
+            proposal.communication_log.append(f"Brand tagline: {goals.tagline}")
+        if goals.brand_story:
             proposal.communication_log.append(
-                f"Using brand guidelines document at path: {goals.brand_guidelines_path}"
-            )
-        if goals.brand_objectives_path:
-            proposal.communication_log.append(
-                f"Using brand objectives document at path: {goals.brand_objectives_path}"
+                f"Brand story context injected ({len(goals.brand_story)} chars)."
             )
         if goals.brand_guidelines:
             proposal.communication_log.append(
