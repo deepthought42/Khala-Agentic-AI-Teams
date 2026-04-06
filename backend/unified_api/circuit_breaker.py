@@ -26,7 +26,6 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ class CircuitBreaker:
     ) -> None:
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
-        self._circuits: Dict[str, _TeamCircuit] = {}
+        self._circuits: dict[str, _TeamCircuit] = {}
         self._lock = threading.Lock()
 
     def _get_circuit(self, team_key: str) -> _TeamCircuit:
@@ -140,7 +139,7 @@ class CircuitBreaker:
                     )
                 circuit.state = CircuitState.OPEN
 
-    def get_all_states(self) -> Dict[str, str]:
+    def get_all_states(self) -> dict[str, str]:
         """Return the circuit state for all tracked teams."""
         with self._lock:
             return {k: v.state.value for k, v in self._circuits.items()}

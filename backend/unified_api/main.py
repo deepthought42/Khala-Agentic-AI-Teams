@@ -133,7 +133,6 @@ async def _health_check_loop() -> None:
     """Periodically probe all registered teams' health endpoints."""
     while True:
         await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
-        enabled = get_enabled_teams()
         for team_key in list(_registered_teams.keys()):
             if not _registered_teams.get(team_key):
                 continue
@@ -265,10 +264,10 @@ from unified_api.middleware import SecurityGatewayMiddleware
 app.add_middleware(SecurityGatewayMiddleware)
 
 # Integrations API (Slack config, etc.)
+from unified_api.routes.analytics import router as analytics_router
 from unified_api.routes.integrations import router as integrations_router
 from unified_api.routes.llm_tools import router as llm_tools_router
 from unified_api.routes.llm_usage import router as llm_usage_router
-from unified_api.routes.analytics import router as analytics_router
 
 app.include_router(integrations_router)
 app.include_router(llm_tools_router)

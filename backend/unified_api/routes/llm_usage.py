@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Query
 
@@ -27,9 +27,9 @@ router = APIRouter(prefix="/api/llm-usage", tags=["llm-usage"])
 
 @router.get("/")
 def usage_summary(
-    team: Optional[str] = Query(None, description="Filter by team name"),
+    team: str | None = Query(None, description="Filter by team name"),
     window: float = Query(24.0, description="Time window in hours"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Aggregated LLM token usage over a time window.
 
     Returns total calls, token counts (prompt/completion/total), average latency,
@@ -40,7 +40,7 @@ def usage_summary(
 
 @router.get("/recent")
 def recent_calls(
-    team: Optional[str] = Query(None, description="Filter by team name"),
+    team: str | None = Query(None, description="Filter by team name"),
     limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
 ) -> list:
     """Recent individual LLM call records (most recent last)."""
@@ -48,7 +48,7 @@ def recent_calls(
 
 
 @router.get("/health")
-def proxy_health() -> Dict[str, Any]:
+def proxy_health() -> dict[str, Any]:
     """Circuit breaker states for all proxied teams."""
     from unified_api.team_proxy import circuit_breaker
 

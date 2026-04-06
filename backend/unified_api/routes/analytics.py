@@ -8,9 +8,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Query
 
@@ -27,25 +28,23 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 def team_scorecard(
     team: str,
     window: float = Query(24.0, description="Time window in hours"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Quality scorecard for a team: pass rates, retry counts, build success, etc."""
     return get_team_scorecard(team, window_hours=window)
 
 
 @router.get("/signals")
 def signal_history(
-    team: Optional[str] = Query(None),
-    signal_type: Optional[str] = Query(None),
+    team: str | None = Query(None),
+    signal_type: str | None = Query(None),
     window: float = Query(24.0),
     limit: int = Query(100, ge=1, le=1000),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Raw quality signal events, filterable by team and type."""
     from analytics.signals import SignalType
 
     st = None
     if signal_type:
-        try:
+        with contextlib.suppress(ValueError):
             st = SignalType(signal_type)
-        except ValueError:
-            pass
     return get_signals(team=team, signal_type=st, window_hours=window, limit=limit)
