@@ -21,6 +21,7 @@ from ..models import (
     MicrotaskReviewConfig,
     MicrotaskReviewFailedError,
     MicrotaskStatus,
+    PhaseReviewResult,
     PlanningResult,
     ReviewIssue,
     ReviewResult,
@@ -371,6 +372,10 @@ def run_execution_with_review_gates(
         )
         # Track files this microtask introduced for rollback on failure
         microtask_file_keys = set(microtask_files.keys())
+        # Initialize phase results so they're always defined for max-cycles check
+        cr_result = PhaseReviewResult(passed=True, phase_name="code_review")
+        qa_result = PhaseReviewResult(passed=True, phase_name="qa")
+        sec_result = PhaseReviewResult(passed=True, phase_name="security")
 
         # ── Sequential Review Gates with Batch Fixes ──────────────────────────
         # Flow: Code Review -> QA -> Security -> Documentation

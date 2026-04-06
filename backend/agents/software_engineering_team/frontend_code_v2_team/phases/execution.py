@@ -354,6 +354,8 @@ def run_execution_with_review_gates(
         max_total_cycles = config.max_retries * 3
         # Track files this microtask introduced for rollback on failure
         microtask_file_keys = set(microtask_files.keys())
+        # Initialize review results so they're always defined for max-cycles check
+        sec_review = ReviewResult(passed=True, summary="")
 
         # ── Sequential Review Gates with Batch Fixes ──────────────────────────
         # Flow: Code Review -> QA -> Security -> Documentation

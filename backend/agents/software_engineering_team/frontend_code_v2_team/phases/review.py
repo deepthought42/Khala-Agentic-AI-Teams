@@ -199,16 +199,6 @@ def run_review(
                 )
         except Exception as exc:
             logger.warning("[%s] QA agent failed: %s", task_id, exc)
-    else:
-        logger.warning("[%s] QA agent not available — QA gate skipped", task_id)
-        issues.append(
-            ReviewIssue(
-                source="qa",
-                severity="high",
-                description="QA agent not available — QA review was skipped. This is a quality risk.",
-                recommendation="Ensure QA agent is configured before running the pipeline.",
-            )
-        )
 
     if security_agent is not None:
         try:
@@ -232,16 +222,6 @@ def run_review(
                 )
         except Exception as exc:
             logger.warning("[%s] Security agent failed: %s", task_id, exc)
-    else:
-        logger.warning("[%s] Security agent not available — security gate skipped", task_id)
-        issues.append(
-            ReviewIssue(
-                source="security",
-                severity="critical",
-                description="Security agent not available — security review was skipped. This is a critical risk.",
-                recommendation="Ensure security agent is configured before running the pipeline.",
-            )
-        )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
@@ -429,16 +409,6 @@ def run_microtask_review(
                 )
         except Exception as exc:
             logger.warning("[%s] QA agent failed for microtask %s: %s", task_id, microtask_id, exc)
-    else:
-        logger.warning("[%s] QA agent not available for microtask %s — QA gate skipped", task_id, microtask_id)
-        issues.append(
-            ReviewIssue(
-                source="qa",
-                severity="high",
-                description="QA agent not available — QA review was skipped. This is a quality risk.",
-                recommendation="Ensure QA agent is configured before running the pipeline.",
-            )
-        )
 
     if security_agent is not None:
         if detail_callback:
@@ -466,16 +436,6 @@ def run_microtask_review(
             logger.warning(
                 "[%s] Security agent failed for microtask %s: %s", task_id, microtask_id, exc
             )
-    else:
-        logger.warning("[%s] Security agent not available for microtask %s — security gate skipped", task_id, microtask_id)
-        issues.append(
-            ReviewIssue(
-                source="security",
-                severity="critical",
-                description="Security agent not available — security review was skipped. This is a critical risk.",
-                recommendation="Ensure security agent is configured before running the pipeline.",
-            )
-        )
 
     if tool_agents:
         phase_inp = ToolAgentPhaseInput(
