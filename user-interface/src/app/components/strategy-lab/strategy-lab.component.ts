@@ -1,9 +1,10 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule, DecimalPipe, DatePipe, CurrencyPipe, JsonPipe } from '@angular/common';
 import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
@@ -12,11 +13,27 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatTableModule } from '@angular/material/table';
 import { MatSortModule } from '@angular/material/sort';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
+import { Subscription, timer, switchMap, takeWhile } from 'rxjs';
 
 import { InvestmentApiService } from '../../services/investment-api.service';
-import type { StrategyLabRecord, StrategyLabResultsResponse, TradeRecord } from '../../models';
+import type {
+  StrategyLabRecord,
+  StrategyLabResultsResponse,
+  StrategyLabRunStatus,
+  StrategyLabStreamEvent,
+  StrategyLabPhase,
+  TradeRecord,
+} from '../../models';
 
 type FilterMode = 'all' | 'winning' | 'losing';
+
+const PHASE_LABELS: Record<string, string> = {
+  ideating: 'Ideating strategy…',
+  fetching_data: 'Fetching market data…',
+  backtesting: 'Running backtest…',
+  analyzing: 'Analyzing results…',
+  complete: 'Complete',
+};
 
 @Component({
   selector: 'app-strategy-lab',
@@ -31,6 +48,7 @@ type FilterMode = 'all' | 'winning' | 'losing';
     MatButtonModule,
     MatIconModule,
     MatProgressSpinnerModule,
+    MatProgressBarModule,
     MatChipsModule,
     MatTooltipModule,
     MatDividerModule,
@@ -43,7 +61,7 @@ type FilterMode = 'all' | 'winning' | 'losing';
   templateUrl: './strategy-lab.component.html',
   styleUrl: './strategy-lab.component.scss',
 })
-export class StrategyLabComponent implements OnInit {
+export class StrategyLabComponent implements OnInit, OnDestroy {
   private readonly api = inject(InvestmentApiService);
 
   running = false;
@@ -70,9 +88,130 @@ export class StrategyLabComponent implements OnInit {
     'net_pnl', 'cumulative_pnl', 'outcome',
   ];
 
+  // Run progress tracking
+  activeRunId: string | null = null;
+  runStatus: StrategyLabRunStatus | null = null;
+  private sseSub: Subscription | null = null;
+  private pollSub: Subscription | null = null;
+
   ngOnInit(): void {
     this.loadResults();
+    this.checkForActiveRun();
   }
+
+  ngOnDestroy(): void {
+    this.sseSub?.unsubscribe();
+    this.pollSub?.unsubscribe();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Active run detection (for navigate-away-and-back)
+  // ---------------------------------------------------------------------------
+
+  private checkForActiveRun(): void {
+    this.api.getActiveRuns().subscribe({
+      next: (res) => {
+        const active = res.runs.find((r) => r.status === 'running');
+        if (active) {
+          this.activeRunId = active.run_id;
+          this.runStatus = active;
+          this.running = true;
+          this.connectToStream(active.run_id);
+        }
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // SSE streaming + polling fallback
+  // ---------------------------------------------------------------------------
+
+  private connectToStream(runId: string): void {
+    this.sseSub?.unsubscribe();
+    this.sseSub = this.api.streamRunStatus(runId).subscribe({
+      next: (event) => this.handleStreamEvent(event),
+      error: () => this.fallbackToPolling(runId),
+      complete: () => this.onRunComplete(),
+    });
+  }
+
+  private handleStreamEvent(event: StrategyLabStreamEvent): void {
+    if (event.type === 'snapshot' && this.runStatus) {
+      // Merge snapshot fields into runStatus
+      Object.assign(this.runStatus, {
+        status: event['status'] ?? this.runStatus.status,
+        completed_cycles: event['completed_cycles'] ?? this.runStatus.completed_cycles,
+        skipped_cycles: event['skipped_cycles'] ?? this.runStatus.skipped_cycles,
+        current_cycle: event['current_cycle'] ?? this.runStatus.current_cycle,
+        completed_record_ids: event['completed_record_ids'] ?? this.runStatus.completed_record_ids,
+        error: event['error'] ?? this.runStatus.error,
+      });
+    }
+
+    if (event.type === 'progress' && this.runStatus) {
+      this.runStatus.current_cycle = {
+        cycle_index: (event['cycle_index'] as number) ?? 0,
+        phase: (event['phase'] as StrategyLabPhase) ?? 'ideating',
+        strategy: event['strategy'] as { asset_class: string; hypothesis: string } | undefined,
+        metrics: event['metrics'] as Record<string, number> | undefined,
+      };
+    }
+
+    if (event.type === 'cycle_complete' && this.runStatus) {
+      this.runStatus.completed_cycles = (event['completed_cycles'] as number) ?? this.runStatus.completed_cycles + 1;
+      this.runStatus.current_cycle = undefined;
+      // Refresh completed cards
+      this.loadResults();
+    }
+
+    if (event.type === 'cycle_skipped' && this.runStatus) {
+      this.runStatus.skipped_cycles = (this.runStatus.skipped_cycles ?? 0) + 1;
+      this.runStatus.current_cycle = undefined;
+    }
+
+    if (event.type === 'complete') {
+      this.onRunComplete();
+    }
+
+    if (event.type === 'error') {
+      this.error = (event['detail'] as string) || 'Run failed';
+      this.onRunComplete();
+    }
+  }
+
+  private onRunComplete(): void {
+    this.running = false;
+    this.activeRunId = null;
+    this.runStatus = null;
+    this.sseSub?.unsubscribe();
+    this.sseSub = null;
+    this.pollSub?.unsubscribe();
+    this.pollSub = null;
+    this.loadResults();
+  }
+
+  private fallbackToPolling(runId: string): void {
+    this.pollSub?.unsubscribe();
+    this.pollSub = timer(0, 5000).pipe(
+      switchMap(() => this.api.getRunStatus(runId)),
+      takeWhile((status) => status.status === 'running', true),
+    ).subscribe({
+      next: (status) => {
+        this.runStatus = status;
+        if (status.status !== 'running') {
+          this.onRunComplete();
+        }
+      },
+      error: () => {
+        // Polling also failed — stop tracking
+        this.onRunComplete();
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Results
+  // ---------------------------------------------------------------------------
 
   loadResults(): void {
     this.loading = true;
@@ -97,9 +236,18 @@ export class StrategyLabComponent implements OnInit {
     this.running = true;
     this.error = null;
     this.api.runStrategyLab({ batch_size: 10 }).subscribe({
-      next: () => {
-        this.loadResults();
-        this.running = false;
+      next: (res) => {
+        this.activeRunId = res.run_id;
+        this.runStatus = {
+          run_id: res.run_id,
+          status: 'running',
+          started_at: new Date().toISOString(),
+          total_cycles: res.total_cycles,
+          completed_cycles: 0,
+          skipped_cycles: 0,
+          completed_record_ids: [],
+        };
+        this.connectToStream(res.run_id);
       },
       error: (err) => {
         this.error = err?.error?.detail || err?.message || 'Strategy run failed.';
@@ -128,6 +276,15 @@ export class StrategyLabComponent implements OnInit {
     if (annualized > 8) return 'winning';
     if (annualized >= 0) return 'neutral';
     return 'losing';
+  }
+
+  phaseLabel(phase: string): string {
+    return PHASE_LABELS[phase] ?? phase;
+  }
+
+  progressPercent(): number {
+    if (!this.runStatus || this.runStatus.total_cycles === 0) return 0;
+    return Math.round((this.runStatus.completed_cycles / this.runStatus.total_cycles) * 100);
   }
 
   // ---------------------------------------------------------------------------

@@ -39,7 +39,15 @@
         } @else {
           <mat-icon>auto_awesome</mat-icon>
         }
-        <span>{{ running ? 'Ideating…' : 'Run New Strategies (10)' }}</span>
+        <span>
+          @if (running && runStatus) {
+            Strategy {{ runStatus.completed_cycles + 1 }} of {{ runStatus.total_cycles }}
+          } @else if (running) {
+            Starting…
+          } @else {
+            Run New Strategies (10)
+          }
+        </span>
       </button>
     </div>
   </div>
@@ -49,6 +57,83 @@
     <div class="error-banner">
       <mat-icon>error_outline</mat-icon>
       <span>{{ error }}</span>
+    </div>
+  }
+
+  <!-- In-progress tracking -->
+  @if (running && runStatus) {
+    <div class="in-progress-section">
+      <div class="progress-header">
+        <mat-icon>hourglass_top</mat-icon>
+        <span class="progress-title">
+          Running — Strategy {{ runStatus.completed_cycles + 1 }} of {{ runStatus.total_cycles }}
+        </span>
+        @if (runStatus.skipped_cycles) {
+          <span class="skipped-badge">{{ runStatus.skipped_cycles }} skipped</span>
+        }
+      </div>
+
+      <mat-progress-bar mode="determinate" [value]="progressPercent()"></mat-progress-bar>
+
+      @if (runStatus.current_cycle) {
+        <mat-card class="progress-card" [class]="'phase-border-' + runStatus.current_cycle.phase">
+          <mat-card-content>
+            <div class="phase-row">
+              <mat-chip [class]="'phase-chip-' + runStatus.current_cycle.phase">
+                {{ phaseLabel(runStatus.current_cycle.phase) }}
+              </mat-chip>
+              <span class="cycle-label">Cycle {{ runStatus.current_cycle.cycle_index }}</span>
+            </div>
+
+            @if (runStatus.current_cycle.strategy) {
+              <div class="preview-rows">
+                <div class="preview-row">
+                  <span class="preview-label">Asset Class</span>
+                  <span class="preview-value">{{ runStatus.current_cycle.strategy.asset_class }}</span>
+                </div>
+                <div class="preview-row">
+                  <span class="preview-label">Hypothesis</span>
+                  <span class="preview-value hypothesis-text">{{ runStatus.current_cycle.strategy.hypothesis }}</span>
+                </div>
+              </div>
+            }
+
+            @if (runStatus.current_cycle.metrics) {
+              <div class="metrics-preview">
+                @if (runStatus.current_cycle.metrics.annualized_return_pct !== undefined) {
+                  <div class="metric-chip" [class]="returnColor(runStatus.current_cycle.metrics.annualized_return_pct!)">
+                    <span class="metric-value">{{ runStatus.current_cycle.metrics.annualized_return_pct | number:'1.1-1' }}%</span>
+                    <span class="metric-label">Return pa</span>
+                  </div>
+                }
+                @if (runStatus.current_cycle.metrics.sharpe_ratio !== undefined) {
+                  <div class="metric-chip">
+                    <span class="metric-value">{{ runStatus.current_cycle.metrics.sharpe_ratio | number:'1.2-2' }}</span>
+                    <span class="metric-label">Sharpe</span>
+                  </div>
+                }
+                @if (runStatus.current_cycle.metrics.max_drawdown_pct !== undefined) {
+                  <div class="metric-chip">
+                    <span class="metric-value">{{ runStatus.current_cycle.metrics.max_drawdown_pct | number:'1.1-1' }}%</span>
+                    <span class="metric-label">Max DD</span>
+                  </div>
+                }
+                @if (runStatus.current_cycle.metrics.win_rate_pct !== undefined) {
+                  <div class="metric-chip">
+                    <span class="metric-value">{{ runStatus.current_cycle.metrics.win_rate_pct | number:'1.0-0' }}%</span>
+                    <span class="metric-label">Win Rate</span>
+                  </div>
+                }
+              </div>
+            }
+          </mat-card-content>
+        </mat-card>
+      } @else {
+        <div class="progress-waiting">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Preparing next strategy…</span>
+        </div>
+      }
     </div>
   }
 

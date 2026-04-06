@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, NgZone, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
@@ -23,8 +23,11 @@ import type {
   CreateMemoResponse,
   InvestmentHealthResponse,
   RunStrategyLabRequest,
-  StrategyLabRunResponse,
+  StrategyLabRunStartResponse,
   StrategyLabResultsResponse,
+  StrategyLabRunStatus,
+  ActiveRunsResponse,
+  StrategyLabStreamEvent,
   DeleteStrategyLabRecordResponse,
   ClearStrategyLabStorageResponse,
   StartAdvisorSessionRequest,
@@ -41,6 +44,7 @@ import type {
 @Injectable({ providedIn: 'root' })
 export class InvestmentApiService {
   private readonly http = inject(HttpClient);
+  private readonly zone = inject(NgZone);
   private readonly baseUrl = environment.investmentApiUrl;
 
   // ---------------------------------------------------------------------------
@@ -158,11 +162,47 @@ export class InvestmentApiService {
   // Strategy Lab
   // ---------------------------------------------------------------------------
 
-  runStrategyLab(request?: RunStrategyLabRequest): Observable<StrategyLabRunResponse> {
-    return this.http.post<StrategyLabRunResponse>(
+  runStrategyLab(request?: RunStrategyLabRequest): Observable<StrategyLabRunStartResponse> {
+    return this.http.post<StrategyLabRunStartResponse>(
       `${this.baseUrl}/strategy-lab/run`,
       request ?? {}
     );
+  }
+
+  getActiveRuns(): Observable<ActiveRunsResponse> {
+    return this.http.get<ActiveRunsResponse>(`${this.baseUrl}/strategy-lab/runs`);
+  }
+
+  getRunStatus(runId: string): Observable<StrategyLabRunStatus> {
+    return this.http.get<StrategyLabRunStatus>(
+      `${this.baseUrl}/strategy-lab/runs/${encodeURIComponent(runId)}/status`
+    );
+  }
+
+  streamRunStatus(runId: string): Observable<StrategyLabStreamEvent> {
+    return new Observable<StrategyLabStreamEvent>((subscriber) => {
+      const url = `${this.baseUrl}/strategy-lab/runs/${encodeURIComponent(runId)}/stream`;
+      const eventSource = new EventSource(url);
+      eventSource.onmessage = (msg) => {
+        this.zone.run(() => {
+          try {
+            const data: StrategyLabStreamEvent = JSON.parse(msg.data);
+            subscriber.next(data);
+            if (data.type === 'done') {
+              eventSource.close();
+              subscriber.complete();
+            }
+          } catch {
+            // Ignore unparseable frames (keepalive comments)
+          }
+        });
+      };
+      eventSource.onerror = () => {
+        eventSource.close();
+        this.zone.run(() => subscriber.error(new Error('SSE connection lost')));
+      };
+      return () => eventSource.close();
+    });
   }
 
   getStrategyLabResults(winning?: boolean): Observable<StrategyLabResultsResponse> {

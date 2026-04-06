@@ -524,3 +524,144 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+
+// ── In-progress tracking ────────────────────────────────────────────────────
+
+.in-progress-section {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: rgba(92, 107, 192, 0.04);
+  border-radius: 8px;
+  border: 1px solid rgba(92, 107, 192, 0.15);
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+
+  mat-icon {
+    color: #5c6bc0;
+    animation: pulse-icon 1.5s ease-in-out infinite;
+  }
+}
+
+.progress-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.skipped-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(255, 152, 0, 0.12);
+  color: #e65100;
+}
+
+mat-progress-bar {
+  margin-bottom: 0.75rem;
+  border-radius: 4px;
+}
+
+.progress-card {
+  border-left: 4px solid #5c6bc0;
+  transition: border-color 0.3s ease;
+
+  &.phase-border-ideating { border-left-color: #42a5f5; }
+  &.phase-border-fetching_data { border-left-color: #ffb300; }
+  &.phase-border-backtesting { border-left-color: #66bb6a; }
+  &.phase-border-analyzing { border-left-color: #ab47bc; }
+  &.phase-border-complete { border-left-color: #4caf50; }
+}
+
+.phase-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.phase-chip-ideating { background: rgba(66, 165, 245, 0.15) !important; color: #1565c0 !important; }
+.phase-chip-fetching_data { background: rgba(255, 179, 0, 0.15) !important; color: #e65100 !important; }
+.phase-chip-backtesting { background: rgba(102, 187, 106, 0.15) !important; color: #2e7d32 !important; }
+.phase-chip-analyzing { background: rgba(171, 71, 188, 0.15) !important; color: #6a1b9a !important; }
+.phase-chip-complete { background: rgba(76, 175, 80, 0.15) !important; color: #2e7d32 !important; }
+
+.cycle-label {
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.preview-rows {
+  margin: 0.5rem 0;
+}
+
+.preview-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.preview-label {
+  font-weight: 600;
+  min-width: 80px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.preview-value {
+  flex: 1;
+}
+
+.hypothesis-text {
+  font-style: italic;
+}
+
+.metrics-preview {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.metric-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04);
+
+  &.winning { background: rgba(76, 175, 80, 0.1); }
+  &.losing { background: rgba(244, 67, 54, 0.08); }
+}
+
+.metric-value {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.metric-label {
+  font-size: 0.7rem;
+  color: rgba(0, 0, 0, 0.5);
+  text-transform: uppercase;
+}
+
+.progress-waiting {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  font-size: 0.9rem;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+@keyframes pulse-icon {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from investment_team.agents import (
@@ -139,9 +140,71 @@ _policy_guardian = PolicyGuardianAgent()
 _orchestrator = InvestmentTeamOrchestrator()
 _committee_agent = InvestmentCommitteeAgent()
 
+# In-memory state for active strategy lab runs (keyed by run_id).
+_active_runs: Dict[str, Dict[str, Any]] = {}
+
 
 def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Strategy Lab run tracking models
+# ---------------------------------------------------------------------------
+
+
+class StrategyLabRunStartResponse(BaseModel):
+    """Returned immediately when a strategy lab batch is started."""
+
+    run_id: str
+    status: str = "running"
+    total_cycles: int
+    message: str = "Strategy lab batch started."
+
+
+class StrategyLabCycleProgress(BaseModel):
+    """Progress snapshot for the currently-executing cycle."""
+
+    cycle_index: int
+    phase: str
+    strategy: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+
+
+class StrategyLabRunStatusResponse(BaseModel):
+    """Full snapshot of a strategy lab run (for polling or initial SSE snapshot)."""
+
+    run_id: str
+    status: str
+    started_at: str
+    total_cycles: int
+    completed_cycles: int = 0
+    skipped_cycles: int = 0
+    current_cycle: Optional[StrategyLabCycleProgress] = None
+    completed_record_ids: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class ActiveRunsResponse(BaseModel):
+    """List of all tracked strategy lab runs (active and recently completed)."""
+
+    runs: List[StrategyLabRunStatusResponse] = Field(default_factory=list)
+
+
+def _run_state_to_response(state: Dict[str, Any]) -> StrategyLabRunStatusResponse:
+    """Convert an _active_runs entry to a Pydantic response."""
+    cc = state.get("current_cycle")
+    return StrategyLabRunStatusResponse(
+        run_id=state["run_id"],
+        status=state["status"],
+        started_at=state["started_at"],
+        total_cycles=state["total_cycles"],
+        completed_cycles=state.get("completed_cycles", 0),
+        skipped_cycles=state.get("skipped_cycles", 0),
+        current_cycle=StrategyLabCycleProgress(**cc) if cc else None,
+        completed_record_ids=state.get("completed_record_ids", []),
+        error=state.get("error"),
+    )
 
 
 class CreateProfileRequest(BaseModel):
@@ -837,17 +900,28 @@ def _run_one_strategy_lab_cycle(
     *,
     precomputed_signal_brief: Optional[SignalIntelligenceBriefV1] = None,
     signal_brief_storage: Optional[Dict[str, Any]] = None,
+    on_phase: Optional[Any] = None,
 ) -> StrategyLabRecord:
     """Single ideation → backtest → analysis; persists to store so the next cycle sees full history.
 
     If all data providers fail for the ideated asset class, re-ideates for a different
     asset class (up to one retry) rather than aborting the entire batch.
+
+    Args:
+        on_phase: Optional callback ``(phase: str, data: dict) -> None`` called at each
+            phase boundary to emit progress events.
     """
+    def _emit(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
+        if on_phase:
+            on_phase(phase, data or {})
+
     with _lock:
         raw_prior = list(_strategy_lab_records.values())
 
     prior_records = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
     prior_records.sort(key=lambda r: r.created_at)
+
+    _emit("ideating")
 
     try:
         strategy_data, rationale = agent.ideate_strategy(
@@ -859,18 +933,21 @@ def _run_one_strategy_lab_cycle(
         raise HTTPException(status_code=500, detail=f"Strategy ideation failed: {exc}") from exc
 
     strategy, strategy_id = _build_strategy_from_ideation(strategy_data)
+    strategy_preview = {"asset_class": strategy.asset_class, "hypothesis": strategy.hypothesis}
+
+    _emit("fetching_data", {"strategy": strategy_preview})
 
     try:
         result, trades = _run_real_data_backtest(strategy, config)
     except HTTPException as exc:
         if exc.status_code != 502:
             raise
-        # All data providers failed for this asset class — re-ideate for a different one
         failed_ac = strategy.asset_class
         logger.warning(
             "No market data for asset class %s (all providers failed); re-ideating with exclusion",
             failed_ac,
         )
+        _emit("ideating", {"retry": True, "excluded": failed_ac})
         try:
             strategy_data, rationale = agent.ideate_strategy(
                 prior_results=prior_records,
@@ -883,8 +960,18 @@ def _run_one_strategy_lab_cycle(
             ) from exc2
 
         strategy, strategy_id = _build_strategy_from_ideation(strategy_data)
-        # Second attempt — if this also fails, let the 502 propagate
+        strategy_preview = {"asset_class": strategy.asset_class, "hypothesis": strategy.hypothesis}
+        _emit("fetching_data", {"strategy": strategy_preview, "retry": True})
         result, trades = _run_real_data_backtest(strategy, config)
+
+    metrics_preview = {
+        "annualized_return_pct": round(result.annualized_return_pct, 2),
+        "sharpe_ratio": round(result.sharpe_ratio, 2),
+        "max_drawdown_pct": round(result.max_drawdown_pct, 2),
+        "win_rate_pct": round(result.win_rate_pct, 2),
+        "total_trades": len(trades),
+    }
+    _emit("analyzing", {"strategy": strategy_preview, "metrics": metrics_preview})
 
     now = _now()
     backtest_id = f"bt-lab-{uuid.uuid4().hex[:8]}"
@@ -940,6 +1027,8 @@ def _run_one_strategy_lab_cycle(
         _strategies[strategy_id] = strategy
         _backtests[backtest_id] = backtest
 
+    _emit("complete", {"record_id": lab_record_id, "is_winning": is_winning, "metrics": metrics_preview})
+
     return record
 
 
@@ -951,133 +1040,207 @@ def _strategy_lab_signal_expert_enabled() -> bool:
     )
 
 
-@app.post("/strategy-lab/run", response_model=StrategyLabRunResponse)
-def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunResponse:
-    """
-    Ideate novel swing trading strategies using the LLM (one per step), backtest each,
-    then generate an analysis narrative. Each step sees all prior lab records including
-    metrics, outcomes, and post-backtest narratives. Default batch size is 10 per run.
+def _strategy_lab_worker(run_id: str, request: RunStrategyLabRequest) -> None:
+    """Background worker that executes the strategy lab batch and publishes progress via SSE."""
+    from investment_team.api.job_event_bus import cleanup_job, publish
 
-    Policy B: one Signal Intelligence brief + one market snapshot per batch; reused for each cycle.
-    """
-    from llm_service.factory import get_client
-
-    llm = get_client("strategy_ideation")
-    agent = StrategyIdeationAgent(llm_client=llm)
-
-    config = BacktestConfig(
-        start_date=request.start_date,
-        end_date=request.end_date,
-        initial_capital=request.initial_capital,
-        benchmark_symbol=request.benchmark_symbol,
-        transaction_cost_bps=request.transaction_cost_bps,
-        slippage_bps=request.slippage_bps,
-    )
-
-    precomputed_brief: Optional[SignalIntelligenceBriefV1] = None
-    signal_brief_storage: Optional[Dict[str, Any]] = None
-    provider: Optional[FreeTierMarketDataProvider] = None
-
-    if _strategy_lab_signal_expert_enabled():
-        provider = FreeTierMarketDataProvider()
-        try:
-            market_ctx = provider.fetch_context(
-                StrategyLabDataRequest(benchmark_symbol=request.benchmark_symbol)
-            )
-        except Exception as exc:
-            logger.warning("Market data fetch failed: %s", exc)
-            market_ctx = MarketLabContext(
-                fetched_at=_now(),
-                degraded=True,
-                degraded_reason=str(exc),
-                sources_used=[],
-            )
+    def _update_run(updates: Dict[str, Any]) -> None:
         with _lock:
-            raw_prior = list(_strategy_lab_records.values())
-        prior_for_brief = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
-        prior_for_brief.sort(key=lambda r: r.created_at)
+            state = _active_runs.get(run_id)
+            if state:
+                state.update(updates)
 
-        llm_signal = get_client("signal_intelligence")
-        expert = SignalIntelligenceExpert(llm_signal)
-        t0 = datetime.now(tz=timezone.utc)
-        try:
-            brief = expert.produce_signal_brief(prior_for_brief, market_ctx)
-            precomputed_brief = brief
-            signal_brief_storage = brief.model_dump(mode="json")
-            prov_text = market_ctx.as_prompt_text()
-            signal_brief_storage["brief_provenance"] = {
-                "expert": "signal_intelligence_v1",
-                "market_snapshot_hash": hashlib.sha256(prov_text.encode()).hexdigest()[:16],
-                "market_fetched_at": market_ctx.fetched_at,
-                "market_degraded": market_ctx.degraded,
-                "duration_ms": int((datetime.now(tz=timezone.utc) - t0).total_seconds() * 1000),
-            }
-            logger.info(
-                "signal_intelligence brief_version=%s len=%s degraded_market=%s",
-                signal_brief_storage.get("brief_version"),
-                len(str(signal_brief_storage)),
-                market_ctx.degraded,
-            )
-        except Exception as exc:
-            logger.warning("Signal intelligence expert failed: %s", exc)
-            precomputed_brief = None
-            signal_brief_storage = {
-                "skipped": True,
-                "skipped_reason": "expert_failed",
-                "error": str(exc)[:500],
-            }
-        finally:
-            if provider is not None:
-                provider.close()
-    else:
-        signal_brief_storage = {
-            "skipped": True,
-            "skipped_reason": "signal_expert_disabled",
-        }
+    def _publish(event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
+        payload = data.copy() if data else {}
+        publish(run_id, payload, event_type=event_type)
 
-    records: List[StrategyLabRecord] = []
-    skipped = 0
-    for i in range(request.batch_size):
-        try:
-            record = _run_one_strategy_lab_cycle(
-                agent,
-                config,
-                precomputed_signal_brief=precomputed_brief,
-                signal_brief_storage=signal_brief_storage,
-            )
-        except HTTPException as exc:
-            if exc.status_code == 502:
-                # Data unavailable even after re-ideation — skip this cycle, continue batch
-                logger.warning(
-                    "Strategy lab cycle %d/%d skipped (no market data available after fallback)",
-                    i + 1, request.batch_size,
-                )
-                skipped += 1
-                continue
-            raise
-        except Exception as exc:
-            logger.exception("Strategy lab cycle %d/%d failed", i + 1, request.batch_size)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Strategy lab cycle {i + 1}/{request.batch_size} failed: {exc}",
-            ) from exc
-        records.append(record)
+    try:
+        from llm_service.factory import get_client
 
-    if not records:
-        raise HTTPException(
-            status_code=502,
-            detail="All strategy lab cycles failed — no market data available from any provider.",
+        llm = get_client("strategy_ideation")
+        agent = StrategyIdeationAgent(llm_client=llm)
+
+        config = BacktestConfig(
+            start_date=request.start_date,
+            end_date=request.end_date,
+            initial_capital=request.initial_capital,
+            benchmark_symbol=request.benchmark_symbol,
+            transaction_cost_bps=request.transaction_cost_bps,
+            slippage_bps=request.slippage_bps,
         )
 
-    msg = f"Completed {len(records)} strategy lab cycle(s)."
-    if skipped:
-        msg += f" ({skipped} skipped due to unavailable market data)"
+        precomputed_brief: Optional[SignalIntelligenceBriefV1] = None
+        signal_brief_storage: Optional[Dict[str, Any]] = None
+        provider: Optional[FreeTierMarketDataProvider] = None
 
-    return StrategyLabRunResponse(
-        records=records,
-        count=len(records),
-        message=msg,
+        if _strategy_lab_signal_expert_enabled():
+            provider = FreeTierMarketDataProvider()
+            try:
+                market_ctx = provider.fetch_context(
+                    StrategyLabDataRequest(benchmark_symbol=request.benchmark_symbol)
+                )
+            except Exception as exc:
+                logger.warning("Market data fetch failed: %s", exc)
+                market_ctx = MarketLabContext(
+                    fetched_at=_now(),
+                    degraded=True,
+                    degraded_reason=str(exc),
+                    sources_used=[],
+                )
+            with _lock:
+                raw_prior = list(_strategy_lab_records.values())
+            prior_for_brief = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
+            prior_for_brief.sort(key=lambda r: r.created_at)
+
+            llm_signal = get_client("signal_intelligence")
+            expert = SignalIntelligenceExpert(llm_signal)
+            t0 = datetime.now(tz=timezone.utc)
+            try:
+                brief = expert.produce_signal_brief(prior_for_brief, market_ctx)
+                precomputed_brief = brief
+                signal_brief_storage = brief.model_dump(mode="json")
+                prov_text = market_ctx.as_prompt_text()
+                signal_brief_storage["brief_provenance"] = {
+                    "expert": "signal_intelligence_v1",
+                    "market_snapshot_hash": hashlib.sha256(prov_text.encode()).hexdigest()[:16],
+                    "market_fetched_at": market_ctx.fetched_at,
+                    "market_degraded": market_ctx.degraded,
+                    "duration_ms": int((datetime.now(tz=timezone.utc) - t0).total_seconds() * 1000),
+                }
+                logger.info(
+                    "signal_intelligence brief_version=%s len=%s degraded_market=%s",
+                    signal_brief_storage.get("brief_version"),
+                    len(str(signal_brief_storage)),
+                    market_ctx.degraded,
+                )
+            except Exception as exc:
+                logger.warning("Signal intelligence expert failed: %s", exc)
+                precomputed_brief = None
+                signal_brief_storage = {
+                    "skipped": True,
+                    "skipped_reason": "expert_failed",
+                    "error": str(exc)[:500],
+                }
+            finally:
+                if provider is not None:
+                    provider.close()
+        else:
+            signal_brief_storage = {
+                "skipped": True,
+                "skipped_reason": "signal_expert_disabled",
+            }
+
+        completed_ids: List[str] = []
+        skipped = 0
+        for i in range(request.batch_size):
+            cycle_num = i + 1
+
+            def on_phase(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
+                cycle_data = {"cycle_index": cycle_num, "phase": phase, **(data or {})}
+                _update_run({"current_cycle": cycle_data})
+                _publish("progress", cycle_data)
+
+            try:
+                record = _run_one_strategy_lab_cycle(
+                    agent,
+                    config,
+                    precomputed_signal_brief=precomputed_brief,
+                    signal_brief_storage=signal_brief_storage,
+                    on_phase=on_phase,
+                )
+                completed_ids.append(record.lab_record_id)
+                _update_run({
+                    "completed_cycles": len(completed_ids),
+                    "completed_record_ids": list(completed_ids),
+                    "current_cycle": None,
+                })
+                _publish("cycle_complete", {
+                    "cycle_index": cycle_num,
+                    "record_id": record.lab_record_id,
+                    "completed_cycles": len(completed_ids),
+                })
+            except HTTPException as exc:
+                if exc.status_code == 502:
+                    logger.warning(
+                        "Strategy lab cycle %d/%d skipped (no market data after fallback)",
+                        cycle_num, request.batch_size,
+                    )
+                    skipped += 1
+                    _update_run({"skipped_cycles": skipped, "current_cycle": None})
+                    _publish("cycle_skipped", {"cycle_index": cycle_num, "reason": "no_market_data"})
+                    continue
+                raise
+            except Exception as exc:
+                logger.exception("Strategy lab cycle %d/%d failed", cycle_num, request.batch_size)
+                _update_run({
+                    "status": "failed",
+                    "error": f"Cycle {cycle_num} failed: {exc}",
+                    "current_cycle": None,
+                })
+                _publish("error", {"detail": f"Cycle {cycle_num} failed: {exc}"})
+                return
+
+        msg = f"Completed {len(completed_ids)} strategy lab cycle(s)."
+        if skipped:
+            msg += f" ({skipped} skipped due to unavailable market data)"
+
+        _update_run({"status": "completed", "current_cycle": None})
+        _publish("complete", {"message": msg, "completed_count": len(completed_ids), "skipped_count": skipped})
+
+    except Exception as exc:
+        logger.exception("Strategy lab worker failed for run %s", run_id)
+        _update_run({"status": "failed", "error": str(exc)[:500], "current_cycle": None})
+        _publish("error", {"detail": str(exc)[:500]})
+    finally:
+        # Schedule cleanup of _active_runs entry after 5 minutes
+        def _cleanup() -> None:
+            with _lock:
+                _active_runs.pop(run_id, None)
+            cleanup_job(run_id)
+
+        timer = threading.Timer(300.0, _cleanup)
+        timer.daemon = True
+        timer.start()
+
+
+@app.post("/strategy-lab/run", response_model=StrategyLabRunStartResponse)
+def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunStartResponse:
+    """
+    Start a strategy lab batch run in the background. Returns a run_id immediately.
+
+    Use ``GET /strategy-lab/runs/{run_id}/stream`` for real-time SSE progress updates,
+    or ``GET /strategy-lab/runs/{run_id}/status`` for polling.
+    """
+    with _lock:
+        active = [r for r in _active_runs.values() if r["status"] == "running"]
+        if active:
+            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    now = _now()
+
+    with _lock:
+        _active_runs[run_id] = {
+            "run_id": run_id,
+            "status": "running",
+            "started_at": now,
+            "total_cycles": request.batch_size,
+            "completed_cycles": 0,
+            "skipped_cycles": 0,
+            "current_cycle": None,
+            "completed_record_ids": [],
+            "error": None,
+        }
+
+    thread = threading.Thread(
+        target=_strategy_lab_worker,
+        args=(run_id, request),
+        name=f"strategy-lab-{run_id}",
+        daemon=True,
     )
+    thread.start()
+
+    return StrategyLabRunStartResponse(run_id=run_id, total_cycles=request.batch_size)
 
 
 @app.get("/strategy-lab/results", response_model=StrategyLabResultsResponse)
@@ -1104,6 +1267,94 @@ def get_strategy_lab_results(winning: Optional[bool] = None) -> StrategyLabResul
         winning_count=winning_count,
         losing_count=losing_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Strategy Lab: run tracking endpoints (SSE + polling + list)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/strategy-lab/runs", response_model=ActiveRunsResponse, summary="List active strategy lab runs")
+def list_strategy_lab_runs() -> ActiveRunsResponse:
+    """Return all tracked runs (active and recently completed, kept for 5 min after finish)."""
+    with _lock:
+        runs = [_run_state_to_response(r) for r in _active_runs.values()]
+    return ActiveRunsResponse(runs=runs)
+
+
+@app.get(
+    "/strategy-lab/runs/{run_id}/status",
+    response_model=StrategyLabRunStatusResponse,
+    summary="Get strategy lab run status (polling fallback)",
+)
+def get_strategy_lab_run_status(run_id: str) -> StrategyLabRunStatusResponse:
+    """Snapshot of a single run's progress. Use for polling when SSE is unavailable."""
+    with _lock:
+        state = _active_runs.get(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found or already cleaned up")
+    return _run_state_to_response(state)
+
+
+@app.get(
+    "/strategy-lab/runs/{run_id}/stream",
+    summary="Stream strategy lab run progress via SSE",
+    description=(
+        "Server-Sent Events stream for real-time progress. Emits 'snapshot' on connect, "
+        "'progress' at each phase, 'cycle_complete'/'cycle_skipped' per cycle, "
+        "and a terminal 'complete' or 'error' event."
+    ),
+)
+def stream_strategy_lab_run(run_id: str) -> StreamingResponse:
+    """SSE endpoint mirroring the blogging team's pattern."""
+    import json as json_module
+    import time as time_mod
+
+    from investment_team.api.job_event_bus import subscribe, unsubscribe
+
+    with _lock:
+        state = _active_runs.get(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    def _sse_line(data: dict) -> str:
+        return f"data: {json_module.dumps(data, default=str)}\n\n"
+
+    # If the run is already terminal, send snapshot + done immediately.
+    if state.get("status") in ("completed", "failed"):
+        def _terminal_gen():
+            yield _sse_line({"type": "snapshot", **_run_state_to_response(state).model_dump(mode="json")})
+            yield _sse_line({"type": "done"})
+        return StreamingResponse(_terminal_gen(), media_type="text/event-stream")
+
+    def event_generator():
+        sub = subscribe(run_id)
+        try:
+            # Initial snapshot
+            with _lock:
+                current = _active_runs.get(run_id, {})
+            if current:
+                yield _sse_line({"type": "snapshot", **_run_state_to_response(current).model_dump(mode="json")})
+
+            deadline = time_mod.monotonic() + 4 * 3600  # 4-hour max
+            while time_mod.monotonic() < deadline:
+                sent_terminal = False
+                while sub.events:
+                    event = sub.events.popleft()
+                    yield _sse_line(event)
+                    if event.get("type") in ("complete", "error"):
+                        sent_terminal = True
+                if sent_terminal:
+                    yield _sse_line({"type": "done"})
+                    return
+
+                yield ": keepalive\n\n"
+                sub.notify.wait(timeout=1.0)
+                sub.notify.clear()
+        finally:
+            unsubscribe(run_id, sub)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 class ClearStrategyLabStorageResponse(BaseModel):

@@ -526,6 +526,45 @@ export interface ClearStrategyLabStorageResponse {
   message: string;
 }
 
+// Strategy Lab — real-time run tracking
+
+export type StrategyLabPhase = 'ideating' | 'fetching_data' | 'backtesting' | 'analyzing' | 'complete';
+
+export interface StrategyLabCycleProgress {
+  cycle_index: number;
+  phase: StrategyLabPhase;
+  strategy?: { asset_class: string; hypothesis: string };
+  metrics?: Partial<BacktestResult>;
+}
+
+export interface StrategyLabRunStatus {
+  run_id: string;
+  status: 'running' | 'completed' | 'failed';
+  started_at: string;
+  total_cycles: number;
+  completed_cycles: number;
+  skipped_cycles: number;
+  current_cycle?: StrategyLabCycleProgress;
+  completed_record_ids: string[];
+  error?: string;
+}
+
+export interface StrategyLabRunStartResponse {
+  run_id: string;
+  status: string;
+  total_cycles: number;
+  message: string;
+}
+
+export interface ActiveRunsResponse {
+  runs: StrategyLabRunStatus[];
+}
+
+export interface StrategyLabStreamEvent {
+  type: 'snapshot' | 'progress' | 'cycle_complete' | 'cycle_skipped' | 'complete' | 'error' | 'done';
+  [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Financial Advisor (Chat) Models
 // ---------------------------------------------------------------------------
