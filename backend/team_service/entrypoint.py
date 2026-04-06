@@ -19,6 +19,20 @@ import uvicorn
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("team_service")
 
+
+class _HealthCheckFilter(logging.Filter):
+    """Suppress health-check access log lines unless the logger is at DEBUG level."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno <= logging.DEBUG:
+            return True  # Always show in debug mode
+        msg = record.getMessage()
+        return not ("GET /health" in msg and "200" in msg)
+
+
+# Apply to uvicorn's access logger so health probes don't fill the logs.
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+
 TEAM_MODULE = os.environ["TEAM_MODULE"]
 TEAM_APP_ATTR = os.environ.get("TEAM_APP_ATTR", "app")
 TEAM_PORT = int(os.environ.get("TEAM_PORT", "8090"))
