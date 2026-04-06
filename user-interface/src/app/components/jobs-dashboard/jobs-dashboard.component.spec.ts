@@ -120,8 +120,8 @@ describe('JobsDashboardComponent', () => {
     it('returns true for failed status', () => {
       expect(component.canResumeJob(seJob('failed'))).toBe(true);
     });
-    it('returns true for cancelled status', () => {
-      expect(component.canResumeJob(seJob('cancelled'))).toBe(true);
+    it('returns false for cancelled status', () => {
+      expect(component.canResumeJob(seJob('cancelled'))).toBe(false);
     });
     it('returns true for agent_crash status', () => {
       expect(component.canResumeJob(seJob('agent_crash'))).toBe(true);
@@ -135,8 +135,8 @@ describe('JobsDashboardComponent', () => {
     it('returns false for completed status', () => {
       expect(component.canResumeJob(seJob('completed'))).toBe(false);
     });
-    it('returns false for non-software_engineering source', () => {
-      const job = { unified: { source: 'blogging', jobId: 'j1', status: 'failed' }, seDetail: null } as any;
+    it('returns false for non-resumable source', () => {
+      const job = { unified: { source: 'market_research', jobId: 'j1', status: 'failed' }, seDetail: null } as any;
       expect(component.canResumeJob(job)).toBe(false);
     });
   });
