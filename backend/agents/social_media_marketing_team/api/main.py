@@ -394,9 +394,26 @@ def get_marketing_job_status(job_id: str) -> MarketingJobStatusResponse:
     job = _job_manager.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return MarketingJobStatusResponse(
-        **{k: v for k, v in job.items() if k in MarketingJobStatusResponse.model_fields}
-    )
+
+    data = {k: v for k, v in job.items() if k in MarketingJobStatusResponse.model_fields}
+
+    # Backfill client_id/brand_id from request_payload for jobs created
+    # before these fields were stored at the top level.
+    if "client_id" not in data or "brand_id" not in data:
+        payload = job.get("request_payload")
+        if isinstance(payload, dict):
+            data.setdefault("client_id", payload.get("client_id"))
+            data.setdefault("brand_id", payload.get("brand_id"))
+    if not data.get("client_id") or not data.get("brand_id"):
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Job {job_id} predates the brand requirement and cannot display "
+                f"brand context. Create a new job with client_id and brand_id."
+            ),
+        )
+
+    return MarketingJobStatusResponse(**data)
 
 
 @app.post("/social-marketing/job/{job_id}/cancel", response_model=CancelMarketingJobResponse)

@@ -157,3 +157,51 @@ def test_revise_marketing_team_missing_job_and_health(temp_job_manager: CentralJ
         )
 
     assert api_main.health() == {"status": "ok"}
+
+
+def test_legacy_job_without_brand_ids_returns_410(temp_job_manager: CentralJobManager) -> None:
+    """A job created before the brand requirement has no client_id/brand_id anywhere."""
+    api_main._job_manager.create_job(
+        "legacy-1",
+        status="completed",
+        current_stage="completed",
+        progress=100,
+        llm_model_name="llama3.1",
+        result=None,
+        error=None,
+        eta_hint="done",
+        last_updated_at=api_main._now(),
+        request_payload={
+            "brand_guidelines_path": "/tmp/old.md",
+            "brand_objectives_path": "/tmp/old.md",
+            "llm_model_name": "llama3.1",
+        },
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        api_main.get_marketing_job_status("legacy-1")
+    assert exc_info.value.status_code == 410
+    assert "predates the brand requirement" in exc_info.value.detail
+
+
+def test_job_backfills_brand_ids_from_request_payload(temp_job_manager: CentralJobManager) -> None:
+    """A job that has client_id/brand_id in request_payload but not at top level."""
+    api_main._job_manager.create_job(
+        "backfill-1",
+        status="completed",
+        current_stage="completed",
+        progress=100,
+        llm_model_name="llama3.1",
+        result=None,
+        error=None,
+        eta_hint="done",
+        last_updated_at=api_main._now(),
+        request_payload={
+            "client_id": "c_from_payload",
+            "brand_id": "b_from_payload",
+            "llm_model_name": "llama3.1",
+            "goals": ["engagement"],
+        },
+    )
+    status = api_main.get_marketing_job_status("backfill-1")
+    assert status.client_id == "c_from_payload"
+    assert status.brand_id == "b_from_payload"
