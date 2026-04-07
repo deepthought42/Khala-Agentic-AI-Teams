@@ -12,7 +12,6 @@ import importlib
 import logging
 from typing import Iterable
 
-from shared_temporal.client import is_temporal_enabled
 from shared_temporal.worker import start_team_worker
 
 logger = logging.getLogger(__name__)
