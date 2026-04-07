@@ -29,10 +29,13 @@ from shared_temporal.client import (
     set_temporal_loop,
 )
 from shared_temporal.runner import run_team_job
+from shared_temporal.teams_registry import TEAM_TEMPORAL_MODULES, start_all_team_workers
 from shared_temporal.worker import start_team_worker
 
 __all__ = [
+    "TEAM_TEMPORAL_MODULES",
     "connect_temporal_client",
+    "start_all_team_workers",
     "get_temporal_address",
     "get_temporal_client",
     "get_temporal_loop",
