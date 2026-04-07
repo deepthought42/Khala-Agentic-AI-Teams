@@ -106,9 +106,15 @@ class DockerProvisionerTool(BaseToolProvisioner):
                 },
             )
 
+        except FileNotFoundError:
+            return self._make_error_result(
+                "Docker CLI not found on PATH — install Docker or run inside a host with docker.sock mounted"
+            )
         except subprocess.TimeoutExpired:
             return self._make_error_result("Docker container creation timed out")
-        except Exception as e:
+        except PermissionError as e:
+            return self._make_error_result(f"Docker permission denied: {e}")
+        except Exception as e:  # noqa: BLE001 — last-resort guard with explicit prior cases
             return self._make_error_result(f"Docker provisioning error: {str(e)}")
 
     def verify_access(
