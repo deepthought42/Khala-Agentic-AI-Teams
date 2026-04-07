@@ -145,6 +145,8 @@ Environment variables for LLM: `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL`
 | `BLOG_PLANNING_MAX_ITERATIONS` | Blog planning refine loop cap (default 5) |
 | `BLOG_PLANNING_MAX_PARSE_RETRIES` | JSON parse/repair attempts per planning LLM call (default 3) |
 | `BLOG_PLANNING_MODEL` | Optional Ollama model name for **planning only** (same base URL as `LLM_*`) |
+| `AUTHOR_PROFILE_PATH` | Path to user/author profile YAML injected into blogging prompts. Falls back to `$AGENT_CACHE/author_profile.yaml`, then to the bundled example. See `backend/agents/blogging/author_profile/`. |
+| `AUTHOR_PROFILE_STRICT` | When `true`, missing/invalid profile raises instead of falling back to the bundled example. Recommended for production. |
 
 **Blogging pipeline:** `research → planning (ContentPlan) → writer → gates`; `POST /research-and-review` runs research + the same planning step. See `backend/agents/blogging/README.md` and repo `CHANGELOG.md`.
 
