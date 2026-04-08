@@ -82,7 +82,14 @@ jobs:
       - run: pip install -r requirements.txt
       # Apply every team's schema to the live Postgres to catch
       # cross-team DDL conflicts before any team test runs.
+      # PYTHONPATH=.. adds backend/ to sys.path so the registry can
+      # import unified_api.postgres and job_service.postgres (both of
+      # which live under backend/ rather than backend/agents/). The
+      # python process's implicit sys.path[0]="" covers the
+      # working-directory (backend/agents/) for the team modules.
       - name: register_all_team_schemas against live Postgres
+        env:
+          PYTHONPATH: ..
         run: python -c "from shared_postgres import register_all_team_schemas; r = register_all_team_schemas(); assert all(r.values()), r"
       - run: pytest shared_postgres/tests/ -v --tb=short
 
