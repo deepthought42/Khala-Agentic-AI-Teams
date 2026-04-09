@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars for local runs (gitignored).
+# In CI, these come from TF_VAR_* env vars sourced from GitHub Actions secrets,
+# so a .tfvars file is not required for the automated workflow.
+
+# SSH keys already uploaded to DigitalOcean (Settings → Security → SSH Keys).
+# Fingerprint format: MD5 hex with colons.
+ssh_key_fingerprints = [
+  "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+]
+
+# DOCR registry name — the part after "registry.digitalocean.com/".
+# Create at: DO → Container Registry → Create.
+docr_registry = "my-strands"
+
+# Optional overrides (defaults shown):
+# region       = "nyc3"
+# droplet_size = "s-4vcpu-8gb"
+# droplet_name = "strands-dev"
+# environment  = "dev"

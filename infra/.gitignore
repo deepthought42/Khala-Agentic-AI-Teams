@@ -1,0 +1,10 @@
+# Local Terraform state (we use Terraform Cloud for remote state)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Local variable overrides
+terraform.tfvars
+*.auto.tfvars

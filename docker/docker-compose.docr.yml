@@ -1,0 +1,99 @@
+# Override for DOCR (DigitalOcean Container Registry) based deployment.
+#
+# Usage on the droplet (the deploy.yml workflow does this automatically):
+#
+#   export TAG=<git sha>
+#   export DOCR_REGISTRY=<your docr registry name>
+#   docker login registry.digitalocean.com
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.docr.yml \
+#     --env-file docker/.env \
+#     pull
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.docr.yml \
+#     --env-file docker/.env \
+#     up -d --no-build --remove-orphans
+#
+# All 18 team microservices share a single `strands-team-service` image —
+# their Dockerfile is identical (team_service/Dockerfile) and they differ
+# only by runtime env vars (TEAM_MODULE, TEAM_NAME, TEAM_PORT, etc.) set in
+# the base docker-compose.yml. The blogging and studio-grid services have
+# their own images because their Dockerfiles differ from team_service.
+#
+# Shell env vars DOCR_REGISTRY and TAG are required — they take precedence
+# over values in --env-file. `${VAR:?}` makes compose fail fast if unset.
+
+services:
+  job-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?DOCR_REGISTRY is required}/strands-job-service:${TAG:-latest}
+
+  blogging-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-blogging-service:${TAG:-latest}
+
+  se-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  pa-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  market-research-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  soc2-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  social-marketing-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  branding-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  agent-provisioning-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  a11y-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  ai-systems-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  investment-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  nutrition-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  planning-v3-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  coding-team-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  studio-grid-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-studio-grid-service:${TAG:-latest}
+
+  sales-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  road-trip-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  startup-advisor-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  agentic-team-provisioning-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  user-agent-founder-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  deepthought-service:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-team-service:${TAG:-latest}
+
+  strands-agents:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-unified-api:${TAG:-latest}
+
+  frontend:
+    image: registry.digitalocean.com/${DOCR_REGISTRY:?}/strands-ui:${TAG:-latest}

@@ -1,0 +1,64 @@
+#cloud-config
+# Bootstraps a fresh Ubuntu 24.04 droplet for the Strands Agents stack.
+# Installs Docker, configures swap + firewall, prepares /opt/strands-agents.
+# Does NOT clone the repo or start containers — the deploy.yml workflow
+# handles that on its first run once DOCR images are available.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - curl
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - ufw
+  - jq
+
+write_files:
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+  - path: /root/.strands-docr-registry
+    permissions: '0644'
+    content: |
+      ${docr_registry}
+
+runcmd:
+  # ── Swap (critical on 8 GB droplet — stack idles at ~8 GB RAM) ────────
+  - fallocate -l 8G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - sh -c 'echo "/swapfile none swap sw 0 0" >> /etc/fstab'
+  - sysctl vm.swappiness=10
+  - sh -c 'echo "vm.swappiness=10" >> /etc/sysctl.conf'
+
+  # ── Docker CE + Compose plugin ─────────────────────────────────────────
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - sh -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+
+  # ── Firewall ───────────────────────────────────────────────────────────
+  - ufw allow OpenSSH
+  - ufw allow 4201/tcp
+  - ufw allow 8888/tcp
+  - ufw --force enable
+
+  # ── App directory ──────────────────────────────────────────────────────
+  - install -d -m 0755 /opt/strands-agents
+
+  # ── Bootstrap complete marker (polled by the deploy workflow) ──────────
+  - touch /root/.strands-bootstrap-complete
