@@ -864,19 +864,17 @@ def start_pipeline_run(team_id: str, req: StartPipelineRunRequest):
 
     # Find the process
     process = None
-    for p in team.get("processes", []):
-        pid = p.get("process_id") if isinstance(p, dict) else p.process_id
-        if pid == req.process_id:
+    for p in team.processes:
+        if p.process_id == req.process_id:
             process = p
             break
     if process is None:
         raise HTTPException(status_code=404, detail="Process not found")
 
     # Build ProcessDefinition from stored data
-    if isinstance(process, dict):
-        process_def = ProcessDefinition(**process)
-    else:
-        process_def = process
+    process_def = (
+        process if isinstance(process, ProcessDefinition) else ProcessDefinition(**process)
+    )
 
     run_id = str(uuid.uuid4())
     run_row = _test_store.create_pipeline_run(run_id, team_id, req.process_id, req.initial_input)
@@ -933,4 +931,3 @@ def cancel_pipeline_run(team_id: str, run_id: str):
     _pipeline_runner.cancel_run(run_id)
     updated = _test_store.get_pipeline_run(run_id)
     return TestPipelineRun(**(updated or row))
-    return Response(status_code=204)

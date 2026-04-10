@@ -65,6 +65,7 @@ export class AgentTestChatComponent implements OnInit, OnChanges, AfterViewCheck
   loading = signal(false);
   error = signal<string | null>(null);
   renamingSessionId = signal<string | null>(null);
+  private shouldAutoScroll = false;
 
   form = this.fb.nonNullable.group({
     message: ['', [Validators.required, Validators.minLength(1)]],
@@ -89,7 +90,10 @@ export class AgentTestChatComponent implements OnInit, OnChanges, AfterViewCheck
   }
 
   ngAfterViewChecked(): void {
-    this.scrollToBottom();
+    if (this.shouldAutoScroll) {
+      this.scrollToBottom();
+      this.shouldAutoScroll = false;
+    }
   }
 
   private scrollToBottom(): void {
@@ -123,6 +127,7 @@ export class AgentTestChatComponent implements OnInit, OnChanges, AfterViewCheck
       next: (detail) => {
         this.activeSession.set(detail.session);
         this.messages.set(detail.messages);
+        this.shouldAutoScroll = true;
         this.suggestedPrompts.set(detail.suggested_prompts);
       },
     });
@@ -231,6 +236,7 @@ export class AgentTestChatComponent implements OnInit, OnChanges, AfterViewCheck
         created_at: new Date().toISOString(),
       },
     ]);
+    this.shouldAutoScroll = true;
     this.loading.set(true);
     this.error.set(null);
     this.suggestedPrompts.set([]);
@@ -238,6 +244,7 @@ export class AgentTestChatComponent implements OnInit, OnChanges, AfterViewCheck
     this.api.sendTestChatMessage(this.team.team_id, sessionId, content).subscribe({
       next: (res) => {
         this.messages.set(res.messages);
+        this.shouldAutoScroll = true;
         this.loading.set(false);
       },
       error: (err) => {
