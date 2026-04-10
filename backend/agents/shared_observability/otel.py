@@ -131,8 +131,38 @@ def init_otel(
         return True
 
 
+def _otlp_endpoint_configured() -> bool:
+    """True when an OTLP collector endpoint is explicitly configured.
+
+    Checks the standard OTel env vars. When none are set we skip
+    exporter construction entirely — otherwise the SDK defaults to
+    ``http://localhost:4318`` and floods the logs with retry warnings
+    on stacks (like Khala's default Prometheus+Grafana setup) that
+    have no OTLP collector.
+    """
+    return any(
+        os.environ.get(var, "").strip()
+        for var in (
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        )
+    )
+
+
 def _build_span_exporter() -> Any:
-    """Pick an OTLP span exporter based on OTEL_EXPORTER_OTLP_PROTOCOL."""
+    """Pick an OTLP span exporter based on OTEL_EXPORTER_OTLP_PROTOCOL.
+
+    Returns ``None`` when no OTLP endpoint is configured, so the caller
+    installs an in-process-only TracerProvider with no exporter (spans
+    still work; nothing is shipped off-box).
+    """
+    if not _otlp_endpoint_configured():
+        logger.info(
+            "OTLP endpoint not configured (OTEL_EXPORTER_OTLP_ENDPOINT unset); "
+            "spans will not be exported."
+        )
+        return None
     protocol = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").lower()
     try:
         if protocol in ("grpc",):
@@ -150,7 +180,14 @@ def _build_span_exporter() -> Any:
 
 
 def _build_metric_exporter() -> Any:
-    """Pick an OTLP metric exporter based on OTEL_EXPORTER_OTLP_PROTOCOL."""
+    """Pick an OTLP metric exporter based on OTEL_EXPORTER_OTLP_PROTOCOL.
+
+    Returns ``None`` when no OTLP endpoint is configured. Prometheus-based
+    stacks scrape ``/metrics`` directly, so OTLP metric export is redundant
+    there; see ``_otlp_endpoint_configured``.
+    """
+    if not _otlp_endpoint_configured():
+        return None
     protocol = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").lower()
     try:
         if protocol in ("grpc",):
