@@ -57,14 +57,37 @@ def _start_temporal_worker() -> None:
 
 
 def _shutdown_hook() -> None:
-    """Mark active jobs as interrupted on service shutdown."""
+    """Mark active jobs as interrupted on service shutdown.
+
+    When the whole stack is being torn down, job-service often disappears
+    first and this call races the shutdown — treat connection errors as a
+    single-line WARNING instead of a full traceback, since there's nothing
+    the team service can do about it. Other exceptions still get the full
+    stack trace so real bugs aren't hidden.
+    """
     try:
         from job_service_client import JobServiceClient
 
         client = JobServiceClient(team=TEAM_NAME)
         client.mark_all_active_jobs_interrupted(f"{TEAM_NAME} service shutting down")
-    except Exception:
-        logger.warning("Shutdown hook failed for %s", TEAM_NAME, exc_info=True)
+    except Exception as exc:
+        # httpx connection errors vs. everything else: quiet the common
+        # "job-service is already gone" case during stack shutdown.
+        is_conn_error = False
+        try:
+            import httpx
+
+            is_conn_error = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+        except Exception:
+            pass
+        if is_conn_error:
+            logger.warning(
+                "Shutdown hook for %s: job-service unreachable (%s); skipping",
+                TEAM_NAME,
+                exc,
+            )
+        else:
+            logger.warning("Shutdown hook failed for %s", TEAM_NAME, exc_info=True)
 
 
 def _resolve_app() -> str:
