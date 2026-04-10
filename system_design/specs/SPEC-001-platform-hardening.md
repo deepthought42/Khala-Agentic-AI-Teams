@@ -12,7 +12,7 @@
 
 ## 1. Problem Statement
 
-The Strands Agents platform mounts 20 enabled agent teams under a single Unified FastAPI reverse proxy, backed by Postgres, Temporal, and Ollama/Claude LLM providers. A comprehensive review identified that the platform is **adding teams and capabilities faster than it is hardening shared infrastructure**. Specific gaps include:
+The Khala platform mounts 20 enabled agent teams under a single Unified FastAPI reverse proxy, backed by Postgres, Temporal, and Ollama/Claude LLM providers. A comprehensive review identified that the platform is **adding teams and capabilities faster than it is hardening shared infrastructure**. Specific gaps include:
 
 - 17 of 20+ teams have **zero CI test coverage** -- regressions ship silently
 - All Docker containers **run as root** with unsandboxed code execution

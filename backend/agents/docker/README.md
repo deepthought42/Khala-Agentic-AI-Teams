@@ -1,4 +1,4 @@
-# Strands Agents - Docker Deployment
+# Khala - Docker Deployment
 
 This document describes how to run all 6 agent teams in a consistent, repeatable Docker environment with pre-installed tools (Node.js, Angular CLI, Git, Docker CLI).
 
@@ -199,6 +199,6 @@ docker exec strands-agents docker --version
 - Do not expose the container to untrusted networks
 - The workspace volume is the only host path mounted; ensure it contains only trusted content
 
-## Strands platform
+## Khala platform
 
-This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).
+This package is part of the [Khala](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

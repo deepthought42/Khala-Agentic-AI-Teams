@@ -1,6 +1,6 @@
-# Strands Agents
+# Khala
 
-Strands Agents is a monorepo for multi-agent "team" systems. Each team exposes a FastAPI service and the platform also provides a Unified API plus an Angular UI.
+Khala is a monorepo for multi-agent "team" systems. Each team exposes a FastAPI service and the platform also provides a Unified API plus an Angular UI.
 
 ## Repository layout
 
