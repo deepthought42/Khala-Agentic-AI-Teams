@@ -91,6 +91,6 @@ For team-specific setup and env vars, use each team's README.
 
 `integrations/` provides provider-neutral integration contracts and routing that can be reused by any team.
 
-## Strands platform
+## Khala platform
 
-This package is part of the [Strands Agents](../../README.md) monorepo (Unified API, Angular UI, and full team index).
+This package is part of the [Khala](../../README.md) monorepo (Unified API, Angular UI, and full team index).

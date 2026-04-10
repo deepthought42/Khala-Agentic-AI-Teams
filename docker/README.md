@@ -6,7 +6,7 @@ This directory defines a **Docker Compose stack** that runs:
 - **Temporal** – workflow engine (Postgres-backed, no Elasticsearch)
 - **Temporal UI** – Web UI for workflows
 - **Ollama** (optional) – local Ollama server if you override LLM to use it
-- **Strands Agents** – all agent APIs; **default LLM is Ollama Cloud** (https://ollama.com) when running from Docker
+- **Khala** – all agent APIs; **default LLM is Ollama Cloud** (https://ollama.com) when running from Docker
 
 ## Quick start
 
@@ -161,6 +161,6 @@ After starting the stack:
 - For production, do not expose Temporal or Postgres to the public internet; keep them on internal networks.
 - Leave **ENABLE_LOG_API** unset or 0 in production so the logs endpoint is disabled.
 
-## Strands platform
+## Khala platform
 
-This package is part of the [Strands Agents](../README.md) monorepo (Unified API, Angular UI, and full team index).
+This package is part of the [Khala](../README.md) monorepo (Unified API, Angular UI, and full team index).

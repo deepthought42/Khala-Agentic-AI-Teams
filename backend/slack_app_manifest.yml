@@ -40,7 +40,7 @@ display_information:
   description: AI-powered multi-team assistant — chat with any specialist team (SE, blogging, market research, and more)
   background_color: "#1a1a2e"
   long_description: |
-    Strands Assistant connects your Slack workspace to the Strands Agents platform,
+    Strands Assistant connects your Slack workspace to the Khala platform,
     giving you access to 13+ specialist AI team assistants directly from Slack.
 
     Available teams:

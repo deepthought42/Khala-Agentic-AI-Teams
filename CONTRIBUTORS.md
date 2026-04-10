@@ -1,6 +1,6 @@
-# Contributing to Strands Agents
+# Contributing to Khala
 
-Thank you for your interest in contributing to Strands Agents. This document covers everything you need to effectively contribute: setup, code standards, workflows, and pull request guidelines.
+Thank you for your interest in contributing to Khala. This document covers everything you need to effectively contribute: setup, code standards, workflows, and pull request guidelines.
 
 ---
 
@@ -331,4 +331,4 @@ Include:
 
 ---
 
-Thank you for contributing to Strands Agents.
+Thank you for contributing to Khala.
