@@ -21,6 +21,7 @@ from .interface import (
     LLMTruncatedError,
     LLMUnreachableAfterRetriesError,
 )
+from .strands_adapter import LLMClientModel, get_strands_model
 from .telemetry import get_recent_calls, get_usage_summary, record_llm_call
 from .tool_loop import complete_json_with_tool_loop
 from .util import call_llm_with_retries, extract_json_from_response
@@ -39,7 +40,9 @@ __all__ = [
     "extract_json_from_response",
     "get_client",
     "get_llm_config_summary",
+    "get_strands_model",
     "LLMClient",
+    "LLMClientModel",
     "LLMError",
     "LLMRateLimitError",
     "LLMTemporaryError",

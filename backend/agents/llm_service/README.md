@@ -73,6 +73,37 @@ Context size is resolved in this order: `LLM_CONTEXT_SIZE` env, then known-model
 
 When `LLM_MODEL_<agent_key>` and `LLM_MODEL` are unset, `config.AGENT_DEFAULT_MODELS` is used (e.g. `backend` → `qwen3.5:397b-cloud`). See `config.py`.
 
+## Strands Agents adapter
+
+New agents should prefer the [AWS Strands Agents SDK](https://strandsagents.com/) via the built-in adapter. `get_strands_model(agent_key)` returns a `strands.models.Model` backed by this package — the Strands `Agent` automatically inherits per-agent model routing, retries, telemetry, and the dummy-client path for tests.
+
+```python
+from llm_service import get_strands_model
+from strands import Agent
+
+model = get_strands_model(agent_key="qa_agent", temperature=0.1, think=True)
+agent = Agent(model=model, system_prompt="You are a QA expert.")
+result = agent("Review this diff: ...")
+```
+
+Under the hood the adapter:
+
+- Calls `get_client(agent_key)` so every `LLM_MODEL_<agent_key>` / `LLM_PROVIDER` rule still applies.
+- Converts Strands `Messages` (Bedrock-style `ContentBlock` lists) to the OpenAI chat shape expected by `LLMClient.chat_json_round`, including `toolUse` / `toolResult` handoffs.
+- Runs the blocking `LLMClient` call inside `asyncio.to_thread` so Strands' async event loop is never blocked.
+- Replays the single-shot response as a minimal Strands stream: `messageStart → contentBlock(text|toolUse) → messageStop` with `stopReason="tool_use"` when the LLM requests a tool.
+
+In tests, inject a client directly (bypasses the factory cache):
+
+```python
+from llm_service import get_strands_model
+from llm_service.clients.dummy import DummyLLMClient
+
+model = get_strands_model(agent_key="test_agent", client=DummyLLMClient())
+```
+
+See `tests/test_strands_adapter.py` for message-conversion, tool-loop, and `structured_output` examples.
+
 ## Exceptions
 
 - `LLMError` – base
