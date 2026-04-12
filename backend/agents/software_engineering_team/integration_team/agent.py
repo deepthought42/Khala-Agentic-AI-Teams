@@ -61,10 +61,10 @@ class IntegrationAgent:
                 )
         except Exception as exc:  # noqa: BLE001 — agent failures should not crash the run
             logger.warning(
-                "Integration: structured_output failed (%s); returning empty result", exc
+                "Integration: structured_output failed (%s); returning failed result", exc
             )
             return IntegrationOutput(
-                passed=True,
+                passed=False,
                 issues=[],
                 summary=f"Integration analysis failed: {exc}",
                 fix_task_suggestions=[],
