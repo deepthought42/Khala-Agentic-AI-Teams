@@ -23,7 +23,7 @@ def run_intake(*, llm=None, task: Task, spec_content: str) -> IntakeResult:
     )
     agent = Agent(model=get_strands_model(), system_prompt=INTAKE_PROMPT)
     result = agent(prompt)
-    raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw_text = str(result).strip()
     raw = json.loads(raw_text)
     return IntakeResult(
         system_goal=raw.get("system_goal", ""),

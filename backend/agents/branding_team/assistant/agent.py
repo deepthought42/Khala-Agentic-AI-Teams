@@ -185,7 +185,7 @@ class BrandingAssistantAgent:
 
         try:
             result = self._agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
         except Exception:
             reply_text = "I'm here to help build your brand. Could you tell me your company name and what you do?"
             suggested_questions = [

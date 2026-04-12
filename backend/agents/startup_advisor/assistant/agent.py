@@ -146,7 +146,7 @@ class StartupAdvisorAgent:
         )
 
         result = self._agent(prompt)
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         return _parse_response(raw)
 
 

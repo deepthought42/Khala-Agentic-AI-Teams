@@ -201,7 +201,7 @@ class ArchitectureExpertAgent:
 
         try:
             result = self._agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data: Dict[str, Any] = json.loads(raw) or {}
         except LLMPermanentError:
             logger.warning(

@@ -2,13 +2,23 @@
 Dummy LLM client for tests and environments without an LLM.
 
 Returns heuristic stub responses matching SE team prompts so existing tests keep passing.
+Also implements the ``strands.models.model.Model`` ABC so it can be passed directly to
+``strands.Agent(model=DummyLLMClient())`` in tests without requiring a live Ollama server.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from collections.abc import AsyncIterable
 from typing import Any, Dict, Optional
+
+from strands.models.model import Model
+from strands.types.content import Message as StrandsMessage
+from strands.types.content import SystemContentBlock
+from strands.types.streaming import StreamEvent
+from strands.types.tools import ToolChoice, ToolSpec
 
 from ..interface import LLMClient
 
@@ -111,13 +121,78 @@ def _extract_name_from_hint(hint: str, separator: str = "-", max_length: int = 2
     return result or f"item{separator}1"
 
 
-class DummyLLMClient(LLMClient):
-    """No-op implementation for tests and environments without an LLM."""
+class DummyLLMClient(LLMClient, Model):
+    """No-op implementation for tests and environments without an LLM.
+
+    Also implements the Strands ``Model`` ABC so tests can pass this directly
+    to ``strands.Agent(model=DummyLLMClient())``.
+    """
 
     _call_counter: int = 0
 
     def __init__(self) -> None:
         self._request_count = 0
+        self._model_config: dict[str, Any] = {}
+
+    # -----------------------------------------------------------------------
+    # strands.models.model.Model ABC implementation
+    # -----------------------------------------------------------------------
+
+    def update_config(self, **model_config: Any) -> None:
+        self._model_config.update(model_config)
+
+    def get_config(self) -> dict[str, Any]:
+        return dict(self._model_config)
+
+    def structured_output(
+        self,
+        output_model: type,
+        prompt: list,
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError("DummyLLMClient.structured_output is not implemented for tests")
+
+    async def stream(
+        self,
+        messages: list[StrandsMessage],
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
+        system_prompt_content: list[SystemContentBlock] | None = None,
+        invocation_state: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterable[StreamEvent]:
+        """Yield a minimal stream that the Strands Agent event loop can process."""
+        # Extract user text from the last user message
+        user_text = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                for block in msg.get("content", []):
+                    if isinstance(block, dict) and "text" in block:
+                        user_text = block["text"]
+                        break
+                    elif isinstance(block, str):
+                        user_text = block
+                        break
+                break
+
+        # Route through the existing complete_json pattern matcher for rich responses
+        response_data = self.complete_json(user_text, system_prompt=system_prompt)
+        response_text = json.dumps(response_data) if isinstance(response_data, dict) else str(response_data)
+
+        yield {"messageStart": {"role": "assistant"}}
+        yield {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}
+        yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": response_text}}}
+        yield {"contentBlockStop": {"contentBlockIndex": 0}}
+        yield {
+            "messageStop": {"stopReason": "end_turn"},
+            "metadata": {
+                "usage": {"inputTokens": len(user_text) // 4, "outputTokens": len(response_text) // 4, "totalTokens": (len(user_text) + len(response_text)) // 4},
+                "metrics": {"latencyMs": 1},
+            },
+        }
 
     @property
     def request_count(self) -> int:

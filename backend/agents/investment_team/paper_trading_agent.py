@@ -127,7 +127,7 @@ def _make_agent_complete_json(agent: Agent) -> Any:
 
     def _complete_json(prompt: str, **_kwargs: Any) -> Dict[str, Any]:
         result = agent(prompt)
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         return json.loads(raw)
 
     return _complete_json
@@ -368,6 +368,6 @@ class PaperTradingAgent:
         )
 
         result = self._divergence_agent(prompt)
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         data = json.loads(raw)
         return str(data.get("analysis", "Divergence analysis not available."))

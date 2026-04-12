@@ -120,7 +120,7 @@ def auto_answer_question(
     try:
         agent = Agent(model=get_strands_model("product_analysis"), system_prompt="Respond with valid JSON only.")
         agent_result = agent(prompt)
-        raw_text = (agent_result.message if hasattr(agent_result, "message") else str(agent_result)).strip()
+        raw_text = str(agent_result).strip()
         raw = json.loads(raw_text)
         result = _parse_auto_answer_response(raw, question)
         logger.info(

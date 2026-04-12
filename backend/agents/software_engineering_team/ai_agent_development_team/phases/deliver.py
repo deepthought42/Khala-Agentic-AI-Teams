@@ -23,7 +23,7 @@ def run_deliver(
     )
     agent = Agent(model=get_strands_model(), system_prompt=DELIVER_PROMPT)
     result = agent(prompt)
-    raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw_text = str(result).strip()
     raw = json.loads(raw_text)
     return DeliverResult(
         summary=raw.get("summary", ""),

@@ -341,7 +341,7 @@ class ProcessDesignerAgent:
             system_prompt=system_prompt,
         )
         result = agent(prompt)
-        raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw_text = str(result).strip()
 
         # Parse structured blocks
         process_data = _parse_process_json(raw_text)

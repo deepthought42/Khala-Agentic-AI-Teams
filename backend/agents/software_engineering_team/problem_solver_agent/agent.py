@@ -45,7 +45,7 @@ class ProblemSolverAgent:
 
         prompt = "\n".join(context)
         result = self._agent(prompt)
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         data = json.loads(raw)
         return ProblemSolverOutput(
             plan=str(data.get("plan", "")),

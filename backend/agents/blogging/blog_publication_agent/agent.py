@@ -238,7 +238,7 @@ class BlogPublicationAgent:
 
         agent = Agent(model=self._model, system_prompt="You help analyze rejection feedback for blog posts.")
         result = agent(prompt + "\n\nRespond with valid JSON only, no markdown fences.")
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
@@ -293,7 +293,7 @@ class BlogPublicationAgent:
             CONVERT_FEEDBACK_TO_EDITOR_PROMPT.format(feedback=human_feedback_text)
             + "\n\nRespond with valid JSON only, no markdown fences."
         )
-        convert_raw = (convert_result.message if hasattr(convert_result, "message") else str(convert_result)).strip()
+        convert_raw = str(convert_result).strip()
         convert_raw = re.sub(r"^```(?:json)?\s*", "", convert_raw)
         convert_raw = re.sub(r"\s*```$", "", convert_raw)
         data = json.loads(convert_raw)

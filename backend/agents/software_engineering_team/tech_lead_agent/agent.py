@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 def _agent_json(agent: Agent, prompt: str) -> dict:
     """Call a Strands Agent and parse the result as JSON."""
     result = agent(prompt)
-    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = str(result).strip()
     return json.loads(raw)
 
 

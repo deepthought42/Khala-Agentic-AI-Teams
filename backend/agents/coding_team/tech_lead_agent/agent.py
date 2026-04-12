@@ -38,7 +38,7 @@ def _plan_text(plan: CodingTeamPlanInput) -> str:
 def _agent_call_json(agent: Agent, prompt: str) -> Dict[str, Any]:
     """Call a Strands Agent and parse the result as JSON."""
     result = agent(prompt)
-    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = str(result).strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     return json.loads(raw)

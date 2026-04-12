@@ -217,7 +217,7 @@ class DocumentationAgent:
             prompt = "\n".join(readme_context)
             agent = Agent(model=self._model, system_prompt=readme_prompt)
             result = agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data = json.loads(raw)
 
             readme_content = data.get("readme_content", "")
@@ -301,7 +301,7 @@ class DocumentationAgent:
             prompt = "\n".join(contrib_context)
             agent = Agent(model=self._model, system_prompt=contrib_prompt)
             result = agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data = json.loads(raw)
 
             contributors_content = data.get("contributors_content", "")

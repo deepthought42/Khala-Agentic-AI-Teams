@@ -102,7 +102,7 @@ class BlogFactCheckAgent:
             current_prompt += "\n\nRespond with valid JSON only, no markdown fences."
             try:
                 result = agent(current_prompt)
-                raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                raw = str(result).strip()
                 raw = re.sub(r"^```(?:json)?\s*", "", raw)
                 raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)

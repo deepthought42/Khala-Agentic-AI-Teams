@@ -272,7 +272,7 @@ class GhostWriterElicitationAgent:
         try:
             agent = Agent(model=self._model, system_prompt=system)
             result = agent(prompt + "\n\nRespond with valid JSON only, no markdown fences.")
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             data = json.loads(raw)
@@ -305,7 +305,7 @@ class GhostWriterElicitationAgent:
             try:
                 working_prompt = prompt if attempt == 0 else prompt + _JSON_RETRY_SUFFIX
                 result = agent(working_prompt)
-                raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                raw = str(result).strip()
                 start = raw.find("[")
                 end = raw.rfind("]") + 1
                 if start == -1 or end == 0:
@@ -521,7 +521,7 @@ class GhostWriterElicitationAgent:
             try:
                 working_prompt = prompt if attempt == 0 else prompt + _JSON_RETRY_SUFFIX
                 result = agent(working_prompt)
-                raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                raw = str(result).strip()
                 raw = re.sub(r"^```(?:json)?\s*", "", raw)
                 raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)
@@ -579,7 +579,7 @@ class GhostWriterElicitationAgent:
         try:
             agent = Agent(model=self._model, system_prompt=_INTERVIEWER_SYSTEM)
             result = agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             return raw or None
         except Exception as e:
             logger.warning("Ghost writer interviewer failed: %s", e)
@@ -636,7 +636,7 @@ class GhostWriterElicitationAgent:
         for attempt in range(2):
             try:
                 result = agent(prompt)
-                return (result.message if hasattr(result, "message") else str(result)).strip() or None
+                return str(result).strip() or None
             except Exception as e:
                 if attempt == 0:
                     logger.warning("Ghost writer narrator error, retrying: %s", e)

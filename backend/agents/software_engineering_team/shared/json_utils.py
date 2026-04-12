@@ -37,7 +37,7 @@ def complete_text_with_continuation(
 
     agent = Agent(model=get_strands_model(agent_name))
     result = agent(prompt)
-    return (result.message if hasattr(result, "message") else str(result)).strip()
+    return str(result).strip()
 
 
 def attempt_fix_output_continuation(

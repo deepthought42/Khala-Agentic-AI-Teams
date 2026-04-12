@@ -152,7 +152,7 @@ class FounderAgent:
     def _call(self, prompt: str) -> str:
         """Invoke the Strands agent and extract text."""
         result = self._agent(prompt)
-        return (result.message if hasattr(result, "message") else str(result)).strip()
+        return str(result).strip()
 
     def generate_spec(self) -> str:
         """Generate the TaskFlow product specification."""

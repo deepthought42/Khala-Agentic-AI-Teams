@@ -216,7 +216,7 @@ class DevOpsExpertAgent:
         try:
             agent = Agent(model=self._model, system_prompt=DEVOPS_PLANNING_PROMPT)
             result = agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data = json.loads(raw)
             plan = TaskPlan.from_llm_json(data)
             return plan.to_markdown()
@@ -292,7 +292,7 @@ class DevOpsExpertAgent:
         prompt = "\n".join(context_parts)
         agent = Agent(model=self._model, system_prompt=DEVOPS_PROMPT)
         result = agent(prompt)
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         data = json.loads(raw)
 
         summary = data.get("summary", "")

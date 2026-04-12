@@ -25,7 +25,7 @@ def run_planning(
     )
     agent = Agent(model=get_strands_model(), system_prompt=PLANNING_PROMPT)
     result = agent(prompt)
-    raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw_text = str(result).strip()
     raw = json.loads(raw_text)
     microtasks = []
     for item in raw.get("microtasks") or []:

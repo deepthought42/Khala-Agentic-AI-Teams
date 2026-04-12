@@ -226,7 +226,7 @@ class LearningEngine:
             "All insights must be grounded in the specific data above — no generic advice."
         )
         result = self._agent(prompt)
-        raw = result.message if hasattr(result, "message") else str(result)
+        raw = str(result)
         insights = _parse_insights_json(raw.strip(), current_version, n_analyzed)
         if insights:
             return insights

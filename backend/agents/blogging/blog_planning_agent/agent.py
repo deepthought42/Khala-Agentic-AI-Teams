@@ -98,7 +98,7 @@ class BlogPlanningAgent:
         """Call a Strands Agent with the given prompt and system prompt, return raw text."""
         agent = Agent(model=self._model, system_prompt=system)
         result = agent(prompt)
-        return (result.message if hasattr(result, "message") else str(result)).strip()
+        return str(result).strip()
 
     def _parse_json_response(self, raw: str) -> dict:
         """Strip markdown fences and parse JSON."""

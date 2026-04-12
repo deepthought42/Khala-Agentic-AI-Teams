@@ -57,7 +57,7 @@ def complete_json_with_continuation(
         system_prompt="You are a helpful assistant. Always respond with valid JSON only.",
     )
     result = agent(prompt)
-    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = str(result).strip()
     return json.loads(raw)
 
 

@@ -52,7 +52,7 @@ class RepairExpertAgent:
         log_llm_prompt(logger, "Repair", "analyze", input_data.task_id[:40], prompt)
         try:
             result = self._agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data = json.loads(raw) if isinstance(raw, str) else raw
             fixes = data.get("suggested_fixes", [])
             if not isinstance(fixes, list):

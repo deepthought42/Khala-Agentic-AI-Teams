@@ -154,7 +154,7 @@ class LintingToolAgent:
 
         try:
             result = self._agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data: Dict[str, Any] = json.loads(raw)
         except Exception as err:
             logger.warning("Lint fix LLM call failed (non-blocking): %s", err)

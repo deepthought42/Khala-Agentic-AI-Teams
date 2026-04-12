@@ -106,7 +106,7 @@ class SignalIntelligenceExpert:
 """
 
         result = self._agent(prompt)
-        raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw_text = str(result).strip()
         raw = json.loads(raw_text)
         data = dict(raw) if isinstance(raw, dict) else {}
         data.setdefault("brief_version", 1)

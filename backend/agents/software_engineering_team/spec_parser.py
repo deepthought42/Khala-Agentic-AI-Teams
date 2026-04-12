@@ -114,7 +114,7 @@ Respond with valid JSON only. No explanatory text."""
 
     agent = Agent(model=get_strands_model("spec_intake"), system_prompt=system_prompt)
     result = agent(prompt)
-    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = str(result).strip()
     data = _json.loads(raw)
     if not isinstance(data.get("acceptance_criteria"), list):
         raise ValueError(

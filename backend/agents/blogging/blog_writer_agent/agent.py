@@ -168,7 +168,7 @@ class BlogWriterAgent:
         """Call a Strands Agent and return the raw text result."""
         agent = Agent(model=self._model, system_prompt=system_prompt or WRITING_SYSTEM_PROMPT)
         result = agent(prompt)
-        return (result.message if hasattr(result, "message") else str(result)).strip()
+        return str(result).strip()
 
     def _call_agent_json(self, prompt: str, system_prompt: str = "") -> dict:
         """Call a Strands Agent and parse JSON from the result."""

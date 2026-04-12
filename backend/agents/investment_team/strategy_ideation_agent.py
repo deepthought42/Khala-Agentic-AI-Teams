@@ -240,7 +240,7 @@ def _format_simulated_trades_summary(
 def _agent_complete_json(agent: Agent, prompt: str) -> Dict[str, Any]:
     """Call an Agent, extract text, and parse as JSON."""
     result = agent(prompt)
-    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = str(result).strip()
     return json.loads(raw)
 
 

@@ -109,7 +109,7 @@ class SeniorSWEAgent:
                     tools=strands_tools,
                 )
                 result = agent(user + "\n\nWhen done, respond with valid JSON only, no markdown fences.")
-                raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                raw = str(result).strip()
                 data = _parse_json_response(raw)
             else:
                 agent = Agent(
@@ -117,7 +117,7 @@ class SeniorSWEAgent:
                     system_prompt=prompts.IMPLEMENT_TASK_SYSTEM,
                 )
                 result = agent(user + "\n\nRespond with valid JSON only, no markdown fences.")
-                raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                raw = str(result).strip()
                 data = _parse_json_response(raw)
         except Exception as e:
             logger.warning("Senior SWE implement LLM failed: %s", e)

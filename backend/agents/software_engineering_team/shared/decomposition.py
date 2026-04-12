@@ -350,7 +350,7 @@ class RecursiveProcessor(Generic[T]):
 
             _agent = _Agent(model=get_strands_model())
             _result = _agent(prompt)
-            _raw = (_result.message if hasattr(_result, "message") else str(_result)).strip()
+            _raw = str(_result).strip()
             return _json.loads(_raw)
         except LLMTruncatedError as e:
             context.add_partial_response(e.partial_content)

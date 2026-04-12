@@ -1138,7 +1138,7 @@ def _try_build_fix_one_at_a_time(
         try:
             _agent = Agent(model=_build_fix_model)
             _result = _agent(prompt)
-            raw = (_result.message if hasattr(_result, "message") else str(_result)).strip()
+            raw = str(_result).strip()
         except Exception as e:
             logger.warning(
                 "[%s] Build fix attempt %d/%d failed: LLM call error: %s. Next step -> Skipping to next issue",

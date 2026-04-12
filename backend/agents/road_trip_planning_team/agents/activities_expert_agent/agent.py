@@ -89,7 +89,7 @@ class ActivitiesExpertAgent:
 
         try:
             result = self._agent(prompt)
-            raw = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw = str(result).strip()
             data = json.loads(raw)
         except Exception as e:
             logger.warning("ActivitiesExpertAgent JSON parse failed for %s: %s", location, e)

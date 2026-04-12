@@ -125,7 +125,7 @@ class BlogComplianceAgent:
             for json_attempt in range(2):
                 try:
                     result = agent(working_prompt + "\n\nRespond with valid JSON only, no markdown fences.")
-                    raw = (result.message if hasattr(result, "message") else str(result)).strip()
+                    raw = str(result).strip()
                     raw = re.sub(r"^```(?:json)?\s*", "", raw)
                     raw = re.sub(r"\s*```$", "", raw)
                     data = json.loads(raw)

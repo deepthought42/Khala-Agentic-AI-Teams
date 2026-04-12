@@ -74,7 +74,7 @@ class ResearchAgent:
         """Call the Strands Agent and parse JSON from the result."""
         agent = Agent(model=self._model, system_prompt="You are a research assistant. Respond with valid JSON only.")
         result = agent(prompt + "\n\nRespond with valid JSON only, no markdown fences.")
-        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        raw = str(result).strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         return json.loads(raw)

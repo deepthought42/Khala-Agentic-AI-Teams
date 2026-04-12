@@ -56,7 +56,7 @@ class _StrandsLLMAdapter:
         **kwargs: Any,
     ) -> str:
         result = self._agent(prompt)
-        return (result.message if hasattr(result, "message") else str(result)).strip()
+        return str(result).strip()
 
     def complete_json(
         self,

@@ -163,7 +163,7 @@ class TrendDiscoveryAgent:
         topics: List[TrendingTopic] = []
         try:
             result = self._agent(prompt)
-            raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+            raw_text = str(result).strip()
             data = json.loads(raw_text)
             raw_topics = data.get("topics", []) if isinstance(data, dict) else []
             for item in raw_topics[:3]:
