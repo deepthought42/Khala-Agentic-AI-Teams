@@ -21,6 +21,7 @@ class InfraDebugAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: IaCDebugInput) -> IaCDebugOutput:
         artifacts_snippet = ""
@@ -34,7 +35,7 @@ class InfraDebugAgent:
             f"--- Artifacts ---\n{artifacts_snippet}\n"
         )
 
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(
+        data = json.loads(str(Agent(model=self._model)(
             INFRA_DEBUG_PROMPT + "\n\n---\n\n" + context,
             temperature=0.1,
             think=True,

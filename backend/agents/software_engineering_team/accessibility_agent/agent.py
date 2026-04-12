@@ -27,7 +27,10 @@ class AccessibilityExpertAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("accessibility")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("accessibility")
 
     def run(self, input_data: AccessibilityInput) -> AccessibilityOutput:
         """Review code for WCAG 2.2 compliance and produce issue list."""

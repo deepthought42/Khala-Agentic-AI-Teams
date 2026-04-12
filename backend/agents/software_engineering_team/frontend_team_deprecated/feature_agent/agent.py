@@ -262,7 +262,10 @@ def _llm_allowed_extensions(llm_client: Any, extensions: set[str]) -> set[str]:
         "Allowed:"
     )
     try:
-        response = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt, temperature=0.0)).strip()
+        from strands.models.model import Model as _StrandsModel
+
+        _model = llm_client if (llm_client is not None and isinstance(llm_client, _StrandsModel)) else get_strands_model()
+        response = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_model)(prompt, temperature=0.0)).strip()
         text = (response or "").strip().lower()
         if not text or "none" in text:
             return set()
@@ -294,7 +297,10 @@ def _llm_allowed_root_paths(llm_client: Any, paths: list[str]) -> set[str]:
         "Allowed paths:"
     )
     try:
-        response = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt, temperature=0.0)).strip()
+        from strands.models.model import Model as _StrandsModel
+
+        _model = llm_client if (llm_client is not None and isinstance(llm_client, _StrandsModel)) else get_strands_model()
+        response = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_model)(prompt, temperature=0.0)).strip()
         text = (response or "").strip()
         if not text or "none" in text.lower():
             return set()

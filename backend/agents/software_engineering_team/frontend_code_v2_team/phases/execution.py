@@ -32,6 +32,13 @@ from ..models import (
 from ..output_templates import parse_files_and_summary_template
 from ..prompts import EXECUTION_PROMPT
 
+
+def _resolve_model(llm):
+    """Use injected LLM client as Strands model when it implements Model; else create one."""
+    from strands.models.model import Model as _StrandsModel
+
+    return llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
+
 logger = logging.getLogger(__name__)
 
 ToolAgentRunner = Callable[[ToolAgentInput], ToolAgentOutput]
@@ -90,7 +97,7 @@ def _run_general_microtask(
         existing_code=existing_code[:8000] if existing_code else "(none)",
         architecture_context=arch_ctx or "(none)",
     )
-    raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+    raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
     data = parse_files_and_summary_template(raw)
     files = data.get("files") or {}
 

@@ -33,7 +33,10 @@ class QAExpertAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("qa")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("qa")
         # One system prompt per request mode. A fresh Strands Agent is
         # constructed per ``run()`` call in :meth:`run` using the selected
         # persona; see the note there for why agents are not cached.

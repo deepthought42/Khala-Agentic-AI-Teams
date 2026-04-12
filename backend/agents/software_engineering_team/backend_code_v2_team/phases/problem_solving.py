@@ -37,6 +37,13 @@ from ..prompts import (
     PYTHON_CONVENTIONS,
 )
 
+
+def _resolve_model(llm):
+    """Use injected LLM client as Strands model when it implements Model; else create one."""
+    from strands.models.model import Model as _StrandsModel
+
+    return llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
+
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS_PER_ISSUE = 5
@@ -141,7 +148,7 @@ def run_batch_coding_fixes(
     )
 
     try:
-        raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+        raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
     except Exception as exc:
         logger.error(
             "[%s] Microtask %s: batch fix LLM call failed: %s",
@@ -281,7 +288,7 @@ def run_problem_solving(
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
             except Exception as exc:
                 logger.warning(
                     "[%s] Problem-solving LLM call failed (issue %d, attempt %d): %s",
@@ -442,7 +449,7 @@ def run_problem_solving_for_microtask(
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
             except Exception as exc:
                 logger.warning(
                     "[%s] Microtask %s: problem-solving LLM call failed (issue %d, attempt %d): %s",
@@ -616,7 +623,7 @@ def _run_phase_fixes(
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
             except Exception as exc:
                 logger.warning(
                     "[%s] Microtask %s: %s fix LLM call failed (issue %d, attempt %d): %s",

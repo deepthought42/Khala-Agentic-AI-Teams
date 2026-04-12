@@ -106,7 +106,12 @@ def _run_chunk_review(llm: LLMClient, input_data: ChunkReviewInput) -> dict:
     )
 
     prompt = "\n".join(context_parts)
-    agent = Agent(model=get_strands_model("code_review"), system_prompt=CODE_REVIEW_PROMPT)
+    # Use the injected LLM client as model when available (it implements Model);
+    # fall back to get_strands_model for production.
+    from strands.models.model import Model as _StrandsModel
+
+    _model = llm if isinstance(llm, _StrandsModel) else get_strands_model("code_review")
+    agent = Agent(model=_model, system_prompt=CODE_REVIEW_PROMPT)
     result = agent(prompt)
     raw = str(result).strip()
     data = json.loads(raw)

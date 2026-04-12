@@ -19,7 +19,11 @@ class ProblemSolverAgent:
     """Specialist that provides plan/execute/review/test guidance for bug fixing."""
 
     def __init__(self, llm_client=None) -> None:
-        self._agent = Agent(model=get_strands_model("problem_solver"), system_prompt=PROBLEM_SOLVER_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("problem_solver")
+        self._agent = Agent(model=_model, system_prompt=PROBLEM_SOLVER_PROMPT)
 
     def run(self, input_data: ProblemSolverInput) -> ProblemSolverOutput:
         """Generate a bounded specialist recommendation for a bug-fix cycle."""

@@ -27,7 +27,10 @@ class CybersecurityExpertAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("security")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("security")
 
     def run(self, input_data: SecurityInput) -> SecurityOutput:
         """Review code for security issues and produce fixed code."""

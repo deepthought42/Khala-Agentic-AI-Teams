@@ -139,7 +139,11 @@ class ArchitectureExpertAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._agent = Agent(model=get_strands_model("architecture"), system_prompt=ARCHITECTURE_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("architecture")
+        self._agent = Agent(model=_model, system_prompt=ARCHITECTURE_PROMPT)
 
     def run(self, input_data: ArchitectureInput) -> ArchitectureOutput:
         """Design system architecture from requirements."""

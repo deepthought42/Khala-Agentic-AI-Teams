@@ -21,7 +21,10 @@ def run_intake(*, llm=None, task: Task, spec_content: str) -> IntakeResult:
         f"Acceptance criteria: {task.acceptance_criteria}\n"
         f"Spec:\n{(spec_content or '')[:8000]}"
     )
-    agent = Agent(model=get_strands_model(), system_prompt=INTAKE_PROMPT)
+    from strands.models.model import Model as _StrandsModel
+
+    _model = llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
+    agent = Agent(model=_model, system_prompt=INTAKE_PROMPT)
     result = agent(prompt)
     raw_text = str(result).strip()
     raw = json.loads(raw_text)

@@ -39,7 +39,11 @@ class DbcCommentsAgent:
         Postconditions:
             - self._agent is set to a Strands Agent
         """
-        self._agent = Agent(model=get_strands_model("dbc_comments"), system_prompt=DBC_COMMENTS_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("dbc_comments")
+        self._agent = Agent(model=_model, system_prompt=DBC_COMMENTS_PROMPT)
 
     def run(
         self,

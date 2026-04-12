@@ -23,7 +23,11 @@ class BuildFixSpecialistAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._agent = Agent(model=get_strands_model("build_fix_specialist"), system_prompt=BUILD_FIX_SPECIALIST_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("build_fix_specialist")
+        self._agent = Agent(model=_model, system_prompt=BUILD_FIX_SPECIALIST_PROMPT)
 
     def run(self, input_data: BuildFixInput) -> BuildFixOutput:
         """Produce minimal edits to fix the build error."""

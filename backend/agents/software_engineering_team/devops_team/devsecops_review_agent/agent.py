@@ -17,6 +17,7 @@ class DevSecOpsReviewAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: DevSecOpsReviewInput) -> DevSecOpsReviewOutput:
         context = (
@@ -24,7 +25,7 @@ class DevSecOpsReviewAgent:
             f"requirements={input_data.requirements}\n"
             f"artifacts={list(input_data.artifacts.keys())}\n"
         )
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(
+        data = json.loads(str(Agent(model=self._model)(
             DEVSECOPS_REVIEW_PROMPT + "\n\n---\n\n" + context, temperature=0.0, think=True
         )).strip())
         findings = [ReviewFinding(**f) for f in (data.get("findings") or []) if isinstance(f, dict)]

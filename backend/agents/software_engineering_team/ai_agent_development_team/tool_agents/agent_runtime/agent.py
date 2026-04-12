@@ -20,7 +20,9 @@ Return JSON with files/recommendations/summary.
 
 class AgentRuntimeToolAgent:
     def __init__(self, llm=None) -> None:
-        self._model = get_strands_model()
+        from strands.models.model import Model as _StrandsModel
+
+        self._model = llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
 
     def run(self, inp: ToolAgentInput) -> ToolAgentOutput:
         raw = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(

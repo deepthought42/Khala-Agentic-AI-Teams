@@ -67,7 +67,9 @@ class ArchitectureToolAgent:
     """Architecture tool agent: generates architecture artifacts in plan phase."""
 
     def __init__(self, llm=None) -> None:
-        self._model = get_strands_model()
+        from strands.models.model import Model as _StrandsModel
+
+        self._model = llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
         self.llm = llm  # kept for backward compat checks
 
     def run(self, inp: ToolAgentInput) -> ToolAgentOutput:

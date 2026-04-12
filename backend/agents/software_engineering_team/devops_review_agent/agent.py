@@ -23,7 +23,11 @@ class DevOpsReviewAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._agent = Agent(model=get_strands_model("devops_review"), system_prompt=DEVOPS_REVIEW_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("devops_review")
+        self._agent = Agent(model=_model, system_prompt=DEVOPS_REVIEW_PROMPT)
 
     def run(self, input_data: DevOpsReviewInput) -> DevOpsReviewOutput:
         """Review DevOps artifacts and return approval or issues."""

@@ -68,7 +68,10 @@ class DocumentationAgent:
         Postconditions:
             - self._model is set to a Strands model
         """
-        self._model = get_strands_model("documentation")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("documentation")
 
     def run(self, input_data: DocumentationInput) -> DocumentationOutput:
         """

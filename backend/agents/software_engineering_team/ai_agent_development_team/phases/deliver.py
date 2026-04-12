@@ -21,7 +21,10 @@ def run_deliver(
         f"Review passed: {review_result.passed}\n"
         f"Review issues: {[issue.description for issue in review_result.issues]}\n"
     )
-    agent = Agent(model=get_strands_model(), system_prompt=DELIVER_PROMPT)
+    from strands.models.model import Model as _StrandsModel
+
+    _model = llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
+    agent = Agent(model=_model, system_prompt=DELIVER_PROMPT)
     result = agent(prompt)
     raw_text = str(result).strip()
     raw = json.loads(raw_text)

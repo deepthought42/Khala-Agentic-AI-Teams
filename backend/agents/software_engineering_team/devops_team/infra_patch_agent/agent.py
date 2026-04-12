@@ -19,6 +19,7 @@ class InfraPatchAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: IaCPatchInput) -> IaCPatchOutput:
         if not input_data.debug_output.fixable:
@@ -37,7 +38,7 @@ class InfraPatchAgent:
 
         context = f"--- Errors ---\n{errors_text}\n\n--- Current Artifacts ---\n{artifacts_text}\n"
 
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(
+        data = json.loads(str(Agent(model=self._model)(
             INFRA_PATCH_PROMPT + "\n\n---\n\n" + context,
             temperature=0.1,
             think=True,

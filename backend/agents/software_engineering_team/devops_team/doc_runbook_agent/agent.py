@@ -22,6 +22,7 @@ class DocumentationRunbookAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: DocumentationRunbookInput) -> DocumentationRunbookOutput:
         context = (
@@ -31,7 +32,7 @@ class DocumentationRunbookAgent:
             f"quality_gates={input_data.quality_gates}\n"
             f"notes={input_data.notes}\n"
         )
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(DOC_RUNBOOK_PROMPT + "\n\n---\n\n" + context)).strip())
+        data = json.loads(str(Agent(model=self._model)(DOC_RUNBOOK_PROMPT + "\n\n---\n\n" + context)).strip())
         completion = DevOpsCompletionPackage(
             task_id=input_data.task_id,
             status="completed",

@@ -1991,7 +1991,10 @@ class ProductRequirementsAnalysisAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("product_analysis")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("product_analysis")
         # Keep LLMClient for context_sizing utilities
         self.llm = llm_client if llm_client is not None else get_client("product_analysis")
 

@@ -37,7 +37,11 @@ class LintingToolAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._agent = Agent(model=get_strands_model("linting_tool_agent"), system_prompt=LINT_FIX_PROMPT)
+        if llm_client is not None:
+            _model = llm_client
+        else:
+            _model = get_strands_model("linting_tool_agent")
+        self._agent = Agent(model=_model, system_prompt=LINT_FIX_PROMPT)
 
     def run(self, input_data: LintToolInput) -> LintToolOutput:
         """Execute the full lint pipeline: plan -> execute -> review.

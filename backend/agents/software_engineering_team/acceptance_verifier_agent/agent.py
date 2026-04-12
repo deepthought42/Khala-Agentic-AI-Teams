@@ -27,7 +27,10 @@ class AcceptanceVerifierAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("acceptance_verifier")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("acceptance_verifier")
 
     def run(self, input_data: AcceptanceVerifierInput) -> AcceptanceVerifierOutput:
         """Verify each acceptance criterion against the code."""

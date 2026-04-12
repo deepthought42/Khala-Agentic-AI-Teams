@@ -27,7 +27,10 @@ class IntegrationAgent:
     """
 
     def __init__(self, llm_client=None) -> None:
-        self._model = get_strands_model("integration")
+        if llm_client is not None:
+            self._model = llm_client
+        else:
+            self._model = get_strands_model("integration")
 
     def run(self, input_data: IntegrationInput) -> IntegrationOutput:
         """Analyze backend and frontend code for integration/contract issues."""

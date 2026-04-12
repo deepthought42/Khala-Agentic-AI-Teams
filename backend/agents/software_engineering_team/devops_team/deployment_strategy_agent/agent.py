@@ -16,6 +16,7 @@ class DeploymentStrategyAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: DeploymentStrategyAgentInput) -> DeploymentStrategyAgentOutput:
         spec = input_data.task_spec
@@ -26,7 +27,7 @@ class DeploymentStrategyAgent:
             f"acceptance_criteria={spec.acceptance_criteria}\n"
             f"nfr={spec.non_functional_requirements}\n"
         )
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(
+        data = json.loads(str(Agent(model=self._model)(
             DEPLOYMENT_STRATEGY_PROMPT + "\n\n---\n\n" + context, temperature=0.1, think=True
         )).strip())
         return DeploymentStrategyAgentOutput(

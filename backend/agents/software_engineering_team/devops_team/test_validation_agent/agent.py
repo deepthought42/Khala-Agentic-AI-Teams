@@ -20,13 +20,14 @@ class DevOpsTestValidationAgent:
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
         self.llm = llm_client
+        self._model = llm_client
 
     def run(self, input_data: DevOpsTestValidationInput) -> DevOpsTestValidationOutput:
         context = (
             f"acceptance_criteria={input_data.acceptance_criteria}\n"
             f"tool_results={input_data.tool_results}\n"
         )
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(
+        data = json.loads(str(Agent(model=self._model)(
             DEVOPS_TEST_VALIDATION_PROMPT + "\n\n---\n\n" + context, temperature=0.0, think=True
         )).strip())
         gates = data.get("quality_gates") or {}

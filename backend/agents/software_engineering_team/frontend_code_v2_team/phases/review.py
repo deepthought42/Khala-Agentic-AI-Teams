@@ -29,6 +29,13 @@ from ..models import (
 from ..output_templates import parse_documentation_self_review_template, parse_review_template
 from ..prompts import DOCUMENTATION_SELF_REVIEW_PROMPT, REVIEW_PROMPT
 
+
+def _resolve_model(llm):
+    """Use injected LLM client as Strands model when it implements Model; else create one."""
+    from strands.models.model import Model as _StrandsModel
+
+    return llm if (llm is not None and isinstance(llm, _StrandsModel)) else get_strands_model()
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -53,7 +60,7 @@ def _run_llm_review(
         else "N/A",
         code=code_text[:MAX_REVIEW_CODE_CHARS],
     )
-    raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+    raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
     data = parse_review_template(raw)
     issues: List[ReviewIssue] = []
     for item in data.get("issues") or []:
@@ -561,7 +568,7 @@ def run_documentation_self_review(
         )
 
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=get_strands_model())(prompt)).strip()
+            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=_resolve_model(llm))(prompt)).strip()
         except Exception as exc:
             logger.warning(
                 "Documentation self-review LLM call failed (iteration %d): %s",
