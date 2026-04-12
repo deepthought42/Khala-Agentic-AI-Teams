@@ -88,7 +88,7 @@ class SecurityToolAgent:
             code=code_text,
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Security review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Security review failed (LLM error).")
@@ -137,7 +137,7 @@ class SecurityToolAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "Security fix for issue %s failed: %s",

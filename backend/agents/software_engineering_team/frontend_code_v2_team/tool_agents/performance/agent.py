@@ -138,7 +138,7 @@ class PerformanceToolAgent:
             code=code_text,
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Performance review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Performance review failed (LLM error).")
@@ -195,7 +195,7 @@ class PerformanceToolAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "Performance fix for issue %s failed: %s",

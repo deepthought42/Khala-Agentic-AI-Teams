@@ -83,7 +83,7 @@ class TestingQAToolAgent:
             code=code_text,
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Testing/QA review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Testing/QA review failed (LLM error).")
@@ -129,7 +129,7 @@ class TestingQAToolAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning("Testing/QA fix for issue %s failed: %s", issue.description[:50], e)
                 continue

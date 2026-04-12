@@ -165,7 +165,7 @@ class UxUsabilityToolAgent:
             spec_content=(inp.task_description or "")[:6000],
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("UX plan LLM call failed: %s", e)
             return ToolAgentPhaseOutput(
@@ -214,7 +214,7 @@ class UxUsabilityToolAgent:
             code=code_text,
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("UX review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="UX review failed (LLM error).")
@@ -271,7 +271,7 @@ class UxUsabilityToolAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "UX fix for issue %s failed: %s",

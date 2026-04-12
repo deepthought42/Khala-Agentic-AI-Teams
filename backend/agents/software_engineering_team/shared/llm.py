@@ -51,9 +51,19 @@ def complete_json_with_continuation(
 
     Uses a Strands Agent for the LLM call. Parses the agent's text output as JSON.
     max_continuation_cycles and task_id are accepted for backward compatibility but ignored.
+
+    When *client* implements the Strands ``Model`` protocol (e.g. a
+    ``DummyLLMClient`` in tests), it is used directly as the agent model so
+    that tests do not need a live LLM server.
     """
+    from strands.models.model import Model as _StrandsModel
+
+    if client is not None and isinstance(client, _StrandsModel):
+        model = client
+    else:
+        model = get_strands_model(task_id, client=client)
     agent = Agent(
-        model=get_strands_model(task_id),
+        model=model,
         system_prompt="You are a helpful assistant. Always respond with valid JSON only.",
     )
     result = agent(prompt)

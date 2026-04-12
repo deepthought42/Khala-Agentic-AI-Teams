@@ -645,7 +645,7 @@ class BackendExpertAgent:
         prompt = BACKEND_PLANNING_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
         log_llm_prompt(logger, "Backend", "planning", (task.description or "")[:80], prompt)
         try:
-            data = _json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+            data = _json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
             plan = TaskPlan.from_llm_json(data)
             return (plan.to_markdown(), False)
         except Exception as e:
@@ -2893,7 +2893,7 @@ class BackendExpertAgent:
         code = ""
         tests = ""
         for attempt in range(4):
-            data = _json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+            data = _json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
             code = data.get("code", "")
             if code and "\\n" in code:
                 code = code.replace("\\n", "\n")

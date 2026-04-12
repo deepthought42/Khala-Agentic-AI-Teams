@@ -57,7 +57,7 @@ class DesignSystemAgent:
             context_parts.append(f"**Architecture:**\n{input_data.architecture.overview}")
 
         prompt = DESIGN_SYSTEM_PROMPT + "\n\n---\n\n" + "\n\n".join(context_parts)
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+        data = json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
 
         return DesignSystemOutput(
             component_library_plan=data.get("component_library_plan", "") or "",

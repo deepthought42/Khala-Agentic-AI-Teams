@@ -57,7 +57,7 @@ class UIDesignerAgent:
             context_parts.append(f"**Architecture:**\n{input_data.architecture.overview}")
 
         prompt = UI_DESIGNER_PROMPT + "\n\n---\n\n" + "\n\n".join(context_parts)
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+        data = json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
 
         return UIDesignerOutput(
             component_specs=data.get("component_specs", "") or "",

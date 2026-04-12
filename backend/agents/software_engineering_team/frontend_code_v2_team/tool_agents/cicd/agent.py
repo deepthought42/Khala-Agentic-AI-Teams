@@ -93,7 +93,7 @@ class CicdAdapterAgent:
             spec_content=spec_excerpt if spec_excerpt.strip() else "(no spec provided)",
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("CI/CD plan LLM call failed: %s", e)
             return ToolAgentPhaseOutput(
@@ -133,7 +133,7 @@ class CicdAdapterAgent:
             spec_content=spec_excerpt if spec_excerpt.strip() else "(no spec provided)",
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("CI/CD deliver LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="CI/CD deliver failed (LLM error).")

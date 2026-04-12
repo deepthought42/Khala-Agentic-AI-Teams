@@ -207,7 +207,7 @@ class BuildSpecialistAdapterAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "Build Specialist fix for issue %s failed: %s",

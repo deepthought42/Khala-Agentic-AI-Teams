@@ -131,7 +131,7 @@ class DocumentationToolAgent:
         )
 
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Documentation microtask LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Documentation update failed (LLM error).")
@@ -181,7 +181,7 @@ class DocumentationToolAgent:
         )
 
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Documentation review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Documentation review failed (LLM error).")
@@ -242,7 +242,7 @@ class DocumentationToolAgent:
             )
 
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "Documentation fix for issue %s failed: %s", (issue.description or "")[:50], e

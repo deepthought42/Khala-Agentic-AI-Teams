@@ -56,7 +56,7 @@ class AuthToolAgent:
             existing_code=inp.existing_code[:4000] if inp.existing_code else "(none)",
         )
         logger.info("Auth: running for microtask %s", inp.microtask.id)
-        raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+        raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         data = parse_files_and_summary_template(raw)
         return ToolAgentOutput(
             files=data.get("files") or {},

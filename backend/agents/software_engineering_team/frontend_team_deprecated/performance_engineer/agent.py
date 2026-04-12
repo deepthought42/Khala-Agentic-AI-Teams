@@ -43,7 +43,7 @@ class PerformanceEngineerAgent:
             context_parts.insert(2, f"**Architecture:** {input_data.architecture.overview}")
 
         prompt = PERFORMANCE_ENGINEER_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+        data = json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
 
         issues: List[Dict[str, Any]] = []
         for i in data.get("issues") or []:

@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,12 +34,14 @@ class _StubClient(DummyLLMClient):
     """Returns a canned response for every ``complete_json`` call.
 
     Routes transparently through the Strands adapter path
-    (``chat_json_round`` → ``StructuredOutputTool`` detection → the
-    ``complete_json`` override below). For PRA tests, this replaces the
-    pre-migration ``MagicMock().complete_json.return_value = {...}``
-    pattern for the 3 methods migrated to ``run_json_via_strands``."""
+    (``stream()`` → ``complete_json`` override below). For PRA tests,
+    this replaces the pre-migration ``MagicMock().complete_json.return_value = {...}``
+    pattern. When the response is a dict, ``stream()`` JSON-serializes it so the
+    Strands Agent returns JSON text that calling code can parse. When the response
+    is a string, ``stream()`` passes it through as-is (for prompts expecting
+    plain markdown/text)."""
 
-    def __init__(self, response: Dict[str, Any]) -> None:
+    def __init__(self, response) -> None:
         super().__init__()
         self._response = response
 
@@ -52,7 +54,36 @@ class _StubClient(DummyLLMClient):
         tools: Optional[list] = None,
         think: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> Any:
+        return self._response
+
+
+class _TrackingStubClient(DummyLLMClient):
+    """Returns a canned response and tracks calls for assertions.
+
+    Supports call_count, last_prompt, and all_prompts for tests that
+    previously inspected ``llm.complete_json.call_count`` or ``call_args``."""
+
+    def __init__(self, response) -> None:
+        super().__init__()
+        self._response = response
+        self.call_count = 0
+        self.last_prompt: Optional[str] = None
+        self.all_prompts: list = []
+
+    def complete_json(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        system_prompt: Optional[str] = None,
+        tools: Optional[list] = None,
+        think: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        self.call_count += 1
+        self.last_prompt = prompt
+        self.all_prompts.append(prompt)
         return self._response
 
 
@@ -151,14 +182,14 @@ def test_has_existing_pra_artifacts_false_when_dir_missing(tmp_path: Path) -> No
 def test_run_spec_review_invokes_llm_once(tmp_path: Path) -> None:
     """_run_spec_review performs a single LLM call (whole-spec review, no chunking)."""
     (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
-    llm = MagicMock()
-    llm.get_max_context_tokens.return_value = 16384
-    llm.complete_json.return_value = {
-        "issues": [],
-        "gaps": [],
-        "open_questions": [],
-        "summary": "Done",
-    }
+    llm = _TrackingStubClient(
+        {
+            "issues": [],
+            "gaps": [],
+            "open_questions": [],
+            "summary": "Done",
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     agent._context_files = {}
     result, updated_spec = agent._run_spec_review(
@@ -166,7 +197,7 @@ def test_run_spec_review_invokes_llm_once(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=None,
     )
-    assert llm.complete_json.call_count == 1
+    assert llm.call_count == 1
     assert result.summary == "Done"
     assert updated_spec == "# My Spec\n\n## Section\nContent"
 
@@ -174,14 +205,14 @@ def test_run_spec_review_invokes_llm_once(tmp_path: Path) -> None:
 def test_run_spec_review_includes_qa_in_prompt(tmp_path: Path) -> None:
     """When answered_questions is non-empty, the prompt passed to the LLM contains Q&A text."""
     (tmp_path / "plan" / "product_analysis").mkdir(parents=True)
-    llm = MagicMock()
-    llm.get_max_context_tokens.return_value = 16384
-    llm.complete_json.return_value = {
-        "issues": [],
-        "gaps": [],
-        "open_questions": [],
-        "summary": "Done",
-    }
+    llm = _TrackingStubClient(
+        {
+            "issues": [],
+            "gaps": [],
+            "open_questions": [],
+            "summary": "Done",
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     agent._context_files = {}
     answered = [
@@ -196,8 +227,7 @@ def test_run_spec_review_includes_qa_in_prompt(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=answered,
     )
-    call_args = llm.complete_json.call_args
-    prompt = call_args[0][0]
+    prompt = llm.last_prompt
     assert "Where to deploy?" in prompt
     assert "Kubernetes" in prompt
     assert "Previously Answered" in prompt or "Current session answers" in prompt
@@ -210,14 +240,14 @@ def test_run_spec_review_includes_qa_file_in_prompt(tmp_path: Path) -> None:
     qa_file.write_text(
         "# Q&A History\n\n## Iteration 1\n\n### OAuth provider?\n**Answer:** GitHub\n\n"
     )
-    llm = MagicMock()
-    llm.get_max_context_tokens.return_value = 16384
-    llm.complete_json.return_value = {
-        "issues": [],
-        "gaps": [],
-        "open_questions": [],
-        "summary": "Done",
-    }
+    llm = _TrackingStubClient(
+        {
+            "issues": [],
+            "gaps": [],
+            "open_questions": [],
+            "summary": "Done",
+        }
+    )
     agent = ProductRequirementsAnalysisAgent(llm)
     agent._context_files = {}
     agent._run_spec_review(
@@ -225,8 +255,7 @@ def test_run_spec_review_includes_qa_file_in_prompt(tmp_path: Path) -> None:
         repo_path=tmp_path,
         answered_questions=None,
     )
-    call_args = llm.complete_json.call_args
-    prompt = call_args[0][0]
+    prompt = llm.last_prompt
     assert "OAuth provider?" in prompt
     assert "GitHub" in prompt
 

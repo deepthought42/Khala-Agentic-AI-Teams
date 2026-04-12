@@ -139,7 +139,7 @@ class AccessibilityToolAgent:
             code=code_text,
         )
         try:
-            raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+            raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
         except Exception as e:
             logger.warning("Accessibility review LLM call failed: %s", e)
             return ToolAgentPhaseOutput(summary="Accessibility review failed (LLM error).")
@@ -196,7 +196,7 @@ class AccessibilityToolAgent:
                 current_code=relevant_code,
             )
             try:
-                raw = (lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip()
+                raw = (lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip()
             except Exception as e:
                 logger.warning(
                     "Accessibility fix for issue %s failed: %s",

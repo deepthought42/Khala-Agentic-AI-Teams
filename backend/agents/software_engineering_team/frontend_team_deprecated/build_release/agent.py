@@ -38,7 +38,7 @@ class BuildReleaseAgent:
             context_parts.append(f"**Existing pipeline:**\n{input_data.existing_pipeline[:3000]}")
 
         prompt = BUILD_RELEASE_PROMPT + "\n\n---\n\n" + "\n\n".join(context_parts)
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+        data = json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
 
         return BuildReleaseOutput(
             ci_plan=data.get("ci_plan", "") or "",

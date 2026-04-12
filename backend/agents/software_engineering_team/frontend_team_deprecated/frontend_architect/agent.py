@@ -75,7 +75,7 @@ class FrontendArchitectAgent:
                 )
 
         prompt = FRONTEND_ARCHITECT_PROMPT + "\n\n---\n\n" + "\n\n".join(context_parts)
-        data = json.loads((lambda _r: _r.message if hasattr(_r, "message") else str(_r))(Agent(model=self._model)(prompt)).strip())
+        data = json.loads((lambda _r: str(_r))(Agent(model=self._model)(prompt)).strip())
 
         return FrontendArchitectOutput(
             folder_structure=data.get("folder_structure", "") or "",
