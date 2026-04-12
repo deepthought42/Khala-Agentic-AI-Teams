@@ -157,11 +157,15 @@ class DummyLLMClient(LLMClient):
         think: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        # Strands-migrated agents separate persona (system_prompt) from the
-        # user payload, so pattern matches that used to find their anchor
-        # strings in ``prompt`` must now scan both. Legacy callers that
-        # concatenate everything into ``prompt`` are unaffected.
-        lowered = (prompt + "\n" + (system_prompt or "")).lower()
+        # Pattern-match against the user prompt only. Callers (including
+        # Strands-migrated agents that hand their persona to the Strands
+        # ``Agent`` as a system prompt) must include the anchor tokens the
+        # branches below look for in the user prompt they build. Scanning
+        # ``system_prompt`` here was tried and reverted in commit <<CI fix>>
+        # because loose single-word branches (``"pipeline"``, ``"security"``)
+        # cross-contaminated other teams' prompts that happened to mention
+        # those words in their persona text.
+        lowered = prompt.lower()
         DummyLLMClient._call_counter += 1
         self._request_count += 1
         counter = DummyLLMClient._call_counter

@@ -104,6 +104,10 @@ model = get_strands_model(agent_key="test_agent", client=DummyLLMClient())
 
 See `tests/test_strands_adapter.py` for message-conversion, tool-loop, and `structured_output` examples.
 
+### Migration rule: keep pattern anchors in the **user** prompt
+
+`DummyLLMClient.complete_json` routes to its canned stubs by scanning the **user** prompt only (not the Strands system prompt). When migrating an agent and moving its persona to `Agent(system_prompt=...)`, the user prompt you build in `_build_user_prompt` must still include the distinctive tokens the matching dummy branch looks for — e.g. `bugs_found` + `test_plan` for the QA branch, or `integration expert` + `backend code` + `frontend code` for the Integration branch. An explicit "produce JSON with fields: foo, bar, baz" schema hint in the user prompt usually satisfies this for free. This only affects dummy-client tests; real LLMs see both prompts.
+
 ## Exceptions
 
 - `LLMError` – base
