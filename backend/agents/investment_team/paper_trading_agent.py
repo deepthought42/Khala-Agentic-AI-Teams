@@ -121,14 +121,32 @@ def _format_trades_table(trades: List[TradeRecord]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _make_agent_complete_json(agent: Agent) -> Any:
+    """Return a callable compatible with evaluate_bar's llm_complete_json signature."""
+
+    def _complete_json(prompt: str, **_kwargs: Any) -> Dict[str, Any]:
+        result = agent(prompt)
+        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        return json.loads(raw)
+
+    return _complete_json
+
+
 class PaperTradingAgent:
     """
     Runs paper trading sessions by walking through real market data bar-by-bar,
     using the LLM to interpret strategy entry/exit rules, and simulating trade execution.
     """
 
-    def __init__(self, llm_client: LLMClient) -> None:
-        self.llm = llm_client
+    def __init__(self, llm_client=None) -> None:
+        self._evaluate_agent = llm_client if llm_client is not None else Agent(
+            model=get_strands_model("paper_trading"),
+            system_prompt=_EVALUATE_SYSTEM,
+        )
+        self._divergence_agent = llm_client if llm_client is not None else Agent(
+            model=get_strands_model("paper_trading"),
+            system_prompt=_DIVERGENCE_SYSTEM,
+        )
 
     def run_session(
         self,
@@ -240,7 +258,7 @@ class PaperTradingAgent:
     ) -> Dict[str, Any]:
         """Ask LLM to evaluate whether entry/exit rules are met for this bar."""
         return evaluate_bar(
-            self.llm.complete_json,
+            _make_agent_complete_json(self._evaluate_agent),
             strategy,
             _EVALUATE_SYSTEM,
             symbol,
@@ -340,10 +358,7 @@ class PaperTradingAgent:
             pt_trades_text=_format_trades_table(pt_trades_sample),
         )
 
-        data = self.llm.complete_json(
-            prompt,
-            temperature=0.3,
-            system_prompt=_DIVERGENCE_SYSTEM,
-            think=True,
-        )
+        result = self._divergence_agent(prompt)
+        raw = (result.message if hasattr(result, "message") else str(result)).strip()
+        data = json.loads(raw)
         return str(data.get("analysis", "Divergence analysis not available."))

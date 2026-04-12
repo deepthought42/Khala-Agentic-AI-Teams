@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List
 
-from llm_service import compact_text, get_strands_model
+from llm_service import compact_text, get_client, get_strands_model
 from strands import Agent
 from software_engineering_team.shared.models import (
     Task,
@@ -55,6 +55,8 @@ class TechLeadAgent:
 
     def __init__(self, llm_client=None) -> None:
         self._model = get_strands_model("tech_lead")
+        # Keep an LLMClient reference for context_sizing utilities
+        self.llm = llm_client if llm_client is not None else get_client("tech_lead")
 
     def _analyze_codebase(self, existing_codebase: str) -> str:
         """Analyze the existing codebase to understand what already exists."""
@@ -261,7 +263,8 @@ class TechLeadAgent:
             codebase_analysis = self._analyze_codebase(existing_codebase)
 
         prompt = self._build_planning_prompt(input_data, codebase_analysis)
-        data = self.llm.complete_json(prompt, temperature=0.2, think=True)
+        agent = Agent(model=self._model, system_prompt=TECH_LEAD_PROMPT)
+        data = _agent_json(agent, prompt)
 
         if data.get("spec_clarification_needed"):
             clarification_questions = data.get("clarification_questions") or []
@@ -467,7 +470,7 @@ class TechLeadAgent:
                 ]
             )
 
-        return TECH_LEAD_PROMPT + "\n\n---\n\n" + "\n".join(context_parts)
+        return "\n".join(context_parts)
 
     def refine_task(
         self,
