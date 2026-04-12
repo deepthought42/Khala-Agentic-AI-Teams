@@ -10,8 +10,7 @@ Each agent wraps a strands.Agent with a methodology-rich system prompt grounded 
 - Salesfolk (hyper-personalized cold email copy)
 - Zig Ziglar (classic closing techniques: assumptive, summary, urgency, etc.)
 
-If the `strands` package is not installed the agents degrade gracefully, returning
-structured-text stubs so the API remains functional and tests can run without the SDK.
+The strands SDK is a hard dependency. The system will fail fast if it is not installed.
 """
 
 from __future__ import annotations
@@ -24,28 +23,13 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Optional Strands SDK import
+# Strands SDK (hard dependency)
 # ---------------------------------------------------------------------------
 
-try:
-    from strands import Agent as StrandsAgent  # type: ignore[import]
+from strands import Agent as StrandsAgent
+from strands_tools import current_time, http_request, python_repl
 
-    try:
-        from strands_tools import current_time, http_request, python_repl  # type: ignore[import]
-
-        _DEFAULT_TOOLS = [http_request, python_repl, current_time]
-    except ImportError:
-        _DEFAULT_TOOLS = []
-
-    HAS_STRANDS = True
-    logger.info("AWS Strands SDK loaded — sales agents will use strands.Agent")
-except ImportError:
-    HAS_STRANDS = False
-    _DEFAULT_TOOLS = []
-    logger.warning(
-        "strands package not found — sales agents running in stub mode. "
-        "Install strands-agents and strands-agents-tools for full LLM capability."
-    )
+_DEFAULT_TOOLS = [http_request, python_repl, current_time]
 
 
 # ---------------------------------------------------------------------------
@@ -53,31 +37,22 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-def _build_strands_agent(system_prompt: str, tools: list | None = None) -> Any | None:
-    """Construct a strands.Agent if the SDK is available, else return None."""
-    if not HAS_STRANDS:
-        return None
+def _build_strands_agent(system_prompt: str, tools: list | None = None) -> StrandsAgent:
+    """Construct a strands.Agent."""
     return StrandsAgent(
         system_prompt=system_prompt,
         tools=tools if tools is not None else _DEFAULT_TOOLS,
     )
 
 
-def _call_agent(agent: Any | None, prompt: str, stub_response: str) -> str:
-    """Call a strands.Agent and return its text output, falling back to the stub."""
-    if agent is None:
-        return stub_response
-    try:
-        result = agent(prompt)
-        # strands.Agent may return an AgentResult or a str
-        if hasattr(result, "message"):
-            content = result.message
-        else:
-            content = str(result)
-        return content.strip()
-    except Exception as exc:
-        logger.error("Strands agent call failed: %s", exc, exc_info=True)
-        return stub_response
+def _call_agent(agent: StrandsAgent, prompt: str) -> str:
+    """Call a strands.Agent and return its text output."""
+    result = agent(prompt)
+    if hasattr(result, "message"):
+        content = result.message
+    else:
+        content = str(result)
+    return content.strip()
 
 
 def _with_insights(base_prompt: str, insights_context: Optional[str]) -> str:
@@ -428,7 +403,7 @@ class ProspectorAgent:
                 }
             ]
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -496,7 +471,7 @@ class OutreachAgent:
                 "sequence_rationale": "Trigger-event hook chosen to maximize relevance and open rates.",
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -553,7 +528,7 @@ class LeadQualifierAgent:
                 ),
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -636,7 +611,7 @@ class NurtureAgent:
                 ],
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -719,7 +694,7 @@ class DiscoveryAgent:
                 ),
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -819,7 +794,7 @@ class ProposalAgent:
                 "custom_sections": [],
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -908,7 +883,7 @@ class CloserAgent:
                 ),
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
 
 
 @dataclass
@@ -986,4 +961,4 @@ class SalesCoachAgent:
                 ),
             }
         )
-        return _call_agent(self._agent, prompt, stub)
+        return _call_agent(self._agent, prompt)
