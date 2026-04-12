@@ -180,6 +180,7 @@ export interface StrategySpec {
   sizing_rules: string[];
   risk_limits: Record<string, unknown>;
   speculative: boolean;
+  strategy_code?: string;
   audit: AuditContext;
 }
 
@@ -483,6 +484,9 @@ export interface StrategyLabRecord {
   strategy_rationale: string;
   analysis_narrative: string;
   created_at: string;
+  refinement_rounds?: number;
+  quality_gate_results?: QualityGateResult[];
+  strategy_code?: string;
   /** Present on new runs: expert JSON or `{ skipped, skipped_reason }`. Legacy rows: undefined/null. */
   signal_intelligence_brief?: SignalIntelligenceBriefPayload;
 }
@@ -528,11 +532,21 @@ export interface ClearStrategyLabStorageResponse {
 
 // Strategy Lab — real-time run tracking
 
-export type StrategyLabPhase = 'ideating' | 'fetching_data' | 'backtesting' | 'analyzing' | 'complete';
+export type StrategyLabPhase =
+  | 'ideating' | 'validating' | 'executing' | 'refining'
+  | 'analyzing' | 'complete';
+
+export interface QualityGateResult {
+  gate_name: string;
+  passed: boolean;
+  details: string;
+  severity: 'info' | 'warning' | 'critical';
+}
 
 export interface StrategyLabCycleProgress {
   cycle_index: number;
   phase: StrategyLabPhase;
+  refinement_round?: number;
   strategy?: { asset_class: string; hypothesis: string };
   metrics?: Partial<BacktestResult>;
 }

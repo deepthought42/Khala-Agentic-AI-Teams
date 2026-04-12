@@ -28,10 +28,11 @@ import type {
 type FilterMode = 'all' | 'winning' | 'losing';
 
 const PHASE_LABELS: Record<string, string> = {
-  ideating: 'Ideating strategy…',
-  fetching_data: 'Fetching market data…',
-  backtesting: 'Running backtest…',
-  analyzing: 'Analyzing results…',
+  ideating: 'Ideating strategy & generating code...',
+  validating: 'Validating strategy & code safety...',
+  executing: 'Executing backtest...',
+  refining: 'Refining strategy code...',
+  analyzing: 'Analyzing results...',
   complete: 'Complete',
 };
 
@@ -152,6 +153,7 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
       this.runStatus.current_cycle = {
         cycle_index: (event['cycle_index'] as number) ?? 0,
         phase: (event['phase'] as StrategyLabPhase) ?? 'ideating',
+        refinement_round: event['refinement_round'] as number | undefined,
         strategy: event['strategy'] as { asset_class: string; hypothesis: string } | undefined,
         metrics: event['metrics'] as Record<string, number> | undefined,
       };
@@ -278,8 +280,12 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
     return 'losing';
   }
 
-  phaseLabel(phase: string): string {
-    return PHASE_LABELS[phase] ?? phase;
+  phaseLabel(phase: string, refinementRound?: number): string {
+    const label = PHASE_LABELS[phase] ?? phase;
+    if (refinementRound !== undefined && refinementRound > 0 && (phase === 'refining' || phase === 'validating' || phase === 'executing')) {
+      return `${label} (round ${refinementRound + 1}/10)`;
+    }
+    return label;
   }
 
   progressPercent(): number {

@@ -80,7 +80,7 @@
           <mat-card-content>
             <div class="phase-row">
               <mat-chip [class]="'phase-chip-' + runStatus.current_cycle.phase">
-                {{ phaseLabel(runStatus.current_cycle.phase) }}
+                {{ phaseLabel(runStatus.current_cycle.phase, runStatus.current_cycle.refinement_round) }}
               </mat-chip>
               <span class="cycle-label">Cycle {{ runStatus.current_cycle.cycle_index }}</span>
             </div>
@@ -501,6 +501,47 @@
                 </div>
 
               </mat-expansion-panel>
+
+              <!-- Quality Gates panel -->
+              @if (record.quality_gate_results && record.quality_gate_results.length > 0) {
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon class="panel-icon">verified</mat-icon>
+                      Quality Gates
+                    </mat-panel-title>
+                    <mat-panel-description>
+                      {{ record.quality_gate_results.length }} check(s)
+                      @if (record.refinement_rounds) {
+                        &middot; {{ record.refinement_rounds }} refinement round(s)
+                      }
+                    </mat-panel-description>
+                  </mat-expansion-panel-header>
+                  <div class="gate-results">
+                    @for (gate of record.quality_gate_results; track $index) {
+                      <div class="gate-result" [class]="'gate-' + gate.severity">
+                        <mat-icon class="gate-icon">{{ gate.passed ? 'check_circle' : (gate.severity === 'critical' ? 'cancel' : 'warning') }}</mat-icon>
+                        <span class="gate-name">{{ gate.gate_name }}</span>
+                        <span class="gate-detail">{{ gate.details }}</span>
+                      </div>
+                    }
+                  </div>
+                </mat-expansion-panel>
+              }
+
+              <!-- Strategy Code panel -->
+              @if (record.strategy_code || record.strategy.strategy_code) {
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon class="panel-icon">code</mat-icon>
+                      Strategy Code
+                    </mat-panel-title>
+                    <mat-panel-description>Generated Python backtest script</mat-panel-description>
+                  </mat-expansion-panel-header>
+                  <pre class="strategy-code">{{ record.strategy_code || record.strategy.strategy_code }}</pre>
+                </mat-expansion-panel>
+              }
 
             </mat-accordion>
 
