@@ -486,7 +486,7 @@ def test_run_workflow_exits_at_five_same_build_failures_and_notifies_tech_lead(
 
     mock_llm = ConfigurableLLM()
     mock_llm._max_context_tokens = 16384
-    mock_llm.complete_json.side_effect = [
+    mock_llm.complete_json_mock.side_effect = [
         {
             "feature_intent": "Add health",
             "what_changes": ["app/main.py"],
@@ -621,7 +621,7 @@ def test_run_workflow_invokes_build_fix_specialist_when_same_build_fails_twice(
 
     mock_llm = ConfigurableLLM()
     mock_llm._max_context_tokens = 16384
-    mock_llm.complete_json.side_effect = [
+    mock_llm.complete_json_mock.side_effect = [
         {
             "feature_intent": "Add health",
             "what_changes": ["app/main.py"],
@@ -749,7 +749,7 @@ def test_run_workflow_skips_specialist_when_none(tmp_path: Path) -> None:
 
     mock_llm = ConfigurableLLM()
     mock_llm._max_context_tokens = 16384
-    mock_llm.complete_json.side_effect = [
+    mock_llm.complete_json_mock.side_effect = [
         {
             "feature_intent": "Add",
             "what_changes": ["app/main.py"],
@@ -908,7 +908,7 @@ def test_run_workflow_uses_problem_solver_agent_on_build_failure(tmp_path: Path)
 
     mock_llm = ConfigurableLLM()
     mock_llm._max_context_tokens = 16384
-    mock_llm.complete_json.side_effect = [
+    mock_llm.complete_json_mock.side_effect = [
         {
             "feature_intent": "Fix build",
             "what_changes": ["app/main.py"],

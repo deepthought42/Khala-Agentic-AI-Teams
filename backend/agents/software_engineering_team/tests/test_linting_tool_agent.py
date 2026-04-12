@@ -9,6 +9,8 @@ from linting_tool_agent import LintingToolAgent, LintIssue, LintToolInput, LintT
 from linting_tool_agent.linter_runner import detect_linter, parse_lint_output
 from linting_tool_agent.models import LintExecutionResult, LintPlan
 
+from software_engineering_team.tests.conftest import ConfigurableLLM
+
 # ---------------------------------------------------------------------------
 # Model construction and serialization
 # ---------------------------------------------------------------------------
@@ -165,7 +167,7 @@ def test_parse_eslint_output() -> None:
 
 def test_agent_run_lint_passes(tmp_path: Path) -> None:
     """When lint passes, agent returns success with no edits."""
-    mock_llm = MagicMock()
+    mock_llm = ConfigurableLLM()
     agent = LintingToolAgent(mock_llm)
 
     with (
@@ -186,7 +188,7 @@ def test_agent_run_lint_fails_and_produces_edits(tmp_path: Path) -> None:
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "main.py").write_text("import os\nprint('hello')\n")
 
-    mock_llm = MagicMock()
+    mock_llm = ConfigurableLLM()
     mock_llm.complete_json.return_value = {
         "edits": [
             {
@@ -222,7 +224,7 @@ def test_agent_run_llm_failure_is_non_blocking(tmp_path: Path) -> None:
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "main.py").write_text("import os\n")
 
-    mock_llm = MagicMock()
+    mock_llm = ConfigurableLLM()
     mock_llm.complete_json.side_effect = Exception("LLM unavailable")
 
     agent = LintingToolAgent(mock_llm)
@@ -274,7 +276,7 @@ def test_backend_workflow_calls_linting_tool_agent(tmp_path: Path) -> None:
         ["git", "checkout", "-b", "development"], cwd=tmp_path, check=True, capture_output=True
     )
 
-    mock_llm = MagicMock()
+    mock_llm = ConfigurableLLM()
     mock_llm.get_max_context_tokens.return_value = 16384
     mock_llm.complete_json.side_effect = [
         # Planning step

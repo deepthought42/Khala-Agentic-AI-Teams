@@ -13,6 +13,7 @@ from frontend_team.feature_agent.agent import (
 )
 
 from software_engineering_team.shared.command_runner import CommandResult
+from software_engineering_team.tests.conftest import ConfigurableLLM
 
 _INSTALL_OK = CommandResult(success=True, exit_code=0, stdout="", stderr="")
 
@@ -189,7 +190,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
             },
         )
 
-        mock_llm = MagicMock()
+        mock_llm = ConfigurableLLM()
         mock_llm.get_max_context_tokens.return_value = 16384
         mock_llm.complete_json.side_effect = [
             {
@@ -299,7 +300,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
             },
         )
 
-        mock_llm = MagicMock()
+        mock_llm = ConfigurableLLM()
         mock_llm.get_max_context_tokens.return_value = 16384
         mock_llm.complete_json.side_effect = [
             {
@@ -397,7 +398,7 @@ class TestFrontendWorkflowBuildFixSpecialist:
             },
         )
 
-        mock_llm = MagicMock()
+        mock_llm = ConfigurableLLM()
         mock_llm.get_max_context_tokens.return_value = 16384
         mock_llm.complete_json.side_effect = [
             {

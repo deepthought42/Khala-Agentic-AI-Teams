@@ -491,6 +491,17 @@ class DummyLLMClient(LLMClient, Model):
                 "spec_compliance_notes": "Code aligns with task requirements.",
                 "suggested_commit_message": "",
             }
+        elif ("code to review" in lowered or "review this code" in lowered or "chunk" in lowered) and (
+            "approved" not in lowered or len(lowered) > 200
+        ):
+            # Catch-all for code review / chunk review prompts routed through Strands
+            return {
+                "approved": True,
+                "issues": [],
+                "summary": "Code review passed (dummy).",
+                "spec_compliance_notes": "",
+                "suggested_commit_message": "",
+            }
         elif "bugs_found" in lowered and (
             "integration_test" in lowered or "readme_content" in lowered or "test_plan" in lowered
         ):
