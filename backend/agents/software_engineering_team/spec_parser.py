@@ -95,8 +95,14 @@ def parse_spec_with_llm(spec_content: str, llm_client=None) -> ProductRequiremen
     import json as _json
 
     from strands import Agent
+    from strands.models.model import Model as _StrandsModel
 
-    from llm_service import get_strands_model
+    if llm_client is not None and isinstance(llm_client, _StrandsModel):
+        model = llm_client
+    else:
+        from llm_service import get_strands_model
+
+        model = get_strands_model("spec_intake")
 
     logger.info("Parsing spec with LLM (%s chars)", len(spec_content))
     system_prompt = """Parse the following software project specification into a structured format.
@@ -110,9 +116,12 @@ Return a single JSON object with:
 
 Respond with valid JSON only. No explanatory text."""
 
-    prompt = "Specification:\n---\n" + spec_content + "\n---"
+    prompt = (
+        "Parse this specification and return JSON with acceptance_criteria and constraints.\n"
+        "Specification:\n---\n" + spec_content + "\n---"
+    )
 
-    agent = Agent(model=get_strands_model("spec_intake"), system_prompt=system_prompt)
+    agent = Agent(model=model, system_prompt=system_prompt)
     result = agent(prompt)
     raw = str(result).strip()
     data = _json.loads(raw)

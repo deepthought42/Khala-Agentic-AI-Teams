@@ -164,7 +164,13 @@ class DummyLLMClient(LLMClient, Model):
         invocation_state: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncIterable[StreamEvent]:
-        """Yield a minimal stream that the Strands Agent event loop can process."""
+        """Yield a minimal stream that the Strands Agent event loop can process.
+
+        When ``tool_specs`` contains a StructuredOutputTool (added by Strands
+        when ``structured_output_model=...`` is used), yields a tool-use event
+        invoking that tool with data from the ``complete_json`` pattern matcher.
+        Otherwise yields a plain text response.
+        """
         # Extract user text from the last user message
         user_text = ""
         for msg in reversed(messages):
@@ -182,12 +188,42 @@ class DummyLLMClient(LLMClient, Model):
         response_data = self.complete_json(user_text, system_prompt=system_prompt)
         response_text = json.dumps(response_data) if isinstance(response_data, dict) else str(response_data)
 
+        # Check if Strands is requesting structured output via a tool
+        structured_tool_name = None
+        if tool_specs:
+            for spec in tool_specs:
+                desc = (spec.get("description") or "").lower()
+                if "structuredoutputtool" in desc or "structured_output" in desc:
+                    structured_tool_name = spec.get("name", "structured_output")
+                    break
+
         yield {"messageStart": {"role": "assistant"}}
-        yield {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}
-        yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": response_text}}}
-        yield {"contentBlockStop": {"contentBlockIndex": 0}}
+
+        if structured_tool_name:
+            # Yield a tool-use block so Strands' structured output flow works
+            tool_use_id = f"dummy_tool_{structured_tool_name}"
+            yield {
+                "contentBlockStart": {
+                    "contentBlockIndex": 0,
+                    "start": {
+                        "toolUse": {"toolUseId": tool_use_id, "name": structured_tool_name},
+                    },
+                },
+            }
+            yield {
+                "contentBlockDelta": {
+                    "contentBlockIndex": 0,
+                    "delta": {"toolUse": {"input": response_text}},
+                },
+            }
+            yield {"contentBlockStop": {"contentBlockIndex": 0}}
+        else:
+            yield {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}
+            yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": response_text}}}
+            yield {"contentBlockStop": {"contentBlockIndex": 0}}
+
         yield {
-            "messageStop": {"stopReason": "end_turn"},
+            "messageStop": {"stopReason": "tool_use" if structured_tool_name else "end_turn"},
             "metadata": {
                 "usage": {"inputTokens": len(user_text) // 4, "outputTokens": len(response_text) // 4, "totalTokens": (len(user_text) + len(response_text)) // 4},
                 "metrics": {"latencyMs": 1},
