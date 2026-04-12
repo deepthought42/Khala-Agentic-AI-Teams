@@ -75,7 +75,8 @@
                    [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
                    class="nav-link"
                    [class.nav-link-nested]="item.nested"
-                   [attr.aria-current]="isActive(item.route) ? 'page' : null">
+                   [attr.aria-current]="isActive(item.route) ? 'page' : null"
+                   tabindex="0">
                   <mat-icon>{{ item.icon }}</mat-icon>
                   <span>{{ item.label }}</span>
                 </a>
