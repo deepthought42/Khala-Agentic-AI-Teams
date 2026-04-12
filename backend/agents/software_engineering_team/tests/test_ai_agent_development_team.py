@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from llm_service import DummyLLMClient
 from software_engineering_team.ai_agent_development_team.models import Phase
 from software_engineering_team.ai_agent_development_team.orchestrator import (
     AIAgentDevelopmentTeamLead,
@@ -9,7 +10,7 @@ from software_engineering_team.ai_agent_development_team.orchestrator import (
 from software_engineering_team.shared.models import Task, TaskType
 
 
-class FakeLLM:
+class FakeLLM(DummyLLMClient):
     def complete_json(self, prompt: str, **kwargs):
         if "spec intake specialist" in prompt:
             return {
