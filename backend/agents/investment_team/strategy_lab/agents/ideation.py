@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,6 +14,7 @@ from ...models import StrategyLabRecord
 from ...signal_intelligence_agent import brief_to_prompt_block
 from ...signal_intelligence_models import SignalIntelligenceBriefV1
 from ...strategy_lab_context import asset_class_mix_hint, format_prior_results
+from .model_factory import get_strands_model
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,6 @@ Return ONLY a JSON object with no markdown:
   "strategy_code": "COMPLETE Python code implementing run_strategy(data, config) -> list"
 }}
 """
-
-
-def _get_model() -> str:
-    return os.environ.get("LLM_MODEL", os.environ.get("ARCHITECT_MODEL_SPECIALIST", "us.anthropic.claude-sonnet-4-20250514-v1:0"))
 
 
 class IdeationAgent:
@@ -101,7 +97,7 @@ class IdeationAgent:
         )
 
         agent = Agent(
-            model=_get_model(),
+            model=get_strands_model("strategy_ideation"),
             system_prompt=system_prompt,
             tools=[],
         )

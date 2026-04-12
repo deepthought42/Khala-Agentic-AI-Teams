@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
@@ -12,6 +11,7 @@ from typing import Any, Dict, List
 from strands import Agent
 
 from ...models import BacktestResult, StrategySpec, TradeRecord
+from .model_factory import get_strands_model
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +47,6 @@ Outcome label: {outcome_label}
 Return ONLY JSON with no markdown:
 {{"revised_narrative": "...", "verification_notes": "..."}}
 """
-
-
-def _get_model() -> str:
-    return os.environ.get("LLM_MODEL", os.environ.get("ARCHITECT_MODEL_SPECIALIST", "us.anthropic.claude-sonnet-4-20250514-v1:0"))
 
 
 class AnalysisAgent:
@@ -97,7 +93,7 @@ class AnalysisAgent:
             simulated_trades_section=trades_summary,
         )
 
-        agent = Agent(model=_get_model(), system_prompt=system_prompt, tools=[])
+        agent = Agent(model=get_strands_model("strategy_ideation"), system_prompt=system_prompt, tools=[])
 
         try:
             draft_result = agent(draft_prompt)
@@ -137,7 +133,7 @@ class AnalysisAgent:
             "You correct any contradiction or overclaim before signing off."
         )
 
-        review_agent = Agent(model=_get_model(), system_prompt=review_system, tools=[])
+        review_agent = Agent(model=get_strands_model("strategy_ideation"), system_prompt=review_system, tools=[])
 
         try:
             review_result = review_agent(review_prompt)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from strands import Agent
 
 from ...models import BacktestResult, StrategySpec
+from .model_factory import get_strands_model
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,6 @@ Return ONLY a JSON object with no markdown:
 """
 
 
-def _get_model() -> str:
-    return os.environ.get("LLM_MODEL", os.environ.get("ARCHITECT_MODEL_SPECIALIST", "us.anthropic.claude-sonnet-4-20250514-v1:0"))
 
 
 class RefinementAgent:
@@ -114,7 +112,7 @@ class RefinementAgent:
         )
 
         agent = Agent(
-            model=_get_model(),
+            model=get_strands_model("strategy_ideation"),
             system_prompt=system_prompt,
             tools=[],
         )
