@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from llm_service import get_strands_model
 from strands import Agent
 from software_engineering_team.shared.models import Task
@@ -11,17 +13,19 @@ from ..prompts import PLANNING_PROMPT
 
 
 def run_planning(
-    *, llm: LLMClient, task: Task, intake_result: IntakeResult, spec_content: str
+    *, llm=None, task: Task, intake_result: IntakeResult, spec_content: str
 ) -> PlanningResult:
     prompt = (
-        f"{PLANNING_PROMPT}\n\n"
         f"Goal: {intake_result.system_goal}\n"
         f"Constraints: {intake_result.constraints}\n"
         f"Metrics: {intake_result.success_metrics}\n"
         f"Task: {task.description}\n"
         f"Spec:\n{(spec_content or '')[:7000]}"
     )
-    raw = llm.complete_json(prompt, think=True)
+    agent = Agent(model=get_strands_model(), system_prompt=PLANNING_PROMPT)
+    result = agent(prompt)
+    raw_text = (result.message if hasattr(result, "message") else str(result)).strip()
+    raw = json.loads(raw_text)
     microtasks = []
     for item in raw.get("microtasks") or []:
         if not isinstance(item, dict) or not item.get("id"):

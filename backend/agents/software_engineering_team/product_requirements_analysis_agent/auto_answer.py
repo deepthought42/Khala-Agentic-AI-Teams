@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from .models import AutoAnswerResult, OpenQuestion, QuestionOption
 from .prompts import AUTO_ANSWER_PROMPT
 
-if TYPE_CHECKING:
-    from llm_service import LLMClient
+import json
+
+from llm_service import get_strands_model
+from strands import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +118,10 @@ def auto_answer_question(
     )
 
     try:
-        raw = llm.complete_json(prompt, think=True)
+        agent = Agent(model=get_strands_model("product_analysis"), system_prompt="Respond with valid JSON only.")
+        agent_result = agent(prompt)
+        raw_text = (agent_result.message if hasattr(agent_result, "message") else str(agent_result)).strip()
+        raw = json.loads(raw_text)
         result = _parse_auto_answer_response(raw, question)
         logger.info(
             "Auto-answered question %s: selected %s with confidence %.2f",

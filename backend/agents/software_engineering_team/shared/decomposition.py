@@ -342,7 +342,15 @@ class RecursiveProcessor(Generic[T]):
         try:
             if process_fn:
                 return process_fn(prompt)
-            return llm.complete_json(prompt, think=True)
+            import json as _json
+
+            from llm_service import get_strands_model
+            from strands import Agent as _Agent
+
+            _agent = _Agent(model=get_strands_model())
+            _result = _agent(prompt)
+            _raw = (_result.message if hasattr(_result, "message") else str(_result)).strip()
+            return _json.loads(_raw)
         except LLMTruncatedError as e:
             context.add_partial_response(e.partial_content)
             if not context.continuation_attempted:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Callable, Optional
 
@@ -20,10 +21,6 @@ from shared.content_plan import (
 from shared.content_profile import LengthPolicy
 from shared.errors import PlanningError
 from shared.planning_config import planning_max_iterations, planning_max_parse_retries
-
-import re
-from typing import Any as _Any
-
 from strands import Agent
 
 from .json_utils import parse_json_object
