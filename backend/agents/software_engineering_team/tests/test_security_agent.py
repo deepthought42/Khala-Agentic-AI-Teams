@@ -93,6 +93,18 @@ def test_security_agent_derives_approved_from_severities() -> None:
     assert result.vulnerabilities[0].category == "injection"
 
 
+def test_multiple_run_calls_on_same_instance_succeed() -> None:
+    """Regression: a single ``CybersecurityExpertAgent`` instance must
+    handle many sequential ``run()`` calls. See
+    test_code_review_agent.py::test_multiple_run_calls_on_same_instance_succeed
+    for the root-cause details."""
+    agent = CybersecurityExpertAgent(DummyLLMClient())
+    for i in range(4):
+        result = agent.run(_input(code=f"def f{i}(): return {i}"))
+        assert isinstance(result, SecurityOutput), f"run {i} did not return SecurityOutput"
+        assert result.approved is True, f"run {i} failed: {result.summary}"
+
+
 def test_security_agent_only_critical_high_flip_approved() -> None:
     """Medium/low-only vulnerabilities should keep approved=True."""
 

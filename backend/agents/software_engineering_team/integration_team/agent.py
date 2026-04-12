@@ -28,13 +28,12 @@ class IntegrationAgent:
 
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
-        model = LLMClientModel(
+        self._model = LLMClientModel(
             llm_client,
             agent_key="integration",
             temperature=0.1,
             think=True,
         )
-        self._agent = Agent(model=model, system_prompt=INTEGRATION_PROMPT)
 
     def run(self, input_data: IntegrationInput) -> IntegrationOutput:
         """Analyze backend and frontend code for integration/contract issues."""
@@ -46,8 +45,15 @@ class IntegrationAgent:
 
         user_prompt = self._build_user_prompt(input_data)
 
+        # A fresh Strands Agent per call. Strands' Agent accumulates message
+        # history across invocations; reusing the same instance breaks the
+        # forced-tool-choice mechanism used by ``structured_output_model``
+        # on the second call. Construction is cheap — it just wraps the
+        # cached model reference with a system_prompt.
+        agent = Agent(model=self._model, system_prompt=INTEGRATION_PROMPT)
+
         try:
-            agent_result = self._agent(user_prompt, structured_output_model=IntegrationOutput)
+            agent_result = agent(user_prompt, structured_output_model=IntegrationOutput)
             result = agent_result.structured_output
             if not isinstance(result, IntegrationOutput):
                 raise TypeError(

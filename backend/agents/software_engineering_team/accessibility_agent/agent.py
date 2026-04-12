@@ -28,13 +28,12 @@ class AccessibilityExpertAgent:
 
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
-        model = LLMClientModel(
+        self._model = LLMClientModel(
             llm_client,
             agent_key="accessibility",
             temperature=0.1,
             think=True,
         )
-        self._agent = Agent(model=model, system_prompt=ACCESSIBILITY_PROMPT)
 
     def run(self, input_data: AccessibilityInput) -> AccessibilityOutput:
         """Review code for WCAG 2.2 compliance and produce issue list."""
@@ -42,8 +41,13 @@ class AccessibilityExpertAgent:
 
         user_prompt = self._build_user_prompt(input_data)
 
+        # A fresh Strands Agent per call — reusing the same instance across
+        # calls breaks structured_output forced-tool-choice on the second
+        # call (Strands accumulates message history).
+        agent = Agent(model=self._model, system_prompt=ACCESSIBILITY_PROMPT)
+
         try:
-            agent_result = self._agent(user_prompt, structured_output_model=AccessibilityOutput)
+            agent_result = agent(user_prompt, structured_output_model=AccessibilityOutput)
             result = agent_result.structured_output
             if not isinstance(result, AccessibilityOutput):
                 raise TypeError(

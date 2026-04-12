@@ -34,21 +34,19 @@ class QAExpertAgent:
 
     def __init__(self, llm_client: LLMClient) -> None:
         assert llm_client is not None, "llm_client is required"
-        model = LLMClientModel(
+        self._model = LLMClientModel(
             llm_client,
             agent_key="qa",
             temperature=0.1,
             think=True,
         )
-        # Build one Strands Agent per request mode. Constructing an Agent is
-        # cheap (it just stores the model reference + system_prompt string),
-        # and this keeps the per-call path allocation-free.
-        self._agents: Dict[str, Agent] = {
-            "default": Agent(model=model, system_prompt=QA_PROMPT),
-            "fix_build": Agent(model=model, system_prompt=QA_PROMPT + "\n\n" + QA_PROMPT_FIX_BUILD),
-            "write_tests": Agent(
-                model=model, system_prompt=QA_PROMPT + "\n\n" + QA_PROMPT_WRITE_TESTS
-            ),
+        # One system prompt per request mode. A fresh Strands Agent is
+        # constructed per ``run()`` call in :meth:`run` using the selected
+        # persona; see the note there for why agents are not cached.
+        self._system_prompts: Dict[str, str] = {
+            "default": QA_PROMPT,
+            "fix_build": QA_PROMPT + "\n\n" + QA_PROMPT_FIX_BUILD,
+            "write_tests": QA_PROMPT + "\n\n" + QA_PROMPT_WRITE_TESTS,
         }
 
     def run(self, input_data: QAInput) -> QAOutput:
@@ -60,8 +58,14 @@ class QAExpertAgent:
             mode,
         )
 
-        agent = self._agents[mode]
         user_prompt = self._build_user_prompt(input_data)
+
+        # A fresh Strands Agent per call. Strands' Agent accumulates
+        # message history across invocations; reusing the same instance
+        # breaks the forced-tool-choice mechanism used by
+        # ``structured_output_model`` on the second call. Construction is
+        # cheap — it just wraps the cached model + system_prompt.
+        agent = Agent(model=self._model, system_prompt=self._system_prompts[mode])
 
         try:
             agent_result = agent(user_prompt, structured_output_model=QAOutput)

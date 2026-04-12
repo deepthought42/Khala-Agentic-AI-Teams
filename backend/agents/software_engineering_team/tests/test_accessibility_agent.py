@@ -62,6 +62,20 @@ def test_accessibility_agent_derives_approved_from_severities() -> None:
     assert result.issues[0].wcag_criterion == "1.1.1"
 
 
+def test_multiple_run_calls_on_same_instance_succeed() -> None:
+    """Regression: a single ``AccessibilityExpertAgent`` instance must
+    handle many sequential ``run()`` calls. See
+    test_code_review_agent.py::test_multiple_run_calls_on_same_instance_succeed
+    for the root-cause details."""
+    agent = AccessibilityExpertAgent(DummyLLMClient())
+    for i in range(4):
+        result = agent.run(_input(code=f"<button>Click {i}</button>"))
+        assert isinstance(result, AccessibilityOutput), (
+            f"run {i} did not return AccessibilityOutput"
+        )
+        assert result.approved is True, f"run {i} failed: {result.summary}"
+
+
 def test_accessibility_agent_medium_only_keeps_approved_true() -> None:
     class _MediumOnlyClient(DummyLLMClient):
         def complete_json(

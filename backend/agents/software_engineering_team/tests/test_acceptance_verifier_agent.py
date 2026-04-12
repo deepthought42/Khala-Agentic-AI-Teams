@@ -84,6 +84,20 @@ def test_acceptance_verifier_derives_all_satisfied_from_per_criterion() -> None:
     assert result.per_criterion[1].satisfied is False
 
 
+def test_multiple_run_calls_on_same_instance_succeed() -> None:
+    """Regression: a single ``AcceptanceVerifierAgent`` instance must
+    handle many sequential ``run()`` calls. See
+    test_code_review_agent.py::test_multiple_run_calls_on_same_instance_succeed
+    for the root-cause details."""
+    agent = AcceptanceVerifierAgent(DummyLLMClient())
+    for i in range(4):
+        result = agent.run(_input(task_description=f"Task {i}"))
+        assert isinstance(result, AcceptanceVerifierOutput), (
+            f"run {i} did not return AcceptanceVerifierOutput"
+        )
+        assert result.all_satisfied is True, f"run {i} failed: {result.summary}"
+
+
 def test_acceptance_verifier_respects_all_satisfied_when_per_criterion_empty() -> None:
     """If the LLM returns an empty per_criterion list but sets all_satisfied,
     we trust the top-level flag (no re-derivation possible)."""

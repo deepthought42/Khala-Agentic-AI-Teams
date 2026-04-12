@@ -165,6 +165,19 @@ def test_qa_expert_agent_derives_approved_from_bug_severities() -> None:
     assert result.bugs_found[0].severity == "critical"
 
 
+def test_multiple_run_calls_on_same_instance_succeed() -> None:
+    """Regression: a single ``QAExpertAgent`` instance must handle many
+    ``run()`` calls in sequence across different request modes. See
+    test_code_review_agent.py::test_multiple_run_calls_on_same_instance_succeed
+    for the root-cause details."""
+    agent = QAExpertAgent(DummyLLMClient())
+    modes: list[str | None] = [None, "write_tests", None, "write_tests"]
+    for i, mode in enumerate(modes):
+        result = agent.run(_input(request_mode=mode))
+        assert isinstance(result, QAOutput), f"run {i} (mode={mode}) did not return QAOutput"
+        assert result.approved is True, f"run {i} (mode={mode}) failed: {result.summary}"
+
+
 def test_qa_expert_agent_falls_back_on_validation_error() -> None:
     """A malformed LLM response must not crash the pipeline."""
 
