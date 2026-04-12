@@ -929,13 +929,14 @@ def _run_one_strategy_lab_cycle(
         exclude_asset_classes=exclude_asset_classes,
     )
 
-    # Persist to in-memory stores
+    # Attach signal brief before persisting (PersistentDict serializes at assignment)
+    if signal_brief_storage and not record.signal_intelligence_brief:
+        record.signal_intelligence_brief = signal_brief_storage
+
     with _lock:
         _strategy_lab_records[record.lab_record_id] = record
         _strategies[record.strategy.strategy_id] = record.strategy
         _backtests[record.backtest.backtest_id] = record.backtest
-        if signal_brief_storage and not record.signal_intelligence_brief:
-            record.signal_intelligence_brief = signal_brief_storage
 
     return record
 

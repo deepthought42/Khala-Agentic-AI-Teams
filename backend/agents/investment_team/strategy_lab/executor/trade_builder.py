@@ -11,6 +11,8 @@ from typing import Any, Dict, List
 
 from ...models import BacktestConfig, TradeRecord
 
+_VALID_SIDES = frozenset({"long", "short"})
+
 
 def build_trade_records(
     raw_trades: List[Dict[str, Any]],
@@ -19,17 +21,33 @@ def build_trade_records(
     """Convert raw trade dicts into TradeRecords with slippage and costs applied.
 
     Each raw trade must have: symbol, side, entry_date, entry_price, exit_date,
-    exit_price, shares.  This function applies slippage to prices, computes PnL
-    after transaction costs, and builds the cumulative PnL series.
+    exit_price, shares.  Trades are sorted chronologically by exit_date (then
+    entry_date as tiebreaker) before numbering and accumulating cumulative PnL,
+    so that equity-curve metrics are order-independent of how the strategy code
+    emitted them.
+
+    Raises:
+        ValueError: If any trade has a ``side`` other than "long" or "short".
     """
     slippage_mult = config.slippage_bps / 10_000
     cost_mult = config.transaction_cost_bps / 10_000
 
+    # Sort chronologically so cumulative PnL / equity curve are correct
+    sorted_trades = sorted(
+        raw_trades,
+        key=lambda t: (str(t.get("exit_date", ""))[:10], str(t.get("entry_date", ""))[:10]),
+    )
+
     records: List[TradeRecord] = []
     cumulative_pnl = 0.0
 
-    for i, raw in enumerate(raw_trades):
-        side = str(raw["side"]).lower()
+    for i, raw in enumerate(sorted_trades):
+        side = str(raw["side"]).lower().strip()
+        if side not in _VALID_SIDES:
+            raise ValueError(
+                f"Trade {i} has invalid side '{raw['side']}'. Must be 'long' or 'short'."
+            )
+
         entry_price = float(raw["entry_price"])
         exit_price = float(raw["exit_price"])
         shares = abs(float(raw["shares"]))
@@ -41,17 +59,13 @@ def build_trade_records(
         if side == "long":
             adj_entry = entry_price * (1 + slippage_mult)
             adj_exit = exit_price * (1 - slippage_mult)
+            gross_pnl = (adj_exit - adj_entry) * shares
         else:
             adj_entry = entry_price * (1 - slippage_mult)
             adj_exit = exit_price * (1 + slippage_mult)
+            gross_pnl = (adj_entry - adj_exit) * shares
 
         position_value = adj_entry * shares
-
-        # Gross PnL
-        if side == "long":
-            gross_pnl = (adj_exit - adj_entry) * shares
-        else:
-            gross_pnl = (adj_entry - adj_exit) * shares
 
         # Transaction costs (entry + exit)
         tx_costs = position_value * cost_mult * 2

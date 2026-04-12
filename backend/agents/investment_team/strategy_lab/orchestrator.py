@@ -217,7 +217,23 @@ class StrategyLabOrchestrator:
             })
 
             # ── 2d: BUILD TRADES + EVALUATE ───────────────────────────
-            trades = build_trade_records(exec_result.raw_trades, config)
+            try:
+                trades = build_trade_records(exec_result.raw_trades, config)
+            except ValueError as ve:
+                all_gate_results.append(QualityGateResult(
+                    gate_name="trade_validation", passed=False, severity="critical",
+                    details=f"Invalid trade output: {ve}",
+                ))
+                if round_num < MAX_REFINEMENT_ROUNDS:
+                    emit("refining", {"sub_phase": "started", "refinement_round": round_num, "failure_phase": "execution"})
+                    updates, code = self._refine(spec, code, "execution", str(ve), None, refinement_attempts)
+                    spec = self._apply_updates(spec, updates, code)
+                    changes = updates.get("changes_made", "trade validation fix")
+                    refinement_attempts.append(changes)
+                    emit("refining", {"sub_phase": "completed", "refinement_round": round_num, "changes_made": changes})
+                    continue
+                else:
+                    break
             metrics = compute_metrics(trades, config.initial_capital, config.start_date, config.end_date)
 
             anomaly_gates = self.anomaly_detector.check(metrics, trades)
