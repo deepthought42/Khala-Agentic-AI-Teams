@@ -187,9 +187,19 @@ class MarketResearchOrchestrator:
         market_signals = _parse_signals_from_text(psych_text) if psych_text else []
 
         if is_split:
-            consistency_text = extract_node_text(result, "consistency")
-            consistency_signals = _parse_signals_from_text(consistency_text) if consistency_text else []
-            market_signals.extend(consistency_signals)
+            if not loaded:
+                # No transcripts → deterministic fallback (no LLM call needed)
+                market_signals.append(MarketSignal(
+                    signal="Cross-interview theme consistency",
+                    confidence=0.55,
+                    evidence=[
+                        "Insufficient transcript volume for consistency scoring; collect 5+ interviews."
+                    ],
+                ))
+            else:
+                consistency_text = extract_node_text(result, "consistency")
+                consistency_signals = _parse_signals_from_text(consistency_text) if consistency_text else []
+                market_signals.extend(consistency_signals)
 
         # Ensure minimum signals
         while len(market_signals) < 2:

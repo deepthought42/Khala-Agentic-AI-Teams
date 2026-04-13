@@ -76,31 +76,30 @@ def test_orchestrator_split_mode_adds_consistency_signal_for_empty_inputs() -> N
 def test_orchestrator_consistency_signal_survives_null_signal_name(monkeypatch) -> None:
     """LLM returns {"signal": null, ...} — should fall back to the default signal name."""
 
-    insight_json = json.dumps(
-        {
-            "user_jobs": ["j1"],
-            "pain_points": ["p1"],
-            "desired_outcomes": ["o1"],
-            "direct_quotes": [],
-        }
-    )
-    signals_json = json.dumps(
-        [
-            {"signal": "User pain urgency", "confidence": 0.7, "evidence": ["e1"]},
-            {"signal": "Adoption motivation clarity", "confidence": 0.6, "evidence": ["e2"]},
-        ]
+    null_consistency_json = json.dumps({"signal": None, "confidence": 0.6, "evidence": ["theme A"]})
+
+    # Override extract_node_text to return null-signal consistency for the consistency node
+    from market_research_team.tests.conftest import (
+        SAMPLE_INSIGHT_JSON,
+        SAMPLE_SCRIPTS_JSON,
+        SAMPLE_SIGNALS_JSON,
+        SAMPLE_VIABILITY_JSON,
     )
 
-    def _fake_call(agent, prompt):
-        prompt_lower = prompt.lower()
-        if "consistency" in prompt_lower or "cross-interview" in prompt_lower:
-            return json.dumps({"signal": None, "confidence": 0.6, "evidence": ["theme A"]})
-        if "transcript" in prompt_lower and "analyze" in prompt_lower:
-            return insight_json
-        return signals_json
+    def _custom_extract(result, node_id):
+        if node_id == "consistency":
+            return null_consistency_json
+        if node_id == "ux_research":
+            return SAMPLE_INSIGHT_JSON
+        if node_id == "psychology":
+            return SAMPLE_SIGNALS_JSON
+        if node_id == "viability_synthesis":
+            return SAMPLE_VIABILITY_JSON
+        if node_id == "scripts":
+            return SAMPLE_SCRIPTS_JSON
+        return ""
 
-    monkeypatch.setattr("market_research_team.orchestrator._call_agent", _fake_call)
-    monkeypatch.setattr("market_research_team.agents._call_agent", _fake_call)
+    monkeypatch.setattr("market_research_team.orchestrator.extract_node_text", _custom_extract)
 
     orchestrator = MarketResearchOrchestrator()
     mission = ResearchMission(
