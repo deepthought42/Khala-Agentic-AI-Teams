@@ -15,7 +15,8 @@ export type JobSource =
   | 'ai_systems'
   | 'agent_provisioning'
   | 'social_marketing'
-  | 'investment';
+  | 'investment'
+  | 'user_agent_founder';
 
 export interface UnifiedJobSummary {
   jobId: string;
@@ -134,6 +135,26 @@ export function fromInvestmentJobSummary(s: InvestmentJobSummary): UnifiedJobSum
   };
 }
 
+export interface FounderJobSummary {
+  job_id: string;
+  status: string;
+  label?: string;
+  current_phase?: string;
+  created_at?: string;
+  error?: string;
+}
+
+export function fromFounderJobSummary(s: FounderJobSummary): UnifiedJobSummary {
+  return {
+    jobId: s.job_id,
+    status: s.status,
+    source: 'user_agent_founder',
+    label: s.label ?? 'Persona: founder workflow',
+    createdAt: s.created_at,
+    phase: s.current_phase,
+  };
+}
+
 /** Team display metadata for the Team column and navigation. */
 export const SOURCE_DISPLAY: Record<
   JobSource,
@@ -145,4 +166,5 @@ export const SOURCE_DISPLAY: Record<
   agent_provisioning: { label: 'Agent Provisioning', icon: 'settings', route: '/agent-provisioning' },
   social_marketing: { label: 'Social Marketing', icon: 'campaign', route: '/social-marketing' },
   investment: { label: 'Investment', icon: 'trending_up', route: '/investment/strategy-lab' },
+  user_agent_founder: { label: 'Persona Testing', icon: 'person_search', route: '/persona-testing' },
 };

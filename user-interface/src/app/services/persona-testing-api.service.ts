@@ -3,6 +3,7 @@ import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import type {
+  FounderJobSummary,
   PersonaInfo,
   PersonaTestRun,
   PersonaTestRunDetail,
@@ -40,5 +41,20 @@ export class PersonaTestingApiService {
 
   getRunArtifacts(runId: string): Observable<RunArtifacts> {
     return this.http.get<RunArtifacts>(`${this.baseUrl}/runs/${runId}/artifacts`);
+  }
+
+  listJobs(runningOnly: boolean): Observable<{ jobs: FounderJobSummary[] }> {
+    const url = runningOnly
+      ? `${this.baseUrl}/jobs?running_only=true`
+      : `${this.baseUrl}/jobs`;
+    return this.http.get<{ jobs: FounderJobSummary[] }>(url);
+  }
+
+  cancelJob(jobId: string): Observable<unknown> {
+    return this.http.post(`${this.baseUrl}/job/${encodeURIComponent(jobId)}/cancel`, {});
+  }
+
+  deleteJob(jobId: string): Observable<unknown> {
+    return this.http.delete(`${this.baseUrl}/job/${encodeURIComponent(jobId)}`);
   }
 }

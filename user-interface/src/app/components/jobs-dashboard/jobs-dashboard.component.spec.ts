@@ -1,4 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { Router } from '@angular/router';
 import { of } from 'rxjs';
 import { vi } from 'vitest';
@@ -8,6 +10,7 @@ import { AISystemsApiService } from '../../services/ai-systems-api.service';
 import { AgentProvisioningApiService } from '../../services/agent-provisioning-api.service';
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { InvestmentApiService } from '../../services/investment-api.service';
+import { PersonaTestingApiService } from '../../services/persona-testing-api.service';
 import { JobsDashboardComponent } from './jobs-dashboard.component';
 
 describe('JobsDashboardComponent', () => {
@@ -47,17 +50,26 @@ describe('JobsDashboardComponent', () => {
     };
     const investmentApi = {
       listStrategyLabJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      deleteJob: vi.fn().mockReturnValue(of({ job_id: 'j1', deleted: true })),
+    };
+    const personaApi = {
+      listJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      cancelJob: vi.fn().mockReturnValue(of({ status: 'cancelled' })),
+      deleteJob: vi.fn().mockReturnValue(of({ deleted: 'true' })),
     };
 
     await TestBed.configureTestingModule({
       imports: [JobsDashboardComponent],
       providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
         { provide: SoftwareEngineeringApiService, useValue: seApi },
         { provide: BloggingApiService, useValue: bloggingApi },
         { provide: AISystemsApiService, useValue: aiApi },
         { provide: AgentProvisioningApiService, useValue: provApi },
         { provide: SocialMarketingApiService, useValue: socialApi },
         { provide: InvestmentApiService, useValue: investmentApi },
+        { provide: PersonaTestingApiService, useValue: personaApi },
         { provide: Router, useValue: routerSpy },
       ],
     }).compileComponents();
@@ -161,12 +173,15 @@ describe('JobsDashboardComponent', () => {
   });
 
   describe('canDeleteJob', () => {
-    it('returns true for software_engineering, blogging, agent_provisioning, ai_systems, social_marketing', () => {
-      expect(component.canDeleteJob({ unified: { source: 'software_engineering' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'blogging' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'agent_provisioning' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'ai_systems' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'social_marketing' } } as any)).toBe(true);
+    it('returns true for terminal job statuses', () => {
+      expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'completed' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'failed' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'investment', status: 'cancelled' } } as any)).toBe(true);
+    });
+
+    it('returns false for running or pending jobs', () => {
+      expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'running' } } as any)).toBe(false);
+      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'pending' } } as any)).toBe(false);
     });
   });
 });

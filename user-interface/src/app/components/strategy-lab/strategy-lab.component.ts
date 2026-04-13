@@ -17,6 +17,8 @@ import { Subscription, timer, switchMap, takeWhile } from 'rxjs';
 
 import { InvestmentApiService } from '../../services/investment-api.service';
 import type {
+  PaperTradingSession,
+  QualityGateResult,
   StrategyLabRecord,
   StrategyLabResultsResponse,
   StrategyLabRunStatus,
@@ -142,22 +144,45 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
 
   @ViewChild('logContainer') logContainer?: ElementRef<HTMLElement>;
 
+  // Paper trading state
+  paperTradingSessions = new Map<string, PaperTradingSession[]>();
+  paperTradingInProgress = new Set<string>();
+
   ngOnInit(): void {
     this.loadResults();
     this.checkForActiveRun();
+    this.loadPaperTradingSessions();
   }
 
   ngOnDestroy(): void {
     this.sseSub?.unsubscribe();
     this.pollSub?.unsubscribe();
+    this.activeRunCheckSub?.unsubscribe();
   }
 
   // ---------------------------------------------------------------------------
   // Active run detection (for navigate-away-and-back)
   // ---------------------------------------------------------------------------
 
+  private activeRunCheckSub: Subscription | null = null;
+
+  /**
+   * Poll for active runs a few times on page load so that a running job
+   * is always picked up — even if the first request races with the
+   * backend becoming ready or the in-memory cache being repopulated.
+   */
   private checkForActiveRun(): void {
-    this.api.getActiveRuns().subscribe({
+    // Poll up to 4 times (0s, 3s, 6s, 9s), stop as soon as we find one
+    // or if a run was started locally via runNewStrategy().
+    this.activeRunCheckSub?.unsubscribe();
+    let attempts = 0;
+    this.activeRunCheckSub = timer(0, 3000).pipe(
+      takeWhile(() => attempts < 4 && !this.running),
+      switchMap(() => {
+        attempts++;
+        return this.api.getActiveRuns();
+      }),
+    ).subscribe({
       next: (res) => {
         const active = res.runs.find((r) => r.status === 'running');
         if (active) {
@@ -165,6 +190,7 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
           this.runStatus = active;
           this.running = true;
           this.connectToStream(active.run_id);
+          this.activeRunCheckSub?.unsubscribe();
         }
       },
     });
@@ -513,6 +539,75 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
 
   hasSignalBrief(record: StrategyLabRecord): boolean {
     return record.signal_intelligence_brief != null && Object.keys(record.signal_intelligence_brief).length > 0;
+  }
+
+  /**
+   * A failed gate is "remedied" if it failed in an earlier refinement round
+   * and the final round produced a passing result (i.e. `refinement_rounds > 0`
+   * and this gate's round is not the last one that ran).
+   */
+  isRemedied(gate: QualityGateResult, record: StrategyLabRecord): boolean {
+    if (gate.passed) return false;
+    const maxRound = record.refinement_rounds ?? 0;
+    if (maxRound === 0) return false;
+    // Gate failed in an earlier round — the strategy continued past it
+    return (gate.refinement_round ?? 0) < maxRound;
+  }
+
+  gateIcon(gate: QualityGateResult, record: StrategyLabRecord): string {
+    if (gate.passed) return 'check_circle';
+    if (this.isRemedied(gate, record)) return 'build_circle';
+    return gate.severity === 'critical' ? 'cancel' : 'warning';
+  }
+
+  gateSeverityClass(gate: QualityGateResult, record: StrategyLabRecord): string {
+    if (this.isRemedied(gate, record)) return 'gate-remedied';
+    return 'gate-' + gate.severity;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paper Trading
+  // ---------------------------------------------------------------------------
+
+  loadPaperTradingSessions(): void {
+    this.api.getPaperTradingResults().subscribe({
+      next: (res) => {
+        this.paperTradingSessions.clear();
+        for (const session of res.items) {
+          const existing = this.paperTradingSessions.get(session.lab_record_id) ?? [];
+          existing.push(session);
+          this.paperTradingSessions.set(session.lab_record_id, existing);
+        }
+      },
+    });
+  }
+
+  getPaperSessions(labRecordId: string): PaperTradingSession[] {
+    return this.paperTradingSessions.get(labRecordId) ?? [];
+  }
+
+  startPaperTrade(record: StrategyLabRecord): void {
+    const id = record.lab_record_id;
+    if (this.paperTradingInProgress.has(id)) return;
+    this.paperTradingInProgress.add(id);
+    this.error = null;
+
+    this.api.startPaperTrade(id).subscribe({
+      next: (res) => {
+        this.paperTradingInProgress.delete(id);
+        const existing = this.paperTradingSessions.get(id) ?? [];
+        existing.unshift(res.session);
+        this.paperTradingSessions.set(id, existing);
+      },
+      error: (err) => {
+        this.paperTradingInProgress.delete(id);
+        this.error = err?.error?.detail || err?.message || 'Paper trading failed.';
+      },
+    });
+  }
+
+  hasPaperSessions(labRecordId: string): boolean {
+    return (this.paperTradingSessions.get(labRecordId)?.length ?? 0) > 0;
   }
 
   deleteRecord(record: StrategyLabRecord): void {

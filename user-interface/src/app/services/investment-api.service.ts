@@ -31,6 +31,8 @@ import type {
   InvestmentJobsListResponse,
   DeleteStrategyLabRecordResponse,
   ClearStrategyLabStorageResponse,
+  PaperTradingResponse,
+  PaperTradingResultsResponse,
   StartAdvisorSessionRequest,
   SendAdvisorMessageRequest,
   AdvisorSessionResponse,
@@ -220,6 +222,12 @@ export class InvestmentApiService {
     );
   }
 
+  deleteJob(runId: string): Observable<{ job_id: string; deleted: boolean }> {
+    return this.http.delete<{ job_id: string; deleted: boolean }>(
+      `${this.baseUrl}/strategy-lab/runs/${encodeURIComponent(runId)}`
+    );
+  }
+
   listStrategyLabJobs(runningOnly = false): Observable<InvestmentJobsListResponse> {
     return this.http.get<InvestmentJobsListResponse>(
       `${this.baseUrl}/strategy-lab/jobs`,
@@ -247,6 +255,34 @@ export class InvestmentApiService {
   clearStrategyLabStorage(): Observable<ClearStrategyLabStorageResponse> {
     return this.http.delete<ClearStrategyLabStorageResponse>(
       `${this.baseUrl}/strategy-lab/storage`
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paper Trading
+  // ---------------------------------------------------------------------------
+
+  startPaperTrade(labRecordId: string): Observable<PaperTradingResponse> {
+    return this.http.post<PaperTradingResponse>(
+      `${this.baseUrl}/strategy-lab/paper-trade`,
+      { lab_record_id: labRecordId }
+    );
+  }
+
+  getPaperTradingResults(verdict?: string): Observable<PaperTradingResultsResponse> {
+    const params: Record<string, string> = {};
+    if (verdict) {
+      params['verdict'] = verdict;
+    }
+    return this.http.get<PaperTradingResultsResponse>(
+      `${this.baseUrl}/strategy-lab/paper-trade/results`,
+      { params }
+    );
+  }
+
+  getPaperTradingSession(sessionId: string): Observable<PaperTradingResponse> {
+    return this.http.get<PaperTradingResponse>(
+      `${this.baseUrl}/strategy-lab/paper-trade/${encodeURIComponent(sessionId)}`
     );
   }
 

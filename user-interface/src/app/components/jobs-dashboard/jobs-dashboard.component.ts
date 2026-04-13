@@ -14,6 +14,7 @@ import { AISystemsApiService } from '../../services/ai-systems-api.service';
 import { AgentProvisioningApiService } from '../../services/agent-provisioning-api.service';
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { InvestmentApiService } from '../../services/investment-api.service';
+import { PersonaTestingApiService } from '../../services/persona-testing-api.service';
 import { JobActionsService } from '../../services/job-actions.service';
 import type {
   RunningJobSummary,
@@ -33,6 +34,7 @@ import {
   fromProvisionJobSummary,
   fromSocialMarketingJobListItem,
   fromInvestmentJobSummary,
+  fromFounderJobSummary,
 } from '../../models';
 
 /** Job type metadata for SE display. */
@@ -97,6 +99,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   private readonly agentProvisioningApi = inject(AgentProvisioningApiService);
   private readonly socialMarketingApi = inject(SocialMarketingApiService);
   private readonly investmentApi = inject(InvestmentApiService);
+  private readonly personaApi = inject(PersonaTestingApiService);
   private readonly jobActions = inject(JobActionsService);
   private readonly router = inject(Router);
 
@@ -158,8 +161,9 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       prov: this.agentProvisioningApi.listJobs(false).pipe(catchError(() => of({ jobs: [] }))),
       social: this.socialMarketingApi.listJobs(false).pipe(catchError(() => of([]))),
       investment: this.investmentApi.listStrategyLabJobs(false).pipe(catchError(() => of({ jobs: [] }))),
+      persona: this.personaApi.listJobs(false).pipe(catchError(() => of({ jobs: [] }))),
     }).pipe(
-      map(({ se, blogging, ai, prov, social, investment }) => {
+      map(({ se, blogging, ai, prov, social, investment, persona }) => {
         this.seFetchError = (se as { _error?: string })._error ?? null;
         const seJobs = (se as { jobs: RunningJobSummary[] }).jobs;
         type RowWithSe = DashboardRow & { seSummary?: RunningJobSummary };
@@ -181,6 +185,9 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
         }
         for (const s of investment.jobs ?? []) {
           rows.push({ unified: fromInvestmentJobSummary(s) });
+        }
+        for (const s of persona.jobs ?? []) {
+          rows.push({ unified: fromFounderJobSummary(s) });
         }
         rows.sort((a, b) => (b.unified.createdAt ?? '').localeCompare(a.unified.createdAt ?? ''));
         return rows;
@@ -459,10 +466,7 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   }
 
   canDeleteJob(job: DashboardRow): boolean {
-    return [
-      'software_engineering', 'blogging', 'agent_provisioning',
-      'ai_systems', 'social_marketing', 'investment',
-    ].includes(job.unified.source);
+    return job.unified.status !== 'running' && job.unified.status !== 'pending';
   }
 
   trackByJobId(_index: number, job: DashboardRow): string {

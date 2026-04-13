@@ -149,10 +149,34 @@ class FounderAgent:
             system_prompt=FOUNDER_SYSTEM_PROMPT,
         )
 
-    def _call(self, prompt: str) -> str:
-        """Invoke the Strands agent and extract text."""
-        result = self._agent(prompt)
-        return str(result).strip()
+    def _call(self, prompt: str, *, max_retries: int = 3) -> str:
+        """Invoke the Strands agent and extract text.
+
+        Retries on transient LLM provider errors (500s, timeouts, connection
+        resets) with exponential backoff.
+        """
+        import time as _time
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = self._agent(prompt)
+                return str(result).strip()
+            except Exception as exc:
+                exc_text = str(exc).lower()
+                is_transient = any(k in exc_text for k in (
+                    "500", "502", "503", "504",
+                    "internal server error", "service unavailable",
+                    "timeout", "connection", "reset",
+                ))
+                if is_transient and attempt < max_retries:
+                    wait = 2 ** attempt * 5  # 5s, 10s, 20s
+                    logger.warning(
+                        "LLM call failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1, max_retries + 1, wait, str(exc)[:200],
+                    )
+                    _time.sleep(wait)
+                    continue
+                raise
 
     def generate_spec(self) -> str:
         """Generate the TaskFlow product specification."""
