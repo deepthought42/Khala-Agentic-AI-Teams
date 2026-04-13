@@ -1540,16 +1540,43 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
     Merges in-memory state with persisted job-service state so that
     running jobs are always visible — even after a page refresh that
     races with server startup or after the in-memory entry is evicted.
-    """
-    with _lock:
-        in_memory = {r["run_id"]: r for r in _active_runs.values()}
 
-    # Merge running/pending jobs from the persistent job service that
-    # may not be in _active_runs (e.g. after a server restart).
+    Also reconciles: if an in-memory run says "running" but the job service
+    has it as terminal (cancelled/failed/completed), the in-memory state is
+    updated to match — this handles external cancellation via the generic
+    job proxy or the Jobs Dashboard.
+    """
+    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+
     try:
         client = _get_lab_run_job_client()
-        persisted = client.list_jobs(statuses=["running", "pending"])
-        for job in persisted:
+
+        # Reconcile: if job service has a terminal status for a run we think
+        # is still active, update _active_runs so the UI sees the real state.
+        with _lock:
+            running_ids = [
+                rid for rid, r in _active_runs.items() if r.get("status") not in _TERMINAL
+            ]
+        for rid in running_ids:
+            try:
+                persisted = client.get_job(rid)
+                if persisted:
+                    js_status = persisted.get("status", "")
+                    if js_status in _TERMINAL:
+                        with _lock:
+                            if rid in _active_runs:
+                                _active_runs[rid]["status"] = js_status
+                                _active_runs[rid]["error"] = persisted.get("error") or persisted.get("data", {}).get("error")
+            except Exception:
+                pass
+
+        with _lock:
+            in_memory = {r["run_id"]: r for r in _active_runs.values()}
+
+        # Merge running/pending jobs from the persistent job service that
+        # may not be in _active_runs (e.g. after a server restart).
+        persisted_list = client.list_jobs(statuses=["running", "pending"])
+        for job in persisted_list:
             rid = job.get("job_id") or job.get("run_id", "")
             if rid and rid not in in_memory:
                 data = job.get("data", job)
@@ -1558,6 +1585,8 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
                 in_memory[rid] = data
     except Exception:
         logger.debug("Job service fallback failed for run listing", exc_info=True)
+        with _lock:
+            in_memory = {r["run_id"]: r for r in _active_runs.values()}
 
     runs = [_run_state_to_response(r) for r in in_memory.values()]
     return ActiveRunsResponse(runs=runs)
@@ -1570,8 +1599,27 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
 )
 def get_strategy_lab_run_status(run_id: str) -> StrategyLabRunStatusResponse:
     """Snapshot of a single run's progress. Use for polling when SSE is unavailable."""
+    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+
     with _lock:
         state = _active_runs.get(run_id)
+
+    # Reconcile with job service if in-memory state looks active
+    if state and state.get("status") not in _TERMINAL:
+        try:
+            client = _get_lab_run_job_client()
+            persisted = client.get_job(run_id)
+            if persisted:
+                js_status = persisted.get("status", "")
+                if js_status in _TERMINAL:
+                    with _lock:
+                        if run_id in _active_runs:
+                            _active_runs[run_id]["status"] = js_status
+                            _active_runs[run_id]["error"] = persisted.get("error") or persisted.get("data", {}).get("error")
+                            state = _active_runs[run_id]
+        except Exception:
+            pass
+
     if not state:
         state = _load_run_from_job_service(run_id)
     if not state:

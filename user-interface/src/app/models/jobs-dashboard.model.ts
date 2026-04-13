@@ -190,15 +190,18 @@ export function fromPlanningV3JobSummary(s: PlanningV3JobSummary): UnifiedJobSum
 }
 
 export function fromGenericJobRecord(source: JobSource, s: GenericJobRecord): UnifiedJobSummary {
-  const data = s.data ?? {};
+  // The job service flattens `data` into the top-level object, so fields like
+  // progress, current_phase, label, repo_path are top-level — not nested under `data`.
+  const r = s as unknown as Record<string, unknown>;
   return {
     jobId: s.job_id,
     status: s.status,
     source,
-    label: (data['label'] as string) ?? (data['repo_path'] as string) ?? s.job_id,
+    label: (r['label'] as string) ?? (r['repo_path'] as string) ?? s.job_id,
     createdAt: s.created_at,
-    progress: data['progress'] as number | undefined,
-    phase: (data['current_phase'] as string) ?? (data['current_stage'] as string),
+    progress: r['progress'] as number | undefined,
+    phase: (r['current_phase'] as string) ?? (r['current_stage'] as string),
+    repoPath: r['repo_path'] as string | undefined,
   };
 }
 
@@ -216,9 +219,9 @@ export const SOURCE_DISPLAY: Record<
   user_agent_founder: { label: 'Persona Testing', icon: 'person_search', route: '/persona-testing' },
   soc2_compliance: { label: 'SOC2 Compliance', icon: 'verified_user', route: '/soc2-compliance' },
   personal_assistant: { label: 'Personal Assistant', icon: 'assistant', route: '/personal-assistant' },
-  planning_v3: { label: 'Planning V3', icon: 'description', route: '/planning-v3' },
-  road_trip_planning: { label: 'Road Trip', icon: 'directions_car', route: '/road-trip' },
+  planning_v3: { label: 'Planning V3', icon: 'description', route: '/software-engineering/planning-v3' },
+  road_trip_planning: { label: 'Road Trip', icon: 'directions_car', route: '/dashboard' },
   nutrition_meal_planning: { label: 'Nutrition', icon: 'restaurant', route: '/nutrition' },
-  coding_team: { label: 'Coding Team', icon: 'terminal', route: '/coding-team' },
+  coding_team: { label: 'Coding Team', icon: 'terminal', route: '/software-engineering/coding-team' },
   sales: { label: 'Sales', icon: 'storefront', route: '/sales' },
 };
