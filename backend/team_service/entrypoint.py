@@ -180,8 +180,32 @@ def _resolve_app() -> str:
     return "_team_wrapper:app"
 
 
+def _startup_recovery() -> None:
+    """Mark any jobs still stuck as 'running' or 'pending' as interrupted.
+
+    On startup, no jobs from a previous process can genuinely be running —
+    they are leftovers from a crash or kill where the shutdown hook didn't fire.
+    """
+    try:
+        from job_service_client import JobServiceClient
+
+        client = JobServiceClient(team=TEAM_NAME)
+        marked = client.mark_all_active_jobs_interrupted(
+            f"{TEAM_NAME} service restarted — marking orphaned jobs"
+        )
+        if marked:
+            logger.info(
+                "Startup recovery: marked %d orphaned job(s) as interrupted for %s",
+                len(marked) if isinstance(marked, list) else 1,
+                TEAM_NAME,
+            )
+    except Exception:
+        logger.warning("Startup recovery failed for %s", TEAM_NAME, exc_info=True)
+
+
 if __name__ == "__main__":
     logger.info("Starting %s on port %d (module=%s)", TEAM_NAME, TEAM_PORT, TEAM_MODULE)
+    _startup_recovery()
     _start_temporal_worker()
     atexit.register(_shutdown_hook)
     app_import = _resolve_app()

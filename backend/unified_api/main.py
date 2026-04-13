@@ -417,3 +417,55 @@ async def list_teams() -> dict[str, Any]:
             "docs_url": f"{config.prefix}/docs" if registered else None,
         }
     return {"teams": teams}
+
+
+# ---------------------------------------------------------------------------
+# Generic job management (proxies to job-service for any team)
+# ---------------------------------------------------------------------------
+
+_JOB_SERVICE_URL = os.environ.get("JOB_SERVICE_URL", "http://job-service:8085")
+
+
+@app.delete("/api/jobs/{team}/{job_id}", tags=["jobs"])
+async def delete_job(team: str, job_id: str) -> dict[str, Any]:
+    """Delete a job for any team. Works regardless of job status."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.delete(f"{_JOB_SERVICE_URL}/jobs/{team}/{job_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/api/jobs/{team}/{job_id}/cancel", tags=["jobs"])
+async def cancel_job(team: str, job_id: str) -> dict[str, Any]:
+    """Force-cancel a running or pending job by setting its status to cancelled."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            f"{_JOB_SERVICE_URL}/jobs/{team}/{job_id}",
+            json={"status": "cancelled", "error": "Cancelled by user"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/api/jobs/{team}/{job_id}/interrupt", tags=["jobs"])
+async def interrupt_job(team: str, job_id: str) -> dict[str, Any]:
+    """Mark a job as interrupted (e.g. after detecting it's stale)."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            f"{_JOB_SERVICE_URL}/jobs/{team}/{job_id}",
+            json={"status": "interrupted", "error": "Marked interrupted by user"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/api/jobs/{team}/mark-all-interrupted", tags=["jobs"])
+async def mark_all_interrupted(team: str) -> dict[str, Any]:
+    """Mark all running/pending jobs for a team as interrupted."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{_JOB_SERVICE_URL}/jobs/{team}/mark-all-running-interrupted",
+            json={"reason": "Bulk interrupted by user"},
+        )
+        resp.raise_for_status()
+        return resp.json()
