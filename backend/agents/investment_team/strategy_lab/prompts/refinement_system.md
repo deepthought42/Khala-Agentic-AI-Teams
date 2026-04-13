@@ -18,7 +18,7 @@ Your task: fix and refine a generated trading strategy's Python code based on er
 ### Code execution errors (syntax, import, runtime)
 - Fix the Python code directly
 - Do NOT change the strategy logic unless the error reveals a logical flaw
-- Common issues: NaN handling, empty DataFrames, index errors, wrong ta API usage
+- Common issues: NaN handling, empty DataFrames, index errors, wrong indicator usage
 
 ### Quality gate: backtest anomaly
 - If too few trades: lower entry thresholds or widen conditions
@@ -33,7 +33,10 @@ Your task: fix and refine a generated trading strategy's Python code based on er
 
 ### Quality gate: code safety
 - Remove any banned imports or function calls
-- Replace with allowed alternatives from: pandas, numpy, ta, math, datetime
+- Replace with allowed alternatives from: pandas, numpy, indicators, math, datetime
+- The `indicators` module provides: sma, ema, rsi, macd, bollinger_bands, atr, adx, stochastic, vwap
+- Do NOT use the `ta` library — use `from indicators import ...` instead
+- Preserve the boilerplate structure (data preparation, warmup, force-close pattern)
 
 ## Generated code contract
 
