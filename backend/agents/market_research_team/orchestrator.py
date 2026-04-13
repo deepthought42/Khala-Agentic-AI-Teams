@@ -20,7 +20,6 @@ from .agents import (
     _safe_float,
 )
 from .graphs.research_graph import build_research_graph
-from .prompts import CONSISTENCY_SYSTEM_PROMPT  # noqa: F401 — re-exported for backward compat
 from .models import (
     HumanReview,
     InterviewInsight,
@@ -31,6 +30,7 @@ from .models import (
     ViabilityRecommendation,
     WorkflowStatus,
 )
+from .prompts import CONSISTENCY_SYSTEM_PROMPT  # noqa: F401 — re-exported for backward compat
 
 logger = logging.getLogger(__name__)
 
