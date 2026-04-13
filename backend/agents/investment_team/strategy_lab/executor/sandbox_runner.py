@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,10 @@ class SandboxRunner:
                 strategy_path = os.path.join(tmpdir, "strategy.py")
                 with open(strategy_path, "w", encoding="utf-8") as f:
                     f.write(strategy_code)
+
+                # 2b. Copy indicators library so `from indicators import ...` works
+                indicators_src = os.path.join(os.path.dirname(__file__), "indicators.py")
+                shutil.copy2(indicators_src, os.path.join(tmpdir, "indicators.py"))
 
                 # 3. Write harness script
                 harness_path = os.path.join(tmpdir, "_harness.py")

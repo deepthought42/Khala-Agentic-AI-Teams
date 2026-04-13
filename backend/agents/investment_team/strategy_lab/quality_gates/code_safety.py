@@ -19,7 +19,7 @@ BANNED_IMPORTS = frozenset({
 })
 
 ALLOWED_IMPORTS = frozenset({
-    "pandas", "numpy", "ta", "math", "datetime", "collections",
+    "pandas", "numpy", "indicators", "math", "datetime", "collections",
     "itertools", "functools", "typing", "dataclasses", "enum", "abc",
     "re", "copy", "statistics", "decimal", "fractions", "operator",
     "json",
