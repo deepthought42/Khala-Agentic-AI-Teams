@@ -465,8 +465,8 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
     return ['completed', 'failed', 'cancelled', 'interrupted', 'agent_crash'].includes(job.unified.status);
   }
 
-  canDeleteJob(_job: DashboardRow): boolean {
-    return true;
+  canDeleteJob(job: DashboardRow): boolean {
+    return job.unified.status !== 'running' && job.unified.status !== 'pending';
   }
 
   trackByJobId(_index: number, job: DashboardRow): string {

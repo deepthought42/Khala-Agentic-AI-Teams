@@ -173,14 +173,15 @@ describe('JobsDashboardComponent', () => {
   });
 
   describe('canDeleteJob', () => {
-    it('returns true for all job sources', () => {
-      expect(component.canDeleteJob({ unified: { source: 'software_engineering' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'blogging' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'agent_provisioning' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'ai_systems' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'social_marketing' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'investment' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'user_agent_founder' } } as any)).toBe(true);
+    it('returns true for terminal job statuses', () => {
+      expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'completed' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'failed' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'investment', status: 'cancelled' } } as any)).toBe(true);
+    });
+
+    it('returns false for running or pending jobs', () => {
+      expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'running' } } as any)).toBe(false);
+      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'pending' } } as any)).toBe(false);
     });
   });
 });
