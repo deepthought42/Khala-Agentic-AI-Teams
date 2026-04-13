@@ -459,6 +459,30 @@ async def interrupt_job(team: str, job_id: str) -> dict[str, Any]:
         return resp.json()
 
 
+@app.post("/api/jobs/{team}/{job_id}/resume", tags=["jobs"])
+async def resume_job(team: str, job_id: str) -> dict[str, Any]:
+    """Reset a failed/interrupted/cancelled job back to running so its team can pick it up."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            f"{_JOB_SERVICE_URL}/jobs/{team}/{job_id}",
+            json={"status": "running", "error": None},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/api/jobs/{team}/{job_id}/restart", tags=["jobs"])
+async def restart_job(team: str, job_id: str) -> dict[str, Any]:
+    """Reset a job to pending so its team re-executes it from scratch."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            f"{_JOB_SERVICE_URL}/jobs/{team}/{job_id}",
+            json={"status": "pending", "error": None},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 @app.post("/api/jobs/{team}/mark-all-interrupted", tags=["jobs"])
 async def mark_all_interrupted(team: str) -> dict[str, Any]:
     """Mark all running/pending jobs for a team as interrupted."""

@@ -441,27 +441,14 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   }
 
   canStopJob(job: DashboardRow): boolean {
-    const stoppableSources = ['software_engineering', 'blogging', 'agent_provisioning', 'ai_systems', 'social_marketing'];
-    if (!stoppableSources.includes(job.unified.source)) return false;
-    const status = job.unified.status;
-    return status === 'running' || status === 'pending';
+    return job.unified.status === 'running' || job.unified.status === 'pending';
   }
 
   canResumeJob(job: DashboardRow): boolean {
-    const resumableSources = [
-      'software_engineering', 'blogging', 'ai_systems',
-      'agent_provisioning', 'social_marketing', 'investment',
-    ];
-    if (!resumableSources.includes(job.unified.source)) return false;
-    return ['failed', 'interrupted', 'agent_crash'].includes(job.unified.status);
+    return ['failed', 'interrupted', 'agent_crash', 'cancelled'].includes(job.unified.status);
   }
 
   canRestartJob(job: DashboardRow): boolean {
-    const restartableSources = [
-      'software_engineering', 'blogging', 'ai_systems',
-      'agent_provisioning', 'social_marketing', 'investment',
-    ];
-    if (!restartableSources.includes(job.unified.source)) return false;
     return ['completed', 'failed', 'cancelled', 'interrupted', 'agent_crash'].includes(job.unified.status);
   }
 

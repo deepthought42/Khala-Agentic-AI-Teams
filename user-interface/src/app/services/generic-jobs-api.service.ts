@@ -18,6 +18,14 @@ export class GenericJobsApiService {
     return this.http.post(`${API_BASE}/api/jobs/${team}/${encodeURIComponent(jobId)}/cancel`, {});
   }
 
+  resume(team: string, jobId: string): Observable<unknown> {
+    return this.http.post(`${API_BASE}/api/jobs/${team}/${encodeURIComponent(jobId)}/resume`, {});
+  }
+
+  restart(team: string, jobId: string): Observable<unknown> {
+    return this.http.post(`${API_BASE}/api/jobs/${team}/${encodeURIComponent(jobId)}/restart`, {});
+  }
+
   interrupt(team: string, jobId: string): Observable<unknown> {
     return this.http.post(`${API_BASE}/api/jobs/${team}/${encodeURIComponent(jobId)}/interrupt`, {});
   }

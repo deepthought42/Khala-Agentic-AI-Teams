@@ -25,7 +25,7 @@ const SOURCE_TO_TEAM: Record<string, string> = {
   ai_systems: 'ai_systems_team',
   agent_provisioning: 'agent_provisioning_team',
   social_marketing: 'social_media_marketing_team',
-  investment: 'investment_team',
+  investment: 'investment_strategy_lab_runs',
   investment_strategy_lab_runs: 'investment_strategy_lab_runs',
   user_agent_founder: 'user_agent_founder',
 };
@@ -61,7 +61,7 @@ export class JobActionsService {
       case 'agent_provisioning': return this.prov.resumeJob(jobId);
       case 'social_marketing': return this.social.resumeJob(jobId);
       case 'investment': return this.investment.resumeRun(jobId);
-      default: return this.generic.cancel(SOURCE_TO_TEAM[source] ?? source, jobId);
+      default: return this.generic.resume(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }
 
@@ -73,7 +73,7 @@ export class JobActionsService {
       case 'agent_provisioning': return this.prov.restartJob(jobId);
       case 'social_marketing': return this.social.restartJob(jobId);
       case 'investment': return this.investment.restartRun(jobId);
-      default: return this.generic.cancel(SOURCE_TO_TEAM[source] ?? source, jobId);
+      default: return this.generic.restart(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }
 
