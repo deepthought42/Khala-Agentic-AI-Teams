@@ -1092,12 +1092,26 @@ def _strategy_lab_worker(
         # ── Wave-based parallel execution ──────────────────────────────
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        _TERMINAL_STATUSES = frozenset({"cancelled", "failed", "interrupted"})
+
+        def _is_run_cancelled() -> bool:
+            """Check the job service for external cancellation."""
+            try:
+                client = _get_lab_run_job_client()
+                persisted = client.get_job(run_id)
+                if persisted:
+                    return persisted.get("status", "") in _TERMINAL_STATUSES
+            except Exception:
+                pass
+            return False
+
         primary_tracker = orchestrator.convergence_tracker
         max_parallel = request.max_parallel
         remaining = list(range(start_cycle_offset, request.batch_size))
         run_failed = False
+        run_cancelled = False
 
-        while remaining and not run_failed:
+        while remaining and not run_failed and not run_cancelled:
             wave_indices = remaining[:max_parallel]
             remaining = remaining[max_parallel:]
 
@@ -1138,22 +1152,22 @@ def _strategy_lab_worker(
                         completed_indices.add(cn - 1)  # 0-based
                         wave_results.append((cn - 1, record))
 
-                        # Persist the highest contiguous completed index so
-                        # resume_strategy_lab_run can safely use it as the
-                        # start_cycle_offset without skipping failed cycles
-                        # or re-running already-finished ones.
+                        # Track the highest contiguous completed index for
+                        # resume_strategy_lab_run (start_cycle_offset), but
+                        # report the actual count for UI progress display.
                         contiguous = 0
                         while contiguous in completed_indices:
                             contiguous += 1
                         _update_run({
-                            "completed_cycles": contiguous,
+                            "completed_cycles": len(completed_ids),
+                            "contiguous_cycles": contiguous,
                             "completed_record_ids": list(completed_ids),
                             "current_cycle": None,
                         })
                         _publish("cycle_complete", {
                             "cycle_index": cn,
                             "record_id": record.lab_record_id,
-                            "completed_cycles": contiguous,
+                            "completed_cycles": len(completed_ids),
                         })
                     except HTTPException as exc:
                         if exc.status_code == 502:
@@ -1194,7 +1208,17 @@ def _strategy_lab_worker(
                 ]
                 primary_tracker.record(record.strategy, gate_results)
 
+            # Check for external cancellation between waves
+            if not run_failed and _is_run_cancelled():
+                logger.info("Strategy lab run %s cancelled externally — stopping after wave", run_id)
+                run_cancelled = True
+
         if run_failed:
+            return
+
+        if run_cancelled:
+            _update_run({"status": "cancelled", "current_cycle": None})
+            _publish("error", {"detail": "Run cancelled by user"})
             return
 
         msg = f"Completed {len(completed_ids)} strategy lab cycle(s)."
@@ -1407,6 +1431,9 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
         raise HTTPException(status_code=400, detail="Original request payload not available.")
 
     completed_cycles = state.get("completed_cycles", 0)
+    # contiguous_cycles tracks the highest unbroken sequence from index 0
+    # — safe to use as the resume offset (won't skip gaps or re-run finished cycles).
+    contiguous_cycles = state.get("contiguous_cycles", completed_cycles)
     total_cycles = state.get("total_cycles", 10)
 
     with _lock:
@@ -1423,6 +1450,7 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
         "started_at": state.get("started_at", _now()),
         "total_cycles": total_cycles,
         "completed_cycles": completed_cycles,
+        "contiguous_cycles": contiguous_cycles,
         "skipped_cycles": state.get("skipped_cycles", 0),
         "current_cycle": None,
         "completed_record_ids": state.get("completed_record_ids", []),
@@ -1439,7 +1467,7 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     thread = threading.Thread(
         target=_strategy_lab_worker,
         args=(run_id, request),
-        kwargs={"start_cycle_offset": completed_cycles},
+        kwargs={"start_cycle_offset": contiguous_cycles},
         name=f"strategy-lab-resume-{run_id}",
         daemon=True,
     )
@@ -1448,7 +1476,7 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     return StrategyLabRunStartResponse(
         run_id=run_id,
         total_cycles=total_cycles,
-        message=f"Run resumed from cycle {completed_cycles + 1} of {total_cycles}.",
+        message=f"Run resumed from cycle {contiguous_cycles + 1} of {total_cycles}.",
     )
 
 
@@ -1540,16 +1568,43 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
     Merges in-memory state with persisted job-service state so that
     running jobs are always visible — even after a page refresh that
     races with server startup or after the in-memory entry is evicted.
-    """
-    with _lock:
-        in_memory = {r["run_id"]: r for r in _active_runs.values()}
 
-    # Merge running/pending jobs from the persistent job service that
-    # may not be in _active_runs (e.g. after a server restart).
+    Also reconciles: if an in-memory run says "running" but the job service
+    has it as terminal (cancelled/failed/completed), the in-memory state is
+    updated to match — this handles external cancellation via the generic
+    job proxy or the Jobs Dashboard.
+    """
+    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+
     try:
         client = _get_lab_run_job_client()
-        persisted = client.list_jobs(statuses=["running", "pending"])
-        for job in persisted:
+
+        # Reconcile: if job service has a terminal status for a run we think
+        # is still active, update _active_runs so the UI sees the real state.
+        with _lock:
+            running_ids = [
+                rid for rid, r in _active_runs.items() if r.get("status") not in _TERMINAL
+            ]
+        for rid in running_ids:
+            try:
+                persisted = client.get_job(rid)
+                if persisted:
+                    js_status = persisted.get("status", "")
+                    if js_status in _TERMINAL:
+                        with _lock:
+                            if rid in _active_runs:
+                                _active_runs[rid]["status"] = js_status
+                                _active_runs[rid]["error"] = persisted.get("error") or persisted.get("data", {}).get("error")
+            except Exception:
+                pass
+
+        with _lock:
+            in_memory = {r["run_id"]: r for r in _active_runs.values()}
+
+        # Merge running/pending jobs from the persistent job service that
+        # may not be in _active_runs (e.g. after a server restart).
+        persisted_list = client.list_jobs(statuses=["running", "pending"])
+        for job in persisted_list:
             rid = job.get("job_id") or job.get("run_id", "")
             if rid and rid not in in_memory:
                 data = job.get("data", job)
@@ -1558,6 +1613,8 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
                 in_memory[rid] = data
     except Exception:
         logger.debug("Job service fallback failed for run listing", exc_info=True)
+        with _lock:
+            in_memory = {r["run_id"]: r for r in _active_runs.values()}
 
     runs = [_run_state_to_response(r) for r in in_memory.values()]
     return ActiveRunsResponse(runs=runs)
@@ -1570,8 +1627,27 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
 )
 def get_strategy_lab_run_status(run_id: str) -> StrategyLabRunStatusResponse:
     """Snapshot of a single run's progress. Use for polling when SSE is unavailable."""
+    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+
     with _lock:
         state = _active_runs.get(run_id)
+
+    # Reconcile with job service if in-memory state looks active
+    if state and state.get("status") not in _TERMINAL:
+        try:
+            client = _get_lab_run_job_client()
+            persisted = client.get_job(run_id)
+            if persisted:
+                js_status = persisted.get("status", "")
+                if js_status in _TERMINAL:
+                    with _lock:
+                        if run_id in _active_runs:
+                            _active_runs[run_id]["status"] = js_status
+                            _active_runs[run_id]["error"] = persisted.get("error") or persisted.get("data", {}).get("error")
+                            state = _active_runs[run_id]
+        except Exception:
+            pass
+
     if not state:
         state = _load_run_from_job_service(run_id)
     if not state:

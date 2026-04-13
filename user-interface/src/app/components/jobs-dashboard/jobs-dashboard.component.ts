@@ -15,6 +15,10 @@ import { AgentProvisioningApiService } from '../../services/agent-provisioning-a
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { InvestmentApiService } from '../../services/investment-api.service';
 import { PersonaTestingApiService } from '../../services/persona-testing-api.service';
+import { SalesApiService } from '../../services/sales-api.service';
+import { PlanningV3ApiService } from '../../services/planning-v3-api.service';
+import { CodingTeamApiService } from '../../services/coding-team-api.service';
+import { GenericJobsApiService } from '../../services/generic-jobs-api.service';
 import { JobActionsService } from '../../services/job-actions.service';
 import type {
   RunningJobSummary,
@@ -35,6 +39,9 @@ import {
   fromSocialMarketingJobListItem,
   fromInvestmentJobSummary,
   fromFounderJobSummary,
+  fromSalesJobListItem,
+  fromPlanningV3JobSummary,
+  fromGenericJobRecord,
 } from '../../models';
 
 /** Job type metadata for SE display. */
@@ -100,6 +107,10 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   private readonly socialMarketingApi = inject(SocialMarketingApiService);
   private readonly investmentApi = inject(InvestmentApiService);
   private readonly personaApi = inject(PersonaTestingApiService);
+  private readonly salesApi = inject(SalesApiService);
+  private readonly planningV3Api = inject(PlanningV3ApiService);
+  private readonly codingTeamApi = inject(CodingTeamApiService);
+  private readonly genericJobsApi = inject(GenericJobsApiService);
   private readonly jobActions = inject(JobActionsService);
   private readonly router = inject(Router);
 
@@ -162,8 +173,15 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
       social: this.socialMarketingApi.listJobs(false).pipe(catchError(() => of([]))),
       investment: this.investmentApi.listStrategyLabJobs(false).pipe(catchError(() => of({ jobs: [] }))),
       persona: this.personaApi.listJobs(false).pipe(catchError(() => of({ jobs: [] }))),
+      sales: this.salesApi.listPipelineJobs(false).pipe(catchError(() => of([]))),
+      planningV3: this.planningV3Api.getJobs().pipe(catchError(() => of({ jobs: [] }))),
+      codingTeam: this.genericJobsApi.listJobs('coding_team').pipe(catchError(() => of({ jobs: [] }))),
+      soc2: this.genericJobsApi.listJobs('soc2_compliance_team').pipe(catchError(() => of({ jobs: [] }))),
+      pa: this.genericJobsApi.listJobs('personal_assistant_team').pipe(catchError(() => of({ jobs: [] }))),
+      roadTrip: this.genericJobsApi.listJobs('road_trip_planning_team').pipe(catchError(() => of({ jobs: [] }))),
+      nutrition: this.genericJobsApi.listJobs('nutrition_meal_planning_team').pipe(catchError(() => of({ jobs: [] }))),
     }).pipe(
-      map(({ se, blogging, ai, prov, social, investment, persona }) => {
+      map(({ se, blogging, ai, prov, social, investment, persona, sales, planningV3, codingTeam, soc2, pa, roadTrip, nutrition }) => {
         this.seFetchError = (se as { _error?: string })._error ?? null;
         const seJobs = (se as { jobs: RunningJobSummary[] }).jobs;
         type RowWithSe = DashboardRow & { seSummary?: RunningJobSummary };
@@ -188,6 +206,27 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
         }
         for (const s of persona.jobs ?? []) {
           rows.push({ unified: fromFounderJobSummary(s) });
+        }
+        for (const s of sales) {
+          rows.push({ unified: fromSalesJobListItem(s) });
+        }
+        for (const s of planningV3.jobs ?? []) {
+          rows.push({ unified: fromPlanningV3JobSummary(s) });
+        }
+        for (const s of codingTeam.jobs ?? []) {
+          rows.push({ unified: fromGenericJobRecord('coding_team', s) });
+        }
+        for (const s of soc2.jobs ?? []) {
+          rows.push({ unified: fromGenericJobRecord('soc2_compliance', s) });
+        }
+        for (const s of pa.jobs ?? []) {
+          rows.push({ unified: fromGenericJobRecord('personal_assistant', s) });
+        }
+        for (const s of roadTrip.jobs ?? []) {
+          rows.push({ unified: fromGenericJobRecord('road_trip_planning', s) });
+        }
+        for (const s of nutrition.jobs ?? []) {
+          rows.push({ unified: fromGenericJobRecord('nutrition_meal_planning', s) });
         }
         rows.sort((a, b) => (b.unified.createdAt ?? '').localeCompare(a.unified.createdAt ?? ''));
         return rows;
@@ -441,27 +480,14 @@ export class JobsDashboardComponent implements OnInit, OnDestroy {
   }
 
   canStopJob(job: DashboardRow): boolean {
-    const stoppableSources = ['software_engineering', 'blogging', 'agent_provisioning', 'ai_systems', 'social_marketing'];
-    if (!stoppableSources.includes(job.unified.source)) return false;
-    const status = job.unified.status;
-    return status === 'running' || status === 'pending';
+    return job.unified.status === 'running' || job.unified.status === 'pending';
   }
 
   canResumeJob(job: DashboardRow): boolean {
-    const resumableSources = [
-      'software_engineering', 'blogging', 'ai_systems',
-      'agent_provisioning', 'social_marketing', 'investment',
-    ];
-    if (!resumableSources.includes(job.unified.source)) return false;
-    return ['failed', 'interrupted', 'agent_crash'].includes(job.unified.status);
+    return ['failed', 'interrupted', 'agent_crash', 'cancelled'].includes(job.unified.status);
   }
 
   canRestartJob(job: DashboardRow): boolean {
-    const restartableSources = [
-      'software_engineering', 'blogging', 'ai_systems',
-      'agent_provisioning', 'social_marketing', 'investment',
-    ];
-    if (!restartableSources.includes(job.unified.source)) return false;
     return ['completed', 'failed', 'cancelled', 'interrupted', 'agent_crash'].includes(job.unified.status);
   }
 
