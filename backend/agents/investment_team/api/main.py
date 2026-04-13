@@ -1913,8 +1913,8 @@ def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
 
     if session.status == PaperTradingStatus.FAILED:
         message = (
-            f"Paper trading failed — strategy code could not be executed against recent data. "
-            f"See divergence_analysis for error details."
+            "Paper trading failed — strategy code could not be executed against recent data. "
+            "See divergence_analysis for error details."
         )
     elif session.verdict == PaperTradingVerdict.READY_FOR_LIVE:
         message = (
