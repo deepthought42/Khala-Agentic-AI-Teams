@@ -28,7 +28,7 @@ from ..agents import (
     _USER_PSYCHOLOGY_SYSTEM_PROMPT,
     _UX_RESEARCH_SYSTEM_PROMPT,
 )
-from ..orchestrator import _CONSISTENCY_SYSTEM_PROMPT
+from ..prompts import CONSISTENCY_SYSTEM_PROMPT
 
 _VIABILITY_SYNTHESIS_PROMPT = """\
 You are a Business Viability Strategist who evaluates product concept viability based on \
@@ -109,7 +109,7 @@ def build_research_graph(*, include_consistency: bool = True) -> Graph:
         consistency = builder.add_node(
             build_agent(
                 name="consistency_analyst",
-                system_prompt=_CONSISTENCY_SYSTEM_PROMPT,
+                system_prompt=CONSISTENCY_SYSTEM_PROMPT,
                 description="Identifies recurring themes across interviews",
             ),
             node_id="consistency",
