@@ -565,6 +565,51 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
     return 'gate-' + gate.severity;
   }
 
+  // ---------------------------------------------------------------------------
+  // Paper Trading
+  // ---------------------------------------------------------------------------
+
+  loadPaperTradingSessions(): void {
+    this.api.getPaperTradingResults().subscribe({
+      next: (res) => {
+        this.paperTradingSessions.clear();
+        for (const session of res.items) {
+          const existing = this.paperTradingSessions.get(session.lab_record_id) ?? [];
+          existing.push(session);
+          this.paperTradingSessions.set(session.lab_record_id, existing);
+        }
+      },
+    });
+  }
+
+  getPaperSessions(labRecordId: string): PaperTradingSession[] {
+    return this.paperTradingSessions.get(labRecordId) ?? [];
+  }
+
+  startPaperTrade(record: StrategyLabRecord): void {
+    const id = record.lab_record_id;
+    if (this.paperTradingInProgress.has(id)) return;
+    this.paperTradingInProgress.add(id);
+    this.error = null;
+
+    this.api.startPaperTrade(id).subscribe({
+      next: (res) => {
+        this.paperTradingInProgress.delete(id);
+        const existing = this.paperTradingSessions.get(id) ?? [];
+        existing.unshift(res.session);
+        this.paperTradingSessions.set(id, existing);
+      },
+      error: (err) => {
+        this.paperTradingInProgress.delete(id);
+        this.error = err?.error?.detail || err?.message || 'Paper trading failed.';
+      },
+    });
+  }
+
+  hasPaperSessions(labRecordId: string): boolean {
+    return (this.paperTradingSessions.get(labRecordId)?.length ?? 0) > 0;
+  }
+
   deleteRecord(record: StrategyLabRecord): void {
     const id = record.lab_record_id;
     const shortHyp = record.strategy.hypothesis.slice(0, 60) + (record.strategy.hypothesis.length > 60 ? '…' : '');
