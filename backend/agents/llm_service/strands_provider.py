@@ -1,84 +1,66 @@
-"""Strands ModelProvider adapter — wraps llm_service config around strands.models.ollama.OllamaModel.
+"""Strands ModelProvider adapter — wraps llm_service's OllamaLLMClient as a Strands Model.
 
 Teams obtain a Strands-compatible model via ``get_strands_model(agent_key)`` and pass it
-to ``strands.Agent(model=...)``. The factory reuses llm_service's config resolution
-(env vars, per-agent defaults, known context sizes) so model selection stays in one place.
+to ``strands.Agent(model=...)``. Under the hood, this returns a ``LLMClientModel`` that
+delegates to the centralized ``OllamaLLMClient`` — which means every Strands agent
+automatically inherits:
 
-The adapter uses Strands' native OllamaModel which handles streaming, tool calling,
-retries, and conversation management natively — no double-looping through llm_service's
-tool_loop or compaction.
+- **Retry with exponential backoff** for transient errors (500s, connection resets, timeouts)
+- **Rate-limit handling** (429s) with backoff
+- **Concurrency limiting** via global semaphore
+- **Per-agent model routing** (``LLM_MODEL_<agent_key>``, agent defaults, etc.)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Optional
 
-from strands.models.ollama import OllamaModel
-
-from . import config as llm_config
+from .factory import get_client
+from .strands_adapter import LLMClientModel
 
 logger = logging.getLogger(__name__)
 
-_model_cache: dict[tuple[str, str], OllamaModel] = {}
+_model_cache: dict[tuple[str, str], LLMClientModel] = {}
 _cache_lock = threading.Lock()
 
 
-def _resolve_ollama_auth_headers() -> dict[str, str]:
-    """Return Authorization Bearer header for Ollama Cloud if an API key is set."""
-    key = (
-        (os.environ.get("OLLAMA_API_KEY") or "")
-        or (os.environ.get(llm_config.ENV_LLM_OLLAMA_API_KEY) or "")
-    ).strip()
-    if not key:
-        return {}
-    return {"Authorization": f"Bearer {key}"}
-
-
-def get_strands_model(agent_key: Optional[str] = None) -> OllamaModel:
-    """Return a cached Strands OllamaModel for the given agent key.
+def get_strands_model(agent_key: Optional[str] = None) -> LLMClientModel:
+    """Return a cached Strands-compatible model backed by the centralized LLM service.
 
     Model resolution follows the same rules as ``llm_service.factory.get_client``:
     ``LLM_MODEL_<agent_key>`` → ``LLM_MODEL`` → ``AGENT_DEFAULT_MODELS[agent_key]`` → fallback.
+
+    The returned ``LLMClientModel`` wraps ``OllamaLLMClient`` which provides full
+    retry-with-exponential-backoff for transient LLM errors (500s, connection resets,
+    timeouts, 429 rate limits).
 
     Args:
         agent_key: Optional agent identifier for per-agent model overrides.
 
     Returns:
-        A configured ``strands.models.ollama.OllamaModel`` instance.
+        A configured ``LLMClientModel`` instance backed by the centralized LLM client.
     """
+    from . import config as llm_config
+
     model_id = llm_config.resolve_model(agent_key)
     base_url = llm_config.resolve_base_url()
     cache_key = (model_id, base_url)
 
     with _cache_lock:
         if cache_key not in _model_cache:
-            headers = _resolve_ollama_auth_headers()
-            client_args: dict = {}
-            if headers:
-                client_args["headers"] = headers
-
-            ollama_kwargs: dict = {"model_id": model_id}
-
-            # Apply max_tokens from config if set
-            max_tokens_raw = os.environ.get(llm_config.ENV_LLM_MAX_TOKENS)
-            if max_tokens_raw:
-                try:
-                    ollama_kwargs["max_tokens"] = int(max_tokens_raw)
-                except ValueError:
-                    pass
-
-            _model_cache[cache_key] = OllamaModel(
-                host=base_url,
-                ollama_client_args=client_args if client_args else None,
-                **ollama_kwargs,
+            backing_client = get_client(agent_key)
+            _model_cache[cache_key] = LLMClientModel(
+                backing_client,
+                agent_key=agent_key,
+                model_id=model_id,
             )
             logger.info(
-                "Strands OllamaModel created: model_id=%s, host=%s",
+                "Strands LLMClientModel created: model_id=%s, host=%s, agent_key=%s",
                 model_id,
                 base_url,
+                agent_key,
             )
 
         return _model_cache[cache_key]
