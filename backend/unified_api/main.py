@@ -426,6 +426,18 @@ async def list_teams() -> dict[str, Any]:
 _JOB_SERVICE_URL = os.environ.get("JOB_SERVICE_URL", "http://job-service:8085")
 
 
+@app.get("/api/jobs/{team}", tags=["jobs"])
+async def list_team_jobs(team: str, running_only: bool = False) -> dict[str, Any]:
+    """List all jobs for a team via the job service."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        url = f"{_JOB_SERVICE_URL}/jobs/{team}"
+        if running_only:
+            url += "?statuses=pending&statuses=running"
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
 @app.delete("/api/jobs/{team}/{job_id}", tags=["jobs"])
 async def delete_job(team: str, job_id: str) -> dict[str, Any]:
     """Delete a job for any team. Works regardless of job status."""

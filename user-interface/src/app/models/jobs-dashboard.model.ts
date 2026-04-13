@@ -8,6 +8,9 @@ import type { AISystemJobSummary } from './ai-systems.model';
 import type { ProvisionJobSummary } from './agent-provisioning.model';
 import type { MarketingJobListItem } from './social-marketing.model';
 import type { InvestmentJobSummary } from './investment.model';
+import type { SalesPipelineJobListItem } from './sales-team.model';
+import type { PlanningV3JobSummary } from './planning-v3.model';
+import type { GenericJobRecord } from '../services/generic-jobs-api.service';
 
 export type JobSource =
   | 'software_engineering'
@@ -16,7 +19,14 @@ export type JobSource =
   | 'agent_provisioning'
   | 'social_marketing'
   | 'investment'
-  | 'user_agent_founder';
+  | 'user_agent_founder'
+  | 'soc2_compliance'
+  | 'personal_assistant'
+  | 'planning_v3'
+  | 'road_trip_planning'
+  | 'nutrition_meal_planning'
+  | 'coding_team'
+  | 'sales';
 
 export interface UnifiedJobSummary {
   jobId: string;
@@ -155,6 +165,43 @@ export function fromFounderJobSummary(s: FounderJobSummary): UnifiedJobSummary {
   };
 }
 
+export function fromSalesJobListItem(s: SalesPipelineJobListItem): UnifiedJobSummary {
+  return {
+    jobId: s.job_id,
+    status: s.status,
+    source: 'sales',
+    label: s.product_name || 'Sales pipeline',
+    createdAt: s.created_at,
+    progress: s.progress,
+    phase: s.current_stage,
+  };
+}
+
+export function fromPlanningV3JobSummary(s: PlanningV3JobSummary): UnifiedJobSummary {
+  return {
+    jobId: s.job_id,
+    status: s.status,
+    source: 'planning_v3',
+    label: getRepoName(s.repo_path) || 'Planning V3',
+    createdAt: undefined,
+    repoPath: s.repo_path,
+    phase: s.current_phase,
+  };
+}
+
+export function fromGenericJobRecord(source: JobSource, s: GenericJobRecord): UnifiedJobSummary {
+  const data = s.data ?? {};
+  return {
+    jobId: s.job_id,
+    status: s.status,
+    source,
+    label: (data['label'] as string) ?? (data['repo_path'] as string) ?? s.job_id,
+    createdAt: s.created_at,
+    progress: data['progress'] as number | undefined,
+    phase: (data['current_phase'] as string) ?? (data['current_stage'] as string),
+  };
+}
+
 /** Team display metadata for the Team column and navigation. */
 export const SOURCE_DISPLAY: Record<
   JobSource,
@@ -167,4 +214,11 @@ export const SOURCE_DISPLAY: Record<
   social_marketing: { label: 'Social Marketing', icon: 'campaign', route: '/social-marketing' },
   investment: { label: 'Investment', icon: 'trending_up', route: '/investment/strategy-lab' },
   user_agent_founder: { label: 'Persona Testing', icon: 'person_search', route: '/persona-testing' },
+  soc2_compliance: { label: 'SOC2 Compliance', icon: 'verified_user', route: '/soc2-compliance' },
+  personal_assistant: { label: 'Personal Assistant', icon: 'assistant', route: '/personal-assistant' },
+  planning_v3: { label: 'Planning V3', icon: 'description', route: '/planning-v3' },
+  road_trip_planning: { label: 'Road Trip', icon: 'directions_car', route: '/road-trip' },
+  nutrition_meal_planning: { label: 'Nutrition', icon: 'restaurant', route: '/nutrition' },
+  coding_team: { label: 'Coding Team', icon: 'terminal', route: '/coding-team' },
+  sales: { label: 'Sales', icon: 'storefront', route: '/sales' },
 };

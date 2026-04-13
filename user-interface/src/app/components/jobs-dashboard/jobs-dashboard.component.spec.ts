@@ -11,6 +11,10 @@ import { AgentProvisioningApiService } from '../../services/agent-provisioning-a
 import { SocialMarketingApiService } from '../../services/social-marketing-api.service';
 import { InvestmentApiService } from '../../services/investment-api.service';
 import { PersonaTestingApiService } from '../../services/persona-testing-api.service';
+import { SalesApiService } from '../../services/sales-api.service';
+import { PlanningV3ApiService } from '../../services/planning-v3-api.service';
+import { CodingTeamApiService } from '../../services/coding-team-api.service';
+import { GenericJobsApiService } from '../../services/generic-jobs-api.service';
 import { JobsDashboardComponent } from './jobs-dashboard.component';
 
 describe('JobsDashboardComponent', () => {
@@ -57,6 +61,22 @@ describe('JobsDashboardComponent', () => {
       cancelJob: vi.fn().mockReturnValue(of({ status: 'cancelled' })),
       deleteJob: vi.fn().mockReturnValue(of({ deleted: 'true' })),
     };
+    const salesApi = {
+      listPipelineJobs: vi.fn().mockReturnValue(of([])),
+      cancelJob: vi.fn().mockReturnValue(of({})),
+      deleteJob: vi.fn().mockReturnValue(of({})),
+    };
+    const planningV3Api = {
+      getJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+    };
+    const codingTeamApi = {};
+    const genericJobsApi = {
+      listJobs: vi.fn().mockReturnValue(of({ jobs: [] })),
+      cancel: vi.fn().mockReturnValue(of({})),
+      resume: vi.fn().mockReturnValue(of({})),
+      restart: vi.fn().mockReturnValue(of({})),
+      delete: vi.fn().mockReturnValue(of({})),
+    };
 
     await TestBed.configureTestingModule({
       imports: [JobsDashboardComponent],
@@ -70,6 +90,10 @@ describe('JobsDashboardComponent', () => {
         { provide: SocialMarketingApiService, useValue: socialApi },
         { provide: InvestmentApiService, useValue: investmentApi },
         { provide: PersonaTestingApiService, useValue: personaApi },
+        { provide: SalesApiService, useValue: salesApi },
+        { provide: PlanningV3ApiService, useValue: planningV3Api },
+        { provide: CodingTeamApiService, useValue: codingTeamApi },
+        { provide: GenericJobsApiService, useValue: genericJobsApi },
         { provide: Router, useValue: routerSpy },
       ],
     }).compileComponents();
@@ -85,6 +109,24 @@ describe('JobsDashboardComponent', () => {
 
   it('should have SOURCE_DISPLAY', () => {
     expect(component.SOURCE_DISPLAY).toBeDefined();
+  });
+
+  it('SOURCE_DISPLAY includes all 14 sources', () => {
+    const sources = Object.keys(component.SOURCE_DISPLAY);
+    expect(sources).toContain('software_engineering');
+    expect(sources).toContain('blogging');
+    expect(sources).toContain('ai_systems');
+    expect(sources).toContain('agent_provisioning');
+    expect(sources).toContain('social_marketing');
+    expect(sources).toContain('investment');
+    expect(sources).toContain('user_agent_founder');
+    expect(sources).toContain('soc2_compliance');
+    expect(sources).toContain('personal_assistant');
+    expect(sources).toContain('planning_v3');
+    expect(sources).toContain('road_trip_planning');
+    expect(sources).toContain('nutrition_meal_planning');
+    expect(sources).toContain('coding_team');
+    expect(sources).toContain('sales');
   });
 
   it('getJobTypeInfo returns info for software_engineering job', () => {
@@ -141,9 +183,10 @@ describe('JobsDashboardComponent', () => {
       expect(component.canResumeJob(makeJob('completed'))).toBe(false);
     });
     it('works for any source — no allowlist', () => {
-      expect(component.canResumeJob(makeJob('failed', 'market_research'))).toBe(true);
-      expect(component.canResumeJob(makeJob('failed', 'investment'))).toBe(true);
-      expect(component.canResumeJob(makeJob('failed', 'user_agent_founder'))).toBe(true);
+      expect(component.canResumeJob(makeJob('failed', 'soc2_compliance'))).toBe(true);
+      expect(component.canResumeJob(makeJob('failed', 'sales'))).toBe(true);
+      expect(component.canResumeJob(makeJob('failed', 'nutrition_meal_planning'))).toBe(true);
+      expect(component.canResumeJob(makeJob('failed', 'coding_team'))).toBe(true);
     });
   });
 
@@ -155,8 +198,9 @@ describe('JobsDashboardComponent', () => {
       expect(component.canStopJob(makeJob('running', 'software_engineering'))).toBe(true);
       expect(component.canStopJob(makeJob('pending', 'blogging'))).toBe(true);
       expect(component.canStopJob(makeJob('running', 'investment'))).toBe(true);
-      expect(component.canStopJob(makeJob('running', 'user_agent_founder'))).toBe(true);
-      expect(component.canStopJob(makeJob('pending', 'ai_systems'))).toBe(true);
+      expect(component.canStopJob(makeJob('running', 'soc2_compliance'))).toBe(true);
+      expect(component.canStopJob(makeJob('running', 'sales'))).toBe(true);
+      expect(component.canStopJob(makeJob('pending', 'planning_v3'))).toBe(true);
     });
     it('returns false for non-active statuses', () => {
       expect(component.canStopJob(makeJob('completed'))).toBe(false);
@@ -175,8 +219,8 @@ describe('JobsDashboardComponent', () => {
       expect(component.canRestartJob(makeJob('cancelled'))).toBe(true);
       expect(component.canRestartJob(makeJob('interrupted'))).toBe(true);
       expect(component.canRestartJob(makeJob('agent_crash'))).toBe(true);
-      expect(component.canRestartJob(makeJob('failed', 'investment'))).toBe(true);
-      expect(component.canRestartJob(makeJob('completed', 'user_agent_founder'))).toBe(true);
+      expect(component.canRestartJob(makeJob('failed', 'road_trip_planning'))).toBe(true);
+      expect(component.canRestartJob(makeJob('completed', 'personal_assistant'))).toBe(true);
     });
     it('returns false for running or pending', () => {
       expect(component.canRestartJob(makeJob('running'))).toBe(false);
@@ -187,13 +231,13 @@ describe('JobsDashboardComponent', () => {
   describe('canDeleteJob', () => {
     it('returns true for terminal job statuses', () => {
       expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'completed' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'failed' } } as any)).toBe(true);
-      expect(component.canDeleteJob({ unified: { source: 'investment', status: 'cancelled' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'soc2_compliance', status: 'failed' } } as any)).toBe(true);
+      expect(component.canDeleteJob({ unified: { source: 'coding_team', status: 'cancelled' } } as any)).toBe(true);
     });
 
     it('returns false for running or pending jobs', () => {
       expect(component.canDeleteJob({ unified: { source: 'software_engineering', status: 'running' } } as any)).toBe(false);
-      expect(component.canDeleteJob({ unified: { source: 'blogging', status: 'pending' } } as any)).toBe(false);
+      expect(component.canDeleteJob({ unified: { source: 'sales', status: 'pending' } } as any)).toBe(false);
     });
   });
 });
