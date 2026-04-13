@@ -283,6 +283,69 @@ def get_run_artifacts(run_id: str) -> RunArtifactsResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Job management (centralized job service integration for Jobs Dashboard)
+# ---------------------------------------------------------------------------
+
+
+class FounderJobSummary(BaseModel):
+    job_id: str
+    status: str
+    label: str = "Persona: founder workflow"
+    current_phase: Optional[str] = None
+    created_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class FounderJobListResponse(BaseModel):
+    jobs: list[FounderJobSummary]
+
+
+@app.get("/jobs", response_model=FounderJobListResponse)
+def list_jobs(running_only: bool = False) -> FounderJobListResponse:
+    """List founder workflow jobs from the centralized job service."""
+    from job_service_client import JobServiceClient
+
+    client = JobServiceClient(team="user_agent_founder")
+    statuses = ["running", "pending"] if running_only else None
+    raw = client.list_jobs(statuses=statuses)
+    jobs = []
+    for j in raw:
+        data = j.get("data", j)
+        jobs.append(FounderJobSummary(
+            job_id=j.get("job_id", ""),
+            status=j.get("status", data.get("status", "unknown")),
+            label=data.get("label", "Persona: founder workflow"),
+            current_phase=data.get("current_phase"),
+            created_at=j.get("created_at", data.get("created_at")),
+            error=data.get("error"),
+        ))
+    return FounderJobListResponse(jobs=jobs)
+
+
+@app.post("/job/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, str]:
+    """Cancel a running founder workflow job."""
+    from job_service_client import JobServiceClient
+
+    client = JobServiceClient(team="user_agent_founder")
+    client.update_job(job_id, status="cancelled", error="Cancelled by user")
+    # Also update the Postgres store
+    store = get_founder_store()
+    store.update_run(job_id, status="failed", error="Cancelled by user")
+    return {"status": "cancelled", "job_id": job_id}
+
+
+@app.delete("/job/{job_id}")
+def delete_job(job_id: str) -> dict[str, str]:
+    """Delete a founder workflow job from the job service."""
+    from job_service_client import JobServiceClient
+
+    client = JobServiceClient(team="user_agent_founder")
+    client.delete_job(job_id)
+    return {"deleted": "true", "job_id": job_id}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}

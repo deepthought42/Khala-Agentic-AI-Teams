@@ -13,10 +13,13 @@ from typing import Any
 
 import httpx
 
+from job_service_client import JobServiceClient
 from user_agent_founder.agent import FounderAgent
 from user_agent_founder.store import FounderRunStore
 
 logger = logging.getLogger(__name__)
+
+_job_client = JobServiceClient(team="user_agent_founder")
 
 UNIFIED_API_BASE = os.environ.get("UNIFIED_API_BASE_URL", "http://localhost:8080")
 SE_PREFIX = "/api/software-engineering"
@@ -31,6 +34,22 @@ HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 def _se_url(path: str) -> str:
     return f"{UNIFIED_API_BASE}{SE_PREFIX}{path}"
+
+
+def _sync_job_status(run_id: str, status: str, *, phase: str = "", error: str = "") -> None:
+    """Mirror a run status update into the centralized job service."""
+    try:
+        _job_client.update_job(run_id, status=status, current_phase=phase, error=error or None)
+    except Exception:
+        logger.debug("Job service sync failed for %s (non-fatal)", run_id, exc_info=True)
+
+
+def _heartbeat(run_id: str) -> None:
+    """Touch the heartbeat so the stale-job monitor doesn't kill a waiting job."""
+    try:
+        _job_client.heartbeat(run_id)
+    except Exception:
+        pass
 
 
 def _answer_pending_questions(
@@ -87,6 +106,7 @@ def _run_product_analysis(
 ) -> str | None:
     """Submit spec for product analysis and poll until complete. Returns repo_path or None."""
     store.update_run(run_id, status="submitting_analysis")
+    _sync_job_status(run_id, "running", phase="submitting_analysis")
 
     resp = client.post(
         _se_url("/product-analysis/start-from-spec"),
@@ -99,15 +119,18 @@ def _run_product_analysis(
             status="failed",
             error=f"Failed to start analysis: {resp.status_code} {resp.text[:500]}",
         )
+        _sync_job_status(run_id, "failed", error="Failed to start analysis")
         return None
 
     data = resp.json()
     analysis_job_id = data.get("job_id")
     store.update_run(run_id, analysis_job_id=analysis_job_id, status="polling_analysis")
+    _sync_job_status(run_id, "running", phase="polling_analysis")
     logger.info("Product analysis started: job_id=%s", analysis_job_id)
 
     for _ in range(MAX_POLL_ATTEMPTS):
         time.sleep(ANALYSIS_POLL_INTERVAL)
+        _heartbeat(run_id)
 
         resp = client.get(
             _se_url(f"/product-analysis/status/{analysis_job_id}"),
@@ -146,9 +169,11 @@ def _run_product_analysis(
                 status="failed",
                 error=f"Product analysis failed: {status_data.get('error', 'unknown')}",
             )
+            _sync_job_status(run_id, "failed", error="Product analysis failed")
             return None
 
     store.update_run(run_id, status="failed", error="Product analysis timed out")
+    _sync_job_status(run_id, "failed", error="Product analysis timed out")
     return None
 
 
@@ -161,6 +186,7 @@ def _run_se_team(
 ) -> bool:
     """Start the SE team build and poll until complete. Returns True on success."""
     store.update_run(run_id, status="submitting_build")
+    _sync_job_status(run_id, "running", phase="submitting_build")
 
     resp = client.post(
         _se_url("/run-team"),
@@ -173,15 +199,18 @@ def _run_se_team(
             status="failed",
             error=f"Failed to start SE team: {resp.status_code} {resp.text[:500]}",
         )
+        _sync_job_status(run_id, "failed", error="Failed to start SE team")
         return False
 
     data = resp.json()
     se_job_id = data.get("job_id")
     store.update_run(run_id, se_job_id=se_job_id, status="polling_build")
+    _sync_job_status(run_id, "running", phase="polling_build")
     logger.info("SE team build started: job_id=%s", se_job_id)
 
     for _ in range(MAX_POLL_ATTEMPTS):
         time.sleep(EXECUTION_POLL_INTERVAL)
+        _heartbeat(run_id)
 
         resp = client.get(
             _se_url(f"/run-team/{se_job_id}"),
@@ -218,13 +247,16 @@ def _run_se_team(
                 status="failed",
                 error=f"SE team build failed: {status_data.get('error', 'unknown')}",
             )
+            _sync_job_status(run_id, "failed", error="SE team build failed")
             return False
 
         if status == "cancelled":
             store.update_run(run_id, status="failed", error="SE team build was cancelled")
+            _sync_job_status(run_id, "failed", error="SE team build cancelled")
             return False
 
     store.update_run(run_id, status="failed", error="SE team build timed out")
+    _sync_job_status(run_id, "failed", error="SE team build timed out")
     return False
 
 
@@ -235,9 +267,16 @@ def run_workflow(run_id: str, store: FounderRunStore, agent: FounderAgent) -> No
     """
     logger.info("Starting founder workflow: run_id=%s", run_id)
 
+    # Register with centralized job service so the Jobs Dashboard can track us.
+    try:
+        _job_client.create_job(run_id, status="running", label="Persona: founder workflow", current_phase="starting")
+    except Exception:
+        logger.debug("Job service create failed for %s (non-fatal)", run_id, exc_info=True)
+
     try:
         # Phase 1: Generate the product spec
         store.update_run(run_id, status="generating_spec")
+        _sync_job_status(run_id, "running", phase="generating_spec")
         spec_content = agent.generate_spec()
         store.update_run(run_id, spec_content=spec_content)
         logger.info("Spec generated for run %s (%d chars)", run_id, len(spec_content))
@@ -252,8 +291,10 @@ def run_workflow(run_id: str, store: FounderRunStore, agent: FounderAgent) -> No
             success = _run_se_team(client, agent, store, run_id, repo_path)
             if success:
                 store.update_run(run_id, status="completed")
+                _sync_job_status(run_id, "completed", phase="completed")
                 logger.info("Founder workflow completed successfully: run_id=%s", run_id)
 
     except Exception as exc:
         logger.exception("Founder workflow crashed: run_id=%s", run_id)
         store.update_run(run_id, status="failed", error=str(exc)[:1000])
+        _sync_job_status(run_id, "failed", error=str(exc)[:500])

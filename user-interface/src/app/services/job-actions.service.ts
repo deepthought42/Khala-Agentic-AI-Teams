@@ -15,6 +15,7 @@ import { AISystemsApiService } from './ai-systems-api.service';
 import { AgentProvisioningApiService } from './agent-provisioning-api.service';
 import { SocialMarketingApiService } from './social-marketing-api.service';
 import { InvestmentApiService } from './investment-api.service';
+import { PersonaTestingApiService } from './persona-testing-api.service';
 import { GenericJobsApiService } from './generic-jobs-api.service';
 
 /** Map JobSource values to the job-service team name used in /api/jobs/{team}. */
@@ -26,6 +27,7 @@ const SOURCE_TO_TEAM: Record<string, string> = {
   social_marketing: 'social_media_marketing_team',
   investment: 'investment_team',
   investment_strategy_lab_runs: 'investment_strategy_lab_runs',
+  user_agent_founder: 'user_agent_founder',
 };
 
 @Injectable({ providedIn: 'root' })
@@ -36,6 +38,7 @@ export class JobActionsService {
   private readonly prov = inject(AgentProvisioningApiService);
   private readonly social = inject(SocialMarketingApiService);
   private readonly investment = inject(InvestmentApiService);
+  private readonly persona = inject(PersonaTestingApiService);
   private readonly generic = inject(GenericJobsApiService);
 
   stop(source: JobSource, jobId: string): Observable<unknown> {
@@ -45,6 +48,7 @@ export class JobActionsService {
       case 'ai_systems': return this.ai.cancelJob(jobId);
       case 'agent_provisioning': return this.prov.cancelJob(jobId);
       case 'social_marketing': return this.social.cancelJob(jobId);
+      case 'user_agent_founder': return this.persona.cancelJob(jobId);
       default: return this.generic.cancel(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }
@@ -80,6 +84,7 @@ export class JobActionsService {
       case 'ai_systems': return this.ai.deleteJob(jobId);
       case 'agent_provisioning': return this.prov.deleteJob(jobId);
       case 'social_marketing': return this.social.deleteJob(jobId);
+      case 'user_agent_founder': return this.persona.deleteJob(jobId);
       default: return this.generic.delete(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }
