@@ -1081,8 +1081,11 @@ def _strategy_lab_worker(
             }
 
         completed_ids: List[str] = []
+        completed_indices: set[int] = set()  # 0-based indices of completed cycles
         skipped = 0
         if start_cycle_offset > 0:
+            # Mark prior cycles as already completed for resume bookkeeping
+            completed_indices.update(range(start_cycle_offset))
             logger.info("Strategy lab worker resuming from cycle %d", start_cycle_offset + 1)
 
         # ── Wave-based parallel execution ──────────────────────────────
@@ -1123,23 +1126,34 @@ def _strategy_lab_worker(
                     )
                     wave_futures[future] = cn
 
-                # Collect results from this wave
-                wave_records: List[StrategyLabRecord] = []
+                # Collect results from this wave.
+                # Each entry is (cycle_index_0based, record) so we can sort
+                # deterministically before updating the convergence tracker.
+                wave_results: List[tuple[int, StrategyLabRecord]] = []
                 for future in as_completed(wave_futures):
                     cn = wave_futures[future]
                     try:
                         record = future.result()
                         completed_ids.append(record.lab_record_id)
-                        wave_records.append(record)
+                        completed_indices.add(cn - 1)  # 0-based
+                        wave_results.append((cn - 1, record))
+
+                        # Persist the highest contiguous completed index so
+                        # resume_strategy_lab_run can safely use it as the
+                        # start_cycle_offset without skipping failed cycles
+                        # or re-running already-finished ones.
+                        contiguous = 0
+                        while contiguous in completed_indices:
+                            contiguous += 1
                         _update_run({
-                            "completed_cycles": len(completed_ids),
+                            "completed_cycles": contiguous,
                             "completed_record_ids": list(completed_ids),
                             "current_cycle": None,
                         })
                         _publish("cycle_complete", {
                             "cycle_index": cn,
                             "record_id": record.lab_record_id,
-                            "completed_cycles": len(completed_ids),
+                            "completed_cycles": contiguous,
                         })
                     except HTTPException as exc:
                         if exc.status_code == 502:
@@ -1169,8 +1183,11 @@ def _strategy_lab_worker(
                         _publish("error", {"detail": f"Cycle {cn} failed: {exc}"})
                         run_failed = True
 
-            # Merge wave results into the primary convergence tracker
-            for record in wave_records:
+            # Merge wave results into the primary convergence tracker in
+            # deterministic cycle-index order so that stall/diversity
+            # directives are reproducible across runs with identical inputs.
+            wave_results.sort(key=lambda pair: pair[0])
+            for _idx, record in wave_results:
                 gate_results = [
                     QualityGateResult(**g) if isinstance(g, dict) else g
                     for g in record.quality_gate_results
