@@ -151,14 +151,32 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.sseSub?.unsubscribe();
     this.pollSub?.unsubscribe();
+    this.activeRunCheckSub?.unsubscribe();
   }
 
   // ---------------------------------------------------------------------------
   // Active run detection (for navigate-away-and-back)
   // ---------------------------------------------------------------------------
 
+  private activeRunCheckSub: Subscription | null = null;
+
+  /**
+   * Poll for active runs a few times on page load so that a running job
+   * is always picked up — even if the first request races with the
+   * backend becoming ready or the in-memory cache being repopulated.
+   */
   private checkForActiveRun(): void {
-    this.api.getActiveRuns().subscribe({
+    // Poll up to 4 times (0s, 3s, 6s, 9s), stop as soon as we find one
+    // or if a run was started locally via runNewStrategy().
+    this.activeRunCheckSub?.unsubscribe();
+    let attempts = 0;
+    this.activeRunCheckSub = timer(0, 3000).pipe(
+      takeWhile(() => attempts < 4 && !this.running),
+      switchMap(() => {
+        attempts++;
+        return this.api.getActiveRuns();
+      }),
+    ).subscribe({
       next: (res) => {
         const active = res.runs.find((r) => r.status === 'running');
         if (active) {
@@ -166,6 +184,7 @@ export class StrategyLabComponent implements OnInit, OnDestroy {
           this.runStatus = active;
           this.running = true;
           this.connectToStream(active.run_id);
+          this.activeRunCheckSub?.unsubscribe();
         }
       },
     });

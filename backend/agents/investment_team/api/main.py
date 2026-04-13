@@ -1517,9 +1517,31 @@ def restart_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     "/strategy-lab/runs", response_model=ActiveRunsResponse, summary="List active strategy lab runs"
 )
 def list_strategy_lab_runs() -> ActiveRunsResponse:
-    """Return all tracked runs (active and recently completed, kept for 5 min after finish)."""
+    """Return all tracked runs (active and recently completed).
+
+    Merges in-memory state with persisted job-service state so that
+    running jobs are always visible — even after a page refresh that
+    races with server startup or after the in-memory entry is evicted.
+    """
     with _lock:
-        runs = [_run_state_to_response(r) for r in _active_runs.values()]
+        in_memory = {r["run_id"]: r for r in _active_runs.values()}
+
+    # Merge running/pending jobs from the persistent job service that
+    # may not be in _active_runs (e.g. after a server restart).
+    try:
+        client = _get_lab_run_job_client()
+        persisted = client.list_jobs(statuses=["running", "pending"])
+        for job in persisted:
+            rid = job.get("job_id") or job.get("run_id", "")
+            if rid and rid not in in_memory:
+                data = job.get("data", job)
+                data["run_id"] = rid
+                data.setdefault("status", job.get("status", "running"))
+                in_memory[rid] = data
+    except Exception:
+        logger.debug("Job service fallback failed for run listing", exc_info=True)
+
+    runs = [_run_state_to_response(r) for r in in_memory.values()]
     return ActiveRunsResponse(runs=runs)
 
 
