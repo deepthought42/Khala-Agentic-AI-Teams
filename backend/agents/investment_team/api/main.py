@@ -59,7 +59,9 @@ from investment_team.models import (
 from investment_team.orchestrator import InvestmentTeamOrchestrator, WorkflowState
 from investment_team.signal_intelligence_agent import SignalIntelligenceExpert
 from investment_team.signal_intelligence_models import SignalIntelligenceBriefV1
-from investment_team.strategy_ideation_agent import StrategyIdeationAgent
+from investment_team.strategy_lab.orchestrator import StrategyLabOrchestrator
+from investment_team.strategy_lab.quality_gates.convergence_tracker import ConvergenceTracker
+from investment_team.strategy_lab.quality_gates.models import QualityGateResult
 from job_service_client import RESTARTABLE_STATUSES, RESUMABLE_STATUSES, validate_job_for_action
 from shared_observability import init_otel, instrument_fastapi_app
 
@@ -855,7 +857,13 @@ class RunStrategyLabRequest(BaseModel):
         default=10,
         ge=1,
         le=25,
-        description="Strategies to generate this run (one per sequential step; each step sees all prior results).",
+        description="Total strategies to generate this run.",
+    )
+    max_parallel: int = Field(
+        default=3,
+        ge=1,
+        le=6,
+        description="Max strategies to generate in parallel per wave.",
     )
 
 
@@ -898,143 +906,42 @@ def _build_strategy_from_ideation(strategy_data: Dict[str, Any]) -> tuple[Strate
 
 
 def _run_one_strategy_lab_cycle(
-    agent: StrategyIdeationAgent,
     config: BacktestConfig,
+    orchestrator: "StrategyLabOrchestrator",
     *,
     precomputed_signal_brief: Optional[SignalIntelligenceBriefV1] = None,
     signal_brief_storage: Optional[Dict[str, Any]] = None,
     on_phase: Optional[Any] = None,
+    exclude_asset_classes: Optional[List[str]] = None,
 ) -> StrategyLabRecord:
-    """Single ideation → backtest → analysis; persists to store so the next cycle sees full history.
+    """Single ideation → validate → execute → refine → analyze cycle via the v2 orchestrator.
 
-    If all data providers fail for the ideated asset class, re-ideates for a different
-    asset class (up to one retry) rather than aborting the entire batch.
-
-    Args:
-        on_phase: Optional callback ``(phase: str, data: dict) -> None`` called at each
-            phase boundary to emit progress events.
+    The orchestrator handles the full code-generation + sandboxed-execution pipeline
+    internally, including up to 10 refinement rounds.
     """
-
-    def _emit(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
-        if on_phase:
-            on_phase(phase, data or {})
-
     with _lock:
         raw_prior = list(_strategy_lab_records.values())
 
     prior_records = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
     prior_records.sort(key=lambda r: r.created_at)
 
-    _emit("ideating")
-
-    try:
-        strategy_data, rationale = agent.ideate_strategy(
-            prior_results=prior_records,
-            precomputed_signal_brief=precomputed_signal_brief,
-        )
-    except Exception as exc:
-        logger.error("Strategy ideation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Strategy ideation failed: {exc}") from exc
-
-    strategy, strategy_id = _build_strategy_from_ideation(strategy_data)
-    strategy_preview = {"asset_class": strategy.asset_class, "hypothesis": strategy.hypothesis}
-
-    _emit("fetching_data", {"strategy": strategy_preview})
-
-    try:
-        result, trades = _run_real_data_backtest(strategy, config)
-    except HTTPException as exc:
-        if exc.status_code != 502:
-            raise
-        failed_ac = strategy.asset_class
-        logger.warning(
-            "No market data for asset class %s (all providers failed); re-ideating with exclusion",
-            failed_ac,
-        )
-        _emit("ideating", {"retry": True, "excluded": failed_ac})
-        try:
-            strategy_data, rationale = agent.ideate_strategy(
-                prior_results=prior_records,
-                precomputed_signal_brief=precomputed_signal_brief,
-                exclude_asset_classes=[failed_ac],
-            )
-        except Exception as exc2:
-            raise HTTPException(
-                status_code=500, detail=f"Re-ideation after data failure failed: {exc2}"
-            ) from exc2
-
-        strategy, strategy_id = _build_strategy_from_ideation(strategy_data)
-        strategy_preview = {"asset_class": strategy.asset_class, "hypothesis": strategy.hypothesis}
-        _emit("fetching_data", {"strategy": strategy_preview, "retry": True})
-        result, trades = _run_real_data_backtest(strategy, config)
-
-    metrics_preview = {
-        "annualized_return_pct": round(result.annualized_return_pct, 2),
-        "sharpe_ratio": round(result.sharpe_ratio, 2),
-        "max_drawdown_pct": round(result.max_drawdown_pct, 2),
-        "win_rate_pct": round(result.win_rate_pct, 2),
-        "total_trades": len(trades),
-    }
-    _emit("analyzing", {"strategy": strategy_preview, "metrics": metrics_preview})
-
-    now = _now()
-    backtest_id = f"bt-lab-{uuid.uuid4().hex[:8]}"
-    backtest = BacktestRecord(
-        backtest_id=backtest_id,
-        strategy_id=strategy_id,
-        strategy=strategy,
+    record = orchestrator.run_cycle(
+        prior_records=prior_records,
         config=config,
-        submitted_by="strategy_ideation_agent",
-        submitted_at=now,
-        completed_at=now,
-        result=result,
-        notes=[],
-        trades=trades,
+        signal_brief=precomputed_signal_brief,
+        on_phase=on_phase,
+        exclude_asset_classes=exclude_asset_classes,
     )
 
-    is_winning = result.annualized_return_pct > 8.0
+    # Attach signal brief before persisting (PersistentDict serializes at assignment)
+    if signal_brief_storage and not record.signal_intelligence_brief:
+        record.signal_intelligence_brief = signal_brief_storage
 
-    lab_record_id = f"lab-{uuid.uuid4().hex[:8]}"
-    provisional_record = StrategyLabRecord(
-        lab_record_id=lab_record_id,
-        strategy=strategy,
-        backtest=backtest,
-        is_winning=is_winning,
-        strategy_rationale=rationale,
-        analysis_narrative="",
-        created_at=now,
-    )
-
-    try:
-        narrative = agent.analyze_result(provisional_record, rationale)
-    except Exception as exc:
-        logger.warning("Analysis narrative generation failed: %s", exc)
-        narrative = (
-            f"Strategy returned {result.annualized_return_pct:.1f}% annualized "
-            f"({'above' if is_winning else 'below'} the 8% winning threshold). "
-            f"Sharpe ratio: {result.sharpe_ratio:.2f}, max drawdown: {result.max_drawdown_pct:.1f}%."
-        )
-
-    record = StrategyLabRecord(
-        lab_record_id=lab_record_id,
-        strategy=strategy,
-        backtest=backtest,
-        is_winning=is_winning,
-        strategy_rationale=rationale,
-        analysis_narrative=narrative,
-        created_at=now,
-        signal_intelligence_brief=signal_brief_storage,
-    )
-
+    # Persist to in-memory stores
     with _lock:
-        _strategy_lab_records[lab_record_id] = record
-        _strategies[strategy_id] = strategy
-        _backtests[backtest_id] = backtest
-
-    _emit(
-        "complete",
-        {"record_id": lab_record_id, "is_winning": is_winning, "metrics": metrics_preview},
-    )
+        _strategy_lab_records[record.lab_record_id] = record
+        _strategies[record.strategy.strategy_id] = record.strategy
+        _backtests[record.backtest.backtest_id] = record.backtest
 
     return record
 
@@ -1100,7 +1007,7 @@ def _strategy_lab_worker(
         publish(run_id, payload, event_type=event_type)
 
     try:
-        agent = StrategyIdeationAgent()
+        orchestrator = StrategyLabOrchestrator(convergence_tracker=ConvergenceTracker())
 
         config = BacktestConfig(
             start_date=request.start_date,
@@ -1174,66 +1081,120 @@ def _strategy_lab_worker(
             }
 
         completed_ids: List[str] = []
+        completed_indices: set[int] = set()  # 0-based indices of completed cycles
         skipped = 0
         if start_cycle_offset > 0:
+            # Mark prior cycles as already completed for resume bookkeeping
+            completed_indices.update(range(start_cycle_offset))
             logger.info("Strategy lab worker resuming from cycle %d", start_cycle_offset + 1)
-        for i in range(start_cycle_offset, request.batch_size):
-            cycle_num = i + 1
 
-            def on_phase(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
-                cycle_data = {"cycle_index": cycle_num, "phase": phase, **(data or {})}
-                _update_run({"current_cycle": cycle_data})
-                _publish("progress", cycle_data)
+        # ── Wave-based parallel execution ──────────────────────────────
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            try:
-                record = _run_one_strategy_lab_cycle(
-                    agent,
-                    config,
-                    precomputed_signal_brief=precomputed_brief,
-                    signal_brief_storage=signal_brief_storage,
-                    on_phase=on_phase,
-                )
-                completed_ids.append(record.lab_record_id)
-                _update_run(
-                    {
-                        "completed_cycles": len(completed_ids),
-                        "completed_record_ids": list(completed_ids),
-                        "current_cycle": None,
-                    }
-                )
-                _publish(
-                    "cycle_complete",
-                    {
-                        "cycle_index": cycle_num,
-                        "record_id": record.lab_record_id,
-                        "completed_cycles": len(completed_ids),
-                    },
-                )
-            except HTTPException as exc:
-                if exc.status_code == 502:
-                    logger.warning(
-                        "Strategy lab cycle %d/%d skipped (no market data after fallback)",
-                        cycle_num,
-                        request.batch_size,
+        primary_tracker = orchestrator.convergence_tracker
+        max_parallel = request.max_parallel
+        remaining = list(range(start_cycle_offset, request.batch_size))
+        run_failed = False
+
+        while remaining and not run_failed:
+            wave_indices = remaining[:max_parallel]
+            remaining = remaining[max_parallel:]
+
+            wave_futures: Dict[Any, int] = {}
+            with ThreadPoolExecutor(max_workers=len(wave_indices), thread_name_prefix="strat-lab") as pool:
+                for i in wave_indices:
+                    cn = i + 1  # cycle_num (1-based)
+
+                    def _make_on_phase(_cn: int):
+                        def on_phase(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
+                            cycle_data = {"cycle_index": _cn, "phase": phase, **(data or {})}
+                            _update_run({"current_cycle": cycle_data})
+                            _publish("progress", cycle_data)
+                        return on_phase
+
+                    cycle_orchestrator = StrategyLabOrchestrator(
+                        convergence_tracker=primary_tracker.snapshot(),
                     )
-                    skipped += 1
-                    _update_run({"skipped_cycles": skipped, "current_cycle": None})
-                    _publish(
-                        "cycle_skipped", {"cycle_index": cycle_num, "reason": "no_market_data"}
+                    future = pool.submit(
+                        _run_one_strategy_lab_cycle,
+                        config,
+                        cycle_orchestrator,
+                        precomputed_signal_brief=precomputed_brief,
+                        signal_brief_storage=signal_brief_storage,
+                        on_phase=_make_on_phase(cn),
                     )
-                    continue
-                raise
-            except Exception as exc:
-                logger.exception("Strategy lab cycle %d/%d failed", cycle_num, request.batch_size)
-                _update_run(
-                    {
-                        "status": "failed",
-                        "error": f"Cycle {cycle_num} failed: {exc}",
-                        "current_cycle": None,
-                    }
-                )
-                _publish("error", {"detail": f"Cycle {cycle_num} failed: {exc}"})
-                return
+                    wave_futures[future] = cn
+
+                # Collect results from this wave.
+                # Each entry is (cycle_index_0based, record) so we can sort
+                # deterministically before updating the convergence tracker.
+                wave_results: List[tuple[int, StrategyLabRecord]] = []
+                for future in as_completed(wave_futures):
+                    cn = wave_futures[future]
+                    try:
+                        record = future.result()
+                        completed_ids.append(record.lab_record_id)
+                        completed_indices.add(cn - 1)  # 0-based
+                        wave_results.append((cn - 1, record))
+
+                        # Persist the highest contiguous completed index so
+                        # resume_strategy_lab_run can safely use it as the
+                        # start_cycle_offset without skipping failed cycles
+                        # or re-running already-finished ones.
+                        contiguous = 0
+                        while contiguous in completed_indices:
+                            contiguous += 1
+                        _update_run({
+                            "completed_cycles": contiguous,
+                            "completed_record_ids": list(completed_ids),
+                            "current_cycle": None,
+                        })
+                        _publish("cycle_complete", {
+                            "cycle_index": cn,
+                            "record_id": record.lab_record_id,
+                            "completed_cycles": contiguous,
+                        })
+                    except HTTPException as exc:
+                        if exc.status_code == 502:
+                            logger.warning(
+                                "Strategy lab cycle %d/%d skipped (no market data after fallback)",
+                                cn, request.batch_size,
+                            )
+                            skipped += 1
+                            _update_run({"skipped_cycles": skipped, "current_cycle": None})
+                            _publish("cycle_skipped", {"cycle_index": cn, "reason": "no_market_data"})
+                        else:
+                            logger.exception("Strategy lab cycle %d/%d failed", cn, request.batch_size)
+                            _update_run({
+                                "status": "failed",
+                                "error": f"Cycle {cn} failed: {exc}",
+                                "current_cycle": None,
+                            })
+                            _publish("error", {"detail": f"Cycle {cn} failed: {exc}"})
+                            run_failed = True
+                    except Exception as exc:
+                        logger.exception("Strategy lab cycle %d/%d failed", cn, request.batch_size)
+                        _update_run({
+                            "status": "failed",
+                            "error": f"Cycle {cn} failed: {exc}",
+                            "current_cycle": None,
+                        })
+                        _publish("error", {"detail": f"Cycle {cn} failed: {exc}"})
+                        run_failed = True
+
+            # Merge wave results into the primary convergence tracker in
+            # deterministic cycle-index order so that stall/diversity
+            # directives are reproducible across runs with identical inputs.
+            wave_results.sort(key=lambda pair: pair[0])
+            for _idx, record in wave_results:
+                gate_results = [
+                    QualityGateResult(**g) if isinstance(g, dict) else g
+                    for g in record.quality_gate_results
+                ]
+                primary_tracker.record(record.strategy, gate_results)
+
+        if run_failed:
+            return
 
         msg = f"Completed {len(completed_ids)} strategy lab cycle(s)."
         if skipped:
