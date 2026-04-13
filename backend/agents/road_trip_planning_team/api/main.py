@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from uuid import uuid4
@@ -9,13 +10,10 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from shared_graph import extract_node_text, invoke_graph_sync
 from shared_observability import init_otel, instrument_fastapi_app
 
-from ..agents.activities_expert_agent import ActivitiesExpertAgent
-from ..agents.itinerary_composer_agent import ItineraryComposerAgent
-from ..agents.logistics_agent import LogisticsAgent
-from ..agents.route_planner_agent import RoutePlannerAgent
-from ..agents.traveler_profiler_agent import TravelerProfilerAgent
+from ..graphs.trip_graph import build_trip_graph
 from ..models import PlanTripRequest, PlanTripResponse, TripItinerary
 from ..shared.job_store import (
     JOB_STATUS_COMPLETED,
@@ -50,42 +48,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialise all specialist agents once at startup (each creates its own Strands Agent)
-_traveler_profiler = TravelerProfilerAgent()
-_route_planner = RoutePlannerAgent()
-_activities_expert = ActivitiesExpertAgent()
-_logistics_agent = LogisticsAgent()
-_itinerary_composer = ItineraryComposerAgent()
-
 
 def _run_pipeline(trip_request: PlanTripRequest) -> TripItinerary:
-    """Execute the full multi-agent planning pipeline synchronously."""
+    """Execute the full multi-agent planning pipeline via a Strands sequential Graph."""
     trip = trip_request.trip
 
     logger.info("Road trip planning started: %s → %s", trip.start_location, trip.required_stops)
 
-    # Phase 1 — Traveler Profiler: understand who is going and what they need
-    logger.info("Phase 1: Traveler profiling")
-    group_profile = _traveler_profiler.run(trip)
+    # Serialize the trip request into a task string for the graph
+    task = (
+        f"Plan a road trip with the following details:\n\n"
+        f"Start location: {trip.start_location}\n"
+        f"Required stops: {', '.join(trip.required_stops) or 'none'}\n"
+        f"End location: {trip.end_location or trip.start_location}\n"
+        f"Duration: {trip.trip_duration_days or 'flexible'} days\n"
+        f"Vehicle: {trip.vehicle_type}\n"
+        f"Budget: {trip.budget_level}\n"
+        f"Preferences: {', '.join(trip.preferences) if trip.preferences else 'none'}\n\n"
+        f"Travelers:\n{json.dumps([t.model_dump() for t in trip.travelers], indent=2)}"
+    )
 
-    # Phase 2 — Route Planner: build the optimal route
-    logger.info("Phase 2: Route planning")
-    route = _route_planner.run(trip, group_profile)
+    graph = build_trip_graph()
+    result = invoke_graph_sync(graph, task)
 
-    # Phase 3 — Activities Expert: tailor activities for each stop
-    logger.info("Phase 3: Activities recommendation (%d stops)", len(route.ordered_stops))
-    activities_per_stop = _activities_expert.run(route, group_profile, trip)
+    # Extract the final itinerary from the composer node
+    text = extract_node_text(result, "itinerary_composer")
+    if text:
+        try:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(text[start:end])
+                return TripItinerary.model_validate(data)
+        except Exception as e:
+            logger.warning("Failed to parse itinerary from graph output: %s", e)
 
-    # Phase 4 — Logistics Agent: accommodations, packing, tips
-    logger.info("Phase 4: Logistics planning")
-    logistics = _logistics_agent.run(route, group_profile, trip)
-
-    # Phase 5 — Itinerary Composer: assemble the final itinerary
-    logger.info("Phase 5: Composing itinerary")
-    itinerary = _itinerary_composer.run(trip, group_profile, route, activities_per_stop, logistics)
-
-    logger.info("Road trip planning complete: %s (%d days)", itinerary.title, itinerary.total_days)
-    return itinerary
+    # Fallback minimal itinerary
+    return TripItinerary(
+        title=f"Road Trip: {trip.start_location} to {trip.end_location or trip.start_location}",
+        overview="Itinerary generation completed but output parsing failed.",
+        total_days=trip.trip_duration_days or len(trip.required_stops) * 2,
+    )
 
 
 @app.get("/health")
@@ -99,7 +102,7 @@ async def post_plan(body: PlanTripRequest) -> PlanTripResponse:
     """
     Plan a complete road trip itinerary (synchronous).
 
-    Runs the full multi-agent pipeline:
+    Runs the full multi-agent pipeline via a Strands sequential Graph:
     1. **Traveler Profiler** — synthesizes who is going and their collective needs
     2. **Route Planner** — builds the optimal ordered route through required stops
     3. **Activities Expert** — tailors activities and dining to the group at each stop
