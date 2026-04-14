@@ -1,11 +1,22 @@
 # System Design
 
-Design documents for this team: feature specs, architecture proposals, and
-similar artifacts produced before or alongside implementation.
+Design documents for this team. The platform convention for this folder is:
 
-Naming convention:
-- `FEATURE_SPEC_<slug>.md` — proposals for new user-facing features.
-- `DESIGN_<slug>.md` — cross-cutting architecture or refactor proposals.
+| File | Purpose |
+|---|---|
+| `architecture.md` | Static architecture: layered component diagram, architectural principles, key design decisions. |
+| `system_design.md` | Detailed system design: module layout, domain model, API surface, persistence, configuration. |
+| `use_cases.md` | Actors and numbered use cases with triggers, preconditions, and main flows. |
+| `flow_charts.md` | Sequence and flow diagrams for every runtime path. |
+| `FEATURE_SPEC_<slug>.md` | Pre-implementation proposals for new user-facing features. |
+| `README.md` | This file — team-specific index of the documents above. |
 
-Keep implementation how-to / operator docs in the team's top-level `README.md`
-and runtime reference in code comments.
+All diagrams use Mermaid. See `accessibility_audit_team`, `branding_team`,
+`investment_team`, `startup_advisor`, and `agentic_team_provisioning` for
+worked examples.
+
+Existing documents in this folder:
+
+- [`FEATURE_SPEC_testing_personas.md`](./FEATURE_SPEC_testing_personas.md) —
+  rename "Persona Testing" to "Testing Personas", add persona CRUD, make
+  target team selectable.
