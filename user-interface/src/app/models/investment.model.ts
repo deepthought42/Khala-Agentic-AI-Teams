@@ -626,6 +626,7 @@ export interface PaperTradingComparison {
   return_aligned: boolean;
   sharpe_aligned: boolean;
   drawdown_aligned: boolean;
+  profit_factor_aligned: boolean;
   overall_aligned: boolean;
 }
 
@@ -648,6 +649,16 @@ export interface PaperTradingSession {
   data_period_end: string;
   started_at: string;
   completed_at: string;
+}
+
+export interface RunPaperTradingRequest {
+  lab_record_id: string;
+  initial_capital?: number;
+  transaction_cost_bps?: number;
+  slippage_bps?: number;
+  min_trades?: number;
+  lookback_days?: number;
+  max_evaluations?: number;
 }
 
 export interface PaperTradingResponse {
