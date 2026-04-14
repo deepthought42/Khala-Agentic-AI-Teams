@@ -35,7 +35,7 @@ Stored per client and used by all agents:
 2. **Feedback**: Client submits `POST /feedback` with `recommendation_id`, `rating` (e.g. 1–5), `would_make_again`, and optional `notes`.
 3. **Learning**: On the next `POST /plan/meals`, the meal planning agent receives a summary of “past hits” (high rating / would make again) and “past misses” (low rating / would not make again) and prefers similar meals to hits and avoids similar to misses.
 
-Data is stored under `.agent_cache/nutrition_meal_planning_team/` (or `AGENT_CACHE` env): `profiles/{client_id}.json` and `recommendations/{recommendation_id}.json`.
+Data is persisted in Postgres (tables `nutrition_profiles`, `nutrition_conversations`, `nutrition_plans`, `nutrition_recommendations`). Schema is registered from the team's FastAPI lifespan via `shared_postgres.register_team_schemas`; connection is configured through the usual `POSTGRES_*` env vars. No local/filesystem cache is used.
 
 ## Agents
 

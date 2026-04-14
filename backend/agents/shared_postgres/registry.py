@@ -33,6 +33,7 @@ TEAM_POSTGRES_MODULES: dict[str, str] = {
     "team_assistant": "team_assistant.postgres",
     "agentic_team_provisioning": "agentic_team_provisioning.postgres",
     "blogging": "blogging.postgres",
+    "nutrition_meal_planning": "nutrition_meal_planning_team.postgres",
 }
 
 

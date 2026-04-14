@@ -26,9 +26,9 @@ from ..models import (
     NutritionPlanResponse,
     ProfileUpdateRequest,
 )
-from ..shared.client_profile_store import ClientProfileStore
-from ..shared.meal_feedback_store import MealFeedbackStore
-from ..shared.nutrition_plan_store import NutritionPlanStore
+from ..shared.client_profile_store import ClientProfileStore, get_profile_store
+from ..shared.meal_feedback_store import MealFeedbackStore, get_meal_feedback_store
+from ..shared.nutrition_plan_store import NutritionPlanStore, get_nutrition_plan_store
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +46,9 @@ class NutritionMealPlanningOrchestrator:
         nutrition_plan_store: Optional[NutritionPlanStore] = None,
         llm: Optional[LLMClient] = None,
     ) -> None:
-        self.profile_store = profile_store or ClientProfileStore()
-        self.meal_feedback_store = meal_feedback_store or MealFeedbackStore()
-        self.nutrition_plan_store = nutrition_plan_store or NutritionPlanStore()
+        self.profile_store = profile_store or get_profile_store()
+        self.meal_feedback_store = meal_feedback_store or get_meal_feedback_store()
+        self.nutrition_plan_store = nutrition_plan_store or get_nutrition_plan_store()
         llm = llm or get_client("nutrition_meal_planning")
         self.intake_agent = IntakeProfileAgent(llm)
         self.nutritionist_agent = NutritionistAgent(llm)
