@@ -1,3 +1,5 @@
+from typing import Any, Dict, List
+
 import pytest
 from agents.investment_team.agents import (
     AgentIdentity,
@@ -1155,3 +1157,443 @@ def test_agent_catalog_includes_signal_intelligence_expert() -> None:
     from agents.investment_team.agent_catalog import CORE_AGENTS
 
     assert any(agent.name == "Signal Intelligence Expert" for agent in CORE_AGENTS)
+
+
+# ---------------------------------------------------------------------------
+# TradeRecord execution-detail fields (bid / fill / order_type)
+# ---------------------------------------------------------------------------
+
+
+def test_trade_record_execution_detail_fields_populated() -> None:
+    """Verify TradeSimulationEngine populates bid/fill/order_type on a round-trip trade.
+
+    With slippage_bps=2, the entry fill is above the raw close and the exit
+    fill is below it. Both sides record the raw close as *_bid_price so
+    downstream analysis can compare realized vs modeled slippage.
+    """
+    from agents.investment_team.market_data_service import OHLCVBar
+    from agents.investment_team.trade_simulator import TradeSimulationEngine
+
+    bars = [
+        OHLCVBar(date="2023-01-01", open=100.0, high=101.0, low=99.0, close=100.0, volume=1e6),
+        OHLCVBar(date="2023-01-02", open=100.0, high=106.0, low=99.0, close=105.0, volume=1e6),
+    ]
+
+    def fake_evaluate(symbol, bar, recent, position, capital):
+        if position is None:
+            return {"action": "enter_long", "confidence": 0.9, "shares": 10, "reasoning": "enter"}
+        return {"action": "exit", "confidence": 0.9, "shares": 0, "reasoning": "exit"}
+
+    engine = TradeSimulationEngine(
+        initial_capital=100_000.0,
+        transaction_cost_bps=5.0,
+        slippage_bps=2.0,
+        min_history_bars=1,
+        pre_filter_pct=0.0,
+    )
+    sim = engine.run({"TEST": bars}, fake_evaluate)
+
+    assert len(sim.trades) == 1
+    trade = sim.trades[0]
+
+    assert trade.symbol == "TEST"
+    assert trade.side == "long"
+    assert trade.shares == 10
+
+    # Bid = raw close; fill = slippage-adjusted. Both must be populated.
+    assert trade.entry_bid_price == 100.0
+    assert trade.entry_fill_price is not None
+    assert trade.entry_fill_price > trade.entry_bid_price  # slippage added on buy
+    assert abs(trade.entry_fill_price - 100.02) < 1e-6
+
+    assert trade.exit_bid_price == 105.0
+    assert trade.exit_fill_price is not None
+    assert trade.exit_fill_price < trade.exit_bid_price  # slippage subtracted on sell
+    # Simulator rounds to 2 decimals for prices >= 10 (105 * 0.9998 = 104.979 → 104.98)
+    assert abs(trade.exit_fill_price - 104.98) < 1e-6
+
+    # Legacy entry_price / exit_price aliases still mirror the fill prices
+    assert trade.entry_price == trade.entry_fill_price
+    assert trade.exit_price == trade.exit_fill_price
+
+    # Order types default to market (engine fills at close)
+    assert trade.entry_order_type == "market"
+    assert trade.exit_order_type == "market"
+
+    # P/L fields still computed as before
+    assert trade.gross_pnl != 0
+    assert trade.net_pnl == trade.gross_pnl - round(trade.position_value * 5.0 / 10_000.0 * 2, 2)
+
+
+def test_trade_record_backward_compat_defaults() -> None:
+    """Legacy persisted rows without the new fields deserialize cleanly."""
+    legacy = {
+        "trade_num": 1,
+        "entry_date": "2023-01-01",
+        "exit_date": "2023-01-02",
+        "symbol": "LEG",
+        "side": "long",
+        "entry_price": 100.0,
+        "exit_price": 101.0,
+        "shares": 5,
+        "position_value": 500.0,
+        "gross_pnl": 5.0,
+        "net_pnl": 4.5,
+        "return_pct": 1.0,
+        "hold_days": 1,
+        "outcome": "win",
+        "cumulative_pnl": 4.5,
+    }
+    trade = TradeRecord(**legacy)
+
+    # New fields default to None / "market"
+    assert trade.entry_bid_price is None
+    assert trade.entry_fill_price is None
+    assert trade.exit_bid_price is None
+    assert trade.exit_fill_price is None
+    assert trade.entry_order_type == "market"
+    assert trade.exit_order_type == "market"
+
+
+# ---------------------------------------------------------------------------
+# Strategy Lab cycle — paper-trading step gating
+# ---------------------------------------------------------------------------
+
+
+class _FakeIdeationAgent:
+    """Minimal stand-in for StrategyIdeationAgent used by cycle tests."""
+
+    def ideate_strategy(
+        self,
+        *,
+        prior_results=None,
+        precomputed_signal_brief=None,
+        exclude_asset_classes=None,
+    ):
+        strategy_data = {
+            "asset_class": "equities",
+            "hypothesis": "test",
+            "signal_definition": "sig",
+            "entry_rules": ["e1"],
+            "exit_rules": ["x1"],
+            "sizing_rules": ["s1"],
+            "risk_limits": {},
+            "speculative": False,
+        }
+        return strategy_data, "rationale"
+
+    def analyze_result(self, record, rationale):
+        return "narrative"
+
+
+class _InMemoryDict:
+    """Minimal _PersistentDict-compatible stand-in for cycle tests."""
+
+    def __init__(self) -> None:
+        self._d: Dict[str, Any] = {}
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._d[key] = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+
+    def __getitem__(self, key: str) -> Any:
+        return self._d[key]
+
+    def get(self, key: str, default=None):
+        return self._d.get(key, default)
+
+    def values(self):
+        return self._d.values()
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._d
+
+    def pop(self, key: str, default=None):
+        return self._d.pop(key, default)
+
+
+def _install_inmemory_stores(monkeypatch):
+    """Replace the cycle's persistent dicts with in-memory shims."""
+    from investment_team.api import main as api_main
+
+    monkeypatch.setattr(api_main, "_strategy_lab_records", _InMemoryDict())
+    monkeypatch.setattr(api_main, "_strategies", _InMemoryDict())
+    monkeypatch.setattr(api_main, "_backtests", _InMemoryDict())
+    monkeypatch.setattr(api_main, "_paper_trading_sessions", _InMemoryDict())
+
+
+def _cycle_models():
+    """Return the models module that ``api.main`` uses (via ``investment_team.*``).
+
+    pytest's ``pythonpath = agents`` config makes both ``agents.investment_team.models``
+    and ``investment_team.models`` importable, but Pydantic v2 compares model
+    classes by identity — so cycle tests must use the same module path that
+    the API internally uses, otherwise ``BacktestRecord(config=...)`` etc. raise
+    ``model_type`` errors.
+    """
+    from investment_team import models as cycle_models
+
+    return cycle_models
+
+
+def _losing_backtest_result():
+    m = _cycle_models()
+    return m.BacktestResult(
+        total_return_pct=-5.0,
+        annualized_return_pct=-2.0,  # below 8% threshold → not winning
+        volatility_pct=10.0,
+        sharpe_ratio=-0.2,
+        max_drawdown_pct=10.0,
+        win_rate_pct=40.0,
+        profit_factor=0.5,
+    )
+
+
+def _winning_backtest_result():
+    m = _cycle_models()
+    return m.BacktestResult(
+        total_return_pct=50.0,
+        annualized_return_pct=20.0,  # above 8% → winning
+        volatility_pct=10.0,
+        sharpe_ratio=1.5,
+        max_drawdown_pct=8.0,
+        win_rate_pct=60.0,
+        profit_factor=2.0,
+    )
+
+
+def _cycle_trade_record(**overrides) -> Any:
+    """Build a TradeRecord using the same module path the cycle uses."""
+    m = _cycle_models()
+    defaults = dict(
+        trade_num=1,
+        entry_date="2023-01-01",
+        exit_date="2023-01-02",
+        symbol="X",
+        side="long",
+        entry_price=100.0,
+        exit_price=105.0,
+        shares=1,
+        position_value=100.0,
+        gross_pnl=5.0,
+        net_pnl=4.9,
+        return_pct=5.0,
+        hold_days=1,
+        outcome="win",
+        cumulative_pnl=4.9,
+    )
+    defaults.update(overrides)
+    return m.TradeRecord(**defaults)
+
+
+def _cycle_backtest_config() -> Any:
+    m = _cycle_models()
+    return m.BacktestConfig(
+        start_date="2021-01-01",
+        end_date="2024-12-31",
+        initial_capital=100_000.0,
+        benchmark_symbol="SPY",
+        transaction_cost_bps=5.0,
+        slippage_bps=2.0,
+    )
+
+
+def test_cycle_skips_paper_trading_when_strategy_loses(monkeypatch) -> None:
+    """Losing strategy: cycle must record paper_trading_status='skipped' (not_winning) and never call the helper."""
+    from investment_team.api import main as api_main
+
+    _install_inmemory_stores(monkeypatch)
+
+    losing_trade = _cycle_trade_record(
+        exit_price=99.0,
+        gross_pnl=-1.0,
+        net_pnl=-1.1,
+        return_pct=-1.0,
+        outcome="loss",
+        cumulative_pnl=-1.1,
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_run_real_data_backtest",
+        lambda strategy, config: (_losing_backtest_result(), [losing_trade]),
+    )
+
+    paper_calls: List[bool] = []
+
+    def _should_not_be_called(*args, **kwargs):
+        paper_calls.append(True)
+        raise AssertionError("Paper trading must not run for a losing strategy")
+
+    monkeypatch.setattr(api_main, "_run_paper_trading_step", _should_not_be_called)
+
+    phases: List[str] = []
+
+    def capture_phase(phase: str, data=None) -> None:
+        phases.append(phase)
+
+    record = api_main._run_one_strategy_lab_cycle(
+        _FakeIdeationAgent(),
+        _cycle_backtest_config(),
+        on_phase=capture_phase,
+        paper_trading_enabled=True,
+    )
+
+    assert paper_calls == [], "Helper must not be invoked for losing strategies"
+    assert record.is_winning is False
+    assert record.paper_trading_status == "skipped"
+    assert record.paper_trading_skipped_reason == "not_winning"
+    assert record.paper_trading_session_id is None
+    assert record.paper_trading_verdict is None
+    assert "paper_trading_skipped" in phases
+    assert "paper_trading" not in phases  # never entered the step
+
+
+def test_cycle_skips_paper_trading_when_disabled(monkeypatch) -> None:
+    """paper_trading_enabled=False: skip with reason='disabled' even for winners."""
+    from investment_team.api import main as api_main
+
+    _install_inmemory_stores(monkeypatch)
+
+    monkeypatch.setattr(
+        api_main,
+        "_run_real_data_backtest",
+        lambda strategy, config: (_winning_backtest_result(), [_cycle_trade_record()]),
+    )
+
+    def _should_not_be_called(**kwargs):
+        raise AssertionError("Paper trading must not run when disabled")
+
+    monkeypatch.setattr(api_main, "_run_paper_trading_step", _should_not_be_called)
+
+    record = api_main._run_one_strategy_lab_cycle(
+        _FakeIdeationAgent(),
+        _cycle_backtest_config(),
+        paper_trading_enabled=False,
+    )
+
+    assert record.is_winning is True
+    assert record.paper_trading_status == "skipped"
+    assert record.paper_trading_skipped_reason == "disabled"
+    assert record.paper_trading_session_id is None
+
+
+def test_cycle_runs_paper_trading_for_winners(monkeypatch) -> None:
+    """Winning strategy with paper_trading_enabled=True: helper runs and session_id is stored."""
+    from investment_team.api import main as api_main
+
+    m = _cycle_models()
+    _install_inmemory_stores(monkeypatch)
+
+    monkeypatch.setattr(
+        api_main,
+        "_run_real_data_backtest",
+        lambda strategy, config: (_winning_backtest_result(), [_cycle_trade_record()]),
+    )
+
+    captured_kwargs: Dict[str, Any] = {}
+
+    def fake_paper_step(**kwargs):
+        captured_kwargs.update(kwargs)
+        strategy = kwargs["strategy"]
+        return m.PaperTradingSession(
+            session_id="pt-test-1",
+            lab_record_id="",  # set by caller
+            strategy=strategy,
+            status=m.PaperTradingStatus.COMPLETED,
+            initial_capital=100_000.0,
+            current_capital=105_000.0,
+            trades=[],
+            verdict=m.PaperTradingVerdict.READY_FOR_LIVE,
+            symbols_traded=["X"],
+            data_source="test",
+            data_period_start="2024-01-01",
+            data_period_end="2024-06-01",
+            started_at="2024-06-01T00:00:00Z",
+            completed_at="2024-06-01T01:00:00Z",
+        )
+
+    monkeypatch.setattr(api_main, "_run_paper_trading_step", fake_paper_step)
+
+    record = api_main._run_one_strategy_lab_cycle(
+        _FakeIdeationAgent(),
+        _cycle_backtest_config(),
+        paper_trading_enabled=True,
+        paper_trading_min_trades=15,
+        paper_trading_lookback_days=200,
+        paper_trading_max_evaluations=1500,
+    )
+
+    assert record.is_winning is True
+    assert record.paper_trading_status == "completed"
+    assert record.paper_trading_session_id == "pt-test-1"
+    assert record.paper_trading_verdict == m.PaperTradingVerdict.READY_FOR_LIVE
+    assert record.paper_trading_skipped_reason is None
+    assert record.paper_trading_error is None
+
+    # Cycle forwarded paper-trade knobs to the helper
+    assert captured_kwargs["min_trades"] == 15
+    assert captured_kwargs["lookback_days"] == 200
+    assert captured_kwargs["max_evaluations"] == 1500
+    # And inherited execution assumptions from the backtest config
+    assert captured_kwargs["initial_capital"] == 100_000.0
+    assert captured_kwargs["transaction_cost_bps"] == 5.0
+    assert captured_kwargs["slippage_bps"] == 2.0
+
+
+def test_cycle_records_paper_trading_failure_as_non_fatal(monkeypatch) -> None:
+    """Paper-trading exception: cycle persists a valid winning record with status='failed'."""
+    from investment_team.api import main as api_main
+
+    _install_inmemory_stores(monkeypatch)
+
+    monkeypatch.setattr(
+        api_main,
+        "_run_real_data_backtest",
+        lambda strategy, config: (_winning_backtest_result(), [_cycle_trade_record()]),
+    )
+
+    def boom(**kwargs):
+        raise RuntimeError("simulated LLM outage")
+
+    monkeypatch.setattr(api_main, "_run_paper_trading_step", boom)
+
+    record = api_main._run_one_strategy_lab_cycle(
+        _FakeIdeationAgent(),
+        _cycle_backtest_config(),
+        paper_trading_enabled=True,
+    )
+
+    # Winner still recorded
+    assert record.is_winning is True
+    assert record.paper_trading_status == "failed"
+    assert record.paper_trading_error is not None
+    assert "simulated LLM outage" in record.paper_trading_error
+    assert record.paper_trading_session_id is None
+
+
+def test_cycle_records_paper_trading_no_market_data_as_skipped(monkeypatch) -> None:
+    """_PaperTradingDataUnavailable: cycle marks the record as skipped=no_market_data (non-fatal)."""
+    from investment_team.api import main as api_main
+
+    _install_inmemory_stores(monkeypatch)
+
+    monkeypatch.setattr(
+        api_main,
+        "_run_real_data_backtest",
+        lambda strategy, config: (_winning_backtest_result(), [_cycle_trade_record()]),
+    )
+
+    def no_data(**kwargs):
+        raise api_main._PaperTradingDataUnavailable("providers exhausted")
+
+    monkeypatch.setattr(api_main, "_run_paper_trading_step", no_data)
+
+    record = api_main._run_one_strategy_lab_cycle(
+        _FakeIdeationAgent(),
+        _cycle_backtest_config(),
+        paper_trading_enabled=True,
+    )
+
+    assert record.is_winning is True
+    assert record.paper_trading_status == "skipped"
+    assert record.paper_trading_skipped_reason == "no_market_data"
+    assert record.paper_trading_error is None

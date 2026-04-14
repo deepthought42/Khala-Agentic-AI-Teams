@@ -844,8 +844,69 @@ def _run_real_data_backtest(
     return agent.run_backtest(strategy, config, market_data)
 
 
+class _PaperTradingDataUnavailable(Exception):
+    """Raised inside the strategy lab cycle when market data can't be fetched for paper trading.
+
+    Converted to a non-fatal ``paper_trading_status = "skipped"`` outcome by the caller.
+    """
+
+
+def _run_paper_trading_step(
+    *,
+    strategy: StrategySpec,
+    backtest_record: BacktestRecord,
+    initial_capital: float,
+    transaction_cost_bps: float,
+    slippage_bps: float,
+    min_trades: int,
+    lookback_days: int,
+    max_evaluations: int,
+) -> PaperTradingSession:
+    """Run a paper-trading session inside a strategy lab cycle.
+
+    Mirrors the body of ``POST /strategy-lab/paper-trade`` but parameterized for
+    in-process use from ``_run_one_strategy_lab_cycle``. Raises
+    ``_PaperTradingDataUnavailable`` when no market data is available (caller
+    converts to a non-fatal ``skipped`` outcome). Any other exception should
+    propagate so the cycle records a ``failed`` status with the error message.
+    """
+    from investment_team.market_data_service import MarketDataService
+    from investment_team.paper_trading_agent import PaperTradingAgent
+    from llm_service.factory import get_client
+
+    market_service = MarketDataService()
+    symbols = market_service.get_symbols_for_strategy(strategy)
+    # Match the standalone endpoint: cap at top 5 symbols to bound fetch cost
+    symbols = symbols[:5]
+
+    logger.info(
+        "Paper-trading step: fetching %d days of market data for %d symbols (%s) ...",
+        lookback_days,
+        len(symbols),
+        strategy.asset_class,
+    )
+    market_data = market_service.fetch_multi_symbol(symbols, strategy.asset_class, lookback_days)
+    if not market_data:
+        raise _PaperTradingDataUnavailable(
+            "Failed to fetch market data for paper trading from external sources."
+        )
+
+    llm = get_client("paper_trading")
+    agent = PaperTradingAgent(llm_client=llm)
+    return agent.run_session(
+        strategy=strategy,
+        backtest_record=backtest_record,
+        market_data=market_data,
+        initial_capital=initial_capital,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+        min_trades=min_trades,
+        max_evaluations=max_evaluations,
+    )
+
+
 class RunStrategyLabRequest(BaseModel):
-    """Run one or more sequential ideation + backtest + analysis cycles."""
+    """Run one or more sequential ideation + backtest + analysis (+ paper-trading) cycles."""
 
     start_date: str = Field(default="2021-01-01", description="Backtest start date")
     end_date: str = Field(default="2024-12-31", description="Backtest end date")
@@ -858,6 +919,33 @@ class RunStrategyLabRequest(BaseModel):
         ge=1,
         le=25,
         description="Strategies to generate this run (one per sequential step; each step sees all prior results).",
+    )
+    # Paper-trading step (only runs when a cycle's backtest is flagged as winning)
+    paper_trading_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True (default), each winning strategy is paper-traded as part of the "
+            "cycle. Losing strategies always skip paper trading regardless of this flag."
+        ),
+    )
+    paper_trading_min_trades: int = Field(
+        default=20,
+        ge=1,
+        description="Minimum trades to target before evaluating the paper-trading session.",
+    )
+    paper_trading_lookback_days: int = Field(
+        default=365,
+        ge=30,
+        description="Days of recent market data to fetch for paper trading.",
+    )
+    paper_trading_max_evaluations: int = Field(
+        default=2000,
+        ge=100,
+        le=20000,
+        description=(
+            "Cap on LLM evaluations during paper trading to bound cycle cost. Lower than "
+            "the standalone endpoint's default (5000) since this runs per winning cycle."
+        ),
     )
 
 
@@ -906,16 +994,34 @@ def _run_one_strategy_lab_cycle(
     precomputed_signal_brief: Optional[SignalIntelligenceBriefV1] = None,
     signal_brief_storage: Optional[Dict[str, Any]] = None,
     on_phase: Optional[Any] = None,
+    paper_trading_enabled: bool = True,
+    paper_trading_min_trades: int = 20,
+    paper_trading_lookback_days: int = 365,
+    paper_trading_max_evaluations: int = 2000,
 ) -> StrategyLabRecord:
-    """Single ideation → backtest → analysis; persists to store so the next cycle sees full history.
+    """Single ideation → backtest → analysis → (paper-trading) cycle.
 
-    If all data providers fail for the ideated asset class, re-ideates for a different
-    asset class (up to one retry) rather than aborting the entire batch.
+    Persists to store so the next cycle sees full history. If all data providers
+    fail for the ideated asset class, re-ideates for a different asset class
+    (up to one retry) rather than aborting the entire batch.
+
+    The paper-trading step only runs when the backtest flags the strategy as
+    winning (``annualized_return_pct > 8.0``). Losing strategies record
+    ``paper_trading_status = "skipped"`` with reason ``"not_winning"`` and never
+    consume paper-trade LLM budget. Paper-trading failures are non-fatal: the
+    cycle still persists a valid winning record with ``paper_trading_status =
+    "failed"`` and the error message.
 
     Args:
         on_phase: Optional callback ``(phase: str, data: dict) -> None`` called at each
             phase boundary to emit progress events.
+        paper_trading_enabled: Opt-out flag; when False, every winning strategy
+            records ``paper_trading_status = "skipped"`` with reason ``"disabled"``.
+        paper_trading_min_trades: Forwarded to the paper-trading engine.
+        paper_trading_lookback_days: Forwarded to ``MarketDataService.fetch_multi_symbol``.
+        paper_trading_max_evaluations: Caps LLM evaluations during the paper-trading step.
     """
+
     def _emit(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
         if on_phase:
             on_phase(phase, data or {})
@@ -1016,6 +1122,59 @@ def _run_one_strategy_lab_cycle(
             f"Sharpe ratio: {result.sharpe_ratio:.2f}, max drawdown: {result.max_drawdown_pct:.1f}%."
         )
 
+    # --- Paper-trading step (gated on winning backtest) -------------------
+    paper_session_id: Optional[str] = None
+    paper_status: Optional[str] = None
+    paper_skipped_reason: Optional[str] = None
+    paper_error: Optional[str] = None
+    paper_verdict: Optional[PaperTradingVerdict] = None
+
+    if not is_winning:
+        paper_status = "skipped"
+        paper_skipped_reason = "not_winning"
+        _emit("paper_trading_skipped", {"reason": "not_winning"})
+    elif not paper_trading_enabled:
+        paper_status = "skipped"
+        paper_skipped_reason = "disabled"
+        _emit("paper_trading_skipped", {"reason": "disabled"})
+    else:
+        _emit("paper_trading", {"strategy": strategy_preview})
+        try:
+            session = _run_paper_trading_step(
+                strategy=strategy,
+                backtest_record=backtest,
+                initial_capital=config.initial_capital,
+                transaction_cost_bps=config.transaction_cost_bps,
+                slippage_bps=config.slippage_bps,
+                min_trades=paper_trading_min_trades,
+                lookback_days=paper_trading_lookback_days,
+                max_evaluations=paper_trading_max_evaluations,
+            )
+            session.lab_record_id = lab_record_id
+            with _lock:
+                _paper_trading_sessions[session.session_id] = session
+            paper_session_id = session.session_id
+            paper_status = "completed"
+            paper_verdict = session.verdict
+            _emit(
+                "paper_trading_complete",
+                {
+                    "session_id": session.session_id,
+                    "verdict": session.verdict.value if session.verdict else None,
+                    "trade_count": len(session.trades),
+                },
+            )
+        except _PaperTradingDataUnavailable as exc:
+            logger.warning("Paper trading step skipped due to missing market data: %s", exc)
+            paper_status = "skipped"
+            paper_skipped_reason = "no_market_data"
+            _emit("paper_trading_skipped", {"reason": "no_market_data", "detail": str(exc)[:200]})
+        except Exception as exc:
+            logger.warning("Paper trading step failed (non-fatal): %s", exc)
+            paper_status = "failed"
+            paper_error = str(exc)[:500]
+            _emit("paper_trading_failed", {"detail": paper_error})
+
     record = StrategyLabRecord(
         lab_record_id=lab_record_id,
         strategy=strategy,
@@ -1025,6 +1184,11 @@ def _run_one_strategy_lab_cycle(
         analysis_narrative=narrative,
         created_at=now,
         signal_intelligence_brief=signal_brief_storage,
+        paper_trading_session_id=paper_session_id,
+        paper_trading_status=paper_status,
+        paper_trading_skipped_reason=paper_skipped_reason,
+        paper_trading_error=paper_error,
+        paper_trading_verdict=paper_verdict,
     )
 
     with _lock:
@@ -1032,7 +1196,16 @@ def _run_one_strategy_lab_cycle(
         _strategies[strategy_id] = strategy
         _backtests[backtest_id] = backtest
 
-    _emit("complete", {"record_id": lab_record_id, "is_winning": is_winning, "metrics": metrics_preview})
+    _emit(
+        "complete",
+        {
+            "record_id": lab_record_id,
+            "is_winning": is_winning,
+            "metrics": metrics_preview,
+            "paper_trading_status": paper_status,
+            "paper_trading_verdict": paper_verdict.value if paper_verdict else None,
+        },
+    )
 
     return record
 
@@ -1132,7 +1305,9 @@ def _strategy_lab_worker(
                 )
             with _lock:
                 raw_prior = list(_strategy_lab_records.values())
-            prior_for_brief = [StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior]
+            prior_for_brief = [
+                StrategyLabRecord(**r) if isinstance(r, dict) else r for r in raw_prior
+            ]
             prior_for_brief.sort(key=lambda r: r.created_at)
 
             llm_signal = get_client("signal_intelligence")
@@ -1192,36 +1367,50 @@ def _strategy_lab_worker(
                     precomputed_signal_brief=precomputed_brief,
                     signal_brief_storage=signal_brief_storage,
                     on_phase=on_phase,
+                    paper_trading_enabled=request.paper_trading_enabled,
+                    paper_trading_min_trades=request.paper_trading_min_trades,
+                    paper_trading_lookback_days=request.paper_trading_lookback_days,
+                    paper_trading_max_evaluations=request.paper_trading_max_evaluations,
                 )
                 completed_ids.append(record.lab_record_id)
-                _update_run({
-                    "completed_cycles": len(completed_ids),
-                    "completed_record_ids": list(completed_ids),
-                    "current_cycle": None,
-                })
-                _publish("cycle_complete", {
-                    "cycle_index": cycle_num,
-                    "record_id": record.lab_record_id,
-                    "completed_cycles": len(completed_ids),
-                })
+                _update_run(
+                    {
+                        "completed_cycles": len(completed_ids),
+                        "completed_record_ids": list(completed_ids),
+                        "current_cycle": None,
+                    }
+                )
+                _publish(
+                    "cycle_complete",
+                    {
+                        "cycle_index": cycle_num,
+                        "record_id": record.lab_record_id,
+                        "completed_cycles": len(completed_ids),
+                    },
+                )
             except HTTPException as exc:
                 if exc.status_code == 502:
                     logger.warning(
                         "Strategy lab cycle %d/%d skipped (no market data after fallback)",
-                        cycle_num, request.batch_size,
+                        cycle_num,
+                        request.batch_size,
                     )
                     skipped += 1
                     _update_run({"skipped_cycles": skipped, "current_cycle": None})
-                    _publish("cycle_skipped", {"cycle_index": cycle_num, "reason": "no_market_data"})
+                    _publish(
+                        "cycle_skipped", {"cycle_index": cycle_num, "reason": "no_market_data"}
+                    )
                     continue
                 raise
             except Exception as exc:
                 logger.exception("Strategy lab cycle %d/%d failed", cycle_num, request.batch_size)
-                _update_run({
-                    "status": "failed",
-                    "error": f"Cycle {cycle_num} failed: {exc}",
-                    "current_cycle": None,
-                })
+                _update_run(
+                    {
+                        "status": "failed",
+                        "error": f"Cycle {cycle_num} failed: {exc}",
+                        "current_cycle": None,
+                    }
+                )
                 _publish("error", {"detail": f"Cycle {cycle_num} failed: {exc}"})
                 return
 
@@ -1230,7 +1419,10 @@ def _strategy_lab_worker(
             msg += f" ({skipped} skipped due to unavailable market data)"
 
         _update_run({"status": "completed", "current_cycle": None})
-        _publish("complete", {"message": msg, "completed_count": len(completed_ids), "skipped_count": skipped})
+        _publish(
+            "complete",
+            {"message": msg, "completed_count": len(completed_ids), "skipped_count": skipped},
+        )
 
     except Exception as exc:
         logger.exception("Strategy lab worker failed for run %s", run_id)
@@ -1259,7 +1451,9 @@ def run_strategy_lab(request: RunStrategyLabRequest) -> StrategyLabRunStartRespo
     with _lock:
         active = [r for r in _active_runs.values() if r["status"] == "running"]
         if active:
-            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+            raise HTTPException(
+                status_code=409, detail="A strategy lab run is already in progress."
+            )
 
     run_id = f"run-{uuid.uuid4().hex[:8]}"
     now = _now()
@@ -1337,7 +1531,11 @@ class InvestmentJobsListResponse(BaseModel):
     jobs: List[InvestmentJobSummary] = Field(default_factory=list)
 
 
-@app.get("/strategy-lab/jobs", response_model=InvestmentJobsListResponse, summary="List strategy lab runs as jobs")
+@app.get(
+    "/strategy-lab/jobs",
+    response_model=InvestmentJobsListResponse,
+    summary="List strategy lab runs as jobs",
+)
 def list_strategy_lab_jobs(running_only: bool = False) -> InvestmentJobsListResponse:
     """Return strategy lab runs in a format compatible with the central Jobs Dashboard."""
     jobs: List[InvestmentJobSummary] = []
@@ -1354,14 +1552,16 @@ def list_strategy_lab_jobs(running_only: bool = False) -> InvestmentJobsListResp
             total = state.get("total_cycles", 1)
             progress = int((completed / total) * 100) if total else 0
             label = hypothesis or f"Strategy batch ({completed}/{total})"
-            jobs.append(InvestmentJobSummary(
-                job_id=state["run_id"],
-                status=state["status"],
-                label=label,
-                progress=progress,
-                current_phase=phase,
-                created_at=state.get("started_at"),
-            ))
+            jobs.append(
+                InvestmentJobSummary(
+                    job_id=state["run_id"],
+                    status=state["status"],
+                    label=label,
+                    progress=progress,
+                    current_phase=phase,
+                    created_at=state.get("started_at"),
+                )
+            )
 
     # Persisted runs from job service (completed runs not in memory)
     try:
@@ -1376,14 +1576,16 @@ def list_strategy_lab_jobs(running_only: bool = False) -> InvestmentJobsListResp
             completed = data.get("completed_cycles", 0)
             total = data.get("total_cycles", 1)
             progress = int((completed / total) * 100) if total else 0
-            jobs.append(InvestmentJobSummary(
-                job_id=jid,
-                status=job.get("status", data.get("status", "completed")),
-                label=f"Strategy batch ({completed}/{total})",
-                progress=progress,
-                current_phase=None,
-                created_at=data.get("started_at"),
-            ))
+            jobs.append(
+                InvestmentJobSummary(
+                    job_id=jid,
+                    status=job.get("status", data.get("status", "completed")),
+                    label=f"Strategy batch ({completed}/{total})",
+                    progress=progress,
+                    current_phase=None,
+                    created_at=data.get("started_at"),
+                )
+            )
     except Exception as exc:
         logger.warning("Failed to load persisted strategy lab runs: %s", exc)
 
@@ -1427,7 +1629,9 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     with _lock:
         active = [r for r in _active_runs.values() if r["status"] == "running"]
         if active:
-            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+            raise HTTPException(
+                status_code=409, detail="A strategy lab run is already in progress."
+            )
 
     # Re-initialize in-memory state
     resumed_state = {
@@ -1459,7 +1663,8 @@ def resume_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     thread.start()
 
     return StrategyLabRunStartResponse(
-        run_id=run_id, total_cycles=total_cycles,
+        run_id=run_id,
+        total_cycles=total_cycles,
         message=f"Run resumed from cycle {completed_cycles + 1} of {total_cycles}.",
     )
 
@@ -1489,7 +1694,9 @@ def restart_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     with _lock:
         active = [r for r in _active_runs.values() if r["status"] == "running"]
         if active:
-            raise HTTPException(status_code=409, detail="A strategy lab run is already in progress.")
+            raise HTTPException(
+                status_code=409, detail="A strategy lab run is already in progress."
+            )
 
     request = RunStrategyLabRequest(**payload)
 
@@ -1518,12 +1725,15 @@ def restart_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
     thread.start()
 
     return StrategyLabRunStartResponse(
-        run_id=run_id, total_cycles=request.batch_size,
+        run_id=run_id,
+        total_cycles=request.batch_size,
         message="Run restarted from scratch.",
     )
 
 
-@app.get("/strategy-lab/runs", response_model=ActiveRunsResponse, summary="List active strategy lab runs")
+@app.get(
+    "/strategy-lab/runs", response_model=ActiveRunsResponse, summary="List active strategy lab runs"
+)
 def list_strategy_lab_runs() -> ActiveRunsResponse:
     """Return all tracked runs (active and recently completed, kept for 5 min after finish)."""
     with _lock:
@@ -1576,9 +1786,13 @@ async def stream_strategy_lab_run(run_id: str) -> StreamingResponse:
 
     # If the run is already terminal, send snapshot + done immediately.
     if state.get("status") in ("completed", "failed"):
+
         async def _terminal_gen():
-            yield _sse_line({"type": "snapshot", **_run_state_to_response(state).model_dump(mode="json")})
+            yield _sse_line(
+                {"type": "snapshot", **_run_state_to_response(state).model_dump(mode="json")}
+            )
             yield _sse_line({"type": "done"})
+
         return StreamingResponse(_terminal_gen(), media_type="text/event-stream")
 
     async def event_generator():
@@ -1588,7 +1802,9 @@ async def stream_strategy_lab_run(run_id: str) -> StreamingResponse:
             with _lock:
                 current = _active_runs.get(run_id, {})
             if current:
-                yield _sse_line({"type": "snapshot", **_run_state_to_response(current).model_dump(mode="json")})
+                yield _sse_line(
+                    {"type": "snapshot", **_run_state_to_response(current).model_dump(mode="json")}
+                )
 
             deadline = time_mod.monotonic() + 4 * 3600  # 4-hour max
             while time_mod.monotonic() < deadline:
@@ -1860,6 +2076,7 @@ def run_paper_trading(request: RunPaperTradingRequest) -> PaperTradingResponse:
             transaction_cost_bps=request.transaction_cost_bps,
             slippage_bps=request.slippage_bps,
             min_trades=request.min_trades,
+            max_evaluations=request.max_evaluations,
         )
     except Exception as exc:
         logger.error("Paper trading session failed: %s", exc)

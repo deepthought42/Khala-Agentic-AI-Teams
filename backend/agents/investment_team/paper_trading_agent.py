@@ -137,6 +137,7 @@ class PaperTradingAgent:
         transaction_cost_bps: float = 5.0,
         slippage_bps: float = 2.0,
         min_trades: int = 50,
+        max_evaluations: int = 5000,
     ) -> PaperTradingSession:
         """Walk through market data bar-by-bar, making LLM-driven trade decisions."""
         session_id = f"pt-{uuid.uuid4().hex[:8]}"
@@ -174,6 +175,7 @@ class PaperTradingAgent:
             initial_capital=initial_capital,
             transaction_cost_bps=transaction_cost_bps,
             slippage_bps=slippage_bps,
+            max_evaluations=max_evaluations,
         )
 
         def evaluate(

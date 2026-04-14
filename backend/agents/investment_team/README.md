@@ -172,6 +172,14 @@ The Investment Team API includes first-class backtesting endpoints so trading ag
 
 Stored `BacktestRecord` objects include strategy details, run configuration, and performance metrics (`total_return_pct`, `annualized_return_pct`, `volatility_pct`, `sharpe_ratio`, `max_drawdown_pct`, `win_rate_pct`, and `profit_factor`) so agents can compare what has been tried over time.
 
+## System design docs
+
+Engineer-facing architecture details live under [`system_design/`](./system_design/README.md):
+
+- [`strategy_lab_pipeline.md`](./system_design/strategy_lab_pipeline.md) — full per-cycle pipeline (`ideating → fetching_data → analyzing → paper_trading? → complete`), phase events, winner gate, skip paths.
+- [`paper_trading_integration.md`](./system_design/paper_trading_integration.md) — paper trading as an integrated cycle step: winner gate, config, failure contract, linkage to `StrategyLabRecord`.
+- [`trade_record_schema.md`](./system_design/trade_record_schema.md) — every `TradeRecord` field, including bid vs fill prices and order-type fields used for post-hoc execution analysis.
+
 ## Strands platform
 
 This package is part of the [Strands Agents](../../../README.md) monorepo (Unified API, Angular UI, and full team index).
