@@ -1,4 +1,4 @@
-"""Unit tests for ClientProfileStore and MealFeedbackStore."""
+"""Unit tests for ClientProfileStore and MealFeedbackStore (Postgres-backed)."""
 
 import pytest
 
@@ -18,18 +18,20 @@ from nutrition_meal_planning_team.shared.meal_feedback_store import (
     record_feedback,
     record_recommendation,
 )
+from shared_postgres import is_postgres_enabled
+
+pytestmark = pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Nutrition stores require Postgres (set POSTGRES_HOST).",
+)
 
 
 class TestClientProfileStore:
     """Tests for ClientProfileStore."""
 
     @pytest.fixture
-    def storage_dir(self, tmp_path):
-        return tmp_path / "profiles"
-
-    @pytest.fixture
-    def store(self, storage_dir):
-        return ClientProfileStore(storage_dir=storage_dir)
+    def store(self):
+        return ClientProfileStore()
 
     def test_create_profile(self, store):
         profile = store.create_profile("client1")
@@ -53,13 +55,11 @@ class TestClientProfileStore:
         assert loaded.household.number_of_people == 2
         assert "vegetarian" in loaded.dietary_needs
 
-    def test_module_level_create_get_save(self, storage_dir):
-        p = create_profile("c3", storage_dir=storage_dir)
+    def test_module_level_create_get_save(self):
+        p = create_profile("c3")
         assert p.client_id == "c3"
-        save_profile(
-            "c3", ClientProfile(client_id="c3", dietary_needs=["vegan"]), storage_dir=storage_dir
-        )
-        loaded = get_profile("c3", storage_dir=storage_dir)
+        save_profile("c3", ClientProfile(client_id="c3", dietary_needs=["vegan"]))
+        loaded = get_profile("c3")
         assert loaded is not None
         assert "vegan" in loaded.dietary_needs
 
@@ -68,12 +68,8 @@ class TestMealFeedbackStore:
     """Tests for MealFeedbackStore."""
 
     @pytest.fixture
-    def storage_dir(self, tmp_path):
-        return tmp_path / "recommendations"
-
-    @pytest.fixture
-    def store(self, storage_dir):
-        return MealFeedbackStore(storage_dir=storage_dir)
+    def store(self):
+        return MealFeedbackStore()
 
     def test_record_recommendation_returns_id(self, store):
         rec_id = store.record_recommendation(
@@ -107,9 +103,9 @@ class TestMealFeedbackStore:
         ok = store.record_feedback("nonexistent-uuid", rating=1)
         assert ok is False
 
-    def test_module_level_functions(self, storage_dir):
-        rec_id = record_recommendation("c2", {"name": "Omelette"}, storage_dir=storage_dir)
-        record_feedback(rec_id, rating=4, would_make_again=True, storage_dir=storage_dir)
-        entries = get_meal_history("c2", storage_dir=storage_dir)
+    def test_module_level_functions(self):
+        rec_id = record_recommendation("c2", {"name": "Omelette"})
+        record_feedback(rec_id, rating=4, would_make_again=True)
+        entries = get_meal_history("c2")
         assert len(entries) == 1
         assert entries[0].feedback and entries[0].feedback.rating == 4

@@ -1,94 +1,104 @@
-"""File-based storage for client profiles (Nutrition & Meal Planning team)."""
+"""Postgres-backed storage for client profiles (Nutrition & Meal Planning team).
+
+Profiles are stored whole in the ``nutrition_profiles.profile`` JSONB
+column keyed by ``client_id``. Saves use upsert semantics so there is at
+most one current row per client (matching the pre-migration file layout).
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
+
+from shared_postgres import Json, dict_row, get_conn
+from shared_postgres.metrics import timed_query
 
 from ..models import ClientProfile
 
 logger = logging.getLogger(__name__)
 
-
-def _default_storage_dir() -> Path:
-    base = os.environ.get("AGENT_CACHE", ".agent_cache")
-    return Path(base) / "nutrition_meal_planning_team" / "profiles"
+_STORE = "nutrition_meal_planning"
 
 
-def _profile_path(storage_dir: Path, client_id: str) -> Path:
-    return storage_dir / f"{client_id}.json"
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def get_profile(client_id: str, storage_dir: Optional[Path] = None) -> Optional[ClientProfile]:
+@timed_query(store=_STORE, op="get_profile")
+def get_profile(client_id: str) -> Optional[ClientProfile]:
     """Load client profile by client_id. Returns None if not found."""
-    directory = storage_dir or _default_storage_dir()
-    path = _profile_path(directory, client_id)
-    if not path.exists():
-        return None
+    with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT profile FROM nutrition_profiles WHERE client_id = %s",
+            (client_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        profile = ClientProfile.model_validate(data)
-        profile.client_id = client_id
-        return profile
-    except json.JSONDecodeError:
-        logger.warning("Corrupt profile JSON for %s at %s", client_id, path)
-        return None
+        profile = ClientProfile.model_validate(row["profile"])
     except Exception:
-        logger.warning("Failed to load profile for %s at %s", client_id, path, exc_info=True)
+        logger.warning("Corrupt profile JSON for %s", client_id, exc_info=True)
         return None
-
-
-def save_profile(
-    client_id: str, profile: ClientProfile, storage_dir: Optional[Path] = None
-) -> None:
-    """Save client profile atomically. Creates directory if needed."""
-    directory = storage_dir or _default_storage_dir()
-    directory.mkdir(parents=True, exist_ok=True)
     profile.client_id = client_id
-    profile.updated_at = _now()
-    path = _profile_path(directory, client_id)
-    # Atomic write: write to temp file in same directory, then rename
-    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(profile.model_dump_json(indent=2))
-        os.replace(tmp_path, path)
-    except BaseException:
-        # Clean up temp file on failure
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    return profile
 
 
-def create_profile(client_id: str, storage_dir: Optional[Path] = None) -> ClientProfile:
+@timed_query(store=_STORE, op="save_profile")
+def save_profile(client_id: str, profile: ClientProfile) -> None:
+    """Save client profile via upsert. Mutates ``profile.updated_at`` as a side effect."""
+    profile.client_id = client_id
+    profile.updated_at = _now_iso()
+    ts = datetime.now(tz=timezone.utc)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO nutrition_profiles (client_id, profile, updated_at) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (client_id) DO UPDATE "
+            "SET profile = EXCLUDED.profile, updated_at = EXCLUDED.updated_at",
+            (client_id, Json(profile.model_dump()), ts),
+        )
+
+
+def create_profile(client_id: str) -> ClientProfile:
     """Create a new empty profile for client_id and save it. Returns the new profile."""
     profile = ClientProfile(client_id=client_id)
-    save_profile(client_id, profile, storage_dir)
+    save_profile(client_id, profile)
     return profile
 
 
 class ClientProfileStore:
-    """File-based store for client profiles. Use get_profile, save_profile, create_profile."""
+    """Postgres-backed store for client profiles.
 
-    def __init__(self, storage_dir: Optional[Path] = None) -> None:
-        self.storage_dir = storage_dir or _default_storage_dir()
+    The constructor takes no arguments — the Postgres DSN is read from
+    ``POSTGRES_*`` env vars by ``shared_postgres.get_conn``.
+    """
+
+    def __init__(self) -> None:
+        # Stateless; the connection pool lives inside shared_postgres.
+        pass
 
     def get_profile(self, client_id: str) -> Optional[ClientProfile]:
-        return get_profile(client_id, self.storage_dir)
+        return get_profile(client_id)
 
     def save_profile(self, client_id: str, profile: ClientProfile) -> None:
-        save_profile(client_id, profile, self.storage_dir)
+        save_profile(client_id, profile)
 
     def create_profile(self, client_id: str) -> ClientProfile:
-        return create_profile(client_id, self.storage_dir)
+        return create_profile(client_id)
+
+
+# ---------------------------------------------------------------------------
+# Lazy singleton
+# ---------------------------------------------------------------------------
+
+_default_store: Optional[ClientProfileStore] = None
+
+
+def get_profile_store() -> ClientProfileStore:
+    """Return the process-wide store, instantiating on first call."""
+    global _default_store
+    if _default_store is None:
+        _default_store = ClientProfileStore()
+    return _default_store

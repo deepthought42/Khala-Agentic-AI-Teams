@@ -80,8 +80,9 @@ python run_unified_api.py --port 9000 --reload --workers 4
 ### Local dev with Postgres
 
 All migrated teams (blogging, branding, startup_advisor, team_assistant,
-user_agent_founder, agentic_team_provisioning, unified_api credentials)
-now require Postgres for local dev and tests — no SQLite fallback.
+user_agent_founder, agentic_team_provisioning, nutrition_meal_planning,
+unified_api credentials) now require Postgres for local dev and tests —
+no SQLite fallback.
 
 ```bash
 # Start Postgres from the full stack compose file (or the tiny subset)

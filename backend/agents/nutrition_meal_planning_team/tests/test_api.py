@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from shared_postgres import is_postgres_enabled
+
 # Ensure agents dir is on path
 _agents_dir = Path(__file__).resolve().parent.parent.parent
 if str(_agents_dir) not in __import__("sys").path:
@@ -16,14 +18,10 @@ from nutrition_meal_planning_team.api.main import app  # noqa: E402
 
 @pytest.fixture
 def client():
-    return TestClient(app)
-
-
-@pytest.fixture
-def temp_cache(tmp_path, monkeypatch):
-    """Use temp dir for AGENT_CACHE so profile and meal stores don't persist."""
-    monkeypatch.setenv("AGENT_CACHE", str(tmp_path))
-    return tmp_path
+    # Use ``TestClient`` as a context manager so Starlette runs the
+    # lifespan (schema registration) before any request hits the app.
+    with TestClient(app) as c:
+        yield c
 
 
 def test_health(client):
@@ -32,12 +30,20 @@ def test_health(client):
     assert r.json().get("team") == "nutrition_meal_planning"
 
 
-def test_get_profile_404(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_get_profile_404(client):
     r = client.get("/profile/nonexistent")
     assert r.status_code == 404
 
 
-def test_put_profile_creates_and_returns(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_put_profile_creates_and_returns(client):
     r = client.put(
         "/profile/client1",
         json={
@@ -51,7 +57,11 @@ def test_put_profile_creates_and_returns(client, temp_cache):
     assert "vegetarian" in data.get("dietary_needs", [])
 
 
-def test_get_profile_after_put(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_get_profile_after_put(client):
     client.put(
         "/profile/c2",
         json={
@@ -63,12 +73,20 @@ def test_get_profile_after_put(client, temp_cache):
     assert r.json().get("household", {}).get("number_of_people") == 2
 
 
-def test_post_plan_nutrition_404(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_post_plan_nutrition_404(client):
     r = client.post("/plan/nutrition", json={"client_id": "nonexistent"})
     assert r.status_code == 404
 
 
-def test_post_plan_nutrition_success(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_post_plan_nutrition_success(client):
     client.put(
         "/profile/p1",
         json={"household": {"number_of_people": 1, "description": "solo", "ages_if_relevant": []}},
@@ -80,12 +98,20 @@ def test_post_plan_nutrition_success(client, temp_cache):
     assert "plan" in data
 
 
-def test_post_plan_meals_404(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed profile store required (set POSTGRES_HOST).",
+)
+def test_post_plan_meals_404(client):
     r = client.post("/plan/meals", json={"client_id": "nonexistent"})
     assert r.status_code == 404
 
 
-def test_post_feedback_recorded(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed stores required (set POSTGRES_HOST).",
+)
+def test_post_feedback_recorded(client):
     # Create profile and get a meal plan to have a recommendation_id
     client.put(
         "/profile/fb1",
@@ -115,7 +141,11 @@ def test_get_history_meals_400(client):
     assert r.status_code == 400
 
 
-def test_get_history_meals_empty(client, temp_cache):
+@pytest.mark.skipif(
+    not is_postgres_enabled(),
+    reason="Postgres-backed meal feedback store required (set POSTGRES_HOST).",
+)
+def test_get_history_meals_empty(client):
     r = client.get("/history/meals?client_id=hist1")
     assert r.status_code == 200
     assert r.json().get("entries") == []
