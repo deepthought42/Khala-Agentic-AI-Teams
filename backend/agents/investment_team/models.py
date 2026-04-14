@@ -242,7 +242,16 @@ class BacktestResult(BaseModel):
 
 
 class TradeRecord(BaseModel):
-    """A single simulated trade from a backtest."""
+    """A single simulated trade from a backtest or paper trading session.
+
+    ``entry_price``/``exit_price`` are retained for backward compat and equal
+    the fill (post-slippage) prices. ``entry_bid_price``/``exit_bid_price``
+    record the raw reference close before slippage was applied, which enables
+    analysis of realized slippage vs modeled slippage. ``entry_order_type`` /
+    ``exit_order_type`` default to ``"market"`` since the simulator fills at
+    close; the fields exist so future limit-order simulation slots in without
+    another model migration.
+    """
 
     trade_num: int
     entry_date: str
@@ -259,6 +268,14 @@ class TradeRecord(BaseModel):
     hold_days: int
     outcome: str  # "win" or "loss"
     cumulative_pnl: float  # running total net P&L
+    # Execution detail (populated by TradeSimulationEngine; optional for
+    # backward compatibility with records persisted before these fields existed)
+    entry_bid_price: Optional[float] = None
+    entry_fill_price: Optional[float] = None
+    exit_bid_price: Optional[float] = None
+    exit_fill_price: Optional[float] = None
+    entry_order_type: str = "market"
+    exit_order_type: str = "market"
 
 
 class BacktestRecord(BaseModel):
@@ -344,8 +361,31 @@ class InvestmentCommitteeMemo(BaseModel):
     audit: AuditContext = Field(default_factory=AuditContext)
 
 
+# ---------------------------------------------------------------------------
+# Paper Trading enums (defined before StrategyLabRecord so it can link to them)
+# ---------------------------------------------------------------------------
+
+
+class PaperTradingStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PaperTradingVerdict(str, Enum):
+    READY_FOR_LIVE = "ready_for_live"
+    NOT_PERFORMANT = "not_performant"
+
+
 class StrategyLabRecord(BaseModel):
-    """Result of one strategy ideation + backtest + analysis cycle."""
+    """Result of one strategy ideation + backtest + analysis (+ optional paper trading) cycle.
+
+    When ``is_winning`` is True and paper trading is enabled on the run, the
+    cycle also executes a paper-trading step and stores the session id and
+    verdict here so clients can surface "winner + paper-trade verdict" without
+    a separate lookup. Losing strategies short-circuit with
+    ``paper_trading_status = "skipped"`` and ``paper_trading_skipped_reason = "not_winning"``.
+    """
 
     lab_record_id: str
     strategy: StrategySpec
@@ -361,22 +401,25 @@ class StrategyLabRecord(BaseModel):
         default=None,
         description="Signal Intelligence Expert JSON (brief_version, themes, …) or skipped metadata; null for legacy rows.",
     )
+    # Paper-trading integration (populated by the strategy lab cycle when the
+    # winner gate passes; null on records created before paper trading was an
+    # integrated step)
+    paper_trading_session_id: Optional[str] = None
+    paper_trading_status: Optional[str] = Field(
+        default=None,
+        description="'skipped' | 'completed' | 'failed'; null for legacy rows.",
+    )
+    paper_trading_skipped_reason: Optional[str] = Field(
+        default=None,
+        description="'not_winning' | 'disabled' | 'no_market_data'; only set when status=='skipped'.",
+    )
+    paper_trading_error: Optional[str] = None
+    paper_trading_verdict: Optional[PaperTradingVerdict] = None
 
 
 # ---------------------------------------------------------------------------
 # Paper Trading models
 # ---------------------------------------------------------------------------
-
-
-class PaperTradingStatus(str, Enum):
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class PaperTradingVerdict(str, Enum):
-    READY_FOR_LIVE = "ready_for_live"
-    NOT_PERFORMANT = "not_performant"
 
 
 class PaperTradingComparison(BaseModel):

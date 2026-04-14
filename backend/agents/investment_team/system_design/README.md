@@ -33,6 +33,25 @@ that client's IPS.
    the four most important end-to-end flows (advisor session, strategy lab
    batch, promotion gate, orchestrator safety).
 
+### Feature-specific design docs
+
+The per-feature design docs below supplement the diagram-first overview above
+with implementation detail for individual Strategy Lab capabilities:
+
+- **[`strategy_lab_pipeline.md`](./strategy_lab_pipeline.md)** — full per-cycle
+  pipeline shape (`ideating → fetching_data → analyzing → paper_trading? →
+  complete`), the complete list of SSE phase events, the winner gate, and the
+  paper-trade skip/failure paths.
+- **[`paper_trading_integration.md`](./paper_trading_integration.md)** —
+  paper trading as an integrated cycle step: winner gate, request-level
+  configuration, failure contract, and linkage between `StrategyLabRecord` and
+  `PaperTradingSession`.
+- **[`trade_record_schema.md`](./trade_record_schema.md)** — every
+  `TradeRecord` field including the execution-detail additions
+  (`entry_bid_price` / `entry_fill_price` / `exit_bid_price` /
+  `exit_fill_price` / `entry_order_type` / `exit_order_type`) used for
+  post-hoc analysis of realized vs modeled slippage.
+
 ## Where things live
 
 | Concept | Source |

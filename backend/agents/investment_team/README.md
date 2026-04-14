@@ -172,6 +172,18 @@ The Investment Team API includes first-class backtesting endpoints so trading ag
 
 Stored `BacktestRecord` objects include strategy details, run configuration, and performance metrics (`total_return_pct`, `annualized_return_pct`, `volatility_pct`, `sharpe_ratio`, `max_drawdown_pct`, `win_rate_pct`, and `profit_factor`) so agents can compare what has been tried over time.
 
+## System design docs
+
+Engineer-facing architecture details live under [`system_design/`](./system_design/README.md):
+
+- [`architecture.md`](./system_design/architecture.md) — C4 container view.
+- [`system_design.md`](./system_design/system_design.md) — component view + domain model class diagram.
+- [`use_cases.md`](./system_design/use_cases.md) — use-case diagram grouped by actor and track.
+- [`flow_charts.md`](./system_design/flow_charts.md) — sequence/state diagrams for advisor, Strategy Lab batch, promotion gate, orchestrator mode.
+- [`strategy_lab_pipeline.md`](./system_design/strategy_lab_pipeline.md) — per-cycle pipeline (`ideating → fetching_data → analyzing → paper_trading? → complete`), phase events, winner gate, skip paths.
+- [`paper_trading_integration.md`](./system_design/paper_trading_integration.md) — paper trading as an integrated cycle step: winner gate, config, failure contract, linkage to `StrategyLabRecord`.
+- [`trade_record_schema.md`](./system_design/trade_record_schema.md) — every `TradeRecord` field, including bid vs fill prices and order-type fields used for post-hoc execution analysis.
+
 ## Khala platform
 
 This package is part of the [Khala](../../../README.md) monorepo (Unified API, Angular UI, and full team index).

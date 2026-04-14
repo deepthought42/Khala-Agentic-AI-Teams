@@ -845,8 +845,65 @@ def _run_real_data_backtest(
     return agent.run_backtest(strategy, config, market_data)
 
 
+class _PaperTradingDataUnavailable(Exception):
+    """Raised inside the strategy lab cycle when market data can't be fetched for paper trading.
+
+    Converted to a non-fatal ``paper_trading_status = "skipped"`` outcome by the caller.
+    """
+
+
+def _run_paper_trading_step(
+    *,
+    strategy: StrategySpec,
+    strategy_code: str,
+    backtest_record: BacktestRecord,
+    initial_capital: float,
+    transaction_cost_bps: float,
+    slippage_bps: float,
+    lookback_days: int,
+) -> PaperTradingSession:
+    """Run a paper-trading session inside a strategy lab cycle.
+
+    Fetches recent market data and executes the orchestrator-generated
+    ``strategy_code`` through the ``PaperTradingAgent``'s sandbox. Raises
+    ``_PaperTradingDataUnavailable`` when no market data is available (caller
+    converts to a non-fatal ``skipped`` outcome). Any other exception should
+    propagate so the cycle records a ``failed`` status with the error message.
+    """
+    from investment_team.market_data_service import MarketDataService
+    from investment_team.paper_trading_agent import PaperTradingAgent
+
+    market_service = MarketDataService()
+    symbols = market_service.get_symbols_for_strategy(strategy)
+    # Match the standalone endpoint: cap at top 5 symbols to bound fetch cost
+    symbols = symbols[:5]
+
+    logger.info(
+        "Paper-trading step: fetching %d days of market data for %d symbols (%s) ...",
+        lookback_days,
+        len(symbols),
+        strategy.asset_class,
+    )
+    market_data = market_service.fetch_multi_symbol(symbols, strategy.asset_class, lookback_days)
+    if not market_data:
+        raise _PaperTradingDataUnavailable(
+            "Failed to fetch market data for paper trading from external sources."
+        )
+
+    agent = PaperTradingAgent()
+    return agent.run_session(
+        strategy=strategy,
+        strategy_code=strategy_code,
+        backtest_record=backtest_record,
+        market_data=market_data,
+        initial_capital=initial_capital,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+    )
+
+
 class RunStrategyLabRequest(BaseModel):
-    """Run one or more sequential ideation + backtest + analysis cycles."""
+    """Run one or more sequential ideation + backtest + analysis (+ paper-trading) cycles."""
 
     start_date: str = Field(default="2021-01-01", description="Backtest start date")
     end_date: str = Field(default="2024-12-31", description="Backtest end date")
@@ -865,6 +922,19 @@ class RunStrategyLabRequest(BaseModel):
         ge=1,
         le=6,
         description="Max strategies to generate in parallel per wave.",
+    )
+    # Paper-trading step (only runs when a cycle's backtest is flagged as winning)
+    paper_trading_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True (default), each winning strategy is paper-traded as part of the "
+            "cycle. Losing strategies always skip paper trading regardless of this flag."
+        ),
+    )
+    paper_trading_lookback_days: int = Field(
+        default=365,
+        ge=30,
+        description="Days of recent market data to fetch for paper trading.",
     )
 
 
@@ -914,12 +984,33 @@ def _run_one_strategy_lab_cycle(
     signal_brief_storage: Optional[Dict[str, Any]] = None,
     on_phase: Optional[Any] = None,
     exclude_asset_classes: Optional[List[str]] = None,
+    paper_trading_enabled: bool = True,
+    paper_trading_lookback_days: int = 365,
 ) -> StrategyLabRecord:
-    """Single ideation → validate → execute → refine → analyze cycle via the v2 orchestrator.
+    """Single ideation → validate → execute → refine → analyze (+ paper-trading) cycle via the v2 orchestrator.
 
     The orchestrator handles the full code-generation + sandboxed-execution pipeline
     internally, including up to 10 refinement rounds.
+
+    After the orchestrator returns a complete ``StrategyLabRecord``, the paper-trading
+    step runs only when the record is flagged as winning
+    (``record.is_winning``). Losing strategies record
+    ``paper_trading_status = "skipped"`` with reason ``"not_winning"`` and never
+    consume paper-trade budget. Paper-trading failures are non-fatal: the cycle
+    still persists the winning record with ``paper_trading_status = "failed"``
+    and the error message.
+
+    Args:
+        paper_trading_enabled: Opt-out flag; when False, every winning strategy
+            records ``paper_trading_status = "skipped"`` with reason ``"disabled"``.
+        paper_trading_lookback_days: Forwarded to ``MarketDataService.fetch_multi_symbol``
+            when the paper-trading step runs.
     """
+
+    def _emit(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
+        if on_phase:
+            on_phase(phase, data or {})
+
     with _lock:
         raw_prior = list(_strategy_lab_records.values())
 
@@ -937,6 +1028,64 @@ def _run_one_strategy_lab_cycle(
     # Attach signal brief before persisting (PersistentDict serializes at assignment)
     if signal_brief_storage and not record.signal_intelligence_brief:
         record.signal_intelligence_brief = signal_brief_storage
+
+    # --- Paper-trading step (gated on winning backtest) -------------------
+    # Only winners proceed to paper trading; failures are non-fatal so the
+    # valid backtest record is still persisted. The standalone
+    # /strategy-lab/paper-trade endpoint can be used to retry later.
+    strategy_preview = {
+        "asset_class": record.strategy.asset_class,
+        "hypothesis": record.strategy.hypothesis,
+    }
+    if not record.is_winning:
+        record.paper_trading_status = "skipped"
+        record.paper_trading_skipped_reason = "not_winning"
+        _emit("paper_trading_skipped", {"reason": "not_winning"})
+    elif not paper_trading_enabled:
+        record.paper_trading_status = "skipped"
+        record.paper_trading_skipped_reason = "disabled"
+        _emit("paper_trading_skipped", {"reason": "disabled"})
+    elif not record.strategy_code:
+        # Orchestrator didn't produce runnable strategy code; nothing to paper-trade
+        record.paper_trading_status = "skipped"
+        record.paper_trading_skipped_reason = "no_strategy_code"
+        _emit("paper_trading_skipped", {"reason": "no_strategy_code"})
+    else:
+        _emit("paper_trading", {"strategy": strategy_preview})
+        try:
+            session = _run_paper_trading_step(
+                strategy=record.strategy,
+                strategy_code=record.strategy_code,
+                backtest_record=record.backtest,
+                initial_capital=config.initial_capital,
+                transaction_cost_bps=config.transaction_cost_bps,
+                slippage_bps=config.slippage_bps,
+                lookback_days=paper_trading_lookback_days,
+            )
+            session.lab_record_id = record.lab_record_id
+            with _lock:
+                _paper_trading_sessions[session.session_id] = session
+            record.paper_trading_session_id = session.session_id
+            record.paper_trading_status = "completed"
+            record.paper_trading_verdict = session.verdict
+            _emit(
+                "paper_trading_complete",
+                {
+                    "session_id": session.session_id,
+                    "verdict": session.verdict.value if session.verdict else None,
+                    "trade_count": len(session.trades),
+                },
+            )
+        except _PaperTradingDataUnavailable as exc:
+            logger.warning("Paper trading step skipped due to missing market data: %s", exc)
+            record.paper_trading_status = "skipped"
+            record.paper_trading_skipped_reason = "no_market_data"
+            _emit("paper_trading_skipped", {"reason": "no_market_data", "detail": str(exc)[:200]})
+        except Exception as exc:
+            logger.warning("Paper trading step failed (non-fatal): %s", exc)
+            record.paper_trading_status = "failed"
+            record.paper_trading_error = str(exc)[:500]
+            _emit("paper_trading_failed", {"detail": record.paper_trading_error})
 
     # Persist to in-memory stores
     with _lock:
@@ -1137,6 +1286,8 @@ def _strategy_lab_worker(
                         precomputed_signal_brief=precomputed_brief,
                         signal_brief_storage=signal_brief_storage,
                         on_phase=_make_on_phase(cn),
+                        paper_trading_enabled=request.paper_trading_enabled,
+                        paper_trading_lookback_days=request.paper_trading_lookback_days,
                     )
                     wave_futures[future] = cn
 
