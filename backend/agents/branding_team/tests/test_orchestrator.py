@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from branding_team import (
     BrandingMission,
     BrandingTeamOrchestrator,
@@ -8,6 +10,12 @@ from branding_team import (
     WorkflowStatus,
 )
 from branding_team.models import BrandCheckRequest, CompetitiveSnapshot
+from branding_team.tests._fake_postgres import install_fake_postgres
+
+
+@pytest.fixture(autouse=False)
+def fake_pg(monkeypatch: pytest.MonkeyPatch) -> dict:
+    return install_fake_postgres(monkeypatch)
 
 
 def _mission() -> BrandingMission:
@@ -107,7 +115,7 @@ def test_run_with_include_design_assets_adds_design_asset_result() -> None:
     assert result.design_asset_result.status == "pending"
 
 
-def test_run_with_brand_id_and_store_appends_version() -> None:
+def test_run_with_brand_id_and_store_appends_version(fake_pg) -> None:
     from branding_team.store import BrandingStore
 
     store = BrandingStore()

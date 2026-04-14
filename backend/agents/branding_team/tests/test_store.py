@@ -1,4 +1,12 @@
-"""Tests for branding store (clients and brands)."""
+"""Tests for branding store (clients and brands).
+
+These tests mock ``shared_postgres.get_conn`` with a tiny dict-backed
+fake — see ``_fake_postgres.py``.
+"""
+
+from __future__ import annotations
+
+import pytest
 
 from branding_team.models import (
     BrandCodification,
@@ -12,9 +20,15 @@ from branding_team.models import (
     WritingGuidelines,
 )
 from branding_team.store import BrandingStore
+from branding_team.tests._fake_postgres import install_fake_postgres
 
 
-def test_create_client_and_list() -> None:
+@pytest.fixture
+def fake_pg(monkeypatch: pytest.MonkeyPatch) -> dict:
+    return install_fake_postgres(monkeypatch)
+
+
+def test_create_client_and_list(fake_pg: dict) -> None:
     store = BrandingStore()
     client = store.create_client("Acme Corp")
     assert client.id.startswith("client_")
@@ -25,7 +39,7 @@ def test_create_client_and_list() -> None:
     assert store.get_client(client.id) == client
 
 
-def test_create_brand_and_list() -> None:
+def test_create_brand_and_list(fake_pg: dict) -> None:
     store = BrandingStore()
     client = store.create_client("Acme")
     mission = BrandingMission(
@@ -46,7 +60,7 @@ def test_create_brand_and_list() -> None:
     assert store.get_brand(client.id, brand.id) == brand
 
 
-def test_get_brand_wrong_client_returns_none() -> None:
+def test_get_brand_wrong_client_returns_none(fake_pg: dict) -> None:
     store = BrandingStore()
     c1 = store.create_client("C1")
     c2 = store.create_client("C2")
@@ -60,7 +74,7 @@ def test_get_brand_wrong_client_returns_none() -> None:
     assert store.get_brand(c2.id, brand.id) is None
 
 
-def test_update_brand() -> None:
+def test_update_brand(fake_pg: dict) -> None:
     store = BrandingStore()
     client = store.create_client("Acme")
     mission = BrandingMission(
@@ -79,7 +93,7 @@ def test_update_brand() -> None:
     assert updated.status == BrandStatus.active
 
 
-def test_append_brand_version() -> None:
+def test_append_brand_version(fake_pg: dict) -> None:
     store = BrandingStore()
     client = store.create_client("Acme")
     mission = BrandingMission(
@@ -114,7 +128,7 @@ def test_append_brand_version() -> None:
     assert updated.current_phase == BrandPhase.COMPLETE
 
 
-def test_append_brand_version_persists_current_phase() -> None:
+def test_append_brand_version_persists_current_phase(fake_pg: dict) -> None:
     """Verify that current_phase on the brand record is updated from the output."""
     store = BrandingStore()
     client = store.create_client("PhaseTest")
@@ -154,7 +168,7 @@ def test_append_brand_version_persists_current_phase() -> None:
     assert reloaded2.current_phase == BrandPhase.COMPLETE
 
 
-def test_create_brand_for_nonexistent_client_returns_none() -> None:
+def test_create_brand_for_nonexistent_client_returns_none(fake_pg: dict) -> None:
     store = BrandingStore()
     mission = BrandingMission(
         company_name="XY",
