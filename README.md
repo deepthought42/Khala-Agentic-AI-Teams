@@ -97,7 +97,7 @@ Khala groups its teams into four *cells* — failure-isolated neighborhoods that
 | **Nutrition & Meal Planning** | `/api/nutrition-meal-planning` | Personalized meal plans that learn from your feedback |
 | **Road Trip Planning** | `/api/road-trip-planning` | Profiling, route optimization, activity recommendations, logistics |
 
-> …and more on the way. Run `GET /api/teams` on a live instance for the authoritative roster.
+> …and more on the way. Run `GET /teams` on a live instance for the authoritative roster.
 
 ---
 
