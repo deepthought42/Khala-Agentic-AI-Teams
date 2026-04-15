@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from strands import Agent
 
@@ -30,6 +30,7 @@ from .models import (
     PaperTradingVerdict,
     StrategySpec,
     TradeRecord,
+    get_fee_defaults,
 )
 from .strategy_lab.executor.sandbox_runner import SandboxRunner
 from .strategy_lab.executor.trade_builder import build_trade_records
@@ -139,10 +140,18 @@ class PaperTradingAgent:
         backtest_record: BacktestRecord,
         market_data: Dict[str, List[OHLCVBar]],
         initial_capital: float = 100_000.0,
-        transaction_cost_bps: float = 5.0,
-        slippage_bps: float = 2.0,
+        transaction_cost_bps: Optional[float] = None,
+        slippage_bps: Optional[float] = None,
     ) -> PaperTradingSession:
         """Run strategy code against recent market data in the subprocess sandbox."""
+        # Resolve fees from strategy's asset class when not explicitly provided
+        if transaction_cost_bps is None or slippage_bps is None:
+            fee_defaults = get_fee_defaults(strategy.asset_class)
+            if transaction_cost_bps is None:
+                transaction_cost_bps = fee_defaults["transaction_cost_bps"]
+            if slippage_bps is None:
+                slippage_bps = fee_defaults["slippage_bps"]
+
         session_id = f"pt-{uuid.uuid4().hex[:8]}"
         now = datetime.now(tz=timezone.utc).isoformat()
 
