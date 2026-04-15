@@ -8,7 +8,8 @@ brief must be regenerated once per batch (not once per run).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+import uuid
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -22,10 +23,11 @@ from investment_team.api.main import (  # noqa: E402
     _strategy_lab_worker,
 )
 from investment_team.models import (  # noqa: E402
+    BacktestConfig,
+    BacktestRecord,
     BacktestResult,
     StrategyLabRecord,
     StrategySpec,
-    TradeRecord,
 )
 
 
@@ -41,6 +43,48 @@ def _stub_backtest_result() -> BacktestResult:
     )
 
 
+def _make_record(idx: int, config: BacktestConfig) -> StrategyLabRecord:
+    """Build a fully-populated StrategyLabRecord stub for cycle ``idx``."""
+    strategy_id = f"strat-test-{idx:04d}-{uuid.uuid4().hex[:6]}"
+    backtest_id = f"bt-test-{idx:04d}-{uuid.uuid4().hex[:6]}"
+    lab_record_id = f"lab-test-{idx:04d}-{uuid.uuid4().hex[:6]}"
+    strategy = StrategySpec(
+        strategy_id=strategy_id,
+        authored_by="test",
+        asset_class="stocks",
+        hypothesis=f"hypothesis #{idx}",
+        signal_definition="sig",
+        entry_rules=["e"],
+        exit_rules=["x"],
+        sizing_rules=["s"],
+        risk_limits={},
+        speculative=False,
+    )
+    now = lab_main._now()
+    backtest = BacktestRecord(
+        backtest_id=backtest_id,
+        strategy_id=strategy_id,
+        strategy=strategy,
+        config=config,
+        submitted_by="test",
+        submitted_at=now,
+        completed_at=now,
+        result=_stub_backtest_result(),
+        notes=[],
+        trades=[],
+    )
+    return StrategyLabRecord(
+        lab_record_id=lab_record_id,
+        strategy=strategy,
+        backtest=backtest,
+        is_winning=False,  # avoid paper-trading branch
+        strategy_rationale="r",
+        analysis_narrative="ok",
+        created_at=now,
+        quality_gate_results=[],
+    )
+
+
 @pytest.fixture
 def empty_lab_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the persistent stores with plain dicts and reset run state."""
@@ -50,67 +94,7 @@ def empty_lab_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lab_main, "_active_runs", {})
 
 
-def test_multi_batch_run_completes_all_cycles_and_learns_from_priors(
-    empty_lab_state: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """batch_size=2, batch_count=3 → 6 strategies; each ideation sees all priors;
-    signal brief regenerates once per batch."""
-
-    ideation_calls: List[Dict[str, Any]] = []
-
-    class _StubAgent:
-        def __init__(self, llm_client: Any = None) -> None:
-            self._counter = 0
-
-        def ideate_strategy(
-            self,
-            *,
-            prior_results: List[StrategyLabRecord] | None = None,
-            precomputed_signal_brief: Any = None,
-            exclude_asset_classes: Any = None,
-        ) -> Tuple[Dict[str, Any], str]:
-            self._counter += 1
-            ideation_calls.append(
-                {
-                    "n_priors": len(prior_results or []),
-                    "had_brief": precomputed_signal_brief is not None,
-                }
-            )
-            data = {
-                "asset_class": "stocks",
-                "hypothesis": f"hypothesis #{self._counter}",
-                "signal_definition": "sig",
-                "entry_rules": ["e"],
-                "exit_rules": ["x"],
-                "sizing_rules": ["s"],
-                "risk_limits": {},
-                "speculative": False,
-            }
-            return data, "rationale"
-
-        def analyze_result(self, record: StrategyLabRecord, rationale: str) -> str:
-            return "ok"
-
-    def _stub_real_data_backtest(
-        strategy: StrategySpec, config: Any
-    ) -> Tuple[BacktestResult, List[TradeRecord]]:
-        return _stub_backtest_result(), []
-
-    brief_calls: List[int] = []
-
-    def _stub_compute_brief() -> Tuple[None, Dict[str, Any]]:
-        # Replicates the disabled-expert path; we just need the per-batch counter
-        # plus a marker so the worker treats the brief as present.
-        brief_calls.append(len(brief_calls) + 1)
-        return None, {"skipped": True, "skipped_reason": "test_stub"}
-
-    monkeypatch.setattr(lab_main, "StrategyIdeationAgent", _StubAgent)
-    monkeypatch.setattr(lab_main, "_run_real_data_backtest", _stub_real_data_backtest)
-    monkeypatch.setattr(lab_main, "_strategy_lab_signal_expert_enabled", lambda: False)
-
-    # Pre-seed run state so the worker's _update_run() finds the entry.
-    request = RunStrategyLabRequest(batch_size=2, batch_count=3)
-    run_id = "run-test-multi"
+def _seed_run_state(run_id: str, request: RunStrategyLabRequest) -> None:
     lab_main._active_runs[run_id] = {
         "run_id": run_id,
         "status": "running",
@@ -128,40 +112,80 @@ def test_multi_batch_run_completes_all_cycles_and_learns_from_priors(
         "current_batch": None,
     }
 
-    # Disable persistence + cleanup timer side-effects.
+
+def test_multi_batch_run_completes_all_cycles_and_learns_from_priors(
+    empty_lab_state: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """batch_size=2, batch_count=3, max_parallel=1 → 6 strategies; each cycle
+    sees all priors; signal brief regenerates once per batch."""
+
+    cycle_calls: List[Dict[str, Any]] = []
+
+    class _StubOrchestrator:
+        """Replaces StrategyLabOrchestrator. ``run_cycle`` records the priors it sees."""
+
+        _counter = 0
+
+        def __init__(self, convergence_tracker: Any = None) -> None:
+            self.convergence_tracker = _StubTracker()
+
+        def run_cycle(
+            self,
+            prior_records: List[StrategyLabRecord],
+            config: BacktestConfig,
+            signal_brief: Any = None,
+            on_phase: Any = None,
+            exclude_asset_classes: Any = None,
+        ) -> StrategyLabRecord:
+            type(self)._counter += 1
+            idx = type(self)._counter
+            cycle_calls.append(
+                {
+                    "n_priors": len(prior_records),
+                    "had_brief": signal_brief is not None,
+                }
+            )
+            return _make_record(idx, config)
+
+    class _StubTracker:
+        def snapshot(self) -> "_StubTracker":
+            return _StubTracker()
+
+        def record(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+    monkeypatch.setattr(lab_main, "StrategyLabOrchestrator", _StubOrchestrator)
+    monkeypatch.setattr(lab_main, "ConvergenceTracker", _StubTracker)
+    monkeypatch.setattr(lab_main, "_strategy_lab_signal_expert_enabled", lambda: False)
     monkeypatch.setattr(lab_main, "_persist_run_state", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        lab_main,
-        "get_client",
-        lambda *_a, **_kw: object(),
-        raising=False,
+
+    # Force strictly-sequential execution so each cycle definitely sees priors
+    # from every previous cycle in the same run (otherwise cycles in the same
+    # parallel wave see the same prior set).
+    request = RunStrategyLabRequest(
+        batch_size=2,
+        batch_count=3,
+        max_parallel=1,
+        paper_trading_enabled=False,
     )
+    run_id = "run-test-multi"
+    _seed_run_state(run_id, request)
 
-    # Patch the inner _compute_signal_brief by patching what it calls so we can
-    # count invocations: the worker calls _compute_signal_brief() once per batch.
-    # Since _compute_signal_brief is a closure inside the worker, we instead
-    # count calls by checking ideation_calls' "had_brief" flag — but with the
-    # signal expert disabled, the brief is None for every cycle. So we count
-    # batches another way: by checking that ideation_calls grows monotonically.
-
-    # Run worker synchronously (no thread).
     _strategy_lab_worker(run_id, request)
 
-    # 6 total strategies generated.
-    assert len(lab_main._strategy_lab_records) == 6
-    assert len(ideation_calls) == 6
-
-    # Each ideation sees N-1 priors (the just-completed records of this run).
-    for i, call in enumerate(ideation_calls):
-        assert call["n_priors"] == i, (
-            f"cycle {i + 1} should see {i} priors but got {call['n_priors']}"
-        )
-
     state = lab_main._active_runs[run_id]
-    assert state["status"] == "completed"
+    assert state["status"] == "completed", state
+    assert len(lab_main._strategy_lab_records) == 6
+    assert len(cycle_calls) == 6
     assert state["completed_cycles"] == 6
     assert state["completed_batches"] == 3
     assert len(state["completed_record_ids"]) == 6
+
+    # With max_parallel=1, each cycle sees N-1 priors.
+    for i, call in enumerate(cycle_calls):
+        assert call["n_priors"] == i, (
+            f"cycle {i + 1} should see {i} priors but got {call['n_priors']}"
+        )
 
 
 def test_signal_brief_regenerates_once_per_batch(
@@ -177,7 +201,7 @@ def test_signal_brief_regenerates_once_per_batch(
             pass
 
         def fetch_context(self, _req: Any) -> Any:
-            from agents.investment_team.market_lab_data.models import MarketLabContext
+            from investment_team.market_lab_data.models import MarketLabContext
 
             return MarketLabContext(fetched_at=lab_main._now(), degraded=False, sources_used=[])
 
@@ -190,7 +214,7 @@ def test_signal_brief_regenerates_once_per_batch(
 
         def produce_signal_brief(self, prior_records: Any, _market: Any) -> Any:
             expert_invocations.append(len(prior_records))
-            from agents.investment_team.signal_intelligence_models import SignalIntelligenceBriefV1
+            from investment_team.signal_intelligence_models import SignalIntelligenceBriefV1
 
             return SignalIntelligenceBriefV1(
                 brief_version=1,
@@ -205,70 +229,66 @@ def test_signal_brief_regenerates_once_per_batch(
                 unsupported_claims=[],
             )
 
-    class _StubAgent:
-        def __init__(self, llm_client: Any = None) -> None:
-            self._n = 0
+    class _StubTracker:
+        def snapshot(self) -> "_StubTracker":
+            return _StubTracker()
 
-        def ideate_strategy(self, **kwargs: Any) -> Tuple[Dict[str, Any], str]:
-            self._n += 1
-            return (
-                {
-                    "asset_class": "stocks",
-                    "hypothesis": f"h{self._n}",
-                    "signal_definition": "s",
-                    "entry_rules": [],
-                    "exit_rules": [],
-                    "sizing_rules": [],
-                    "risk_limits": {},
-                    "speculative": False,
-                },
-                "r",
-            )
+        def record(self, *_a: Any, **_kw: Any) -> None:
+            pass
 
-        def analyze_result(self, *_a: Any, **_kw: Any) -> str:
-            return "ok"
+    class _StubOrchestrator:
+        _counter = 0
 
-    def _stub_backtest(
-        strategy: StrategySpec, config: Any
-    ) -> Tuple[BacktestResult, List[TradeRecord]]:
-        return _stub_backtest_result(), []
+        def __init__(self, convergence_tracker: Any = None) -> None:
+            self.convergence_tracker = _StubTracker()
 
-    monkeypatch.setattr(lab_main, "StrategyIdeationAgent", _StubAgent)
+        def run_cycle(
+            self,
+            prior_records: List[StrategyLabRecord],
+            config: BacktestConfig,
+            signal_brief: Any = None,
+            on_phase: Any = None,
+            exclude_asset_classes: Optional[List[str]] = None,
+        ) -> StrategyLabRecord:
+            type(self)._counter += 1
+            return _make_record(type(self)._counter, config)
+
+    monkeypatch.setattr(lab_main, "StrategyLabOrchestrator", _StubOrchestrator)
+    monkeypatch.setattr(lab_main, "ConvergenceTracker", _StubTracker)
     monkeypatch.setattr(lab_main, "FreeTierMarketDataProvider", _StubProvider)
     monkeypatch.setattr(lab_main, "SignalIntelligenceExpert", _StubExpert)
-    monkeypatch.setattr(lab_main, "_run_real_data_backtest", _stub_backtest)
     monkeypatch.setattr(lab_main, "_strategy_lab_signal_expert_enabled", lambda: True)
     monkeypatch.setattr(lab_main, "_persist_run_state", lambda *a, **kw: None)
 
-    # Stub get_client (used both inside _compute_signal_brief and at worker top)
-    import llm_service.factory as llm_factory
-
-    monkeypatch.setattr(llm_factory, "get_client", lambda *_a, **_kw: object())
-
-    request = RunStrategyLabRequest(batch_size=2, batch_count=3)
+    request = RunStrategyLabRequest(
+        batch_size=2,
+        batch_count=3,
+        max_parallel=1,
+        paper_trading_enabled=False,
+    )
     run_id = "run-test-brief"
-    lab_main._active_runs[run_id] = {
-        "run_id": run_id,
-        "status": "running",
-        "started_at": lab_main._now(),
-        "total_cycles": 6,
-        "completed_cycles": 0,
-        "skipped_cycles": 0,
-        "current_cycle": None,
-        "completed_record_ids": [],
-        "error": None,
-        "request_payload": request.model_dump(),
-        "batch_size": 2,
-        "batch_count": 3,
-        "completed_batches": 0,
-        "current_batch": None,
-    }
+    _seed_run_state(run_id, request)
 
     _strategy_lab_worker(run_id, request)
 
-    assert lab_main._active_runs[run_id]["status"] == "completed"
+    state = lab_main._active_runs[run_id]
+    assert state["status"] == "completed", state
     assert len(lab_main._strategy_lab_records) == 6
     # Brief is generated exactly once per batch — 3 batches → 3 invocations.
     assert len(expert_invocations) == 3
     # Each new batch's brief sees the priors written by every previous batch.
     assert expert_invocations == [0, 2, 4]
+
+
+def test_total_cycles_is_batch_size_times_batch_count(empty_lab_state: None) -> None:
+    """Sanity check: the request validates and computes total work correctly."""
+    request = RunStrategyLabRequest(batch_size=5, batch_count=4)
+    assert request.batch_size * request.batch_count == 20
+
+    # Field bounds remain enforced.
+    with pytest.raises(Exception):
+        RunStrategyLabRequest(batch_size=0)
+    with pytest.raises(Exception):
+        RunStrategyLabRequest(batch_count=0)
+    with pytest.raises(Exception):
+        RunStrategyLabRequest(batch_count=11)

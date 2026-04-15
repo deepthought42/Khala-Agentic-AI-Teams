@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from llm_service import LLMClient, get_client
+from llm_service import get_strands_model
 
 from ..agents.chat_agent import NutritionChatAgent
 from ..agents.intake_profile_agent import IntakeProfileAgent
@@ -26,9 +26,9 @@ from ..models import (
     NutritionPlanResponse,
     ProfileUpdateRequest,
 )
-from ..shared.client_profile_store import ClientProfileStore
-from ..shared.meal_feedback_store import MealFeedbackStore
-from ..shared.nutrition_plan_store import NutritionPlanStore
+from ..shared.client_profile_store import ClientProfileStore, get_profile_store
+from ..shared.meal_feedback_store import MealFeedbackStore, get_meal_feedback_store
+from ..shared.nutrition_plan_store import NutritionPlanStore, get_nutrition_plan_store
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +44,17 @@ class NutritionMealPlanningOrchestrator:
         profile_store: Optional[ClientProfileStore] = None,
         meal_feedback_store: Optional[MealFeedbackStore] = None,
         nutrition_plan_store: Optional[NutritionPlanStore] = None,
-        llm: Optional[LLMClient] = None,
+        llm_model: Optional[Any] = None,
     ) -> None:
-        self.profile_store = profile_store or ClientProfileStore()
-        self.meal_feedback_store = meal_feedback_store or MealFeedbackStore()
-        self.nutrition_plan_store = nutrition_plan_store or NutritionPlanStore()
-        llm = llm or get_client("nutrition_meal_planning")
-        self.intake_agent = IntakeProfileAgent(llm)
-        self.nutritionist_agent = NutritionistAgent(llm)
-        self.meal_planning_agent = MealPlanningAgent(llm)
+        self.profile_store = profile_store or get_profile_store()
+        self.meal_feedback_store = meal_feedback_store or get_meal_feedback_store()
+        self.nutrition_plan_store = nutrition_plan_store or get_nutrition_plan_store()
+        model = llm_model or get_strands_model("nutrition_meal_planning")
+        self.intake_agent = IntakeProfileAgent(model)
+        self.nutritionist_agent = NutritionistAgent(model)
+        self.meal_planning_agent = MealPlanningAgent(model)
         self.chat_agent = NutritionChatAgent(
-            llm, self.intake_agent, self.nutritionist_agent, self.meal_planning_agent
+            model, self.intake_agent, self.nutritionist_agent, self.meal_planning_agent
         )
 
     def get_profile(self, client_id: str) -> Optional[ClientProfile]:

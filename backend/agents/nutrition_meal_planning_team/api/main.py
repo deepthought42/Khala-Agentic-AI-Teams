@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import asynccontextmanager
 from typing import Optional
 from uuid import uuid4
 
@@ -41,10 +42,31 @@ logger = logging.getLogger(__name__)
 
 init_otel(service_name="nutrition-meal-planning-team", team_key="nutrition_meal_planning")
 
+
+@asynccontextmanager
+async def _nutrition_lifespan(app: FastAPI):
+    # Register Postgres schema (no-op when POSTGRES_HOST is unset).
+    try:
+        from nutrition_meal_planning_team.postgres import SCHEMA as NUTRITION_POSTGRES_SCHEMA
+        from shared_postgres import register_team_schemas
+
+        register_team_schemas(NUTRITION_POSTGRES_SCHEMA)
+    except Exception:
+        logger.exception("nutrition_meal_planning postgres schema registration failed")
+    yield
+    try:
+        from shared_postgres import close_pool
+
+        close_pool()
+    except Exception:
+        logger.warning("nutrition_meal_planning shared_postgres close_pool failed", exc_info=True)
+
+
 app = FastAPI(
     title="Nutrition & Meal Planning API",
     description="Personal nutrition and meal planning with learning from feedback",
     version="0.1.0",
+    lifespan=_nutrition_lifespan,
 )
 instrument_fastapi_app(app, team_key="nutrition_meal_planning")
 
@@ -67,26 +89,17 @@ def health():
 
 @app.get("/health/ready")
 def health_ready():
-    """Deep health check: verifies store directories are writable."""
+    """Deep health check: verifies the Postgres connection is reachable."""
     checks: dict = {"team": "nutrition_meal_planning"}
     try:
-        test_dir = orchestrator.profile_store.storage_dir
-        test_dir.mkdir(parents=True, exist_ok=True)
-        checks["profile_store"] = "ok"
+        from shared_postgres import get_conn
+
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        checks["postgres"] = "ok"
     except Exception as e:
-        checks["profile_store"] = f"error: {e}"
-    try:
-        test_dir = orchestrator.meal_feedback_store.storage_dir
-        test_dir.mkdir(parents=True, exist_ok=True)
-        checks["meal_feedback_store"] = "ok"
-    except Exception as e:
-        checks["meal_feedback_store"] = f"error: {e}"
-    try:
-        test_dir = orchestrator.nutrition_plan_store.storage_dir
-        test_dir.mkdir(parents=True, exist_ok=True)
-        checks["nutrition_plan_store"] = "ok"
-    except Exception as e:
-        checks["nutrition_plan_store"] = f"error: {e}"
+        checks["postgres"] = f"error: {e}"
 
     all_ok = all(v == "ok" for k, v in checks.items() if k != "team")
     checks["status"] = "ok" if all_ok else "degraded"
@@ -109,8 +122,11 @@ def post_chat_route(body: ChatRequest):
 
     # Persist the assistant response
     append_message(
-        client_id, "assistant", response.message,
-        phase=response.phase, action=response.action,
+        client_id,
+        "assistant",
+        response.message,
+        phase=response.phase,
+        action=response.action,
     )
 
     return response

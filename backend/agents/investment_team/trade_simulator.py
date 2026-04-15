@@ -26,7 +26,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OpenPosition:
-    """Typed container for an open trading position."""
+    """Typed container for an open trading position.
+
+    ``entry_price`` is the fill price (post-slippage). ``entry_bid_price`` is
+    the raw reference close used as the baseline before slippage was applied,
+    captured so the eventual ``TradeRecord`` can expose both. ``entry_order_type``
+    defaults to ``"market"`` (every simulated fill is at bar close); the field
+    is here so future limit/stop-order simulation can set a different value
+    without touching downstream code.
+    """
 
     symbol: str
     side: str  # "long" or "short"
@@ -34,6 +42,8 @@ class OpenPosition:
     entry_price: float
     shares: float
     position_value: float
+    entry_bid_price: float = 0.0
+    entry_order_type: str = "market"
 
 
 # Callback signature: (symbol, bar, recent_bars, open_position, capital) -> decision dict
@@ -426,6 +436,7 @@ class TradeSimulationEngine:
 
                 if shares > 0 and capital >= shares * bar.close:
                     slippage_mult = 1.0 + self.slippage_bps / 10_000.0
+                    entry_bid_price = round(bar.close, 4 if bar.close < 10 else 2)
                     entry_price = round(bar.close * slippage_mult, 4 if bar.close < 10 else 2)
                     position_value = round(entry_price * shares, 2)
                     capital -= position_value
@@ -437,6 +448,8 @@ class TradeSimulationEngine:
                         entry_price=entry_price,
                         shares=shares,
                         position_value=position_value,
+                        entry_bid_price=entry_bid_price,
+                        entry_order_type="market",
                     )
 
             # --- Exit ---
@@ -503,8 +516,9 @@ class TradeSimulationEngine:
         trade_num: int,
         cumulative_pnl: float,
     ) -> TradeRecord:
-        """Close a position and return a ``TradeRecord``."""
+        """Close a position and return a ``TradeRecord`` with full execution detail."""
         slippage_mult = 1.0 - self.slippage_bps / 10_000.0
+        exit_bid_price = round(close_price, 4 if close_price < 10 else 2)
         exit_price = round(close_price * slippage_mult, 4 if close_price < 10 else 2)
 
         gross_pnl = round(pos.shares * (exit_price - pos.entry_price), 2)
@@ -537,4 +551,10 @@ class TradeSimulationEngine:
             hold_days=hold_days,
             outcome="win" if net_pnl > 0 else "loss",
             cumulative_pnl=cumulative_pnl,
+            entry_bid_price=pos.entry_bid_price,
+            entry_fill_price=pos.entry_price,
+            exit_bid_price=exit_bid_price,
+            exit_fill_price=exit_price,
+            entry_order_type=pos.entry_order_type,
+            exit_order_type="market",
         )

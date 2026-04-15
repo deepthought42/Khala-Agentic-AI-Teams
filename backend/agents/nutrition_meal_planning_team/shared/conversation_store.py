@@ -1,50 +1,55 @@
-"""File-based storage for chat conversation history (Nutrition & Meal Planning team).
+"""Postgres-backed storage for chat conversation history (Nutrition & Meal Planning team).
 
-Stores messages per client_id as a JSON file in the agent cache directory.
-Each file contains a list of message dicts with role, content, timestamp, phase, and action.
+Each chat turn is stored as a row in ``nutrition_conversations``; messages
+are returned ordered by insertion id. Schema is registered from the team's
+FastAPI lifespan via ``shared_postgres.register_team_schemas`` — this
+module only does data access through ``shared_postgres.get_conn``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from shared_postgres import dict_row, get_conn
+from shared_postgres.metrics import timed_query
 
 logger = logging.getLogger(__name__)
 
-
-def _default_storage_dir() -> Path:
-    base = os.environ.get("AGENT_CACHE", ".agent_cache")
-    return Path(base) / "nutrition_meal_planning_team" / "conversations"
+_STORE = "nutrition_meal_planning"
 
 
-def _conversation_path(storage_dir: Path, client_id: str) -> Path:
-    return storage_dir / f"{client_id}.json"
+def _row_ts(value: Any) -> str:
+    """Normalize a Postgres TIMESTAMPTZ to an ISO-8601 string."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value or "")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def get_conversation(
-    client_id: str, storage_dir: Optional[Path] = None
-) -> List[Dict[str, Any]]:
+@timed_query(store=_STORE, op="get_conversation")
+def get_conversation(client_id: str) -> List[Dict[str, Any]]:
     """Load conversation history for a client. Returns empty list if not found."""
-    directory = storage_dir or _default_storage_dir()
-    path = _conversation_path(directory, client_id)
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to load conversation for %s", client_id)
-        return []
+    with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT role, content, timestamp, phase, action "
+            "FROM nutrition_conversations "
+            "WHERE client_id = %s ORDER BY id",
+            (client_id,),
+        )
+        return [
+            {
+                "role": r["role"],
+                "content": r["content"],
+                "timestamp": _row_ts(r["timestamp"]),
+                "phase": r["phase"],
+                "action": r["action"],
+            }
+            for r in cur.fetchall()
+        ]
 
 
+@timed_query(store=_STORE, op="append_message")
 def append_message(
     client_id: str,
     role: str,
@@ -52,33 +57,23 @@ def append_message(
     *,
     phase: Optional[str] = None,
     action: Optional[str] = None,
-    storage_dir: Optional[Path] = None,
 ) -> None:
     """Append a single message to the conversation history."""
-    directory = storage_dir or _default_storage_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-
-    messages = get_conversation(client_id, storage_dir=directory)
-    messages.append({
-        "role": role,
-        "content": content,
-        "timestamp": _now(),
-        "phase": phase,
-        "action": action,
-    })
-
-    path = _conversation_path(directory, client_id)
-    try:
-        path.write_text(json.dumps(messages, indent=2, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        logger.warning("Failed to save conversation for %s", client_id, exc_info=True)
+    ts = datetime.now(tz=timezone.utc)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO nutrition_conversations "
+            "(client_id, role, content, phase, action, timestamp) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (client_id, role, content, phase, action, ts),
+        )
 
 
-def clear_conversation(
-    client_id: str, storage_dir: Optional[Path] = None
-) -> None:
+@timed_query(store=_STORE, op="clear_conversation")
+def clear_conversation(client_id: str) -> None:
     """Delete conversation history for a client."""
-    directory = storage_dir or _default_storage_dir()
-    path = _conversation_path(directory, client_id)
-    if path.exists():
-        path.unlink(missing_ok=True)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM nutrition_conversations WHERE client_id = %s",
+            (client_id,),
+        )
