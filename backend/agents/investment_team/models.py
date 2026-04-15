@@ -231,6 +231,26 @@ class BacktestConfig(BaseModel):
     slippage_bps: float = Field(default=2.0, ge=0)
 
 
+# Asset-class-aware fee defaults.  Crypto uses Kraken taker fees (lowest
+# volume tier).  Other classes use representative retail broker fees.
+ASSET_CLASS_FEE_DEFAULTS: dict[str, dict[str, float]] = {
+    "crypto": {"transaction_cost_bps": 26.0, "slippage_bps": 10.0},
+    "forex": {"transaction_cost_bps": 8.0, "slippage_bps": 5.0},
+    "stocks": {"transaction_cost_bps": 5.0, "slippage_bps": 2.0},
+    "futures": {"transaction_cost_bps": 10.0, "slippage_bps": 5.0},
+    "commodities": {"transaction_cost_bps": 12.0, "slippage_bps": 5.0},
+    "options": {"transaction_cost_bps": 15.0, "slippage_bps": 8.0},
+}
+
+
+def get_fee_defaults(asset_class: str) -> dict[str, float]:
+    """Return transaction_cost_bps and slippage_bps for a given asset class."""
+    return ASSET_CLASS_FEE_DEFAULTS.get(
+        asset_class.lower(),
+        {"transaction_cost_bps": 10.0, "slippage_bps": 5.0},
+    )
+
+
 class BacktestResult(BaseModel):
     total_return_pct: float
     annualized_return_pct: float

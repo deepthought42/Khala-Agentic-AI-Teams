@@ -1146,13 +1146,16 @@ def _run_one_strategy_lab_cycle(
     else:
         _emit("paper_trading", {"strategy": strategy_preview})
         try:
+            # Use the backtest record's config which has asset-class-resolved
+            # fees (the orchestrator may have overridden generic defaults).
+            bt_config = record.backtest.config
             session = _run_paper_trading_step(
                 strategy=record.strategy,
                 strategy_code=record.strategy_code,
                 backtest_record=record.backtest,
-                initial_capital=config.initial_capital,
-                transaction_cost_bps=config.transaction_cost_bps,
-                slippage_bps=config.slippage_bps,
+                initial_capital=bt_config.initial_capital,
+                transaction_cost_bps=bt_config.transaction_cost_bps,
+                slippage_bps=bt_config.slippage_bps,
                 lookback_days=paper_trading_lookback_days,
             )
             session.lab_record_id = record.lab_record_id
@@ -2245,8 +2248,16 @@ class RunPaperTradingRequest(BaseModel):
 
     lab_record_id: str = Field(..., description="ID of a winning StrategyLabRecord to paper trade")
     initial_capital: float = Field(default=100000.0, gt=0)
-    transaction_cost_bps: float = Field(default=5.0, ge=0)
-    slippage_bps: float = Field(default=2.0, ge=0)
+    transaction_cost_bps: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Override tx cost (bps); auto-detected from asset class when omitted",
+    )
+    slippage_bps: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Override slippage (bps); auto-detected from asset class when omitted",
+    )
     lookback_days: int = Field(
         default=365, ge=30, description="Days of recent market data to fetch"
     )

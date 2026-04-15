@@ -36,7 +36,21 @@ Your task: fix and refine a generated trading strategy's Python code based on er
 - Replace with allowed alternatives from: pandas, numpy, indicators, math, datetime
 - The `indicators` module provides: sma, ema, rsi, macd, bollinger_bands, atr, adx, stochastic, vwap
 - Do NOT use the `ta` library — use `from indicators import ...` instead
-- Preserve the boilerplate structure (data preparation, warmup, force-close pattern)
+- Preserve the boilerplate structure (data preparation, warmup, row conversion, force-close pattern)
+
+### Quality gate: look-ahead bias detected
+- The code accesses future data (e.g., `df.iloc[i+1]`, `.shift(-1)`, or using `df` inside the loop)
+- Fix: use only `row` (current bar) and `prev_row` (previous bar) for decisions
+- All indicator values are pre-computed as DataFrame columns before conversion to row dicts
+- For crossover detection, compare `row['indicator']` vs `prev_row['indicator']`
+- NEVER access the raw DataFrame inside the trading loop — it has been deleted via `del df`
+
+### Phantom capital / over-allocation
+- If the strategy enters more capital than available, `capital` is not being updated correctly
+- On entry: deduct `shares * price * (1 + slip_mult + cost_mult)` from capital
+- On exit: add `shares * price * (1 - slip_mult - cost_mult)` to capital
+- Always guard entries with `if entry_cost <= capital`
+- Use `cost_mult = config['transaction_cost_bps'] / 10_000` and `slip_mult = config['slippage_bps'] / 10_000`
 
 ## Generated code contract
 

@@ -24,6 +24,7 @@ from ..models import (
     StrategyLabRecord,
     StrategySpec,
     TradeRecord,
+    get_fee_defaults,
 )
 from ..signal_intelligence_models import SignalIntelligenceBriefV1
 from ..trade_simulator import compute_metrics
@@ -114,17 +115,33 @@ class StrategyLabOrchestrator:
             strategy_code=code,
         )
 
-        emit("ideating", {"sub_phase": "completed", "strategy": {
-            "asset_class": spec.asset_class,
-            "hypothesis": spec.hypothesis[:120],
-        }})
+        # Override generic fee defaults with asset-class-appropriate values
+        if config.transaction_cost_bps == 5.0 and config.slippage_bps == 2.0:
+            fee_defaults = get_fee_defaults(spec.asset_class)
+            config = config.model_copy(update=fee_defaults)
+
+        emit(
+            "ideating",
+            {
+                "sub_phase": "completed",
+                "strategy": {
+                    "asset_class": spec.asset_class,
+                    "hypothesis": spec.hypothesis[:120],
+                },
+            },
+        )
 
         all_gate_results: List[QualityGateResult] = []
         refinement_attempts: List[str] = []
         trades: List[TradeRecord] = []
         metrics = BacktestResult(
-            total_return_pct=0, annualized_return_pct=0, volatility_pct=0,
-            sharpe_ratio=0, max_drawdown_pct=0, win_rate_pct=0, profit_factor=0,
+            total_return_pct=0,
+            annualized_return_pct=0,
+            volatility_pct=0,
+            sharpe_ratio=0,
+            max_drawdown_pct=0,
+            win_rate_pct=0,
+            profit_factor=0,
         )
         execution_succeeded = False
         market_data: Optional[Dict[str, List[OHLCVBar]]] = None
@@ -152,127 +169,235 @@ class StrategyLabOrchestrator:
             checks_total = len(round_gate_results)
             checks_passed = sum(1 for g in round_gate_results if g.passed)
 
-            critical_failures = [g for g in round_gate_results if not g.passed and g.severity == "critical"]
+            critical_failures = [
+                g for g in round_gate_results if not g.passed and g.severity == "critical"
+            ]
             if critical_failures:
-                emit("coding", {
-                    "sub_phase": "failed", "refinement_round": round_num,
-                    "checks_passed": checks_passed, "checks_total": checks_total,
-                })
+                emit(
+                    "coding",
+                    {
+                        "sub_phase": "failed",
+                        "refinement_round": round_num,
+                        "checks_passed": checks_passed,
+                        "checks_total": checks_total,
+                    },
+                )
                 if round_num < MAX_CODE_REFINEMENT_ROUNDS - 1:
-                    emit("coding", {"sub_phase": "refining", "refinement_round": round_num, "failure_phase": "validation"})
-                    failure_details = "\n".join(f"- [{g.gate_name}] {g.details}" for g in critical_failures)
-                    updates, code = self._refine(spec, code, "validation", failure_details, None, refinement_attempts)
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refining",
+                            "refinement_round": round_num,
+                            "failure_phase": "validation",
+                        },
+                    )
+                    failure_details = "\n".join(
+                        f"- [{g.gate_name}] {g.details}" for g in critical_failures
+                    )
+                    updates, code = self._refine(
+                        spec, code, "validation", failure_details, None, refinement_attempts
+                    )
                     spec = self._apply_updates(spec, updates, code)
                     changes = updates.get("changes_made", "validation fix")
                     refinement_attempts.append(changes)
-                    emit("coding", {"sub_phase": "refined", "refinement_round": round_num, "changes_made": changes})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refined",
+                            "refinement_round": round_num,
+                            "changes_made": changes,
+                        },
+                    )
                     continue
                 else:
-                    logger.warning("Max code refinement rounds reached on validation for %s", spec.strategy_id)
+                    logger.warning(
+                        "Max code refinement rounds reached on validation for %s", spec.strategy_id
+                    )
                     break
 
-            emit("coding", {
-                "sub_phase": "completed", "refinement_round": round_num,
-                "checks_passed": checks_passed, "checks_total": checks_total,
-            })
+            emit(
+                "coding",
+                {
+                    "sub_phase": "completed",
+                    "refinement_round": round_num,
+                    "checks_passed": checks_passed,
+                    "checks_total": checks_total,
+                },
+            )
 
             # ── 2b: FETCH DATA (once, reuse across rounds) ───────────
             if market_data is None:
                 emit("backtesting", {"sub_phase": "fetching_data"})
                 market_data = self._fetch_market_data(spec, config)
                 if not market_data:
-                    all_gate_results.append(QualityGateResult(
-                        gate_name="market_data", passed=False, severity="critical",
-                        details=f"No market data available for asset class '{spec.asset_class}'.",
-                        refinement_round=round_num,
-                    ))
+                    all_gate_results.append(
+                        QualityGateResult(
+                            gate_name="market_data",
+                            passed=False,
+                            severity="critical",
+                            details=f"No market data available for asset class '{spec.asset_class}'.",
+                            refinement_round=round_num,
+                        )
+                    )
                     break
                 total_bars = sum(len(bars) for bars in market_data.values())
-                emit("backtesting", {
-                    "sub_phase": "data_loaded",
-                    "symbols_count": len(market_data),
-                    "bars_count": total_bars,
-                })
+                emit(
+                    "backtesting",
+                    {
+                        "sub_phase": "data_loaded",
+                        "symbols_count": len(market_data),
+                        "bars_count": total_bars,
+                    },
+                )
 
             # ── 2c: EXECUTE (syntax / runtime correctness) ───────────
             emit("backtesting", {"sub_phase": "running_code", "refinement_round": round_num})
             exec_result = self.sandbox.run(code, market_data, config)
 
             if not exec_result.success:
-                all_gate_results.append(QualityGateResult(
-                    gate_name="code_execution", passed=False, severity="critical",
-                    details=f"Execution failed ({exec_result.error_type}): {exec_result.stderr[:500]}",
-                    refinement_round=round_num,
-                ))
+                all_gate_results.append(
+                    QualityGateResult(
+                        gate_name="code_execution",
+                        passed=False,
+                        severity="critical",
+                        details=f"Execution failed ({exec_result.error_type}): {exec_result.stderr[:500]}",
+                        refinement_round=round_num,
+                    )
+                )
                 if round_num < MAX_CODE_REFINEMENT_ROUNDS - 1:
-                    emit("coding", {"sub_phase": "refining", "refinement_round": round_num, "failure_phase": "execution"})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refining",
+                            "refinement_round": round_num,
+                            "failure_phase": "execution",
+                        },
+                    )
                     failure_details = (
                         f"Error type: {exec_result.error_type}\n"
                         f"stderr:\n{exec_result.stderr[:2000]}"
                     )
-                    updates, code = self._refine(spec, code, "execution", failure_details, None, refinement_attempts)
+                    updates, code = self._refine(
+                        spec, code, "execution", failure_details, None, refinement_attempts
+                    )
                     spec = self._apply_updates(spec, updates, code)
                     changes = updates.get("changes_made", "execution fix")
                     refinement_attempts.append(changes)
-                    emit("coding", {"sub_phase": "refined", "refinement_round": round_num, "changes_made": changes})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refined",
+                            "refinement_round": round_num,
+                            "changes_made": changes,
+                        },
+                    )
                     continue
                 else:
-                    logger.warning("Max code refinement rounds reached on execution for %s", spec.strategy_id)
+                    logger.warning(
+                        "Max code refinement rounds reached on execution for %s", spec.strategy_id
+                    )
                     break
 
             # ── 2d: VALIDATE TRADE OUTPUT ─────────────────────────────
             try:
                 trades = build_trade_records(exec_result.raw_trades, config)
             except ValueError as ve:
-                all_gate_results.append(QualityGateResult(
-                    gate_name="trade_validation", passed=False, severity="critical",
-                    details=f"Invalid trade output: {ve}",
-                    refinement_round=round_num,
-                ))
+                all_gate_results.append(
+                    QualityGateResult(
+                        gate_name="trade_validation",
+                        passed=False,
+                        severity="critical",
+                        details=f"Invalid trade output: {ve}",
+                        refinement_round=round_num,
+                    )
+                )
                 if round_num < MAX_CODE_REFINEMENT_ROUNDS - 1:
-                    emit("coding", {"sub_phase": "refining", "refinement_round": round_num, "failure_phase": "execution"})
-                    updates, code = self._refine(spec, code, "execution", str(ve), None, refinement_attempts)
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refining",
+                            "refinement_round": round_num,
+                            "failure_phase": "execution",
+                        },
+                    )
+                    updates, code = self._refine(
+                        spec, code, "execution", str(ve), None, refinement_attempts
+                    )
                     spec = self._apply_updates(spec, updates, code)
                     changes = updates.get("changes_made", "trade validation fix")
                     refinement_attempts.append(changes)
-                    emit("coding", {"sub_phase": "refined", "refinement_round": round_num, "changes_made": changes})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refined",
+                            "refinement_round": round_num,
+                            "changes_made": changes,
+                        },
+                    )
                     continue
                 else:
                     break
 
-            emit("backtesting", {
-                "sub_phase": "completed",
-                "trades_count": len(exec_result.raw_trades),
-                "execution_time": exec_result.execution_time_seconds,
-            })
+            emit(
+                "backtesting",
+                {
+                    "sub_phase": "completed",
+                    "trades_count": len(exec_result.raw_trades),
+                    "execution_time": exec_result.execution_time_seconds,
+                },
+            )
 
             # ── 2e: BACKTEST EVALUATION ───────────────────────────────
             # Code ran cleanly — now compute metrics and check for
             # anomalies.  Critical anomalies (zero trades, implausible
             # returns, etc.) trigger refinement while budget remains.
-            metrics = compute_metrics(trades, config.initial_capital, config.start_date, config.end_date)
+            metrics = compute_metrics(
+                trades, config.initial_capital, config.start_date, config.end_date
+            )
 
             anomaly_gates = self.anomaly_detector.check(metrics, trades)
             for g in anomaly_gates:
                 g.refinement_round = round_num
             all_gate_results.extend(anomaly_gates)
 
-            critical_anomalies = [g for g in anomaly_gates if not g.passed and g.severity == "critical"]
+            critical_anomalies = [
+                g for g in anomaly_gates if not g.passed and g.severity == "critical"
+            ]
             if critical_anomalies:
                 if round_num < MAX_CODE_REFINEMENT_ROUNDS - 1:
-                    emit("coding", {"sub_phase": "refining", "refinement_round": round_num, "failure_phase": "evaluation"})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refining",
+                            "refinement_round": round_num,
+                            "failure_phase": "evaluation",
+                        },
+                    )
                     failure_details = "\n".join(f"- {g.details}" for g in critical_anomalies)
                     updates, code = self._refine(
-                        spec, code, "evaluation (backtest anomaly)",
-                        failure_details, metrics, refinement_attempts,
+                        spec,
+                        code,
+                        "evaluation (backtest anomaly)",
+                        failure_details,
+                        metrics,
+                        refinement_attempts,
                     )
                     spec = self._apply_updates(spec, updates, code)
                     changes = updates.get("changes_made", "anomaly fix")
                     refinement_attempts.append(changes)
-                    emit("coding", {"sub_phase": "refined", "refinement_round": round_num, "changes_made": changes})
+                    emit(
+                        "coding",
+                        {
+                            "sub_phase": "refined",
+                            "refinement_round": round_num,
+                            "changes_made": changes,
+                        },
+                    )
                     continue
                 else:
-                    logger.warning("Max code refinement rounds reached on evaluation for %s", spec.strategy_id)
+                    logger.warning(
+                        "Max code refinement rounds reached on evaluation for %s", spec.strategy_id
+                    )
                     execution_succeeded = True  # anomalous but code is correct
                     break
 
@@ -285,10 +410,13 @@ class StrategyLabOrchestrator:
         if execution_succeeded and trades:
             emit("analyzing", {"sub_phase": "draft"})
             try:
+
                 def _on_analysis_sub(sub: str) -> None:
                     emit("analyzing", {"sub_phase": sub})
 
-                narrative = self.analysis_agent.run(spec, metrics, trades, rationale, on_sub_phase=_on_analysis_sub)
+                narrative = self.analysis_agent.run(
+                    spec, metrics, trades, rationale, on_sub_phase=_on_analysis_sub
+                )
                 is_w = metrics.annualized_return_pct > WINNING_THRESHOLD
                 emit("analyzing", {"sub_phase": "completed", "is_winning": is_w})
             except Exception:
@@ -342,12 +470,15 @@ class StrategyLabOrchestrator:
         # Update convergence tracker
         self.convergence_tracker.record(spec, all_gate_results)
 
-        emit("complete", {
-            "record_id": lab_record_id,
-            "is_winning": is_winning,
-            "metrics": metrics.model_dump(),
-            "refinement_rounds": len(refinement_attempts),
-        })
+        emit(
+            "complete",
+            {
+                "record_id": lab_record_id,
+                "is_winning": is_winning,
+                "metrics": metrics.model_dump(),
+                "refinement_rounds": len(refinement_attempts),
+            },
+        )
 
         return record
 
