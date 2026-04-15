@@ -48,6 +48,11 @@ And the roster keeps growing. The team you need next is probably already being w
 
 ---
 
+> [!WARNING]
+> **Khala is experimental.** The agents in this project are active research, not a production-ready product. Outputs can be incomplete, inconsistent, or just plain wrong; APIs change without notice; a team that shipped a feature yesterday may hit a wall today. Run it in isolated environments, keep humans in the loop for anything that matters, and treat every generated artifact (code, audits, trades, compliance reports) as a draft that needs review before you rely on it. If you're looking for a hardened platform with SLAs, this isn't it — yet. If you're looking to build, tinker, and help push the frontier of multi-agent systems, welcome aboard.
+
+---
+
 ## Meet the current roster
 
 Khala groups its teams into four *cells* — failure-isolated neighborhoods that share infrastructure and deploy together. This list grows every release; the authoritative source is always [`backend/unified_api/config.py`](backend/unified_api/config.py).
