@@ -895,7 +895,12 @@ def _run_real_data_backtest(
 
         try:
             trades = build_trade_records(exec_result.raw_trades, config)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
+            # ``build_trade_records`` raises ``ValueError`` for invalid sides and
+            # ``TypeError`` when numeric coercion fails (e.g. ``entry_price`` is
+            # ``None`` or a non-numeric type).  Both are user-facing output-shape
+            # errors, not server failures — surface as 422 so the caller sees
+            # the actual problem instead of a generic 500.
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid trade output from strategy code: {exc}",

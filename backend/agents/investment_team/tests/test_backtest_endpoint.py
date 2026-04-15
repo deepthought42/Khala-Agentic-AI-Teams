@@ -252,3 +252,86 @@ def test_run_real_data_backtest_raises_when_sandbox_execution_fails(monkeypatch)
 
     assert excinfo.value.status_code == 422
     assert "runtime_error" in excinfo.value.detail
+
+
+@pytest.mark.parametrize(
+    ("bad_trade", "expected_err"),
+    [
+        # None for a numeric field → TypeError inside float(None)
+        (
+            {
+                "symbol": "AAA",
+                "side": "long",
+                "entry_date": "2024-01-02",
+                "entry_price": None,
+                "exit_date": "2024-01-04",
+                "exit_price": 103.5,
+                "shares": 10,
+            },
+            TypeError,
+        ),
+        # Invalid side → ValueError raised explicitly by build_trade_records
+        (
+            {
+                "symbol": "AAA",
+                "side": "sideways",
+                "entry_date": "2024-01-02",
+                "entry_price": 101.5,
+                "exit_date": "2024-01-04",
+                "exit_price": 103.5,
+                "shares": 10,
+            },
+            ValueError,
+        ),
+    ],
+    ids=["typeerror_null_price", "valueerror_bad_side"],
+)
+def test_run_real_data_backtest_returns_422_for_invalid_trade_output(
+    monkeypatch, bad_trade, expected_err
+) -> None:
+    """Malformed sandbox trade output should surface as HTTP 422, not 500.
+
+    ``build_trade_records`` can raise either ``ValueError`` (explicit, for
+    bad ``side``) or ``TypeError`` (from ``float(None)`` during numeric
+    coercion); both are user-facing output-shape errors and must be
+    handled uniformly.
+    """
+    from fastapi import HTTPException
+
+    from investment_team.api import main as api_main
+    from investment_team.strategy_lab.executor import sandbox_runner as sr_mod
+
+    # Sanity check: build_trade_records really does raise the expected
+    # error on this input, so the test stays meaningful if the builder
+    # evolves.
+    from investment_team.strategy_lab.executor.trade_builder import build_trade_records
+
+    with pytest.raises(expected_err):
+        build_trade_records([bad_trade], _sample_config())
+
+    market_data = {"AAA": _sample_bars()}
+    _install_fake_market_service(monkeypatch, market_data)
+
+    class _StubSandbox:
+        def run(self, code, md, cfg):
+            return sr_mod.CodeExecutionResult(
+                success=True,
+                raw_trades=[bad_trade],
+                stdout="",
+                stderr="",
+                execution_time_seconds=0.0,
+            )
+
+    monkeypatch.setattr(sr_mod, "SandboxRunner", _StubSandbox)
+    from investment_team.strategy_lab import executor as executor_pkg
+
+    monkeypatch.setattr(executor_pkg, "SandboxRunner", _StubSandbox)
+
+    strategy = _sample_strategy(with_code=True)
+    config = _sample_config()
+
+    with pytest.raises(HTTPException) as excinfo:
+        api_main._run_real_data_backtest(strategy, config)
+
+    assert excinfo.value.status_code == 422
+    assert "Invalid trade output" in excinfo.value.detail
