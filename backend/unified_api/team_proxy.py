@@ -81,6 +81,7 @@ async def proxy_request(
     *,
     team_key: str = "",
     timeout: float | None = None,
+    stream: bool | None = None,
 ) -> Response:
     """Forward a FastAPI *request* to *target_base_url*/*path* and return the response.
 
@@ -91,6 +92,11 @@ async def proxy_request(
         and log correlation. If empty, a shared default client is used.
     timeout:
         Per-team timeout in seconds (from ``TeamConfig.timeout_seconds``).
+    stream:
+        Explicit SSE-intent flag. When ``True`` the per-request read timeout is
+        disabled so sparse SSE streams are not cut mid-chunk by the client's
+        default read deadline. When ``None`` (default) the path is inspected:
+        any path ending in ``/stream`` is treated as streaming.
     """
     effective_key = team_key or "_default"
 
@@ -116,11 +122,15 @@ async def proxy_request(
 
     body = await request.body()
 
-    # If the client is asking for an SSE response, override the read timeout
-    # for this single request so long idle gaps between chunks don't truncate
-    # the stream. Non-streaming calls keep the bounded client default.
+    # If the client is asking for an SSE response (via Accept header or via an
+    # explicit `stream=` override, or the path heuristically ends in /stream),
+    # override the read timeout for this single request so long idle gaps
+    # between chunks don't truncate the stream. Non-streaming calls keep the
+    # bounded client default.
     accept_header = request.headers.get("accept", "").lower()
-    is_sse_request = "text/event-stream" in accept_header
+    is_sse_request = (
+        stream if stream is not None else "text/event-stream" in accept_header or path.rstrip("/").endswith("/stream")
+    )
     effective_timeout = (
         httpx.Timeout(
             connect=10.0,
@@ -169,13 +179,14 @@ async def proxy_request(
             except httpx.HTTPError as exc:
                 logger.error(
                     "Proxy upstream disconnected mid-stream: %s %s -> %s: %s",
-                    request.method, request.url.path, url, exc,
+                    request.method,
+                    request.url.path,
+                    url,
+                    exc,
                 )
                 # Emit a clean terminating frame so downstream clients see a
                 # proper stream close instead of ERR_INCOMPLETE_CHUNKED_ENCODING.
-                error_payload = json.dumps(
-                    {"error": "upstream disconnected", "detail": type(exc).__name__}
-                )
+                error_payload = json.dumps({"error": "upstream disconnected", "detail": type(exc).__name__})
                 yield f"event: error\ndata: {error_payload}\n\n".encode()
                 yield b"event: done\ndata: {}\n\n"
             finally:

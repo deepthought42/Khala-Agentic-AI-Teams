@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -172,3 +174,128 @@ def test_stream_endpoint(mock_orch_cls):
     assert "text/event-stream" in resp.headers["content-type"]
     body = resp.text
     assert "event: result" in body or "event: done" in body
+
+
+@patch("deepthought.api.main.DeepthoughtOrchestrator")
+def test_stream_starts_with_stream_open_comment(mock_orch_cls):
+    """First bytes of the SSE body include `: stream open` before any event frame."""
+    from deepthought.models import AgentResult, DeepthoughtResponse
+
+    mock_orch = MagicMock()
+    mock_orch_cls.return_value = mock_orch
+    mock_orch.process_message.return_value = DeepthoughtResponse(
+        answer="A",
+        agent_tree=AgentResult(
+            agent_id="root",
+            agent_name="general_analyst",
+            depth=0,
+            focus_question="Q?",
+            answer="A",
+            confidence=0.9,
+        ),
+        total_agents_spawned=1,
+        max_depth_reached=0,
+    )
+    mock_orch._collect_event = MagicMock()
+
+    client = TestClient(app)
+    resp = client.post("/deepthought/ask/stream", json={"message": "start"})
+
+    assert resp.status_code == 200
+    body = resp.text
+    open_idx = body.find(": stream open")
+    first_event_idx = body.find("event:")
+    assert open_idx != -1, "expected `: stream open` comment frame"
+    assert first_event_idx == -1 or open_idx < first_event_idx
+
+
+@patch("deepthought.api.main.DeepthoughtOrchestrator")
+def test_stream_always_ends_with_done_on_error(mock_orch_cls):
+    """If the orchestrator raises, the stream still emits `event: done`."""
+    mock_orch = MagicMock()
+    mock_orch_cls.return_value = mock_orch
+    mock_orch._collect_event = MagicMock()
+    mock_orch.process_message.side_effect = RuntimeError("boom")
+
+    client = TestClient(app)
+    resp = client.post("/deepthought/ask/stream", json={"message": "fail please"})
+
+    assert resp.status_code == 200
+    body = resp.text
+    # Error frame should appear, and the stream must terminate with event: done.
+    assert "event: error" in body
+    assert body.rstrip().endswith("event: done\ndata: {}") or "event: done" in body
+
+
+@patch("deepthought.api.main.DeepthoughtOrchestrator")
+def test_stream_emits_keepalive_on_silence(mock_orch_cls, monkeypatch):
+    """When the orchestrator goes silent past the keepalive interval, `: keepalive` is emitted."""
+    from deepthought.models import AgentResult, DeepthoughtResponse
+
+    # Force a very short keepalive window so the test doesn't hang.
+    monkeypatch.setenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "0.2")
+
+    mock_orch = MagicMock()
+    mock_orch_cls.return_value = mock_orch
+    mock_orch._collect_event = MagicMock()
+
+    def slow_process(_request):
+        # Block long enough for multiple keepalive intervals to elapse.
+        time.sleep(0.7)
+        return DeepthoughtResponse(
+            answer="slow",
+            agent_tree=AgentResult(
+                agent_id="root",
+                agent_name="general_analyst",
+                depth=0,
+                focus_question="Q?",
+                answer="slow",
+                confidence=0.9,
+            ),
+            total_agents_spawned=1,
+            max_depth_reached=0,
+        )
+
+    mock_orch.process_message.side_effect = slow_process
+
+    client = TestClient(app)
+    resp = client.post("/deepthought/ask/stream", json={"message": "slow"})
+
+    # Cleanup env var regardless of assertion outcome
+    os.environ.pop("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", None)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert ": keepalive" in body
+    assert "event: done" in body
+
+
+@patch("deepthought.api.main.DeepthoughtOrchestrator")
+def test_stream_survives_malformed_keepalive_env(mock_orch_cls, monkeypatch):
+    """A malformed DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS must not 500 the stream."""
+    from deepthought.models import AgentResult, DeepthoughtResponse
+
+    monkeypatch.setenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "not-a-number")
+
+    mock_orch = MagicMock()
+    mock_orch_cls.return_value = mock_orch
+    mock_orch._collect_event = MagicMock()
+    mock_orch.process_message.return_value = DeepthoughtResponse(
+        answer="A",
+        agent_tree=AgentResult(
+            agent_id="root",
+            agent_name="general_analyst",
+            depth=0,
+            focus_question="Q?",
+            answer="A",
+            confidence=0.9,
+        ),
+        total_agents_spawned=1,
+        max_depth_reached=0,
+    )
+
+    client = TestClient(app)
+    resp = client.post("/deepthought/ask/stream", json={"message": "hi"})
+
+    assert resp.status_code == 200
+    assert "event: done" in resp.text

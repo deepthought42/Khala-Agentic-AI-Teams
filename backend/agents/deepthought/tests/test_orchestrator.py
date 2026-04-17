@@ -315,3 +315,49 @@ def test_specialists_footer_format():
 
     assert "Specialists consulted" in resp.answer
     assert "physics_expert" in resp.answer
+
+
+def test_budget_warning_flows_through_collect_event():
+    """_register_spawn routes budget-exhausted vetoes through _collect_event
+    (so SSE streams see them) and does not deadlock on the non-reentrant lock."""
+    from deepthought.models import AgentEventType, AgentSpec
+
+    orch = _make_orchestrator(MagicMock(), budget=1)
+
+    # Capture every event that _collect_event sees.
+    captured = []
+    original_collect = orch._collect_event
+
+    def spy(event):
+        captured.append(event)
+        original_collect(event)
+
+    orch._collect_event = spy  # type: ignore[assignment]
+
+    # First spawn consumes the budget.
+    spec1 = AgentSpec(
+        agent_id="a1",
+        name="agent_one",
+        role_description="first",
+        focus_question="Q?",
+        depth=0,
+        parent_id=None,
+    )
+    assert orch._register_spawn(spec1) is True
+
+    # Second spawn is vetoed; must emit a BUDGET_WARNING through _collect_event.
+    spec2 = AgentSpec(
+        agent_id="a2",
+        name="agent_two",
+        role_description="second",
+        focus_question="Q?",
+        depth=1,
+        parent_id="a1",
+    )
+    assert orch._register_spawn(spec2) is False
+
+    budget_events = [e for e in captured if e.event_type == AgentEventType.BUDGET_WARNING]
+    assert len(budget_events) == 1
+    assert budget_events[0].agent_id == "a2"
+    # And it made it into the stored events list as well.
+    assert any(e.event_type == AgentEventType.BUDGET_WARNING for e in orch._events)

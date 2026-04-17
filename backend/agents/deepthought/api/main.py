@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
 
@@ -91,8 +92,20 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
 
     # How long the stream may go without emitting any bytes before we send
     # a keepalive comment. Must be shorter than any intermediate proxy's
-    # read-idle timeout (nginx/cloudflare defaults are ~60s).
-    HEARTBEAT_INTERVAL = 10.0
+    # read-idle timeout (nginx/cloudflare defaults are ~60s). Overridable via
+    # env var for tests and ops; falls back to a safe default on malformed
+    # values so one bad env var cannot 500 every streaming request.
+    _heartbeat_raw = os.getenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "10")
+    try:
+        heartbeat_interval = float(_heartbeat_raw)
+        if heartbeat_interval <= 0:
+            raise ValueError("non-positive heartbeat interval")
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS=%r; using default 10s",
+            _heartbeat_raw,
+        )
+        heartbeat_interval = 10.0
 
     async def _generate():
         loop = asyncio.get_event_loop()
@@ -105,7 +118,7 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
             try:
                 event = event_queue.get_nowait()
             except queue.Empty:
-                if loop.time() - last_byte_time >= HEARTBEAT_INTERVAL:
+                if loop.time() - last_byte_time >= heartbeat_interval:
                     yield ": keepalive\n\n"
                     last_byte_time = loop.time()
                 await asyncio.sleep(0.1)
@@ -115,6 +128,9 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
             yield f"event: agent_event\ndata: {event.model_dump_json()}\n\n"
             last_byte_time = loop.time()
 
+        # Orchestrator completed. Errors are surfaced here via result_holder —
+        # this path also guarantees a trailing `event: done` frame even when the
+        # orchestrator raised, because `_run` always queues the sentinel.
         if result_holder and isinstance(result_holder[0], DeepthoughtResponse):
             yield f"event: result\ndata: {result_holder[0].model_dump_json()}\n\n"
         elif result_holder and isinstance(result_holder[0], Exception):
@@ -128,6 +144,11 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
         # A disconnected client cannot receive `done` anyway, so emitting it
         # only on normal completion is both correct and sufficient.
         yield "event: done\ndata: {}\n\n"
+        # No try/finally with yields: yielding during async-generator finalization
+        # (e.g. client disconnect triggers aclose()) raises
+        # RuntimeError: async generator ignored GeneratorExit. If the client is
+        # gone there is nothing to send anyway; orchestrator errors are already
+        # handled above via result_holder.
 
     return StreamingResponse(
         _generate(),
