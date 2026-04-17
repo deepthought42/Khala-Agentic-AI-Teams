@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# SPEC-002 schema version. Bump when the ClientProfile shape changes
+# in a way downstream consumers must observe. Kept as a plain string
+# so JSON round-trips via Postgres JSONB are lossless.
+PROFILE_SCHEMA_VERSION = "2.0"
 
 # --- Client profile (what a dietician would need) ---
 
@@ -48,10 +54,138 @@ class PreferencesInfo(BaseModel):
     preferences_free_text: str = ""  # "prefer X over Y", etc.
 
 
+# --- Biometrics (SPEC-002) -----------------------------------------------
+
+
+class Sex(str, Enum):
+    """Biological-sex options used by the calculator (SPEC-003).
+
+    ``other`` and ``unspecified`` route to a sex-averaged BMR variant.
+    """
+
+    female = "female"
+    male = "male"
+    other = "other"
+    unspecified = "unspecified"
+
+
+class ActivityLevel(str, Enum):
+    """Activity categories with PAL multipliers defined by SPEC-003.
+
+    sedentary=1.2, light=1.375, moderate=1.55, active=1.725,
+    very_active=1.9. The multipliers themselves live in ``nutrition_calc``
+    (SPEC-003); this enum only names the categories.
+    """
+
+    sedentary = "sedentary"
+    light = "light"
+    moderate = "moderate"
+    active = "active"
+    very_active = "very_active"
+
+
+class BiometricInfo(BaseModel):
+    """Inputs the calculator needs.
+
+    All numeric fields have implausibility bounds at the Pydantic layer.
+    Outside-range values are **rejected**, not clamped; the API returns
+    422 so the client can surface a clear error. See SPEC-002 §4.1.
+    """
+
+    sex: Sex = Sex.unspecified
+    age_years: Optional[int] = Field(default=None, ge=2, le=120)
+    height_cm: Optional[float] = Field(default=None, ge=50, le=260)
+    weight_kg: Optional[float] = Field(default=None, ge=20, le=400)
+    body_fat_pct: Optional[float] = Field(default=None, ge=3, le=75)
+    activity_level: ActivityLevel = ActivityLevel.sedentary
+    timezone: str = "UTC"
+    measured_at: Optional[str] = None
+    # User's preferred display units for UI round-trips. Not used by any
+    # calculator input; purely cosmetic.
+    preferred_units: str = "metric"  # 'metric' | 'imperial'
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str) -> str:
+        if not v:
+            return "UTC"
+        # Lazy import so we don't crash on platforms without tzdata.
+        try:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown IANA timezone: {v}") from exc
+        except Exception:
+            # Missing tzdata on the host — accept and let the user
+            # resolve it rather than failing the whole profile write.
+            return v
+        return v
+
+    @field_validator("preferred_units")
+    @classmethod
+    def _validate_units(cls, v: str) -> str:
+        if v not in ("metric", "imperial"):
+            raise ValueError("preferred_units must be 'metric' or 'imperial'")
+        return v
+
+
+# --- Clinical (SPEC-002) -------------------------------------------------
+
+
+class ReproductiveState(str, Enum):
+    """Pregnancy / lactation stage for cohort routing.
+
+    SPEC-003's cohort router skips deficit calculation for pregnancy
+    and lactation and applies trimester-specific kcal additions.
+    """
+
+    none = "none"
+    pregnant_t1 = "pregnant_t1"
+    pregnant_t2 = "pregnant_t2"
+    pregnant_t3 = "pregnant_t3"
+    lactating = "lactating"
+    postpartum = "postpartum"
+
+
+class ClinicalInfo(BaseModel):
+    """Medical context driving SPEC-003 clinical overrides and SPEC-007
+    medication-interaction checks.
+
+    ``conditions`` / ``medications`` hold the **recognized** entries from
+    ``clinical_taxonomy.Condition`` / ``Medication``. Anything the user
+    enters that isn't in those enums lives in the ``*_freetext`` lists —
+    still surfaced to the narrator, never used to drive numeric clamps.
+    """
+
+    conditions: List[str] = Field(default_factory=list)
+    conditions_freetext: List[str] = Field(default_factory=list)
+    medications: List[str] = Field(default_factory=list)
+    medications_freetext: List[str] = Field(default_factory=list)
+    reproductive_state: ReproductiveState = ReproductiveState.none
+    # ED history flag: when True, scale-centric UX is disabled and
+    # SPEC-003 refuses deficit goals regardless of goal_type. This is
+    # a team invariant, not a per-user toggle — see SPEC-002 §4.1.
+    ed_history_flag: bool = False
+    # Clinician-authored overrides (e.g. ``{"bmi_floor": 19.5}``).
+    # Admin-only write path; users cannot edit these.
+    clinician_overrides: Dict[str, float] = Field(default_factory=dict)
+
+
 class GoalsInfo(BaseModel):
-    """Nutrition goals (optional)."""
+    """Nutrition goals (optional).
+
+    ``goal_type`` is the high-level intent; ``target_weight_kg`` and
+    ``rate_kg_per_week`` parameterize the calculator's energy delta.
+    Rate is clamped at input; SPEC-003 applies additional per-profile
+    safety clamps (≤1% body weight / week) at compute time.
+    """
 
     goal_type: str = "maintain"  # maintain, lose_weight, gain_weight, muscle, etc.
+    target_weight_kg: Optional[float] = Field(default=None, ge=20, le=400)
+    rate_kg_per_week: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    started_at: Optional[str] = None
+    paused_at: Optional[str] = None
     notes: str = ""
 
 
@@ -69,6 +203,13 @@ class ClientProfile(BaseModel):
     lifestyle: LifestyleInfo = Field(default_factory=LifestyleInfo)
     preferences: PreferencesInfo = Field(default_factory=PreferencesInfo)
     goals: GoalsInfo = Field(default_factory=GoalsInfo)
+    biometrics: BiometricInfo = Field(default_factory=BiometricInfo)
+    clinical: ClinicalInfo = Field(default_factory=ClinicalInfo)
+    # Monotonic write counter; bumped by the store on every save.
+    profile_version: int = 1
+    # Data-model version. Migrations that reshape ClientProfile bump
+    # this; downstream consumers pin on it.
+    schema_version: str = PROFILE_SCHEMA_VERSION
     updated_at: Optional[str] = None
 
 
@@ -152,7 +293,11 @@ class MealHistoryEntry(BaseModel):
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Body for PUT /profile/{client_id}."""
+    """Body for PUT /profile/{client_id}.
+
+    All fields optional and additive; unspecified fields preserve the
+    current value. Nested objects merge shallowly (see SPEC-002 §4.4).
+    """
 
     household: Optional[HouseholdInfo] = None
     dietary_needs: Optional[List[str]] = None
@@ -160,6 +305,107 @@ class ProfileUpdateRequest(BaseModel):
     lifestyle: Optional[LifestyleInfo] = None
     preferences: Optional[PreferencesInfo] = None
     goals: Optional[GoalsInfo] = None
+    biometrics: Optional[BiometricInfo] = None
+    clinical: Optional[ClinicalInfo] = None
+
+
+# --- SPEC-002 additive request/response models ---------------------------
+
+
+class BiometricPatchRequest(BaseModel):
+    """Body for PATCH /profile/{client_id}/biometrics.
+
+    Supports either metric inputs (``height_cm`` / ``weight_kg``) or
+    imperial inputs (``height_ft`` + ``height_in`` / ``weight_lb``).
+    Metric values win if both sides are provided. See ``units.py``.
+    """
+
+    sex: Optional[Sex] = None
+    age_years: Optional[int] = Field(default=None, ge=2, le=120)
+    height_cm: Optional[float] = Field(default=None, ge=50, le=260)
+    height_ft: Optional[float] = Field(default=None, ge=0, le=9)
+    height_in: Optional[float] = Field(default=None, ge=0, le=107)
+    weight_kg: Optional[float] = Field(default=None, ge=20, le=400)
+    weight_lb: Optional[float] = Field(default=None, ge=44, le=880)
+    body_fat_pct: Optional[float] = Field(default=None, ge=3, le=75)
+    activity_level: Optional[ActivityLevel] = None
+    timezone: Optional[str] = None
+    preferred_units: Optional[str] = None
+    measured_at: Optional[str] = None
+
+    @field_validator("preferred_units")
+    @classmethod
+    def _validate_units(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if v not in ("metric", "imperial"):
+            raise ValueError("preferred_units must be 'metric' or 'imperial'")
+        return v
+
+
+class ClinicalPatchRequest(BaseModel):
+    """Body for PATCH /profile/{client_id}/clinical.
+
+    Whole-list semantics: ``conditions`` and ``medications`` replace the
+    existing lists. This matches how users think about these edits
+    (toggle chips on/off) and avoids subtle add/remove bugs.
+
+    Clinician overrides are **not** editable through this path; use the
+    admin-only ``PUT /clinical-overrides`` endpoint.
+    """
+
+    conditions: Optional[List[str]] = None
+    medications: Optional[List[str]] = None
+    reproductive_state: Optional[ReproductiveState] = None
+    ed_history_flag: Optional[bool] = None
+
+
+class ClinicianOverrideRequest(BaseModel):
+    """Body for PUT /profile/{client_id}/clinical-overrides.
+
+    Admin-only. Every write produces an audit row. Overrides replace
+    the entire dict; partial edits go through the admin tool, not the
+    API.
+    """
+
+    overrides: Dict[str, float] = Field(default_factory=dict)
+    reason: Optional[str] = None
+    author: str = "admin"
+
+
+class BiometricHistoryEntry(BaseModel):
+    """One row from nutrition_biometric_log, trimmed for the API."""
+
+    field: str
+    value_numeric: Optional[float] = None
+    value_text: Optional[str] = None
+    unit: Optional[str] = None
+    source: str = "manual"
+    recorded_at: str
+    recorded_by: Optional[str] = None
+
+
+class BiometricHistoryResponse(BaseModel):
+    client_id: str
+    field: Optional[str] = None
+    entries: List[BiometricHistoryEntry] = Field(default_factory=list)
+
+
+class CompletenessResponse(BaseModel):
+    """Shape for GET /profile/{client_id}/completeness.
+
+    Drives the UI gating: a profile with no ``weight_kg`` for instance
+    cannot yet receive calculator-driven plans and the UI shows a
+    banner. See SPEC-002 §4.5 / §4.6.
+    """
+
+    client_id: str
+    has_biometrics: bool = False
+    has_activity: bool = False
+    has_clinical_confirmed: bool = False
+    is_minor: bool = False
+    ed_history_flag: bool = False
+    blockers: List[str] = Field(default_factory=list)
 
 
 class NutritionPlanRequest(BaseModel):

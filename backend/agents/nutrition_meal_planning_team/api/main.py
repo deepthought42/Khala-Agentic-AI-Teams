@@ -14,9 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared_observability import init_otel, instrument_fastapi_app
 
 from ..models import (
+    BiometricHistoryResponse,
+    BiometricPatchRequest,
     ChatRequest,
     ChatResponse,
     ClientProfile,
+    ClinicalPatchRequest,
+    ClinicianOverrideRequest,
+    CompletenessResponse,
     FeedbackRequest,
     FeedbackResponse,
     MealHistoryResponse,
@@ -166,6 +171,66 @@ def get_profile_route(client_id: str):
 def put_profile_route(client_id: str, body: ProfileUpdateRequest):
     """Update client profile. Intake agent validates/completes; profile is saved."""
     return orchestrator.update_profile(client_id, body)
+
+
+@app.patch("/profile/{client_id}/biometrics", response_model=ClientProfile)
+def patch_biometrics_route(client_id: str, body: BiometricPatchRequest):
+    """SPEC-002: append-only biometric update.
+
+    Metric inputs (cm, kg) take precedence; imperial inputs are
+    coerced to canonical units before validation. Every changed
+    field writes a row to ``nutrition_biometric_log``.
+    """
+    return orchestrator.patch_biometrics(client_id, body)
+
+
+@app.get(
+    "/profile/{client_id}/biometrics/history",
+    response_model=BiometricHistoryResponse,
+)
+def get_biometrics_history_route(
+    client_id: str,
+    field: Optional[str] = None,
+    since: Optional[str] = None,
+    limit: int = 200,
+):
+    """SPEC-002: biometric log time series.
+
+    Optional ``field`` and ``since`` (ISO timestamp) narrow the query.
+    """
+    return orchestrator.get_biometric_history(client_id, field=field, since_iso=since, limit=limit)
+
+
+@app.patch("/profile/{client_id}/clinical", response_model=ClientProfile)
+def patch_clinical_route(client_id: str, body: ClinicalPatchRequest):
+    """SPEC-002: update clinical info (conditions, meds, reproductive state, ED flag).
+
+    Whole-list replace for ``conditions`` and ``medications``.
+    Unrecognized strings land in the ``*_freetext`` lists on the
+    clinical sub-object.
+    """
+    return orchestrator.patch_clinical(client_id, body)
+
+
+@app.put("/profile/{client_id}/clinical-overrides", response_model=ClientProfile)
+def put_clinician_overrides_route(client_id: str, body: ClinicianOverrideRequest):
+    """SPEC-002: replace clinician-authored numeric overrides.
+
+    Admin-only in production deployments. v1 enforces the admin
+    boundary via the platform's security gateway; this route itself
+    does not re-check auth.
+    """
+    return orchestrator.put_clinician_overrides(client_id, body)
+
+
+@app.get("/profile/{client_id}/completeness", response_model=CompletenessResponse)
+def get_profile_completeness_route(client_id: str):
+    """SPEC-002: completeness blockers + minor / ED flags.
+
+    Drives UI gating. Never 404s — an unknown client returns a
+    response with ``no_profile`` in blockers.
+    """
+    return orchestrator.get_completeness(client_id)
 
 
 @app.post("/plan/nutrition", response_model=NutritionPlanResponse)
