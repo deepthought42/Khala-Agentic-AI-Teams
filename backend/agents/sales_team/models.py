@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# Type aliases used by the outreach payload
+# ---------------------------------------------------------------------------
+
+PersonalizationGrade = Literal["high", "medium", "low", "fallback"]
+OutreachAngle = Literal[
+    "trigger_event",
+    "thought_leadership",
+    "mutual_connection",
+    "peer_proof",
+    "company_soft_opener",
+]
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -244,6 +257,24 @@ class ProspectDossier(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class EvidenceCitation(BaseModel):
+    """Dossier-rooted evidence backing a personalization claim in outreach copy."""
+
+    claim: str = Field(
+        ...,
+        description="The personalized statement the email makes, e.g. 'saw your talk on distributed tracing at QCon'",
+    )
+    dossier_field: str = Field(
+        ...,
+        description="Path inside ProspectDossier that supports the claim, e.g. 'publications[2]' or 'trigger_events[0]'",
+    )
+    source_url: Optional[str] = Field(
+        default=None,
+        description="URL from dossier.sources that supports the claim; None for summary-level claims with no URL",
+    )
+    strength: Literal["weak", "medium", "strong"] = Field(default="medium")
+
+
 class EmailTouch(BaseModel):
     """A single email in a multi-touch cold outreach sequence."""
 
@@ -254,17 +285,51 @@ class EmailTouch(BaseModel):
         default_factory=list, description="Merge fields to fill before sending"
     )
     call_to_action: str = Field(default="", description="Specific ask at the end of this touch")
+    evidence_citations: List[EvidenceCitation] = Field(
+        default_factory=list,
+        description="Dossier-rooted evidence for every personalization claim in this touch",
+    )
 
 
-class OutreachSequence(BaseModel):
-    """Complete multi-channel outreach plan for a prospect."""
+class OutreachVariant(BaseModel):
+    """One angle-specific version of a prospect's outreach sequence.
 
-    prospect: Prospect
+    Every variant uses a different angle so downstream A/B tracking can
+    attribute reply rate to angle type, not just subject-line text.
+    """
+
+    angle: OutreachAngle = Field(
+        ...,
+        description="Personalization angle used for this variant",
+    )
     email_sequence: List[EmailTouch] = Field(default_factory=list)
     call_script: str = Field(default="", description="Cold-call opener and talk track")
     linkedin_message: str = Field(default="", description="Connection request / InMail copy")
-    sequence_rationale: str = Field(
-        default="", description="Why this angle was chosen for this prospect"
+    rationale: str = Field(
+        default="", description="Why this angle was picked and why it is expected to land"
+    )
+    personalization_grade: PersonalizationGrade = Field(
+        default="medium",
+        description=(
+            "high  = grounded in strong dossier signal with source URL; "
+            "medium = grounded in at least one cited dossier field; "
+            "low    = citation verifier stripped an unverified URL; "
+            "fallback = company_soft_opener, no person-level claim"
+        ),
+    )
+
+
+class OutreachSequence(BaseModel):
+    """All generated variants for a single prospect's outreach."""
+
+    prospect: Prospect
+    dossier_id: str = Field(..., description="ProspectDossier this sequence was grounded in")
+    dossier_confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Snapshot of dossier.confidence at generation time"
+    )
+    variants: List[OutreachVariant] = Field(
+        default_factory=list,
+        description="One entry per angle; every entry uses a different angle",
     )
 
 

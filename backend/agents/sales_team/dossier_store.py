@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import uuid4
 
 from psycopg.rows import dict_row
@@ -95,6 +95,31 @@ class DossierStore:
         if row is None:
             return None
         return ProspectDossier.model_validate(row["data"])
+
+    @timed_query(store=_STORE, op="get_dossiers_by_prospect_ids")
+    def get_dossiers_by_prospect_ids(self, prospect_ids: List[str]) -> Dict[str, ProspectDossier]:
+        """Batch-load dossiers keyed by their linked prospect_id.
+
+        Used by the outreach loop so we do one query per pipeline run instead
+        of one per prospect. Prospect ids without a dossier are simply absent
+        from the returned map — callers decide how to handle misses.
+        """
+        if not prospect_ids:
+            return {}
+        with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT prospect_id, data FROM sales_dossiers WHERE prospect_id = ANY(%s)",
+                (list(prospect_ids),),
+            )
+            rows = cur.fetchall()
+        out: Dict[str, ProspectDossier] = {}
+        for row in rows:
+            dossier = ProspectDossier.model_validate(row["data"])
+            # If multiple dossiers exist for a prospect, keep the newest.
+            existing = out.get(row["prospect_id"])
+            if existing is None or dossier.generated_at > existing.generated_at:
+                out[row["prospect_id"]] = dossier
+        return out
 
     # ------------------------------------------------------------------
     # Prospect lists

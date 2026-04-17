@@ -20,6 +20,7 @@ from sales_team.models import (
     OutcomeResult,
     PipelineStage,
     Prospect,
+    ProspectDossier,
     SalesPipelineRequest,
     SalesPipelineResult,
     StageOutcome,
@@ -49,6 +50,7 @@ def sample_icp() -> IdealCustomerProfile:
 @pytest.fixture()
 def sample_prospect() -> Prospect:
     return Prospect(
+        id="prs_testprospect",
         company_name="Acme Corp",
         website="https://acme.example.com",
         contact_name="Jane Smith",
@@ -60,6 +62,47 @@ def sample_prospect() -> Prospect:
         icp_match_score=0.85,
         research_notes="Recently raised Series B; hiring 10 AEs; uses Salesforce.",
         trigger_events=["Series B funding announced"],
+    )
+
+
+@pytest.fixture()
+def sample_dossier(sample_prospect: Prospect) -> ProspectDossier:
+    return ProspectDossier(
+        dossier_id="dsr_testdossier1",
+        prospect_id=sample_prospect.id,
+        full_name=sample_prospect.contact_name or "Jane Smith",
+        current_title=sample_prospect.contact_title or "VP of Sales",
+        current_company=sample_prospect.company_name,
+        linkedin_url=sample_prospect.linkedin_url,
+        executive_summary=(
+            "Jane runs sales at Acme Corp, a Series-B SaaS company. She has spoken "
+            "publicly about ramping AE teams and improving pipeline visibility."
+        ),
+        trigger_events=[
+            "Acme Corp announced Series B funding ($40M)",
+            "Hiring 10 AEs per LinkedIn headcount",
+        ],
+        conversation_hooks=[
+            "Recent QCon talk on ramping AE teams",
+            "Series B funding → need for pipeline scale",
+        ],
+        sources=[
+            "https://techcrunch.com/2026/acme-series-b",
+            "https://qcon.example.com/2025/talks/jane-smith-ramp-ae",
+        ],
+        confidence=0.82,
+    )
+
+
+@pytest.fixture()
+def low_confidence_dossier(sample_prospect: Prospect) -> ProspectDossier:
+    return ProspectDossier(
+        dossier_id="dsr_lowconf",
+        prospect_id=sample_prospect.id,
+        full_name=sample_prospect.contact_name or "Jane Smith",
+        current_title=sample_prospect.contact_title or "VP of Sales",
+        current_company=sample_prospect.company_name,
+        confidence=0.35,
     )
 
 
@@ -198,14 +241,23 @@ class TestAgentStubs:
         assert "company_name" in data[0]
         assert "icp_match_score" in data[0]
 
-    def test_outreach_returns_parseable_json(self, orchestrator, sample_prospect):
+    def test_outreach_returns_parseable_json(self, orchestrator, sample_prospect, sample_dossier):
         raw = orchestrator.outreach.generate_sequence(
-            sample_prospect.model_dump_json(), "TestProduct", "We help X", "", ""
+            sample_prospect.model_dump_json(),
+            sample_dossier,
+            "TestProduct",
+            "We help X",
+            "",
+            "",
         )
         data = json.loads(raw)
-        assert "email_sequence" in data
-        assert "call_script" in data
-        assert "linkedin_message" in data
+        assert "variants" in data
+        assert isinstance(data["variants"], list)
+        assert data["variants"], "expected at least one variant"
+        variant = data["variants"][0]
+        assert "angle" in variant
+        assert "email_sequence" in variant
+        assert "personalization_grade" in variant
 
     def test_qualifier_returns_parseable_json(self, orchestrator, sample_prospect):
         raw = orchestrator.qualifier.qualify(
@@ -273,12 +325,26 @@ class TestOrchestrator:
         assert len(prospects) > 0
         assert all(hasattr(p, "company_name") for p in prospects)
 
-    def test_outreach_only(self, orchestrator, sample_prospect):
+    def test_outreach_only(self, orchestrator, sample_prospect, sample_dossier):
         sequences = orchestrator.outreach_only(
-            [sample_prospect], "TestProduct", "We help X", [], ""
+            [sample_prospect],
+            {sample_prospect.id: sample_dossier},
+            "TestProduct",
+            "We help X",
+            [],
+            "",
         )
         assert len(sequences) == 1
         assert sequences[0].prospect.company_name == "Acme Corp"
+        assert sequences[0].dossier_id == sample_dossier.dossier_id
+        assert sequences[0].dossier_confidence == sample_dossier.confidence
+        assert sequences[0].variants, "expected at least one variant"
+
+    def test_outreach_only_skips_prospects_without_dossier(self, orchestrator, sample_prospect):
+        sequences = orchestrator.outreach_only(
+            [sample_prospect], {}, "TestProduct", "We help X", [], ""
+        )
+        assert sequences == []
 
     def test_qualify_only(self, orchestrator, sample_prospect):
         score = orchestrator.qualify_only(sample_prospect, "TestProduct", "We help X", "")
@@ -347,6 +413,224 @@ class TestOrchestrator:
         # Patch the outreach stage to skip since no prospects
         result = orchestrator.run(request, job_id="test-job-003")
         assert result.summary != ""
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dossier rendering (agents._render_dossier_for_prompt)
+# ---------------------------------------------------------------------------
+
+
+class TestDossierRendering:
+    def test_renders_full_dossier(self, sample_dossier):
+        from sales_team.agents import _render_dossier_for_prompt
+
+        block = _render_dossier_for_prompt(sample_dossier)
+        assert "Prospect Dossier" in block
+        assert f"confidence: {sample_dossier.confidence:.2f}" in block
+        assert sample_dossier.full_name in block
+        assert sample_dossier.executive_summary in block
+        # All trigger events rendered
+        for ev in sample_dossier.trigger_events:
+            assert ev in block
+        # Sources section present so the model knows which URLs it may cite
+        assert "Sources" in block
+        for url in sample_dossier.sources:
+            assert url in block
+
+    def test_omits_empty_sections(self, low_confidence_dossier):
+        from sales_team.agents import _render_dossier_for_prompt
+
+        block = _render_dossier_for_prompt(low_confidence_dossier)
+        # Identity + confidence still appear
+        assert "Identity" in block
+        assert "confidence: 0.35" in block
+        # But none of the empty-list sections
+        assert "Trigger Events" not in block
+        assert "Publications" not in block
+        assert "Conversation Hooks" not in block
+        assert "Sources" not in block
+
+    def test_truncates_long_lists(self, sample_prospect):
+        from sales_team.agents import _DOSSIER_LIST_TOP_K, _render_dossier_for_prompt
+        from sales_team.models import ProspectDossier
+
+        big = ProspectDossier(
+            prospect_id=sample_prospect.id,
+            full_name="Jane",
+            current_title="VP",
+            current_company="Acme",
+            trigger_events=[f"trigger_{i}" for i in range(20)],
+            confidence=0.9,
+        )
+        block = _render_dossier_for_prompt(big)
+        # Only the first _DOSSIER_LIST_TOP_K triggers appear
+        for i in range(_DOSSIER_LIST_TOP_K):
+            assert f"trigger_{i}" in block
+        assert f"trigger_{_DOSSIER_LIST_TOP_K}" not in block
+
+
+# ---------------------------------------------------------------------------
+# Outreach parser + confidence gate + citation verifier
+# ---------------------------------------------------------------------------
+
+
+class TestOutreachParser:
+    def test_high_confidence_keeps_grounded_variant(self, sample_prospect, sample_dossier):
+        from sales_team.orchestrator import _outreach_from_json
+
+        raw = json.dumps(
+            {
+                "variants": [
+                    {
+                        "angle": "trigger_event",
+                        "email_sequence": [
+                            {
+                                "day": 1,
+                                "subject_line": "Quick note on Acme's Series B",
+                                "body": "Congrats on the Series B.",
+                                "personalization_tokens": ["first_name"],
+                                "call_to_action": "Open to 15 min next week?",
+                                "evidence_citations": [
+                                    {
+                                        "claim": "Acme's Series B funding",
+                                        "dossier_field": "trigger_events[0]",
+                                        "source_url": sample_dossier.sources[0],
+                                        "strength": "strong",
+                                    }
+                                ],
+                            }
+                        ],
+                        "call_script": "...",
+                        "linkedin_message": "...",
+                        "rationale": "trigger event is strongest signal",
+                        "personalization_grade": "high",
+                    }
+                ]
+            }
+        )
+        seq = _outreach_from_json(raw, sample_prospect, sample_dossier)
+        assert seq is not None
+        assert len(seq.variants) == 1
+        v = seq.variants[0]
+        assert v.angle == "trigger_event"
+        assert v.personalization_grade == "high"
+        assert v.email_sequence[0].evidence_citations[0].source_url == sample_dossier.sources[0]
+
+    def test_unverified_url_is_stripped_and_grade_downgraded(self, sample_prospect, sample_dossier):
+        from sales_team.orchestrator import _outreach_from_json
+
+        raw = json.dumps(
+            {
+                "variants": [
+                    {
+                        "angle": "trigger_event",
+                        "email_sequence": [
+                            {
+                                "day": 1,
+                                "subject_line": "Series B",
+                                "body": "Congrats!",
+                                "evidence_citations": [
+                                    {
+                                        "claim": "made up",
+                                        "dossier_field": "trigger_events[0]",
+                                        "source_url": "https://evil.example.com/fake",
+                                        "strength": "strong",
+                                    },
+                                    {
+                                        "claim": "real",
+                                        "dossier_field": "trigger_events[0]",
+                                        "source_url": sample_dossier.sources[0],
+                                        "strength": "strong",
+                                    },
+                                ],
+                            }
+                        ],
+                        "personalization_grade": "high",
+                    }
+                ]
+            }
+        )
+        seq = _outreach_from_json(raw, sample_prospect, sample_dossier)
+        assert seq is not None
+        v = seq.variants[0]
+        # Unverified URL stripped, verified one kept
+        urls = [c.source_url for c in v.email_sequence[0].evidence_citations]
+        assert "https://evil.example.com/fake" not in urls
+        assert sample_dossier.sources[0] in urls
+        # Grade downgraded because a citation was stripped
+        assert v.personalization_grade == "low"
+
+    def test_non_fallback_with_no_citations_forced_to_fallback(
+        self, sample_prospect, sample_dossier
+    ):
+        from sales_team.orchestrator import _outreach_from_json
+
+        raw = json.dumps(
+            {
+                "variants": [
+                    {
+                        "angle": "trigger_event",
+                        "email_sequence": [
+                            {
+                                "day": 1,
+                                "subject_line": "No citations",
+                                "body": "This pretends to be personalized but isn't.",
+                                "evidence_citations": [],
+                            }
+                        ],
+                        "personalization_grade": "high",
+                    }
+                ]
+            }
+        )
+        seq = _outreach_from_json(raw, sample_prospect, sample_dossier)
+        assert seq is not None
+        assert seq.variants[0].personalization_grade == "fallback"
+
+    def test_low_confidence_collapses_to_company_soft_opener(
+        self, sample_prospect, low_confidence_dossier
+    ):
+        from sales_team.orchestrator import _outreach_from_json
+
+        raw = json.dumps(
+            {
+                "variants": [
+                    {
+                        "angle": "trigger_event",
+                        "email_sequence": [
+                            {
+                                "day": 1,
+                                "subject_line": "Should be overridden",
+                                "body": "Personal claims the dossier doesn't support.",
+                                "evidence_citations": [],
+                            }
+                        ],
+                        "personalization_grade": "high",
+                    },
+                    {
+                        "angle": "thought_leadership",
+                        "email_sequence": [],
+                        "personalization_grade": "medium",
+                    },
+                ]
+            }
+        )
+        seq = _outreach_from_json(raw, sample_prospect, low_confidence_dossier)
+        assert seq is not None
+        # All non-fallback angles dropped; a synthesized fallback remains.
+        assert all(v.angle == "company_soft_opener" for v in seq.variants)
+        assert all(v.personalization_grade == "fallback" for v in seq.variants)
+
+    def test_empty_variants_yields_fallback(self, sample_prospect, sample_dossier):
+        from sales_team.orchestrator import _outreach_from_json
+
+        raw = json.dumps({"variants": []})
+        seq = _outreach_from_json(raw, sample_prospect, sample_dossier)
+        assert seq is not None
+        assert len(seq.variants) == 1
+        assert seq.variants[0].angle == "company_soft_opener"
+        assert seq.variants[0].personalization_grade == "fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +1058,6 @@ class TestOutcomeAPI:
 from sales_team.models import (  # noqa: E402
     DeepResearchRequest,
     DeepResearchResult,
-    ProspectDossier,
 )
 from sales_team.orchestrator import _enforce_cap_and_rank  # noqa: E402
 

@@ -63,20 +63,45 @@ export interface Prospect {
 // Outreach
 // -------------------------------------------------------------------------
 
+export type OutreachAngle =
+  | 'trigger_event'
+  | 'thought_leadership'
+  | 'mutual_connection'
+  | 'peer_proof'
+  | 'company_soft_opener';
+
+export type PersonalizationGrade = 'high' | 'medium' | 'low' | 'fallback';
+
+export interface EvidenceCitation {
+  claim: string;
+  dossier_field: string;
+  source_url: string | null;
+  strength: 'weak' | 'medium' | 'strong';
+}
+
 export interface EmailTouch {
   day: number;
   subject_line: string;
   body: string;
   personalization_tokens: string[];
   call_to_action: string;
+  evidence_citations: EvidenceCitation[];
+}
+
+export interface OutreachVariant {
+  angle: OutreachAngle;
+  email_sequence: EmailTouch[];
+  call_script: string;
+  linkedin_message: string;
+  rationale: string;
+  personalization_grade: PersonalizationGrade;
 }
 
 export interface OutreachSequence {
   prospect: Prospect;
-  email_sequence: EmailTouch[];
-  call_script: string;
-  linkedin_message: string;
-  sequence_rationale: string;
+  dossier_id: string;
+  dossier_confidence: number;
+  variants: OutreachVariant[];
 }
 
 // -------------------------------------------------------------------------

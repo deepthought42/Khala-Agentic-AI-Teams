@@ -159,5 +159,3 @@ def outcome_counts() -> dict:
         "deal_outcomes": len(list(deal_dir.glob("*.json"))) if deal_dir.exists() else 0,
         "has_insights": _INSIGHTS_PATH.exists(),
     }
-
-
