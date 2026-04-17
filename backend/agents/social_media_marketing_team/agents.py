@@ -361,7 +361,6 @@ class ContentConceptAgent:
                     brand_fit_score += 0.05
                 if "behind-the-scenes" in topic.lower():
                     brand_fit_score += 0.03
-                # Storytelling role gives extra brand-fit credit for narrative archetypes
                 if self.role == "Brand Storytelling Lead" and "story" in archetype_name.lower():
                     brand_fit_score += 0.04
 
@@ -373,7 +372,6 @@ class ContentConceptAgent:
                     audience_resonance_score += 0.05
                 if "story" in archetype_name.lower():
                     audience_resonance_score += 0.03
-                # Creative testing role gives extra resonance for data-driven formats
                 if self.role == "Creative Testing Lead" and archetype_name in (
                     "Data snapshot",
                     "Contrarian take",

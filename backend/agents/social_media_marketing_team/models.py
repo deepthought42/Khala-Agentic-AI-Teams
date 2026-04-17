@@ -129,3 +129,4 @@ class TeamOutput(BaseModel):
     llm_model_name: str = ""
     experiment_plan: Optional[ExperimentPlan] = None
     ingested_performance: List[PostPerformanceObservation] = Field(default_factory=list)
+    winners_retrieved: int = 0
