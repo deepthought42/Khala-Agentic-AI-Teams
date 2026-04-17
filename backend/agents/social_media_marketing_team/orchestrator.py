@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+import logging
+from typing import Any, Dict, List
 
 from .agents import (
     CampaignCollaborationAgent,
@@ -22,6 +23,8 @@ from .models import (
     Platform,
     TeamOutput,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SocialMediaMarketingOrchestrator:
@@ -188,17 +191,38 @@ class SocialMediaMarketingOrchestrator:
                 filtered.append(idea)
         return filtered
 
+    @staticmethod
+    def _load_winners(
+        brand_id: str, proposal: CampaignProposal, goals: BrandGoals
+    ) -> list[dict[str, Any]]:
+        if not brand_id:
+            return []
+        try:
+            from .shared.winning_posts_bank import find_relevant_winners
+
+            query_kw = (proposal.messaging_pillars or []) + (goals.goals or [])
+            return find_relevant_winners(
+                brand_id=brand_id,
+                query_keywords=query_kw,
+                limit=10,
+                concept_opportunity=proposal.objective,
+            )
+        except Exception:
+            logger.warning("Winner retrieval failed (non-fatal)", exc_info=True)
+            return []
+
     def _plan_content(
         self,
         proposal: CampaignProposal,
         goals: BrandGoals,
         performance: CampaignPerformanceSnapshot | None = None,
+        winners: list[dict[str, Any]] | None = None,
     ) -> ContentPlan:
         required_posts = goals.cadence_posts_per_day * goals.duration_days
 
         candidates: List[ConceptIdea] = []
         for agent in self.concept_team:
-            candidates.extend(agent.generate_candidates(proposal, goals))
+            candidates.extend(agent.generate_candidates(proposal, goals, winners=winners))
 
         candidates = self._goal_traceability_filter(candidates, goals)
         candidates = self._calibrate_probabilities(candidates, performance)
@@ -249,6 +273,7 @@ class SocialMediaMarketingOrchestrator:
         goals: BrandGoals,
         human_review: HumanReview,
         performance: CampaignPerformanceSnapshot | None = None,
+        brand_id: str = "",
     ) -> TeamOutput:
         proposal = self._reach_consensus(self._build_initial_proposal(goals))
 
@@ -260,7 +285,8 @@ class SocialMediaMarketingOrchestrator:
                 llm_model_name=self.llm_model_name,
             )
 
-        content_plan = self._plan_content(proposal, goals, performance)
+        winners = self._load_winners(brand_id, proposal, goals)
+        content_plan = self._plan_content(proposal, goals, performance, winners=winners)
         platform_plans = [
             specialist.create_execution_plan(
                 goals, proposal.campaign_name, len(content_plan.approved_ideas)
@@ -281,4 +307,5 @@ class SocialMediaMarketingOrchestrator:
             llm_model_name=self.llm_model_name,
             experiment_plan=experiment_plan,
             ingested_performance=(performance.observations if performance else []),
+            winners_retrieved=len(winners),
         )

@@ -52,7 +52,7 @@ def test_plan_content_handles_no_initially_approved_ideas() -> None:
     goals = _goals()
 
     class LowConfidenceAgent(ContentConceptAgent):
-        def generate_candidates(self, proposal: CampaignProposal, goals: BrandGoals):
+        def generate_candidates(self, proposal: CampaignProposal, goals: BrandGoals, **kwargs):
             return [
                 ConceptIdea(
                     title="Low confidence",

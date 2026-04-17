@@ -24,6 +24,7 @@ from job_service_client import (
     validate_job_for_action,
 )
 from shared_observability import init_otel, instrument_fastapi_app
+from shared_postgres import close_pool, is_postgres_enabled, register_team_schemas
 from social_media_marketing_team.adapters.branding import (
     BrandContext,
     BrandIncompleteError,
@@ -59,9 +60,19 @@ from .trend_scheduler import get_latest_digest, run_trend_job, start_scheduler, 
 
 @asynccontextmanager
 async def _lifespan(_application: FastAPI) -> AsyncIterator[None]:
+    try:
+        from social_media_marketing_team.postgres import SCHEMA
+
+        register_team_schemas(SCHEMA)
+    except Exception:
+        logger.exception("social_media_marketing postgres schema registration failed")
     start_scheduler()
     yield
     stop_scheduler()
+    try:
+        close_pool()
+    except Exception:
+        pass
 
 
 init_otel(service_name="social-media-marketing-team", team_key="social_marketing")
@@ -139,6 +150,7 @@ def _run_team_job(job_id: str, request: RunMarketingTeamRequest, brand_ctx: Bran
                 feedback=request.human_feedback,
             ),
             performance=performance,
+            brand_id=request.brand_id,
         )
 
         _update_job(
@@ -183,6 +195,91 @@ def _dispatch_job(job_id: str, request: RunMarketingTeamRequest, brand_ctx: Bran
 # ---------------------------------------------------------------------------
 # Routes — campaign jobs
 # ---------------------------------------------------------------------------
+
+
+def _extract_brand_id(job: dict) -> str:
+    payload = job.get("request_payload")
+    if isinstance(payload, dict):
+        return payload.get("brand_id", "")
+    return ""
+
+
+def _extract_campaign_name(job: dict) -> str | None:
+    result = job.get("result")
+    if isinstance(result, dict):
+        proposal = result.get("proposal")
+        if isinstance(proposal, dict):
+            return proposal.get("campaign_name")
+    return None
+
+
+def _find_concept_meta(result: dict, concept_title: str) -> dict:
+    """Walk the job result to find metadata for a concept by title."""
+    content_plan = result.get("content_plan")
+    if not isinstance(content_plan, dict):
+        return {}
+    for idea in content_plan.get("approved_ideas", []):
+        if not isinstance(idea, dict):
+            continue
+        if idea.get("title") == concept_title:
+            title = idea.get("title", "")
+            archetype = ""
+            if " \u2013 " in title:
+                archetype = title.split(" \u2013 ", 1)[1]
+            elif " - " in title:
+                archetype = title.split(" - ", 1)[1]
+            return {
+                "archetype": archetype,
+                "concept": idea.get("concept", ""),
+                "content_format": idea.get("content_format", ""),
+                "cta_variant": idea.get("cta_variant", ""),
+                "keywords": (idea.get("linked_goals") or []),
+            }
+    return {}
+
+
+def _persist_observations_to_bank(job: dict, job_id: str, observations: list) -> int:
+    """Persist post observations to the winning posts bank. Returns count persisted."""
+    if not is_postgres_enabled():
+        return 0
+
+    from social_media_marketing_team.shared.winning_posts_bank import save_post
+
+    brand_id = _extract_brand_id(job)
+    if not brand_id:
+        return 0
+
+    result = job.get("result") or {}
+    persisted = 0
+    for obs in observations:
+        obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else obs
+        concept_title = obs_dict.get("concept_title", "")
+        concept_meta = _find_concept_meta(result, concept_title)
+        metrics = (
+            {m["name"]: m["value"] for m in obs_dict.get("metrics", [])}
+            if isinstance(obs_dict.get("metrics"), list)
+            else {}
+        )
+        try:
+            save_post(
+                brand_id=brand_id,
+                campaign_name=obs_dict.get("campaign_name", ""),
+                platform=obs_dict.get("platform", ""),
+                archetype=concept_meta.get("archetype", ""),
+                concept_title=concept_title,
+                concept_text=concept_meta.get("concept", ""),
+                post_copy="",
+                content_format=concept_meta.get("content_format", ""),
+                cta_variant=concept_meta.get("cta_variant", ""),
+                keywords=concept_meta.get("keywords", []),
+                engagement_metrics=metrics,
+                posted_at=obs_dict.get("posted_at"),
+                source_job_id=job_id,
+            )
+            persisted += 1
+        except Exception:
+            logger.warning("Failed to persist observation to winning posts bank", exc_info=True)
+    return persisted
 
 
 def _build_brand_summary(brand_ctx: BrandContext) -> str:
@@ -313,18 +410,15 @@ def ingest_performance(job_id: str, payload: PerformanceIngestRequest) -> Perfor
     observations.extend([obs.model_dump() for obs in payload.observations])
     _job_manager.update_job(job_id, performance_observations=observations, last_updated_at=_now())
 
-    campaign_name = None
-    result = job.get("result")
-    if isinstance(result, dict):
-        proposal = result.get("proposal")
-        if isinstance(proposal, dict):
-            campaign_name = proposal.get("campaign_name")
+    persisted_count = _persist_observations_to_bank(job, job_id, payload.observations)
+
+    campaign_name = _extract_campaign_name(job)
 
     return PerformanceIngestResponse(
         job_id=job_id,
         campaign_name=campaign_name,
         observations_ingested=len(payload.observations),
-        message="Performance observations stored.",
+        message=f"Performance observations stored. {persisted_count} persisted to bank.",
     )
 
 
@@ -454,40 +548,56 @@ def delete_marketing_job(job_id: str) -> DeleteMarketingJobResponse:
 def resume_marketing_job(job_id: str) -> RunMarketingTeamResponse:
     """Resume an interrupted marketing job by re-dispatching with stored inputs."""
     try:
-        job = validate_job_for_action(_job_manager.get_job(job_id), job_id, RESUMABLE_STATUSES, "resumed")
+        job = validate_job_for_action(
+            _job_manager.get_job(job_id), job_id, RESUMABLE_STATUSES, "resumed"
+        )
     except ValueError as exc:
         code = 404 if "not found" in str(exc) else 400
         raise HTTPException(status_code=code, detail=str(exc)) from exc
 
     payload = job.get("request_payload")
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Original request payload not available for resume.")
+        raise HTTPException(
+            status_code=400, detail="Original request payload not available for resume."
+        )
 
     request = RunMarketingTeamRequest(**payload)
     _job_manager.update_job(job_id, status=JOB_STATUS_RUNNING, error=None, current_stage="resuming")
     dispatch_msg = _dispatch_job(job_id, request)
-    return RunMarketingTeamResponse(job_id=job_id, status="running", message=f"Job resumed. {dispatch_msg}")
+    return RunMarketingTeamResponse(
+        job_id=job_id, status="running", message=f"Job resumed. {dispatch_msg}"
+    )
 
 
 @app.post("/social-marketing/job/{job_id}/restart", response_model=RunMarketingTeamResponse)
 def restart_marketing_job(job_id: str) -> RunMarketingTeamResponse:
     """Restart a marketing job from scratch with the same inputs."""
     try:
-        job = validate_job_for_action(_job_manager.get_job(job_id), job_id, RESTARTABLE_STATUSES, "restarted")
+        job = validate_job_for_action(
+            _job_manager.get_job(job_id), job_id, RESTARTABLE_STATUSES, "restarted"
+        )
     except ValueError as exc:
         code = 404 if "not found" in str(exc) else 400
         raise HTTPException(status_code=code, detail=str(exc)) from exc
 
     payload = job.get("request_payload")
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Original request payload not available for restart.")
+        raise HTTPException(
+            status_code=400, detail="Original request payload not available for restart."
+        )
 
     request = RunMarketingTeamRequest(**payload)
     _job_manager.update_job(
-        job_id, status=JOB_STATUS_PENDING, error=None, progress=0, current_stage="restart_queued",
+        job_id,
+        status=JOB_STATUS_PENDING,
+        error=None,
+        progress=0,
+        current_stage="restart_queued",
     )
     dispatch_msg = _dispatch_job(job_id, request)
-    return RunMarketingTeamResponse(job_id=job_id, status="running", message=f"Job restarted. {dispatch_msg}")
+    return RunMarketingTeamResponse(
+        job_id=job_id, status="running", message=f"Job restarted. {dispatch_msg}"
+    )
 
 
 # ---------------------------------------------------------------------------

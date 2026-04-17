@@ -67,6 +67,7 @@ class ConceptIdea(BaseModel):
     estimated_engagement_probability: float = Field(ge=0, le=1)
     risk_level: str = "low"
     risk_reasons: List[str] = Field(default_factory=list)
+    exemplar_source_ids: List[str] = Field(default_factory=list)
 
 
 class ContentPlan(BaseModel):
@@ -125,3 +126,4 @@ class TeamOutput(BaseModel):
     llm_model_name: str = ""
     experiment_plan: Optional[ExperimentPlan] = None
     ingested_performance: List[PostPerformanceObservation] = Field(default_factory=list)
+    winners_retrieved: int = 0
