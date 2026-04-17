@@ -155,7 +155,7 @@ async def proxy_request(
                 error_payload = json.dumps(
                     {"error": "upstream disconnected", "detail": type(exc).__name__}
                 )
-                yield f"event: error\ndata: {error_payload}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {error_payload}\n\n".encode()
                 yield b"event: done\ndata: {}\n\n"
             finally:
                 await resp.aclose()
