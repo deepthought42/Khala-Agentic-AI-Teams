@@ -266,11 +266,13 @@ _CREATIVE_TESTING_ARCHETYPES = [
 ]
 
 
-def _format_exemplar_prefix(exemplars: Optional[List[Dict[str, Any]]]) -> str:
-    """Format Winning Posts Bank exemplars for injection into a concept.
+def _format_exemplar_context(exemplars: Optional[List[Dict[str, Any]]]) -> str:
+    """Format Winning Posts Bank exemplars for the ``prior_winners_context`` field.
 
-    Returns an empty string when no exemplars are supplied so existing
-    concept strings are byte-identical to pre-feature output.
+    Returns an empty string when no exemplars are supplied. Output is
+    stored on its own ``ConceptIdea`` field — never concatenated into
+    ``concept`` — so risk and routing scanners cannot misread terms in
+    exemplar text as belonging to the new concept.
     """
     if not exemplars:
         return ""
@@ -283,7 +285,7 @@ def _format_exemplar_prefix(exemplars: Optional[List[Dict[str, Any]]]) -> str:
         blocks.append(
             f"[Winning post on {platform} — engagement {score:.2f}]\n{title}\n{body}".rstrip()
         )
-    return "Prior winners (reference, do not copy):\n" + "\n\n".join(blocks) + "\n\n"
+    return "Prior winners (reference, do not copy):\n" + "\n\n".join(blocks)
 
 
 @dataclass
@@ -314,10 +316,10 @@ class ContentConceptAgent:
         """Generate a diverse, platform-aware set of candidate concepts.
 
         When *exemplars* are provided (from the Winning Posts Bank),
-        a prefix block listing past winners is prepended to each
-        generated ``concept`` string so downstream writers see
-        reference material without it leaking into scoring or
-        routing fields.
+        the formatted reference block is stored on the
+        ``prior_winners_context`` field. Crucially, it is NOT mixed
+        into ``concept`` so downstream scanners (risk/compliance,
+        routing) only see the agent's own copy.
         """
         base_topics = proposal.messaging_pillars or [
             "Educational insight",
@@ -327,7 +329,7 @@ class ContentConceptAgent:
         linked_goals = goals.goals or ["engagement"]
         archetypes = self._archetypes()
 
-        exemplar_prefix = _format_exemplar_prefix(exemplars)
+        exemplar_context = _format_exemplar_context(exemplars)
 
         ideas: List[ConceptIdea] = []
         idx = 0
@@ -391,7 +393,6 @@ class ContentConceptAgent:
                     ConceptIdea(
                         title=f"{topic} – {archetype_name}",
                         concept=(
-                            f"{exemplar_prefix}"
                             f"{archetype_prompt} {topic.lower()} for {goals.target_audience}. "
                             f"Close with a CTA tied to {goal} and the campaign objective: {proposal.objective}."
                         ),
@@ -405,6 +406,7 @@ class ContentConceptAgent:
                         audience_resonance_score=min(1.0, audience_resonance_score),
                         goal_alignment_score=min(1.0, goal_alignment_score),
                         estimated_engagement_probability=min(1.0, estimated_engagement_probability),
+                        prior_winners_context=exemplar_context,
                     )
                 )
         return ideas

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from social_media_marketing_team.agents import (
     ContentConceptAgent,
-    _format_exemplar_prefix,
+    RiskComplianceAgent,
+    _format_exemplar_context,
 )
 from social_media_marketing_team.models import CampaignProposal, Platform
 from social_media_marketing_team.tests.conftest import make_goals
@@ -20,13 +21,13 @@ def _proposal() -> CampaignProposal:
     )
 
 
-def test_format_prefix_empty_returns_empty_string():
-    assert _format_exemplar_prefix(None) == ""
-    assert _format_exemplar_prefix([]) == ""
+def test_format_context_empty_returns_empty_string():
+    assert _format_exemplar_context(None) == ""
+    assert _format_exemplar_context([]) == ""
 
 
-def test_format_prefix_renders_blocks():
-    prefix = _format_exemplar_prefix(
+def test_format_context_renders_blocks():
+    ctx = _format_exemplar_context(
         [
             {
                 "platform": "linkedin",
@@ -36,13 +37,12 @@ def test_format_prefix_renders_blocks():
             }
         ]
     )
-    assert "Prior winners (reference, do not copy):" in prefix
-    assert "[Winning post on linkedin — engagement 0.84]" in prefix
-    assert "Why seed rounds fail" in prefix
-    assert prefix.endswith("\n\n")
+    assert "Prior winners (reference, do not copy):" in ctx
+    assert "[Winning post on linkedin — engagement 0.84]" in ctx
+    assert "Why seed rounds fail" in ctx
 
 
-def test_generate_candidates_injects_exemplars_into_concept():
+def test_generate_candidates_writes_exemplars_to_separate_field():
     agent = ContentConceptAgent("Brand Storytelling Lead")
     goals = make_goals()
     proposal = _proposal()
@@ -58,13 +58,17 @@ def test_generate_candidates_injects_exemplars_into_concept():
     ideas = agent.generate_candidates(proposal, goals, exemplars=exemplars)
     assert ideas, "Expected at least one generated idea"
     for idea in ideas:
-        assert "[Winning post on linkedin — engagement 0.91]" in idea.concept
-        assert "Our $100k pricing mistake" in idea.concept
-        assert idea.concept.startswith("Prior winners (reference, do not copy):")
+        # Exemplar text lives on its own field …
+        assert "[Winning post on linkedin — engagement 0.91]" in idea.prior_winners_context
+        assert "Our $100k pricing mistake" in idea.prior_winners_context
+        # … and never leaks into the concept the agent actually wrote.
+        assert "[Winning post on" not in idea.concept
+        assert "Prior winners" not in idea.concept
+        assert "Our $100k pricing mistake" not in idea.concept
 
 
-def test_generate_candidates_without_exemplars_matches_legacy_output():
-    """Regression guard: exemplars=None must leave concept strings unchanged."""
+def test_generate_candidates_without_exemplars_leaves_field_empty():
+    """Regression guard: no exemplars → empty context, concept unchanged."""
     agent = ContentConceptAgent("Brand Storytelling Lead")
     goals = make_goals()
     proposal = _proposal()
@@ -72,7 +76,8 @@ def test_generate_candidates_without_exemplars_matches_legacy_output():
     ideas_none = agent.generate_candidates(proposal, goals)
     ideas_empty = agent.generate_candidates(proposal, goals, exemplars=[])
 
-    for idea in ideas_none:
+    for idea in ideas_none + ideas_empty:
+        assert idea.prior_winners_context == ""
         assert "[Winning post on" not in idea.concept
         assert "Prior winners" not in idea.concept
 
@@ -93,6 +98,38 @@ def test_generate_candidates_preserves_scoring_with_exemplars():
 
     assert len(without) == len(with_ex)
     for a, b in zip(without, with_ex):
+        assert a.concept == b.concept  # exemplar must not change the agent's own copy
         assert a.brand_fit_score == b.brand_fit_score
         assert a.audience_resonance_score == b.audience_resonance_score
         assert a.goal_alignment_score == b.goal_alignment_score
+
+
+def test_risk_scorer_ignores_banned_terms_inside_exemplar():
+    """Critical: a winning post containing 'guarantee'/'overnight' must NOT
+    cause clean new concepts to be flagged high-risk."""
+    agent = ContentConceptAgent("Brand Storytelling Lead")
+    goals = make_goals()
+    proposal = _proposal()
+
+    poisoned_exemplars = [
+        {
+            "platform": "linkedin",
+            "engagement_score": 0.95,
+            "title": "We guarantee overnight results",
+            "body": "No risk, instant ROI for every customer.",
+        }
+    ]
+
+    ideas = agent.generate_candidates(proposal, goals, exemplars=poisoned_exemplars)
+    reviewer = RiskComplianceAgent()
+    reviewed = [reviewer.review_concept(i, goals) for i in ideas]
+
+    assert reviewed, "Expected at least one reviewed idea"
+    for idea in reviewed:
+        # The exemplar carries banned terms, but the new concept is clean.
+        assert idea.risk_level == "low", (
+            f"Exemplar text leaked into risk scoring: "
+            f"risk_level={idea.risk_level}, reasons={idea.risk_reasons}, "
+            f"concept={idea.concept!r}"
+        )
+        assert not any("risky claim" in r for r in idea.risk_reasons)
