@@ -384,6 +384,202 @@ class ProspectorAgent:
         )
         return _call_agent(self._agent, prompt)
 
+    def prospect_companies(
+        self,
+        icp_json: str,
+        product_name: str,
+        value_proposition: str,
+        max_companies: int,
+        company_context: str,
+        insights_context: Optional[str] = None,
+    ) -> str:
+        """Return a ranked JSON array of *companies* (not individual contacts).
+
+        Used by the deep-research pipeline as the first stage: we first build
+        the account list, then map decision-makers into each account, then
+        build dossiers per decision-maker.
+
+        Each returned object should include:
+        company_name, website, industry, company_size_estimate, icp_match_score,
+        research_notes, trigger_events. contact_* fields should be left null.
+        """
+        prompt = _with_insights(
+            f"You are building an ACCOUNT list for: {product_name}\n"
+            f"Value proposition: {value_proposition}\n"
+            f"Company context: {company_context}\n\n"
+            f"Ideal Customer Profile:\n{icp_json}\n\n"
+            f"Research and return up to {max_companies} distinct COMPANIES that match this ICP. "
+            "Do NOT return individual contacts in this step — only company-level data. "
+            "For each company include: company_name, website, industry, company_size_estimate, "
+            "icp_match_score (0.0–1.0), research_notes (why this company is a fit and any recent "
+            "trigger events), trigger_events (array of concrete events). Leave contact_name, "
+            "contact_title, contact_email, linkedin_url as null in this step. "
+            "Prefer companies with recent public trigger events (funding, leadership change, "
+            "hiring spree, product launch, vendor switch). "
+            "Return a JSON array of company objects — no commentary.",
+            insights_context,
+        )
+        return _call_agent(self._agent, prompt)
+
+
+# ---------------------------------------------------------------------------
+# Decision-maker mapping agent — converts companies → named decision-makers
+# ---------------------------------------------------------------------------
+
+
+_DECISION_MAKER_MAPPER_SYSTEM_PROMPT = """You are a B2B account research specialist focused on \
+identifying the specific human decision-makers inside a target company for a given product.
+
+## Your Methodology
+
+You look for the Economic Buyer and adjacent influencers by combining publicly available signals:
+- LinkedIn: current title, reporting lines, tenure in role, previous decision-making roles.
+- Company "About" / "Leadership" pages and press releases: officer titles and committee structures.
+- Vendor case studies and G2/Capterra reviews: who is quoted or named as the buyer of record.
+- Job postings: a hiring manager's title on a relevant req is a strong ownership signal.
+- Podcasts / conference talks / bylines: people who publicly own a problem area usually own the budget.
+
+You apply MEDDIC's "Economic Buyer" lens: the person who writes the check, plus the 1–2 people
+most likely to champion or block the purchase inside that account.
+
+## Hard rules
+- Return 1 to `max_contacts` decision-makers per company. Never more.
+- NEVER fabricate names, titles, or LinkedIn URLs. If you cannot identify a real person with
+  reasonable public evidence, return an empty array instead of guessing.
+- Never fabricate email addresses. Always return contact_email as null.
+- Favor quality over quantity: one well-evidenced decision-maker is better than three guesses.
+
+## Output Format
+Return a JSON array of objects. Each object must include:
+- contact_name (string, full name)
+- contact_title (string, exact current title)
+- linkedin_url (string or null)
+- contact_email (always null)
+- decision_maker_rationale (1–2 sentence explanation grounded in a specific public signal)
+- confidence (0.0–1.0 — lower if you had to triangulate from weak signals)
+
+Return only the JSON array, no prose.
+"""
+
+
+@dataclass
+class DecisionMakerMapperAgent:
+    """Given a company + ICP, returns named decision-makers at that company.
+
+    Used by the deep-research pipeline after the company shortlist is built.
+    """
+
+    role: str = "Account Researcher (Decision-Maker Mapper)"
+    _agent: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._agent = _build_strands_agent(_DECISION_MAKER_MAPPER_SYSTEM_PROMPT, _DEFAULT_TOOLS)
+
+    def map_contacts(
+        self,
+        company_json: str,
+        icp_json: str,
+        product_name: str,
+        value_proposition: str,
+        max_contacts: int = 2,
+        insights_context: Optional[str] = None,
+    ) -> str:
+        prompt = _with_insights(
+            f"Product: {product_name}\n"
+            f"Value proposition: {value_proposition}\n\n"
+            f"Target company (account-level research already done):\n{company_json}\n\n"
+            f"Ideal Customer Profile:\n{icp_json}\n\n"
+            f"Identify up to {max_contacts} real decision-makers at this company who are likely "
+            "to own the purchasing decision for this product. Use public signals only — titles, "
+            "LinkedIn, press releases, vendor case studies, job postings, conference talks. "
+            "Return a JSON array. If no decision-maker can be confidently identified, "
+            "return an empty array [].",
+            insights_context,
+        )
+        return _call_agent(self._agent, prompt)
+
+
+# ---------------------------------------------------------------------------
+# Dossier builder agent — full per-prospect research profile
+# ---------------------------------------------------------------------------
+
+
+_DOSSIER_BUILDER_SYSTEM_PROMPT = """You are a principal-level B2B sales research analyst. Your job \
+is to build a deep, factually grounded dossier on a single named prospect to prepare a sales rep \
+for a first conversation.
+
+## What a great dossier contains
+- Accurate identity (full name, current title, current company, location).
+- Public profiles (LinkedIn, personal site, and any other relevant social).
+- 3–5 sentence executive summary: who they are, what they care about, why they matter for this sale.
+- Career history drawn from LinkedIn and press releases — the arc, not just a list of jobs.
+- Education, if public.
+- Thought-leadership footprint: articles, papers, conference talks, podcast appearances, OSS, patents,
+  interviews. Capture title, venue, date, URL, and a one-line summary.
+- Topics of interest and publicly stated beliefs (quotes they've actually said — cite the source).
+- Decision-maker signals: concrete public evidence that they have budget or buying authority.
+- Recent activity: posts, job moves, speaking engagements, or company events in the last ~12 months.
+- Conversation hooks: 3–7 specific angles that tie the product to this person (never generic).
+- Mutual connection angles: shared past employers, schools, communities, co-authors.
+- Personalization tokens: ready-to-merge fields for outreach (first_name, hook, etc.).
+
+## Research sources to consult (use http_request and fetch real pages)
+LinkedIn profile, company About/Leadership page, Google Scholar, GitHub, personal blog/Substack/Medium,
+Twitter/X, YouTube (for talks), podcast directories, Crunchbase bio, Wikipedia if applicable,
+press releases that mention them by name.
+
+## Hard rules
+- NEVER fabricate facts, URLs, quotes, or sources. If you cannot verify something, leave it empty.
+- Every URL you include must be one you actually retrieved in this session.
+- Put every URL you consulted into `sources` — this is the provenance trail.
+- If fewer than 3 independent sources corroborate identity, set `confidence` ≤ 0.5.
+- contact_email should stay null unless it appears on the prospect's own public site.
+- Keep `executive_summary` to 3–5 sentences. Keep `conversation_hooks` specific and concrete.
+
+## Output Format
+Return a single JSON object matching the ProspectDossier schema. Keys:
+prospect_id, full_name, current_title, current_company, location, linkedin_url, personal_site,
+other_social (array), executive_summary, career_history (array of {company, title, start, end, summary}),
+education (array), publications (array of {kind, title, url, venue, date, summary}),
+topics_of_interest (array), stated_beliefs (array), decision_maker_signals (array of
+{signal, evidence_url, strength}), recent_activity (array), trigger_events (array),
+conversation_hooks (array), mutual_connection_angles (array), personalization_tokens (object),
+sources (array of URLs), confidence (0.0–1.0), notes.
+
+Return only the JSON object, no prose, no markdown fences.
+"""
+
+
+@dataclass
+class DossierBuilderAgent:
+    """Given one named prospect, builds a full :class:`ProspectDossier` via web research."""
+
+    role: str = "Sales Research Analyst (Dossier Builder)"
+    _agent: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._agent = _build_strands_agent(_DOSSIER_BUILDER_SYSTEM_PROMPT, _DEFAULT_TOOLS)
+
+    def build(
+        self,
+        prospect_json: str,
+        product_name: str,
+        value_proposition: str,
+        insights_context: Optional[str] = None,
+    ) -> str:
+        prompt = _with_insights(
+            f"Build a full dossier for this prospect to prepare for a sales conversation about "
+            f"{product_name}.\n\n"
+            f"Product: {product_name}\n"
+            f"Value proposition: {value_proposition}\n\n"
+            f"Prospect (from earlier prospecting stage — includes prospect_id):\n{prospect_json}\n\n"
+            "Use http_request to fetch real public pages (LinkedIn, personal site, GitHub, "
+            "Substack/Medium, podcasts, talks, press). Cite every URL you consulted in `sources`. "
+            "Never fabricate. Return a single JSON object matching the ProspectDossier schema.",
+            insights_context,
+        )
+        return _call_agent(self._agent, prompt)
+
 
 @dataclass
 class OutreachAgent:
