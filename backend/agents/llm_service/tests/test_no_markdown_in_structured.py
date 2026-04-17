@@ -38,7 +38,7 @@ from pathlib import Path
 # Configuration
 # ---------------------------------------------------------------------------
 
-AGENTS_ROOT = Path(__file__).resolve().parents[3]  # backend/agents/
+AGENTS_ROOT = Path(__file__).resolve().parents[2]  # backend/agents/
 
 TRIGGER_PHRASES = (
     "markdown",
