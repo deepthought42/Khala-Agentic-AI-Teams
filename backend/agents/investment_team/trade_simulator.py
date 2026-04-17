@@ -1,8 +1,15 @@
-"""Shared trade simulation engine used by both BacktestingAgent and PaperTradingAgent.
+"""Legacy trade simulation engine, retained for tests and metric computation.
 
-Consolidates the bar-walking loop, position tracking, slippage/cost simulation,
-force-close logic, metrics computation, and LLM call pre-filtering into a single
-reusable module.
+Historically this module also owned an LLM-per-bar evaluation helper
+(``evaluate_bar`` / ``_EVALUATE_PROMPT``) used by the now-deleted
+``BacktestingAgent``. Trade decisions are no longer LLM-driven — only
+Strategy-Lab-generated Python scripts may emit trades, via the event-driven
+``trading_service`` package. The simulation engine below remains because:
+
+* ``compute_metrics`` is still the canonical P&L/Sharpe/DD estimator used by
+  the new service and by the paper-trading agent;
+* a handful of tests exercise ``TradeSimulationEngine`` directly while the
+  new engine is being built out. PR 3 removes the engine class.
 """
 
 from __future__ import annotations
@@ -14,7 +21,7 @@ from datetime import date as date_cls
 from typing import Any, Callable, Dict, List, Optional
 
 from .market_data_service import OHLCVBar
-from .models import BacktestResult, StrategySpec, TradeRecord
+from .models import BacktestResult, TradeRecord
 
 logger = logging.getLogger(__name__)
 
@@ -54,118 +61,6 @@ EvaluateCallback = Callable[
 
 
 # ---------------------------------------------------------------------------
-# Shared LLM-based bar evaluation prompt and callback builder
-# ---------------------------------------------------------------------------
-
-_EVALUATE_PROMPT = """\
-Evaluate whether the trading strategy's rules are triggered for this market data.
-
-## Strategy
-Asset class: {asset_class}
-Hypothesis: {hypothesis}
-Signal: {signal_definition}
-Entry rules: {entry_rules}
-Exit rules: {exit_rules}
-Sizing rules: {sizing_rules}
-Risk limits: {risk_limits}
-
-## Current Position
-{position_status}
-
-## Available Capital
-${capital:,.2f}
-
-## Current Bar ({symbol}, {current_date})
-Open: {open}  High: {high}  Low: {low}  Close: {close}  Volume: {volume}
-
-## Recent Price History ({symbol}, last {n_bars} bars)
-{recent_bars_text}
-
-## Instructions
-Based on the strategy rules and market data above, decide your action.
-If you have NO open position, evaluate ENTRY rules. If you HAVE an open position, evaluate EXIT rules.
-Be conservative — only enter when signals are clearly met, and respect risk limits.
-
-Return ONLY a JSON object with no markdown:
-{{"action": "enter_long" or "enter_short" or "exit" or "hold", "confidence": 0.0 to 1.0, \
-"shares": number_of_shares_or_0, "reasoning": "brief explanation"}}
-
-For "hold", set shares to 0. For entries, calculate shares based on sizing rules and available capital.
-For exits, set shares to 0 (will close full position).
-"""
-
-
-def evaluate_bar(
-    llm_complete_json: Callable[..., Dict[str, Any]],
-    strategy: StrategySpec,
-    system_prompt: str,
-    symbol: str,
-    current_bar: OHLCVBar,
-    recent_bars: List[OHLCVBar],
-    open_position: Optional[OpenPosition],
-    capital: float,
-) -> Dict[str, Any]:
-    """Shared LLM-based bar evaluation used by both backtesting and paper trading agents.
-
-    Args:
-        llm_complete_json: Bound ``LLMClient.complete_json`` method.
-        strategy: The strategy spec being evaluated.
-        system_prompt: Agent-specific system prompt (backtest vs paper context).
-        symbol: Current symbol being evaluated.
-        current_bar: The OHLCV bar to evaluate.
-        recent_bars: Recent price history for context.
-        open_position: Current open position, if any.
-        capital: Available capital for sizing.
-
-    Returns:
-        Dict with keys: action, confidence, shares, reasoning.
-    """
-    if open_position:
-        pos_status = (
-            f"OPEN {open_position.side.upper()} position in {symbol}: "
-            f"{open_position.shares} shares @ ${open_position.entry_price:.2f} "
-            f"(entered {open_position.entry_date})"
-        )
-    else:
-        pos_status = "No open position — looking for entry signals."
-
-    prompt = _EVALUATE_PROMPT.format(
-        asset_class=strategy.asset_class,
-        hypothesis=strategy.hypothesis,
-        signal_definition=strategy.signal_definition,
-        entry_rules="; ".join(strategy.entry_rules),
-        exit_rules="; ".join(strategy.exit_rules),
-        sizing_rules="; ".join(strategy.sizing_rules),
-        risk_limits=strategy.risk_limits,
-        position_status=pos_status,
-        capital=capital,
-        symbol=symbol,
-        current_date=current_bar.date,
-        open=current_bar.open,
-        high=current_bar.high,
-        low=current_bar.low,
-        close=current_bar.close,
-        volume=current_bar.volume,
-        n_bars=len(recent_bars),
-        recent_bars_text=format_bars_table(recent_bars),
-    )
-
-    data = llm_complete_json(
-        prompt,
-        temperature=0.2,
-        system_prompt=system_prompt,
-        think=True,
-    )
-
-    return {
-        "action": str(data.get("action", "hold")),
-        "confidence": float(data.get("confidence", 0.0)),
-        "shares": float(data.get("shares", 0)),
-        "reasoning": str(data.get("reasoning", "")),
-    }
-
-
-# ---------------------------------------------------------------------------
 # Simulation result
 # ---------------------------------------------------------------------------
 
@@ -196,18 +91,6 @@ def date_diff_days(d1: str, d2: str) -> int:
         return max(1, abs((dt2 - dt1).days))
     except (ValueError, TypeError):
         return 1
-
-
-def format_bars_table(bars: List[OHLCVBar]) -> str:
-    """Format a list of OHLCV bars as a compact text table."""
-    if not bars:
-        return "No data available."
-    lines = ["Date       | Open     | High     | Low      | Close    | Volume"]
-    for b in bars:
-        lines.append(
-            f"{b.date} | {b.open:<8.2f} | {b.high:<8.2f} | {b.low:<8.2f} | {b.close:<8.2f} | {b.volume:.0f}"
-        )
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

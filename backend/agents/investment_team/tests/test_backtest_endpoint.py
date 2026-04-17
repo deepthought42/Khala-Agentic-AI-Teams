@@ -1,15 +1,14 @@
 """Regression tests for ``_run_real_data_backtest``.
 
-The Investment Strategy Lab regressed in the past by evaluating backtests
-with one LLM call per bar via ``BacktestingAgent`` — even for strategies
-that already had a Strategy-Lab-generated Python script attached as
-``strategy.strategy_code``.  These tests lock in the correct behaviour:
+Trade decisions can only come from a Strategy-Lab-generated Python script.
+The prior LLM-per-bar ``BacktestingAgent`` fallback has been removed.
+These tests lock in the current behaviour:
 
 * When ``strategy_code`` is present, the sandbox path
   (``SandboxRunner.run`` + ``build_trade_records`` + ``compute_metrics``)
-  is taken and the LLM-per-bar agent is never instantiated.
-* When ``strategy_code`` is absent, we fall back to the legacy
-  ``BacktestingAgent``.
+  runs and produces trades.
+* When ``strategy_code`` is absent, the endpoint returns HTTP 422; there
+  is no LLM fallback.
 """
 
 from __future__ import annotations
@@ -129,17 +128,6 @@ def test_run_real_data_backtest_uses_sandbox_when_strategy_code_present(monkeypa
 
     monkeypatch.setattr(executor_pkg, "SandboxRunner", _StubSandbox)
 
-    # Guard: if the sandbox path is taken, BacktestingAgent must NEVER be constructed.
-    import investment_team.backtesting_agent as bt_mod
-
-    def _must_not_instantiate(*args, **kwargs):
-        raise AssertionError(
-            "BacktestingAgent was instantiated even though strategy_code is present — "
-            "regression: sandbox execution was bypassed."
-        )
-
-    monkeypatch.setattr(bt_mod, "BacktestingAgent", _must_not_instantiate)
-
     strategy = _sample_strategy(with_code=True)
     config = _sample_config()
 
@@ -158,57 +146,35 @@ def test_run_real_data_backtest_uses_sandbox_when_strategy_code_present(monkeypa
     assert trades[0].side == "long"
 
 
-def test_run_real_data_backtest_falls_back_to_llm_when_no_strategy_code(monkeypatch) -> None:
-    """Legacy strategies without ``strategy_code`` should still go through BacktestingAgent."""
+def test_run_real_data_backtest_returns_422_when_no_strategy_code(monkeypatch) -> None:
+    """Strategies without ``strategy_code`` must return HTTP 422.
+
+    The LLM-per-bar fallback has been removed — only Strategy-Lab-generated
+    Python scripts may produce trades.
+    """
+    from fastapi import HTTPException
+
     from investment_team.api import main as api_main
     from investment_team.strategy_lab.executor import sandbox_runner as sr_mod
 
-    market_data = {"AAA": _sample_bars()}
-    _install_fake_market_service(monkeypatch, market_data)
-
     # Guard: the sandbox must NOT be invoked when there's no generated code.
-    def _must_not_be_called(*args, **kwargs):
-        raise AssertionError("SandboxRunner was called for a strategy with no strategy_code")
-
     class _ForbiddenSandbox:
         def run(self, *a, **kw):
-            _must_not_be_called()
+            raise AssertionError("SandboxRunner was called for a strategy with no strategy_code")
 
     monkeypatch.setattr(sr_mod, "SandboxRunner", _ForbiddenSandbox)
     from investment_team.strategy_lab import executor as executor_pkg
 
     monkeypatch.setattr(executor_pkg, "SandboxRunner", _ForbiddenSandbox)
 
-    # Stub BacktestingAgent to return a fixed (result, trades) pair and record the call.
-    import investment_team.backtesting_agent as bt_mod
-
-    fake_result = BacktestResult(
-        total_return_pct=0.0,
-        annualized_return_pct=0.0,
-        volatility_pct=0.0,
-        sharpe_ratio=0.0,
-        max_drawdown_pct=0.0,
-        win_rate_pct=0.0,
-        profit_factor=0.0,
-    )
-    agent_calls: List[Dict[str, Any]] = []
-
-    class _StubAgent:
-        def run_backtest(self, strategy, config, md):
-            agent_calls.append({"strategy_id": strategy.strategy_id})
-            return fake_result, []
-
-    monkeypatch.setattr(bt_mod, "BacktestingAgent", lambda: _StubAgent())
-
     strategy = _sample_strategy(with_code=False)
     config = _sample_config()
 
-    result, trades = api_main._run_real_data_backtest(strategy, config)
+    with pytest.raises(HTTPException) as excinfo:
+        api_main._run_real_data_backtest(strategy, config)
 
-    assert len(agent_calls) == 1
-    assert agent_calls[0]["strategy_id"] == strategy.strategy_id
-    assert result is fake_result
-    assert trades == []
+    assert excinfo.value.status_code == 422
+    assert "strategy_code is required" in excinfo.value.detail
 
 
 def test_run_real_data_backtest_raises_when_sandbox_execution_fails(monkeypatch) -> None:
@@ -236,13 +202,6 @@ def test_run_real_data_backtest_raises_when_sandbox_execution_fails(monkeypatch)
     from investment_team.strategy_lab import executor as executor_pkg
 
     monkeypatch.setattr(executor_pkg, "SandboxRunner", _FailingSandbox)
-
-    import investment_team.backtesting_agent as bt_mod
-
-    def _must_not_instantiate(*args, **kwargs):
-        raise AssertionError("Fell back to BacktestingAgent after sandbox failure")
-
-    monkeypatch.setattr(bt_mod, "BacktestingAgent", _must_not_instantiate)
 
     strategy = _sample_strategy(with_code=True)
     config = _sample_config()

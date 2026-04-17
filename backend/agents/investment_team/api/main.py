@@ -824,22 +824,29 @@ def _run_real_data_backtest(
     """
     Run a backtest using real historical market data.
 
-    Fetches OHLCV data from Yahoo Finance (all asset classes including crypto)
-    for the backtest period, then:
+    Fetches OHLCV data for the backtest period, then executes the
+    Strategy-Lab-generated Python script through the subprocess sandbox —
+    the same execution path used by the Strategy Lab orchestrator and the
+    paper-trading step — and derives metrics from the resulting trades.
 
-    * If ``strategy.strategy_code`` is populated (the normal Strategy Lab
-      path), executes that generated Python script once in a subprocess
-      sandbox — the same execution path used by the Strategy Lab
-      orchestrator and paper-trading step — and derives metrics from the
-      resulting trade list.
-    * Otherwise (legacy strategies with no generated code), falls back to
-      the slower LLM-driven bar-by-bar evaluation via ``BacktestingAgent``.
+    Only Strategy-Lab-generated scripts may produce trades. The prior
+    LLM-per-bar fallback has been removed; strategies without
+    ``strategy_code`` now return 422.
 
     Returns (BacktestResult, trade_ledger).
     """
-    # Lazy imports: yfinance is slow to import and the LLM client has side-effects;
-    # deferring keeps application startup fast and avoids loading these until needed.
+    # Lazy import: yfinance is slow to import; defer until a request arrives.
     from investment_team.market_data_service import MarketDataService
+
+    if not strategy.strategy_code:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "strategy_code is required. The legacy LLM-per-bar backtest "
+                "path has been removed; regenerate the strategy via the "
+                "Strategy Lab ideation agent."
+            ),
+        )
 
     market_service = MarketDataService()
     symbols = market_service.get_symbols_for_strategy(strategy)
@@ -863,70 +870,53 @@ def _run_real_data_backtest(
             detail="Failed to fetch historical market data. Please check the date range and try again.",
         )
 
-    # Preferred path: run the Strategy Lab-generated Python script in the
-    # sandbox.  This matches the orchestrator's and paper-trading agent's
-    # execution path, so backtest metrics are reproducible and consistent
-    # across endpoints.
-    if strategy.strategy_code:
-        from investment_team.strategy_lab.executor import (
-            SandboxRunner,
-            build_trade_records,
-        )
-        from investment_team.trade_simulator import compute_metrics
-
-        total_bars = sum(len(bars) for bars in market_data.values())
-        logger.info(
-            "Executing generated strategy script in sandbox for %s (%d symbols, %d bars)",
-            strategy.strategy_id,
-            len(market_data),
-            total_bars,
-        )
-
-        exec_result = SandboxRunner().run(strategy.strategy_code, market_data, config)
-
-        if not exec_result.success:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Strategy code execution failed ({exec_result.error_type}): "
-                    f"{exec_result.stderr[:500]}"
-                ),
-            )
-
-        try:
-            trades = build_trade_records(exec_result.raw_trades, config)
-        except (ValueError, TypeError) as exc:
-            # ``build_trade_records`` raises ``ValueError`` for invalid sides and
-            # ``TypeError`` when numeric coercion fails (e.g. ``entry_price`` is
-            # ``None`` or a non-numeric type).  Both are user-facing output-shape
-            # errors, not server failures — surface as 422 so the caller sees
-            # the actual problem instead of a generic 500.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid trade output from strategy code: {exc}",
-            ) from exc
-
-        result = compute_metrics(trades, config.initial_capital, config.start_date, config.end_date)
-
-        logger.info(
-            "Sandbox backtest complete for %s: %d trades, execution %.2fs",
-            strategy.strategy_id,
-            len(trades),
-            exec_result.execution_time_seconds,
-        )
-        return result, trades
-
-    # Fallback: legacy strategies with no generated code.  This is slow and
-    # expensive (one LLM call per bar); any Strategy Lab-generated
-    # strategy will take the sandbox path above.
-    from investment_team.backtesting_agent import BacktestingAgent
-
-    logger.warning(
-        "Strategy %s has no strategy_code; falling back to LLM-per-bar backtest",
-        strategy.strategy_id,
+    from investment_team.strategy_lab.executor import (
+        SandboxRunner,
+        build_trade_records,
     )
-    agent = BacktestingAgent()
-    return agent.run_backtest(strategy, config, market_data)
+    from investment_team.trade_simulator import compute_metrics
+
+    total_bars = sum(len(bars) for bars in market_data.values())
+    logger.info(
+        "Executing generated strategy script in sandbox for %s (%d symbols, %d bars)",
+        strategy.strategy_id,
+        len(market_data),
+        total_bars,
+    )
+
+    exec_result = SandboxRunner().run(strategy.strategy_code, market_data, config)
+
+    if not exec_result.success:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Strategy code execution failed ({exec_result.error_type}): "
+                f"{exec_result.stderr[:500]}"
+            ),
+        )
+
+    try:
+        trades = build_trade_records(exec_result.raw_trades, config)
+    except (ValueError, TypeError) as exc:
+        # ``build_trade_records`` raises ``ValueError`` for invalid sides and
+        # ``TypeError`` when numeric coercion fails (e.g. ``entry_price`` is
+        # ``None`` or a non-numeric type).  Both are user-facing output-shape
+        # errors, not server failures — surface as 422 so the caller sees
+        # the actual problem instead of a generic 500.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid trade output from strategy code: {exc}",
+        ) from exc
+
+    result = compute_metrics(trades, config.initial_capital, config.start_date, config.end_date)
+
+    logger.info(
+        "Sandbox backtest complete for %s: %d trades, execution %.2fs",
+        strategy.strategy_id,
+        len(trades),
+        exec_result.execution_time_seconds,
+    )
+    return result, trades
 
 
 class _PaperTradingDataUnavailable(Exception):
@@ -2301,7 +2291,10 @@ def _run_paper_trading_background(
         symbols = market_service.get_symbols_for_strategy(strategy)[:5]
         logger.info(
             "Paper trade %s: fetching %d days of market data for %d symbols (%s) ...",
-            session_id, lookback_days, len(symbols), strategy.asset_class,
+            session_id,
+            lookback_days,
+            len(symbols),
+            strategy.asset_class,
         )
         market_data = market_service.fetch_multi_symbol(
             symbols, strategy.asset_class, lookback_days
@@ -2338,7 +2331,10 @@ def _run_paper_trading_background(
             _paper_trading_sessions[session_id] = result_session
         logger.info(
             "Paper trade %s: completed (status=%s, verdict=%s, trades=%d)",
-            session_id, result_session.status, result_session.verdict, len(result_session.trades),
+            session_id,
+            result_session.status,
+            result_session.verdict,
+            len(result_session.trades),
         )
     except Exception as exc:
         logger.exception("Paper trade %s: background worker crashed", session_id)
