@@ -82,6 +82,10 @@ class IdealCustomerProfile(BaseModel):
 class Prospect(BaseModel):
     """Raw lead identified during prospecting — not yet contacted."""
 
+    id: str = Field(
+        default="",
+        description="Stable prospect identifier ('prs_<uuid12>'); assigned by the orchestrator when empty",
+    )
     company_name: str
     website: Optional[str] = None
     contact_name: Optional[str] = None
@@ -95,6 +99,144 @@ class Prospect(BaseModel):
     trigger_events: List[str] = Field(
         default_factory=list, description="Recent events making them likely to buy now"
     )
+    dossier_id: Optional[str] = Field(
+        default=None,
+        description="ID of the ProspectDossier that provides deep research on this prospect",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dossier models — deep-research artifact for a single prospect
+# ---------------------------------------------------------------------------
+
+
+class CareerRole(BaseModel):
+    """A single role in a prospect's career history."""
+
+    company: str
+    title: str
+    start: Optional[str] = Field(default=None, description="e.g. '2021' or '2021-06'")
+    end: Optional[str] = Field(default=None, description="None = current role")
+    summary: Optional[str] = None
+
+
+class PublicWorkItem(BaseModel):
+    """A publicly visible piece of work by the prospect.
+
+    Covers writing, research, talks, podcasts, OSS contributions, patents, interviews.
+    """
+
+    kind: str = Field(
+        ...,
+        description="article | talk | paper | podcast | oss | patent | interview | other",
+    )
+    title: str
+    url: Optional[str] = None
+    venue: Optional[str] = Field(
+        default=None, description="Conference, publication, podcast, or platform name"
+    )
+    date: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class DecisionMakerSignal(BaseModel):
+    """A single piece of evidence that this prospect has buying authority."""
+
+    signal: str = Field(
+        ...,
+        description=(
+            "Short handle for the signal, e.g. 'reports_directly_to_ceo', "
+            "'owns_budget_for_data_tooling', 'sole_signatory_on_vendor_page'"
+        ),
+    )
+    evidence_url: Optional[str] = Field(
+        default=None, description="Public URL that supports this signal"
+    )
+    strength: str = Field(default="medium", description="weak | medium | strong")
+
+
+class ProspectDossier(BaseModel):
+    """Deep-research profile of a single prospect.
+
+    Assembled from publicly available sources. Every non-trivial claim should
+    have a corresponding URL in ``sources``. Unknown fields stay empty rather
+    than being fabricated.
+    """
+
+    dossier_id: str = Field(
+        default="",
+        description="Stable dossier identifier ('dsr_<uuid12>'); assigned by the store on write",
+    )
+    prospect_id: str = Field(..., description="Links back to Prospect.id")
+    generated_at: str = Field(default="", description="ISO-8601 UTC timestamp")
+
+    # Identity
+    full_name: str
+    current_title: str
+    current_company: str
+    location: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    personal_site: Optional[str] = None
+    other_social: List[str] = Field(
+        default_factory=list,
+        description="Public profile URLs (Twitter/X, GitHub, Substack, Mastodon, etc.)",
+    )
+
+    # Narrative
+    executive_summary: str = Field(
+        default="",
+        description="3–5 sentence distillation: who they are and why they matter for this sale",
+    )
+    career_history: List[CareerRole] = Field(default_factory=list)
+    education: List[str] = Field(default_factory=list)
+
+    # Thought-leadership
+    publications: List[PublicWorkItem] = Field(
+        default_factory=list,
+        description="Writing, research, talks, podcasts, OSS, patents, interviews",
+    )
+    topics_of_interest: List[str] = Field(default_factory=list)
+    stated_beliefs: List[str] = Field(
+        default_factory=list,
+        description="Quotes or positions the prospect has taken publicly",
+    )
+
+    # Buying signals
+    decision_maker_signals: List[DecisionMakerSignal] = Field(default_factory=list)
+    recent_activity: List[str] = Field(
+        default_factory=list,
+        description="Recent posts, job moves, speaking engagements, or company events",
+    )
+    trigger_events: List[str] = Field(default_factory=list)
+
+    # Outreach helpers
+    conversation_hooks: List[str] = Field(
+        default_factory=list,
+        description="3–7 angles tying the product to this specific person",
+    )
+    mutual_connection_angles: List[str] = Field(
+        default_factory=list,
+        description="Shared companies, schools, communities, or past collaborators",
+    )
+    personalization_tokens: dict = Field(
+        default_factory=dict,
+        description="Ready-to-merge fields for outreach templates (e.g. {'first_name': 'Jane'})",
+    )
+
+    # Provenance
+    sources: List[str] = Field(
+        default_factory=list, description="Public URLs consulted while building this dossier"
+    )
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Overall confidence that the dossier identifies the right person and is factually "
+            "grounded. Decreases sharply if fewer than 3 independent sources corroborate identity."
+        ),
+    )
+    notes: str = Field(default="")
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +480,15 @@ class SalesPipelineRequest(BaseModel):
     value_proposition: str = Field(..., min_length=10, max_length=5000)
     icp: IdealCustomerProfile
     entry_stage: PipelineStage = PipelineStage.PROSPECTING
-    max_prospects: int = Field(default=5, ge=1, le=20, description="Max leads to generate")
+    max_prospects: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Max leads to generate. The legacy flat pipeline typically uses ≤20; the deep-research "
+            "endpoint raises this up to 100."
+        ),
+    )
     existing_prospects: List[Prospect] = Field(
         default_factory=list,
         description="Pre-existing leads to skip prospecting (used when entry_stage != PROSPECTING)",
@@ -360,8 +510,68 @@ class ProspectingRequest(BaseModel):
     icp: IdealCustomerProfile
     product_name: str
     value_proposition: str
-    max_prospects: int = Field(default=5, ge=1, le=20)
+    max_prospects: int = Field(default=5, ge=1, le=100)
     company_context: str = Field(default="", max_length=5000)
+
+
+class DeepResearchRequest(BaseModel):
+    """Run a deep-research prospecting pass — produces a top-N list with full dossiers.
+
+    Unlike :class:`ProspectingRequest` which returns a flat batch of prospects,
+    this request drives a company→decision-maker→dossier pipeline and enforces
+    a per-company cap on how many prospects appear in the final ranked list.
+    """
+
+    product_name: str = Field(..., min_length=1, max_length=200)
+    value_proposition: str = Field(..., min_length=10, max_length=5000)
+    icp: IdealCustomerProfile
+    target_prospects: int = Field(
+        default=100,
+        ge=10,
+        le=100,
+        description="Number of prospects to return in the ranked list",
+    )
+    max_per_company: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description=(
+            "Hard cap on how many prospects from the same company may appear in the final list. "
+            "Default 2: aligns with the 'no more than 2 prospects per company' rule."
+        ),
+    )
+    company_context: str = Field(default="", max_length=5000)
+
+
+class ProspectListEntry(BaseModel):
+    """A single entry in a deep-research top-N list.
+
+    Holds the ranked prospect plus a reference to the full dossier so
+    consumers can fetch the dossier independently via its API endpoint.
+    """
+
+    rank: int = Field(..., ge=1, description="1-based rank in the top-N list")
+    prospect: Prospect
+    dossier_id: str = Field(..., description="ID of this prospect's ProspectDossier")
+    dossier_url: str = Field(
+        ...,
+        description="Relative API path for retrieving the dossier, e.g. /api/sales/dossiers/<id>",
+    )
+
+
+class DeepResearchResult(BaseModel):
+    """Ranked top-N prospect list + metadata produced by a deep-research run."""
+
+    list_id: str = Field(default="", description="Stable list identifier ('plst_<uuid12>')")
+    product_name: str
+    generated_at: str = Field(default="", description="ISO-8601 UTC timestamp")
+    total_prospects: int = Field(..., ge=0)
+    companies_represented: int = Field(..., ge=0)
+    entries: List[ProspectListEntry] = Field(default_factory=list)
+    notes: str = Field(
+        default="",
+        description="Non-fatal issues from the run (e.g. shortfalls, dropped duplicates)",
+    )
 
 
 class OutreachRequest(BaseModel):

@@ -1,9 +1,13 @@
 """AI Sales Team — full B2B sales pod powered by AWS Strands agents."""
 
 from .models import (
+    CareerRole,
     ClosingStrategy,
     DealOutcome,
     DealResult,
+    DecisionMakerSignal,
+    DeepResearchRequest,
+    DeepResearchResult,
     DiscoveryPlan,
     IdealCustomerProfile,
     LearningInsights,
@@ -11,6 +15,9 @@ from .models import (
     OutreachSequence,
     PipelineStage,
     Prospect,
+    ProspectDossier,
+    ProspectListEntry,
+    PublicWorkItem,
     QualificationScore,
     SalesPipelineRequest,
     SalesPipelineResult,
@@ -36,4 +43,12 @@ __all__ = [
     "DealOutcome",
     "DealResult",
     "LearningInsights",
+    # Deep-research prospecting
+    "DeepResearchRequest",
+    "DeepResearchResult",
+    "ProspectListEntry",
+    "ProspectDossier",
+    "CareerRole",
+    "PublicWorkItem",
+    "DecisionMakerSignal",
 ]

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Callable, List, Optional
+from uuid import uuid4
 
 from .agents import (
     CloserAgent,
+    DecisionMakerMapperAgent,
     DiscoveryAgent,
+    DossierBuilderAgent,
     LeadQualifierAgent,
     NurtureAgent,
     OutreachAgent,
@@ -20,6 +25,8 @@ from .learning_engine import LearningEngine, format_insights_for_prompt
 from .models import (
     BANTScore,
     ClosingStrategy,
+    DeepResearchRequest,
+    DeepResearchResult,
     DiscoveryPlan,
     IdealCustomerProfile,
     LearningInsights,
@@ -32,6 +39,8 @@ from .models import (
     PipelineStage,
     ProposalRequest,
     Prospect,
+    ProspectDossier,
+    ProspectListEntry,
     QualificationScore,
     ROIModel,
     SalesPipelineRequest,
@@ -86,6 +95,130 @@ def _prospects_from_json(raw: str) -> List[Prospect]:
         except Exception as exc:
             logger.warning("Could not parse prospect: %s — %s", item, exc)
     return results
+
+
+def _decision_makers_from_json(raw: str, company: Prospect) -> List[tuple[Prospect, float]]:
+    """Parse a decision-maker mapper JSON array into ``(prospect, confidence)`` tuples.
+
+    Each returned Prospect inherits company-level data (company_name, website,
+    industry, icp_match_score, etc.) from ``company`` and overlays the contact
+    fields (contact_name, contact_title, linkedin_url). Confidence is a 0–1
+    score from the mapper agent used later to break ties during ranking.
+    """
+    data = _parse_json(raw, [])
+    if not isinstance(data, list):
+        data = [data] if isinstance(data, dict) else []
+    results: List[tuple[Prospect, float]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("contact_name")
+        if not name:
+            continue
+        rationale = item.get("decision_maker_rationale") or ""
+        confidence_raw = item.get("confidence")
+        extra_notes = rationale
+        if confidence_raw is not None:
+            extra_notes = f"{rationale} (confidence: {confidence_raw})".strip()
+        notes = company.research_notes
+        combined_notes = (notes + "\n" + extra_notes).strip() if extra_notes else notes
+        try:
+            prospect = Prospect(
+                company_name=company.company_name,
+                website=company.website,
+                contact_name=name,
+                contact_title=item.get("contact_title"),
+                contact_email=None,  # never fabricate emails
+                linkedin_url=item.get("linkedin_url"),
+                company_size_estimate=company.company_size_estimate,
+                industry=company.industry,
+                icp_match_score=company.icp_match_score,
+                research_notes=combined_notes,
+                trigger_events=list(company.trigger_events or []),
+            )
+            confidence = float(confidence_raw) if confidence_raw is not None else 0.5
+            results.append((prospect, confidence))
+        except Exception as exc:
+            logger.warning("Could not parse decision-maker contact: %s — %s", item, exc)
+    return results
+
+
+def _dossier_from_json(raw: str, prospect: Prospect) -> Optional[ProspectDossier]:
+    """Parse a dossier-builder JSON object into a ProspectDossier."""
+    data = _parse_json(raw, {})
+    if not isinstance(data, dict):
+        return None
+    # Ensure we always tie the dossier back to the prospect we asked about.
+    data.setdefault("prospect_id", prospect.id)
+    data.setdefault("full_name", prospect.contact_name or "")
+    data.setdefault("current_title", prospect.contact_title or "")
+    data.setdefault("current_company", prospect.company_name)
+    # Inherit linkedin if the agent didn't return one.
+    if not data.get("linkedin_url"):
+        data["linkedin_url"] = prospect.linkedin_url
+    try:
+        return ProspectDossier.model_validate(data)
+    except Exception as exc:
+        logger.warning(
+            "Could not parse dossier for prospect %s (%s): %s",
+            prospect.id,
+            prospect.contact_name,
+            exc,
+        )
+        return None
+
+
+def _rank_score(entry: tuple[Prospect, float]) -> float:
+    """Composite ranking score: 70% ICP fit, 30% decision-maker confidence."""
+    prospect, confidence = entry
+    return 0.7 * prospect.icp_match_score + 0.3 * confidence
+
+
+def _enforce_cap_and_rank(
+    entries: List[tuple[Prospect, float]],
+    max_per_company: int,
+    target_count: int,
+) -> List[Prospect]:
+    """Enforce the per-company cap, rank globally, and trim to ``target_count``.
+
+    ``entries`` is a list of ``(prospect, confidence)`` pairs produced by
+    :func:`_decision_makers_from_json`. Returns a plain ``List[Prospect]``
+    ordered by rank score descending.
+
+    Rules:
+    1. Drop duplicates by (company_name, linkedin_url or contact_name).
+    2. For each company, keep only the top ``max_per_company`` contacts by
+       their rank score.
+    3. Sort the surviving list globally by rank score desc and trim to
+       ``target_count``.
+    """
+    # Step 1: dedupe within the input
+    seen: set[tuple[str, str]] = set()
+    deduped: List[tuple[Prospect, float]] = []
+    for p, conf in entries:
+        key = (
+            (p.company_name or "").strip().lower(),
+            (p.linkedin_url or p.contact_name or "").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((p, conf))
+
+    # Step 2: per-company cap (keep top ``max_per_company`` per company by rank score)
+    by_company: dict[str, List[tuple[Prospect, float]]] = {}
+    for entry in deduped:
+        p = entry[0]
+        by_company.setdefault((p.company_name or "").strip().lower(), []).append(entry)
+
+    capped: List[tuple[Prospect, float]] = []
+    for company_list in by_company.values():
+        company_list.sort(key=_rank_score, reverse=True)
+        capped.extend(company_list[:max_per_company])
+
+    # Step 3: global rank + trim
+    capped.sort(key=_rank_score, reverse=True)
+    return [entry[0] for entry in capped[:target_count]]
 
 
 def _qual_from_json(raw: str, prospect: Prospect) -> Optional[QualificationScore]:
@@ -315,6 +448,8 @@ class SalesPodOrchestrator:
         self.proposal = ProposalAgent()
         self.closer = CloserAgent()
         self.coach = SalesCoachAgent()
+        self.decision_maker_mapper = DecisionMakerMapperAgent()
+        self.dossier_builder = DossierBuilderAgent()
         self.learning_engine = LearningEngine()
 
     def _should_run(self, stage: PipelineStage, entry: PipelineStage) -> bool:
@@ -676,3 +811,195 @@ class SalesPodOrchestrator:
         prospects_json = json.dumps([p.model_dump() for p in prospects], indent=2)
         raw = self.coach.review(prospects_json, product_name, pipeline_context, ctx)
         return _coaching_from_json(raw, len(prospects))
+
+    # ------------------------------------------------------------------
+    # Deep-research prospecting: top-N list + per-prospect dossiers
+    # ------------------------------------------------------------------
+
+    def deep_research_only(
+        self,
+        request: DeepResearchRequest,
+        persist: bool = True,
+        dossier_url_builder: Optional[Callable[[str], str]] = None,
+    ) -> DeepResearchResult:
+        """Run company → decision-maker → dossier and return a ranked top-N list.
+
+        Produces a :class:`DeepResearchResult` where every entry carries a
+        stable ``dossier_id`` and ``dossier_url``. If ``persist`` is True
+        (default), dossiers and the list are saved via :class:`DossierStore`.
+        If the store is unavailable (e.g. ``POSTGRES_HOST`` not set), the
+        run still returns a valid result in-memory — the shortfall is noted.
+
+        ``dossier_url_builder`` is an optional callable that maps a
+        ``dossier_id`` to the public URL at which that dossier can be
+        fetched. Pass ``lambda d: str(request.url_for("get_dossier",
+        dossier_id=d))`` from a FastAPI route to produce a URL that matches
+        the actual registered path (including any mount prefix). If omitted,
+        the URL defaults to ``/api/sales/dossiers/<id>`` which matches the
+        unified-api mount; this is a reasonable fallback but not guaranteed
+        to match every deployment.
+        """
+        if dossier_url_builder is None:
+
+            def dossier_url_builder(dossier_id: str) -> str:
+                return f"/api/sales/dossiers/{dossier_id}"
+
+        ctx = self._load_insights_ctx()
+        icp_json = request.icp.model_dump_json(indent=2)
+        # Request more companies than needed so that dedupe, failures, and
+        # the per-company cap leave enough prospects to hit the target.
+        companies_requested = min(100, max(40, request.target_prospects))
+        run_notes: List[str] = []
+
+        # Stage 1 — company shortlist
+        companies_raw = self.prospector.prospect_companies(
+            icp_json,
+            request.product_name,
+            request.value_proposition,
+            companies_requested,
+            request.company_context,
+            ctx,
+        )
+        companies = _prospects_from_json(companies_raw)
+        if not companies:
+            run_notes.append("No companies returned by the prospector agent.")
+            return DeepResearchResult(
+                list_id="",
+                product_name=request.product_name,
+                generated_at=datetime.now(tz=timezone.utc).isoformat(),
+                total_prospects=0,
+                companies_represented=0,
+                entries=[],
+                notes="; ".join(run_notes),
+            )
+
+        # Stage 2 — map decision-makers per company (bounded concurrency)
+        mapped: List[tuple[Prospect, float]] = []
+
+        def _map_one(company: Prospect) -> List[tuple[Prospect, float]]:
+            try:
+                raw = self.decision_maker_mapper.map_contacts(
+                    company.model_dump_json(indent=2),
+                    icp_json,
+                    request.product_name,
+                    request.value_proposition,
+                    request.max_per_company,
+                    ctx,
+                )
+                return _decision_makers_from_json(raw, company)
+            except Exception:
+                logger.exception(
+                    "decision-maker mapping failed for company %s", company.company_name
+                )
+                return []
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for result in pool.map(_map_one, companies):
+                mapped.extend(result)
+
+        if not mapped:
+            run_notes.append("No decision-makers identified across the company shortlist.")
+            return DeepResearchResult(
+                list_id="",
+                product_name=request.product_name,
+                generated_at=datetime.now(tz=timezone.utc).isoformat(),
+                total_prospects=0,
+                companies_represented=0,
+                entries=[],
+                notes="; ".join(run_notes),
+            )
+
+        # Stage 3 — enforce ≤max_per_company, rank, trim to target
+        final_prospects = _enforce_cap_and_rank(
+            mapped, request.max_per_company, request.target_prospects
+        )
+        if len(final_prospects) < request.target_prospects:
+            run_notes.append(
+                f"Only {len(final_prospects)} qualifying prospects after per-company cap "
+                f"(target was {request.target_prospects})."
+            )
+
+        # Assign stable prospect IDs before dossier building so dossiers can
+        # reference them.
+        for p in final_prospects:
+            if not p.id:
+                p.id = f"prs_{uuid4().hex[:12]}"
+
+        # Stage 4 — build dossiers (bounded concurrency; network-heavy)
+        def _build_one(p: Prospect) -> tuple[Prospect, Optional[ProspectDossier]]:
+            try:
+                raw = self.dossier_builder.build(
+                    p.model_dump_json(indent=2),
+                    request.product_name,
+                    request.value_proposition,
+                    ctx,
+                )
+                return p, _dossier_from_json(raw, p)
+            except Exception:
+                logger.exception("dossier building failed for prospect %s", p.id)
+                return p, None
+
+        dossiers: dict[str, ProspectDossier] = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_build_one, p) for p in final_prospects]
+            for fut in as_completed(futures):
+                p, dossier = fut.result()
+                if dossier is None:
+                    continue
+                # Ensure dossier has IDs before potential persistence.
+                if not dossier.dossier_id:
+                    dossier.dossier_id = f"dsr_{uuid4().hex[:12]}"
+                if not dossier.generated_at:
+                    dossier.generated_at = datetime.now(tz=timezone.utc).isoformat()
+                dossier.prospect_id = p.id
+                dossiers[p.id] = dossier
+
+        # Stage 5 — persist (best-effort) and assemble the result
+        store = None
+        if persist:
+            try:
+                from .dossier_store import DossierStore
+
+                store = DossierStore()
+            except Exception:
+                logger.warning("DossierStore unavailable; continuing without persistence")
+                store = None
+
+        entries: List[ProspectListEntry] = []
+        rank = 0
+        for p in final_prospects:
+            dossier = dossiers.get(p.id)
+            if dossier is None:
+                run_notes.append(f"No dossier produced for prospect {p.id} ({p.contact_name}).")
+                continue
+            if store is not None:
+                try:
+                    dossier = store.save_dossier(dossier)
+                except Exception:
+                    logger.exception("Failed to persist dossier %s", dossier.dossier_id)
+            p.dossier_id = dossier.dossier_id
+            rank += 1
+            entries.append(
+                ProspectListEntry(
+                    rank=rank,
+                    prospect=p,
+                    dossier_id=dossier.dossier_id,
+                    dossier_url=dossier_url_builder(dossier.dossier_id),
+                )
+            )
+
+        result = DeepResearchResult(
+            list_id="",
+            product_name=request.product_name,
+            generated_at=datetime.now(tz=timezone.utc).isoformat(),
+            total_prospects=len(entries),
+            companies_represented=len({e.prospect.company_name for e in entries}),
+            entries=entries,
+            notes="; ".join(run_notes),
+        )
+        if store is not None:
+            try:
+                result = store.save_prospect_list(result)
+            except Exception:
+                logger.exception("Failed to persist prospect list")
+        return result

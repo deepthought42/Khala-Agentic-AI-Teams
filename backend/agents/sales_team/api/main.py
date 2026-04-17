@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from job_service_client import (
@@ -23,10 +24,13 @@ from sales_team.learning_engine import LearningEngine
 from sales_team.models import (
     CoachingRequest,
     DealOutcome,
+    DeepResearchRequest,
+    DeepResearchResult,
     LearningInsights,
     NurtureRequest,
     OutreachRequest,
     ProposalRequest,
+    ProspectDossier,
     ProspectingRequest,
     QualificationRequest,
     RecordDealOutcomeRequest,
@@ -48,6 +52,30 @@ from shared_observability import init_otel, instrument_fastapi_app
 
 init_otel(service_name="sales-team", team_key="sales_team")
 
+
+@asynccontextmanager
+async def _sales_lifespan(_app: FastAPI):
+    """Register the sales_team Postgres schema at startup and close the pool at shutdown.
+
+    Both steps are best-effort — when ``POSTGRES_HOST`` is unset (e.g. in
+    isolated unit tests) ``shared_postgres`` is a no-op and we continue.
+    """
+    try:
+        from sales_team.postgres import SCHEMA as SALES_POSTGRES_SCHEMA
+        from shared_postgres import register_team_schemas
+
+        register_team_schemas(SALES_POSTGRES_SCHEMA)
+    except Exception:
+        logger.exception("sales_team postgres schema registration failed")
+    yield
+    try:
+        from shared_postgres import close_pool
+
+        close_pool()
+    except Exception:
+        logger.warning("sales_team shared_postgres close_pool failed", exc_info=True)
+
+
 app = FastAPI(
     title="AI Sales Team API",
     version="1.0.0",
@@ -57,6 +85,7 @@ app = FastAPI(
         "discovery, proposals, and closing — grounded in Gong Labs, Jeb Blount, "
         "HubSpot, Anthony Iannarino, Jill Konrath, Sales Hacker, Salesfolk, and Zig Ziglar."
     ),
+    lifespan=_sales_lifespan,
 )
 instrument_fastapi_app(app, team_key="sales_team")
 
@@ -416,6 +445,108 @@ def get_coaching(request: CoachingRequest) -> Dict[str, Any]:
     if not report:
         raise HTTPException(status_code=500, detail="Coach agent failed to return a result")
     return report.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Deep-research prospecting — top-N prospects + per-prospect dossiers
+# ---------------------------------------------------------------------------
+
+
+def _load_dossier_store():
+    """Import and instantiate DossierStore, mapping failures to HTTP 503.
+
+    Covers both import-time errors (e.g. psycopg missing in a stripped
+    environment) and construction-time errors. Runtime call failures are
+    handled by the individual route handlers so that 404 vs. 503 semantics
+    can be preserved.
+    """
+    try:
+        from sales_team.dossier_store import DossierStore
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Dossier store unavailable: {exc}") from exc
+    try:
+        return DossierStore()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Dossier store unavailable: {exc}") from exc
+
+
+@app.post(
+    "/sales/prospect/deep-research",
+    response_model=DeepResearchResult,
+    tags=["prospecting"],
+)
+def deep_research(body: DeepResearchRequest, request: Request) -> DeepResearchResult:
+    """Run the deep-research prospecting pipeline.
+
+    Executes company → decision-maker → dossier in sequence and returns a
+    ranked top-N list. Every entry references its dossier by ``dossier_id``
+    and carries a ``dossier_url`` for direct retrieval. No company may appear
+    more than ``max_per_company`` times in the list (default 2).
+    """
+    orchestrator = SalesPodOrchestrator()
+
+    def _build_dossier_url(dossier_id: str) -> str:
+        """Resolve the dossier URL against this app's actual registered route.
+
+        Using ``request.url_for("get_dossier", ...)`` means the emitted URL
+        tracks whatever path the route is mounted at — including the
+        ``/api/sales`` prefix that the unified API adds — so clients can
+        always follow the link without hard-coding a prefix.
+        """
+        try:
+            return str(request.url_for("get_dossier", dossier_id=dossier_id))
+        except Exception:
+            # Fall back to the unified-api shape if url_for fails for any
+            # reason (e.g. route name changes, routing context missing).
+            return f"/api/sales/dossiers/{dossier_id}"
+
+    return orchestrator.deep_research_only(body, dossier_url_builder=_build_dossier_url)
+
+
+@app.get(
+    "/sales/dossiers/{dossier_id}",
+    response_model=ProspectDossier,
+    tags=["prospecting"],
+    name="get_dossier",
+)
+def get_dossier(dossier_id: str) -> ProspectDossier:
+    """Return a single ProspectDossier by ID, or 404 if not found."""
+    store = _load_dossier_store()
+    try:
+        dossier = store.get_dossier(dossier_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Dossier store unavailable: {exc}") from exc
+    if dossier is None:
+        raise HTTPException(status_code=404, detail=f"Dossier {dossier_id} not found")
+    return dossier
+
+
+@app.get(
+    "/sales/prospect-lists/{list_id}",
+    response_model=DeepResearchResult,
+    tags=["prospecting"],
+    name="get_prospect_list",
+)
+def get_prospect_list(list_id: str) -> DeepResearchResult:
+    """Return a saved deep-research prospect list by ID, or 404 if not found."""
+    store = _load_dossier_store()
+    try:
+        result = store.get_prospect_list(list_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Dossier store unavailable: {exc}") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Prospect list {list_id} not found")
+    return result
+
+
+@app.get("/sales/prospect-lists", tags=["prospecting"])
+def list_prospect_lists(limit: int = 50) -> List[Dict[str, Any]]:
+    """Return lightweight summaries of recent deep-research prospect lists."""
+    store = _load_dossier_store()
+    try:
+        return store.list_prospect_lists(limit=max(1, min(limit, 200)))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Dossier store unavailable: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ The strands SDK is a hard dependency. Tests require it to be installed.
 from __future__ import annotations
 
 import json
+from typing import Dict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -120,12 +121,20 @@ class TestModels:
         assert req.existing_prospects == []
 
     def test_max_prospects_bounds(self, sample_icp):
+        # Upper bound was raised from 20 to 100 to support deep-research runs.
+        # 100 should be accepted; 101 should fail.
+        SalesPipelineRequest(
+            product_name="X",
+            value_proposition="Y",
+            icp=sample_icp,
+            max_prospects=100,
+        )
         with pytest.raises(Exception):
             SalesPipelineRequest(
                 product_name="X",
                 value_proposition="Y",
                 icp=sample_icp,
-                max_prospects=25,
+                max_prospects=101,
             )
 
 
@@ -755,3 +764,328 @@ class TestOutcomeAPI:
         assert "stage_outcomes_recorded" in data
         assert "deal_outcomes_recorded" in data
         assert "insights_available" in data
+
+
+# ---------------------------------------------------------------------------
+# Deep-research prospecting tests
+# ---------------------------------------------------------------------------
+
+
+from sales_team.models import (  # noqa: E402
+    DeepResearchRequest,
+    DeepResearchResult,
+    ProspectDossier,
+)
+from sales_team.orchestrator import _enforce_cap_and_rank  # noqa: E402
+
+
+class TestDeepResearchModels:
+    def test_prospect_dossier_round_trip(self):
+        dossier = ProspectDossier(
+            prospect_id="prs_abc123",
+            full_name="Jane Smith",
+            current_title="VP of Data",
+            current_company="Acme Corp",
+            executive_summary="Owns the data platform and buys tooling for it.",
+            confidence=0.8,
+        )
+        payload = dossier.model_dump(mode="json")
+        restored = ProspectDossier.model_validate(payload)
+        assert restored.full_name == "Jane Smith"
+        assert restored.current_company == "Acme Corp"
+        assert restored.confidence == 0.8
+
+    def test_deep_research_request_bounds(self, sample_icp):
+        # 10..100 inclusive are valid.
+        DeepResearchRequest(
+            product_name="P",
+            value_proposition="we help teams do X",
+            icp=sample_icp,
+            target_prospects=100,
+        )
+        with pytest.raises(Exception):
+            DeepResearchRequest(
+                product_name="P",
+                value_proposition="we help teams do X",
+                icp=sample_icp,
+                target_prospects=101,
+            )
+        with pytest.raises(Exception):
+            DeepResearchRequest(
+                product_name="P",
+                value_proposition="we help teams do X",
+                icp=sample_icp,
+                target_prospects=9,
+            )
+
+    def test_max_per_company_default_is_two(self, sample_icp):
+        req = DeepResearchRequest(
+            product_name="P",
+            value_proposition="we help teams do X",
+            icp=sample_icp,
+        )
+        assert req.max_per_company == 2
+
+
+class TestCapAndRank:
+    def _make(
+        self, company: str, name: str, score: float, confidence: float = 0.5
+    ) -> tuple[Prospect, float]:
+        p = Prospect(
+            company_name=company,
+            contact_name=name,
+            icp_match_score=score,
+            linkedin_url=f"https://linkedin.com/in/{name.lower().replace(' ', '-')}",
+        )
+        return p, confidence
+
+    def test_cap_enforces_max_per_company(self):
+        entries: list = []
+        for i in range(10):  # 10 prospects at Acme
+            entries.append(self._make("Acme", f"Person {i}", 0.9, confidence=0.5))
+        for i in range(5):  # 5 at Beta
+            entries.append(self._make("Beta", f"Person {i}", 0.8, confidence=0.5))
+
+        result = _enforce_cap_and_rank(entries, max_per_company=2, target_count=100)
+        # Acme should contribute at most 2, Beta at most 2 → 4 total.
+        assert len(result) == 4
+        counts: Dict[str, int] = {}
+        for p in result:
+            counts[p.company_name] = counts.get(p.company_name, 0) + 1
+        assert all(c <= 2 for c in counts.values())
+
+    def test_cap_trims_to_target(self):
+        # 25 companies × 5 contacts each = 125 candidates; cap=2 → 50 keepers;
+        # target_count=30 should trim to 30.
+        entries: list = []
+        for c in range(25):
+            for i in range(5):
+                entries.append(self._make(f"Company{c}", f"Person {c}-{i}", 0.5 + (i * 0.01)))
+        result = _enforce_cap_and_rank(entries, max_per_company=2, target_count=30)
+        assert len(result) == 30
+        counts: Dict[str, int] = {}
+        for p in result:
+            counts[p.company_name] = counts.get(p.company_name, 0) + 1
+        assert all(c <= 2 for c in counts.values())
+
+    def test_cap_dedupes_exact_duplicates(self):
+        entry = self._make("Acme", "Jane Smith", 0.9, confidence=0.5)
+        result = _enforce_cap_and_rank([entry, entry, entry], max_per_company=2, target_count=10)
+        assert len(result) == 1
+
+    def test_rank_preserves_highest_fit_per_company(self):
+        low = self._make("Acme", "Low", 0.3, confidence=0.5)
+        mid = self._make("Acme", "Mid", 0.6, confidence=0.5)
+        hi = self._make("Acme", "High", 0.9, confidence=0.5)
+        result = _enforce_cap_and_rank([low, mid, hi], max_per_company=2, target_count=10)
+        names = {p.contact_name for p in result}
+        # Top 2 of 3 by icp_match_score should survive.
+        assert names == {"Mid", "High"}
+
+
+class TestDeepResearchOrchestrator:
+    def test_deep_research_happy_path(self, monkeypatch, sample_icp):
+        """End-to-end with all three agents monkeypatched to return fixed JSON."""
+        orchestrator = SalesPodOrchestrator()
+
+        # Agent 1: return 60 companies across 30 unique names (2 contacts/company target).
+        def _fake_prospect_companies(*_args, **_kwargs):
+            companies = []
+            for i in range(60):
+                companies.append(
+                    {
+                        "company_name": f"Company {i // 2}",  # repeats — 30 unique
+                        "website": f"https://company{i // 2}.example.com",
+                        "industry": "SaaS",
+                        "company_size_estimate": "200-500",
+                        "icp_match_score": 0.7,
+                        "research_notes": "matches ICP",
+                        "trigger_events": ["recent funding"],
+                    }
+                )
+            return json.dumps(companies)
+
+        # Agent 2: return 2 decision-makers per company.
+        counter = {"n": 0}
+
+        def _fake_map_contacts(*_args, **_kwargs):
+            n = counter["n"]
+            counter["n"] += 1
+            return json.dumps(
+                [
+                    {
+                        "contact_name": f"Decision Maker {n}-A",
+                        "contact_title": "VP Operations",
+                        "linkedin_url": f"https://linkedin.com/in/dm-{n}-a",
+                        "contact_email": None,
+                        "decision_maker_rationale": "holds budget authority for tooling",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "contact_name": f"Decision Maker {n}-B",
+                        "contact_title": "Director of Ops",
+                        "linkedin_url": f"https://linkedin.com/in/dm-{n}-b",
+                        "contact_email": None,
+                        "decision_maker_rationale": "champion role on prior vendor deals",
+                        "confidence": 0.7,
+                    },
+                ]
+            )
+
+        # Agent 3: return a valid dossier.
+        def _fake_build_dossier(prospect_json, *_args, **_kwargs):
+            p = json.loads(prospect_json)
+            return json.dumps(
+                {
+                    "prospect_id": p.get("id", "prs_unknown"),
+                    "full_name": p.get("contact_name", "Unknown"),
+                    "current_title": p.get("contact_title", "Unknown"),
+                    "current_company": p.get("company_name", "Unknown"),
+                    "executive_summary": "Seasoned operator in SaaS ops.",
+                    "career_history": [
+                        {"company": "Prev Inc", "title": "Director", "start": "2019", "end": "2022"}
+                    ],
+                    "publications": [],
+                    "topics_of_interest": ["ops efficiency"],
+                    "sources": ["https://linkedin.com/in/example"],
+                    "confidence": 0.75,
+                }
+            )
+
+        monkeypatch.setattr(orchestrator.prospector, "prospect_companies", _fake_prospect_companies)
+        monkeypatch.setattr(orchestrator.decision_maker_mapper, "map_contacts", _fake_map_contacts)
+        monkeypatch.setattr(orchestrator.dossier_builder, "build", _fake_build_dossier)
+
+        request = DeepResearchRequest(
+            product_name="AcmeOps",
+            value_proposition="Cuts ops review time by 80%",
+            icp=sample_icp,
+            target_prospects=50,
+            max_per_company=2,
+        )
+        result = orchestrator.deep_research_only(request, persist=False)
+
+        assert isinstance(result, DeepResearchResult)
+        assert result.total_prospects == 50
+        assert len(result.entries) == 50
+
+        # No company should appear more than twice.
+        from collections import Counter
+
+        company_counts = Counter(e.prospect.company_name for e in result.entries)
+        assert all(c <= 2 for c in company_counts.values())
+
+        # Every entry must have a dossier reference and a well-formed URL.
+        for e in result.entries:
+            assert e.dossier_id
+            assert e.dossier_url == f"/api/sales/dossiers/{e.dossier_id}"
+            assert e.prospect.dossier_id == e.dossier_id
+            assert e.prospect.id
+
+    def test_deep_research_handles_empty_company_shortlist(self, monkeypatch, sample_icp):
+        orchestrator = SalesPodOrchestrator()
+        monkeypatch.setattr(orchestrator.prospector, "prospect_companies", lambda *a, **kw: "[]")
+        request = DeepResearchRequest(
+            product_name="X",
+            value_proposition="we help teams do X",
+            icp=sample_icp,
+            target_prospects=10,
+        )
+        result = orchestrator.deep_research_only(request, persist=False)
+        assert result.total_prospects == 0
+        assert result.entries == []
+        assert "No companies" in result.notes
+
+
+class TestDeepResearchAPI:
+    def test_get_dossier_unknown_id_returns_404(self, api_client, monkeypatch):
+        """Missing dossiers return 404 — regardless of backing store availability."""
+        # Force the store to return None for any id.
+        import sales_team.api.main as api_main
+
+        class _FakeStore:
+            def get_dossier(self, _id):
+                return None
+
+        # The route imports DossierStore lazily; patch the module attribute it imports from.
+        import sales_team.dossier_store as ds
+
+        monkeypatch.setattr(ds, "DossierStore", _FakeStore)
+        response = api_client.get("/sales/dossiers/dsr_nonexistent")
+        assert response.status_code == 404
+
+        # Avoid unused import complaints in case of future refactors.
+        assert api_main is not None
+
+    def test_deep_research_endpoint_monkeypatched(self, api_client, monkeypatch, sample_icp):
+        import sales_team.api.main as api_main
+
+        fake_result = DeepResearchResult(
+            list_id="plst_test",
+            product_name="AcmeOps",
+            generated_at="2026-04-17T00:00:00+00:00",
+            total_prospects=0,
+            companies_represented=0,
+            entries=[],
+            notes="monkeypatched",
+        )
+
+        captured: Dict[str, object] = {}
+
+        class _FakeOrch:
+            def deep_research_only(self, req, dossier_url_builder=None, persist=True):
+                # The route handler must pass a URL builder so that emitted
+                # URLs match the actual registered route (including mount prefix).
+                captured["builder"] = dossier_url_builder
+                captured["req"] = req
+                captured["persist"] = persist
+                return fake_result
+
+        monkeypatch.setattr(api_main, "SalesPodOrchestrator", _FakeOrch)
+
+        response = api_client.post(
+            "/sales/prospect/deep-research",
+            json={
+                "product_name": "AcmeOps",
+                "value_proposition": "Cuts ops review time by 80%",
+                "icp": sample_icp.model_dump(),
+                "target_prospects": 10,
+                "max_per_company": 2,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["list_id"] == "plst_test"
+        assert body["total_prospects"] == 0
+
+        # The handler must have passed a URL builder that resolves against
+        # the app's actual route ("get_dossier"). In the TestClient, routes
+        # are registered at /sales/..., so url_for includes that path.
+        builder = captured["builder"]
+        assert callable(builder)
+        built = builder("dsr_abc123")
+        assert "/sales/dossiers/dsr_abc123" in built
+
+    def test_get_dossier_runtime_store_failure_returns_503(self, api_client, monkeypatch):
+        """Runtime failures from the store (not just import failures) map to 503."""
+        import sales_team.dossier_store as ds
+
+        class _ExplodingStore:
+            def get_dossier(self, _id):
+                raise RuntimeError("postgres unreachable")
+
+        monkeypatch.setattr(ds, "DossierStore", _ExplodingStore)
+        response = api_client.get("/sales/dossiers/dsr_anything")
+        assert response.status_code == 503
+        assert "unavailable" in response.json()["detail"].lower()
+
+    def test_list_prospect_lists_runtime_store_failure_returns_503(self, api_client, monkeypatch):
+        import sales_team.dossier_store as ds
+
+        class _ExplodingStore:
+            def list_prospect_lists(self, limit: int = 50):
+                raise RuntimeError("postgres unreachable")
+
+        monkeypatch.setattr(ds, "DossierStore", _ExplodingStore)
+        response = api_client.get("/sales/prospect-lists")
+        assert response.status_code == 503
