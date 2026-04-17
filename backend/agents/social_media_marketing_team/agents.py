@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from .models import (
     BrandGoals,
@@ -266,6 +266,26 @@ _CREATIVE_TESTING_ARCHETYPES = [
 ]
 
 
+def _format_exemplar_prefix(exemplars: Optional[List[Dict[str, Any]]]) -> str:
+    """Format Winning Posts Bank exemplars for injection into a concept.
+
+    Returns an empty string when no exemplars are supplied so existing
+    concept strings are byte-identical to pre-feature output.
+    """
+    if not exemplars:
+        return ""
+    blocks: List[str] = []
+    for e in exemplars:
+        platform = str(e.get("platform") or "unknown")
+        score = float(e.get("engagement_score") or 0.0)
+        title = str(e.get("title") or "")
+        body = str(e.get("body") or "")
+        blocks.append(
+            f"[Winning post on {platform} — engagement {score:.2f}]\n{title}\n{body}".rstrip()
+        )
+    return "Prior winners (reference, do not copy):\n" + "\n\n".join(blocks) + "\n\n"
+
+
 @dataclass
 class ContentConceptAgent:
     """Generates candidate post concepts before final filtering.
@@ -286,9 +306,19 @@ class ContentConceptAgent:
         return _STORYTELLING_ARCHETYPES + _CREATIVE_TESTING_ARCHETYPES
 
     def generate_candidates(
-        self, proposal: CampaignProposal, goals: BrandGoals
+        self,
+        proposal: CampaignProposal,
+        goals: BrandGoals,
+        exemplars: Optional[List[Dict[str, Any]]] = None,
     ) -> List[ConceptIdea]:
-        """Generate a diverse, platform-aware set of candidate concepts."""
+        """Generate a diverse, platform-aware set of candidate concepts.
+
+        When *exemplars* are provided (from the Winning Posts Bank),
+        a prefix block listing past winners is prepended to each
+        generated ``concept`` string so downstream writers see
+        reference material without it leaking into scoring or
+        routing fields.
+        """
         base_topics = proposal.messaging_pillars or [
             "Educational insight",
             "Proof point",
@@ -296,6 +326,8 @@ class ContentConceptAgent:
         ]
         linked_goals = goals.goals or ["engagement"]
         archetypes = self._archetypes()
+
+        exemplar_prefix = _format_exemplar_prefix(exemplars)
 
         ideas: List[ConceptIdea] = []
         idx = 0
@@ -359,6 +391,7 @@ class ContentConceptAgent:
                     ConceptIdea(
                         title=f"{topic} – {archetype_name}",
                         concept=(
+                            f"{exemplar_prefix}"
                             f"{archetype_prompt} {topic.lower()} for {goals.target_audience}. "
                             f"Close with a CTA tied to {goal} and the campaign objective: {proposal.objective}."
                         ),
