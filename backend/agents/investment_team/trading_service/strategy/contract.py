@@ -1,0 +1,261 @@
+"""Strategy-facing contract.
+
+Strategy-Lab-generated scripts run inside an isolated subprocess and receive
+``Bar`` / ``Fill`` events delivered over stdin by :class:`StreamingHarness`.
+They interact with the engine exclusively through :class:`StrategyContext`,
+which is a narrow, backward-looking API:
+
+* ``ctx.submit_order(...)`` — register intent; the engine owns the fill.
+* ``ctx.cancel(order_id)`` — cancel a still-pending order.
+* ``ctx.position(symbol)`` / ``ctx.capital`` / ``ctx.equity`` — current state.
+* ``ctx.history(symbol, n)`` — last *n* bars the strategy has already received.
+* ``ctx.now`` — timestamp of the currently-dispatching event.
+* ``ctx.is_warmup`` — true during the live-mode warm-up pass (PR 2).
+
+By construction the strategy process never holds a full market-data structure,
+so "peeking" at future bars is structurally impossible — there is no accessor
+for future data in this process at all.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class OrderSide(str, Enum):
+    LONG = "long"
+    SHORT = "short"
+
+
+class OrderType(str, Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
+
+
+class TimeInForce(str, Enum):
+    DAY = "day"
+    GTC = "gtc"
+
+
+class Bar(BaseModel):
+    """One candle delivered to the strategy. Timeframe-agnostic.
+
+    ``timestamp`` is ISO-8601. ``timeframe`` labels the candle duration
+    (``"1d"``, ``"1m"``, ``"15m"``, …) so resampled candles remain
+    self-describing.
+    """
+
+    symbol: str
+    timestamp: str
+    timeframe: str = "1d"
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+class OrderRequest(BaseModel):
+    """Intent emitted by the strategy. The engine assigns the final ``order_id``."""
+
+    client_order_id: str  # strategy-side ID, opaque to engine
+    symbol: str
+    side: OrderSide
+    qty: float = Field(gt=0)
+    order_type: OrderType = OrderType.MARKET
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    tif: TimeInForce = TimeInForce.DAY
+    reason: str = ""  # free-form annotation; surfaced in logs / fills
+
+    def validate_prices(self) -> None:
+        """Enforce price presence based on ``order_type``."""
+        if self.order_type == OrderType.LIMIT and self.limit_price is None:
+            raise ValueError("limit order requires limit_price")
+        if self.order_type == OrderType.STOP and self.stop_price is None:
+            raise ValueError("stop order requires stop_price")
+
+
+class Fill(BaseModel):
+    """Engine → strategy notification that a submitted order has filled."""
+
+    order_id: str
+    client_order_id: str
+    symbol: str
+    side: OrderSide
+    qty: float
+    price: float  # post-slippage fill price
+    timestamp: str
+    reason: str = ""
+
+
+class CancelRequest(BaseModel):
+    """Request from strategy to cancel a still-pending order."""
+
+    order_id: str
+
+
+# ---------------------------------------------------------------------------
+# StrategyContext — used inside the strategy subprocess.
+#
+# The parent-process engine has its own state; the context below is the *view*
+# the strategy is allowed to see, and its mutators (submit_order / cancel) are
+# serialized to stdout so the parent engine can process them.
+# ---------------------------------------------------------------------------
+
+
+class _PositionSnapshot(BaseModel):
+    symbol: str
+    side: OrderSide
+    qty: float
+    entry_price: float
+    entry_timestamp: str
+
+
+class StrategyContext:
+    """Narrow, backward-looking API exposed to strategy code.
+
+    This class is instantiated by the child-side harness and mutated as events
+    arrive. It never receives a full market-data frame — ``history()`` only
+    returns bars that have already been delivered via ``on_bar``.
+    """
+
+    # Sentinel class used so the harness can type-check context without
+    # importing anything from the parent process.
+    #
+    # NOTE: this object lives in the *strategy* subprocess. Its submit_order /
+    # cancel implementations write protocol lines to the child's stdout. The
+    # parent engine reads those lines, applies its authoritative state, and
+    # echoes fills back as FillEvents.
+
+    def __init__(self, *, emit) -> None:
+        # ``emit`` is an injection point (callable taking a dict) so the same
+        # class can be driven by the real stdout-backed harness in production
+        # and by a synchronous in-process driver in unit tests.
+        self._emit = emit
+        self._history: Dict[str, List[Bar]] = {}
+        self._positions: Dict[str, _PositionSnapshot] = {}
+        self._capital: float = 0.0
+        self._equity: float = 0.0
+        self._now: str = ""
+        self._is_warmup: bool = False
+        self._next_client_order_id: int = 0
+
+    # ------------------------------------------------------------------
+    # Read-only accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def capital(self) -> float:
+        return self._capital
+
+    @property
+    def equity(self) -> float:
+        return self._equity
+
+    @property
+    def now(self) -> str:
+        return self._now
+
+    @property
+    def is_warmup(self) -> bool:
+        return self._is_warmup
+
+    def position(self, symbol: str) -> Optional[_PositionSnapshot]:
+        return self._positions.get(symbol)
+
+    def history(self, symbol: str, n: int) -> List[Bar]:
+        bars = self._history.get(symbol, [])
+        if n <= 0:
+            return []
+        return bars[-n:]
+
+    # ------------------------------------------------------------------
+    # Mutators — produce OrderRequest / CancelRequest records that the
+    # harness serialises to the parent engine.
+    # ------------------------------------------------------------------
+
+    def submit_order(
+        self,
+        *,
+        symbol: str,
+        side: OrderSide | str,
+        qty: float,
+        order_type: OrderType | str = OrderType.MARKET,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        tif: TimeInForce | str = TimeInForce.DAY,
+        reason: str = "",
+    ) -> str:
+        """Submit an order. Returns the strategy-side ``client_order_id``."""
+        self._next_client_order_id += 1
+        cid = f"c{self._next_client_order_id}"
+        req = OrderRequest(
+            client_order_id=cid,
+            symbol=symbol,
+            side=OrderSide(side) if not isinstance(side, OrderSide) else side,
+            qty=qty,
+            order_type=(
+                OrderType(order_type) if not isinstance(order_type, OrderType) else order_type
+            ),
+            limit_price=limit_price,
+            stop_price=stop_price,
+            tif=TimeInForce(tif) if not isinstance(tif, TimeInForce) else tif,
+            reason=reason,
+        )
+        req.validate_prices()
+        self._emit({"kind": "order", "payload": req.model_dump(mode="json")})
+        return cid
+
+    def cancel(self, order_id: str) -> None:
+        self._emit({"kind": "cancel", "payload": {"order_id": order_id}})
+
+    # ------------------------------------------------------------------
+    # Harness-private ingest methods — not part of the strategy API.
+    # ------------------------------------------------------------------
+
+    def _ingest_bar(self, bar: Bar) -> None:
+        self._history.setdefault(bar.symbol, []).append(bar)
+        # Bound the retained history to keep strategy subprocess memory sane;
+        # strategies that need more are expected to maintain their own state.
+        hist = self._history[bar.symbol]
+        if len(hist) > 500:
+            del hist[:-500]
+        self._now = bar.timestamp
+
+    def _ingest_state(
+        self,
+        *,
+        capital: float,
+        equity: float,
+        positions: List[_PositionSnapshot],
+        is_warmup: bool,
+    ) -> None:
+        self._capital = capital
+        self._equity = equity
+        self._is_warmup = is_warmup
+        self._positions = {p.symbol: p for p in positions}
+
+
+class Strategy:
+    """Base class for Strategy-Lab-generated scripts.
+
+    Subclasses override the ``on_*`` hooks they care about. The default
+    implementations are no-ops so minimal strategies stay terse.
+    """
+
+    def on_start(self, ctx: StrategyContext) -> None:  # noqa: D401 - hook
+        """Called once before the first bar."""
+
+    def on_bar(self, ctx: StrategyContext, bar: Bar) -> None:
+        """Called once per finalized bar. Primary decision point."""
+
+    def on_fill(self, ctx: StrategyContext, fill: Fill) -> None:
+        """Called when a previously-submitted order fills."""
+
+    def on_end(self, ctx: StrategyContext) -> None:
+        """Called after the last bar (or on session termination)."""
