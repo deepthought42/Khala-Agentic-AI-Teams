@@ -226,6 +226,64 @@ class TestFindRelevantWinners:
             results = _keyword_scored_candidates("brand1", ["engagement", "growth"])
             assert len(results) == 0
 
+    @patch("social_media_marketing_team.shared.winning_posts_bank.get_conn")
+    def test_lookback_uses_posted_at_with_created_at_fallback(self, mock_get_conn):
+        """Verify the SQL lookback clause uses COALESCE(posted_at, created_at)."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = []
+        mock_get_conn.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        find_relevant_winners("brand1", ["engagement"], lookback_days=30)
+        sql_text = mock_cur.execute.call_args[0][0]
+        assert "COALESCE(posted_at, created_at) >= %s" in sql_text
+
+
+class TestConceptMetaKeywords:
+    def test_pillar_extracted_from_title_and_added_to_keywords(self):
+        """Pillar prefix of concept title is added to keywords alongside linked_goals."""
+        from social_media_marketing_team.shared.performance_ingestion import (
+            find_concept_meta as _find_concept_meta,
+        )
+
+        result = {
+            "content_plan": {
+                "approved_ideas": [
+                    {
+                        "title": "Practical education \u2013 Customer story",
+                        "concept": "A story",
+                        "content_format": "carousel",
+                        "cta_variant": "CTA",
+                        "linked_goals": ["engagement"],
+                    }
+                ]
+            }
+        }
+        meta = _find_concept_meta(result, "Practical education \u2013 Customer story")
+        assert meta["archetype"] == "Customer story"
+        assert set(meta["keywords"]) == {"engagement", "Practical education"}
+
+    def test_pillar_not_duplicated_if_already_in_linked_goals(self):
+        from social_media_marketing_team.shared.performance_ingestion import (
+            find_concept_meta as _find_concept_meta,
+        )
+
+        result = {
+            "content_plan": {
+                "approved_ideas": [
+                    {
+                        "title": "engagement \u2013 Customer story",
+                        "linked_goals": ["engagement"],
+                    }
+                ]
+            }
+        }
+        meta = _find_concept_meta(result, "engagement \u2013 Customer story")
+        assert meta["keywords"] == ["engagement"]
+
 
 class TestLlmRerank:
     def test_rerank_reorders_candidates(self):

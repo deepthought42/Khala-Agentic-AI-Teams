@@ -212,13 +212,19 @@ def _keyword_scored_candidates(
 ) -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
+    # Lookback is based on the date the post was published (posted_at),
+    # not when it was ingested into the bank (created_at). This keeps the
+    # recency guardrail honest when older performance data is backfilled.
+    # Fall back to created_at when posted_at is NULL so rows without a
+    # recorded post date still participate in retrieval.
     sql = (
         "SELECT id, brand_id, campaign_name, platform, archetype, concept_title, "
         "concept_text, post_copy, content_format, cta_variant, keywords, "
         "semantic_summary, engagement_metrics, engagement_score, posted_at, "
         "source_job_id, created_at "
         "FROM social_media_posts "
-        "WHERE brand_id = %s AND engagement_score >= %s AND created_at >= %s"
+        "WHERE brand_id = %s AND engagement_score >= %s "
+        "AND COALESCE(posted_at, created_at) >= %s"
     )
     params: list[Any] = [brand_id, min_score, cutoff]
 
