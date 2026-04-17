@@ -77,21 +77,42 @@ class OrderBook:
         return list(self._pending.values())
 
     # ------------------------------------------------------------------
-    # TIF expiry — callers pass the current bar timestamp; day orders
-    # submitted on a strictly-earlier date are removed.
+    # TIF expiry — remove DAY orders whose submitted_at date is strictly
+    # earlier than ``cutoff_date``.
+    #
+    # An order submitted after bar B(d1) gets its first fill attempt on
+    # its symbol's next bar. In multi-symbol timelines that next bar may
+    # still share the same date (e.g. AAA(d1) → BBB(d1) → AAA(d2)): if
+    # we expire on the first d2 event using d2 as the cutoff, AAA's order
+    # is killed before AAA(d2) ever sees it. Callers therefore pass the
+    # *previous* bar's timestamp so orders born on date d1 remain alive
+    # for the entirety of the first date that is strictly after d1.
     # ------------------------------------------------------------------
 
-    def expire_day_orders(self, current_date: str) -> List[PendingOrder]:
+    def expire_day_orders(self, cutoff_date: str) -> List[PendingOrder]:
         expired: List[PendingOrder] = []
         for oid in list(self._pending.keys()):
             po = self._pending[oid]
             if po.request.tif != TimeInForce.DAY:
                 continue
             # Compare date prefix only so intraday timestamps also work.
-            if _date_only(po.submitted_at) < _date_only(current_date):
+            if _date_only(po.submitted_at) < _date_only(cutoff_date):
                 expired.append(po)
                 self.remove(oid)
         return expired
+
+    def cancel_by_client_order_id(self, client_order_id: str) -> bool:
+        """Cancel the (at most one) pending order carrying this client ID.
+
+        Strategy code only knows the client-side IDs it generated via
+        ``ctx.submit_order`` (``c1``, ``c2``, …); the engine's internal
+        ``order_id`` never crosses the subprocess boundary before fill.
+        This lookup translates without requiring a round-trip ack.
+        """
+        for oid, po in self._pending.items():
+            if po.request.client_order_id == client_order_id:
+                return self.cancel(oid)
+        return False
 
 
 def _date_only(ts: str) -> str:

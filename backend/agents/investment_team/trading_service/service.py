@@ -95,9 +95,15 @@ class TradingService:
                         continue
                     cur_bar = event.bar
 
-                    # 1) Expire day orders on date change.
+                    # 1) Expire day orders on date change. Use prev_bar's
+                    #    date as the cutoff so orders submitted on date d1
+                    #    remain alive through *all* of the following date
+                    #    (d2) — if we used cur_bar's date, a cross-symbol
+                    #    timeline like AAA(d1)→BBB(d1)→AAA(d2) would kill
+                    #    the AAA order before AAA(d2) got a chance to fill
+                    #    it.
                     if prev_bar is not None and (cur_bar.timestamp[:10] != prev_bar.timestamp[:10]):
-                        order_book.expire_day_orders(cur_bar.timestamp)
+                        order_book.expire_day_orders(prev_bar.timestamp)
 
                     # 2) Fill any orders from the previous iteration against
                     #    *this* (current) bar. These were submitted by the
@@ -136,12 +142,6 @@ class TradingService:
                         is_warmup=False,
                     )
 
-                    # Map cancels.
-                    for c in resp.cancels:
-                        oid = c.get("order_id")
-                        if oid:
-                            order_book.cancel(oid)
-
                     # Orders submitted now are evaluated against the *next*
                     # bar (look-ahead-safe).
                     for o in resp.orders:
@@ -151,6 +151,23 @@ class TradingService:
                             pending_for_prev.append(req)
                         except Exception as exc:  # malformed request from strategy
                             logger.warning("dropping malformed order from strategy: %s", exc)
+
+                    # Cancels. The strategy only ever sees the client-side
+                    # ID it generated (``c1``, ``c2``, …); the engine's
+                    # internal ``order_id`` never crosses the subprocess
+                    # boundary before fill. Translate here. Also honor
+                    # cancels that target orders still sitting in
+                    # ``pending_for_prev`` (submitted on this same bar and
+                    # not yet pushed into the book), which is how a
+                    # strategy can undo an order it just placed.
+                    for c in resp.cancels:
+                        client_oid = c.get("order_id")
+                        if not client_oid:
+                            continue
+                        pending_for_prev = [
+                            req for req in pending_for_prev if req.client_order_id != client_oid
+                        ]
+                        order_book.cancel_by_client_order_id(client_oid)
 
                     prev_bar = cur_bar
 

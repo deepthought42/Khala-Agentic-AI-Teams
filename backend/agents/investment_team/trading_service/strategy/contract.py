@@ -211,8 +211,13 @@ class StrategyContext:
         self._emit({"kind": "order", "payload": req.model_dump(mode="json")})
         return cid
 
-    def cancel(self, order_id: str) -> None:
-        self._emit({"kind": "cancel", "payload": {"order_id": order_id}})
+    def cancel(self, client_order_id: str) -> None:
+        """Cancel a pending order by the ID ``submit_order`` returned.
+
+        The engine matches by client-side ID (``c1``, ``c2``, …) since that
+        is the only ID the strategy process ever sees before fill.
+        """
+        self._emit({"kind": "cancel", "payload": {"order_id": client_order_id}})
 
     # ------------------------------------------------------------------
     # Harness-private ingest methods — not part of the strategy API.

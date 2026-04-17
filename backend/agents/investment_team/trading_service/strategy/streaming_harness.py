@@ -30,11 +30,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -87,6 +89,12 @@ class StreamingHarness:
         self._tmpdir: Optional[tempfile.TemporaryDirectory] = None
         self._proc: Optional[subprocess.Popen] = None
         self._started_at: float = 0.0
+        # stdout is drained by a background thread so the per-event timeout
+        # actually fires even when user strategy code hangs without emitting
+        # a protocol line — a bare ``readline()`` on the main thread would
+        # otherwise block indefinitely.
+        self._line_q: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        self._reader: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -137,7 +145,27 @@ class StreamingHarness:
             bufsize=1,
         )
         self._started_at = time.monotonic()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
         return self
+
+    def _read_loop(self) -> None:
+        """Drain stdout line-by-line into ``self._line_q``.
+
+        Sentinels ``("eof", None)`` / ``("err", exc)`` mark the end so the
+        main thread can distinguish subprocess crash from benign shutdown.
+        """
+        stdout = self._proc.stdout if self._proc is not None else None
+        if stdout is None:
+            self._line_q.put(("eof", None))
+            return
+        try:
+            for line in stdout:
+                self._line_q.put(("line", line))
+        except Exception as exc:  # pragma: no cover — defensive
+            self._line_q.put(("err", exc))
+            return
+        self._line_q.put(("eof", None))
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
@@ -205,15 +233,38 @@ class StreamingHarness:
         resp = HarnessResponse()
         deadline = time.monotonic() + self._event_timeout
         while True:
-            if time.monotonic() > deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 self._proc.kill()
                 raise StrategyRuntimeError(
                     f"strategy did not ack within {self._event_timeout}s",
                     etype="event_timeout",
                 )
-            raw = self._proc.stdout.readline()  # type: ignore[union-attr]
+            try:
+                kind, payload = self._line_q.get(timeout=remaining)
+            except queue.Empty:
+                # User strategy code hung without emitting a protocol line.
+                self._proc.kill()
+                raise StrategyRuntimeError(
+                    f"strategy did not ack within {self._event_timeout}s",
+                    etype="event_timeout",
+                ) from None
+            if kind == "eof":
+                stderr = _drain(self._proc.stderr)
+                raise StrategyRuntimeError(
+                    f"strategy subprocess closed stdout unexpectedly: {stderr[:1000]}",
+                    etype="crash",
+                )
+            if kind == "err":
+                raise StrategyRuntimeError(
+                    f"strategy stdout read error: {payload!r}",
+                    etype="crash",
+                )
+            raw = payload
             if not raw:
-                # EOF — subprocess died.
+                # Sentinel safety — shouldn't occur with the thread-backed
+                # reader, but keep the semantics of treating empty input as
+                # an unexpected subprocess close.
                 stderr = _drain(self._proc.stderr)
                 raise StrategyRuntimeError(
                     f"strategy subprocess closed stdout unexpectedly: {stderr[:1000]}",
