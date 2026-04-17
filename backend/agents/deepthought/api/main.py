@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,25 +91,51 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
+    # Keepalive interval in seconds. Overridable for tests.
+    keepalive_interval = float(os.getenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "10"))
+
     async def _generate():
-        while True:
-            # Non-blocking check — yields control back to the event loop
-            try:
-                event = event_queue.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.1)
-                continue
-            if event is None:
-                break
-            yield f"event: agent_event\ndata: {event.model_dump_json()}\n\n"
+        done_sent = False
+        try:
+            # Emit bytes immediately so intermediaries (proxies, LBs) see liveness
+            # before the orchestrator's blocking classify/LLM call begins.
+            yield ": starting\n\n"
+            last_yield_ts = time.monotonic()
 
-        if result_holder and isinstance(result_holder[0], DeepthoughtResponse):
-            yield f"event: result\ndata: {result_holder[0].model_dump_json()}\n\n"
-        elif result_holder and isinstance(result_holder[0], Exception):
-            error_msg = json.dumps({"error": str(result_holder[0])})
-            yield f"event: error\ndata: {error_msg}\n\n"
+            while True:
+                try:
+                    event = event_queue.get_nowait()
+                except queue.Empty:
+                    # Periodic SSE comment keepalive — ignored by EventSource clients
+                    # but keeps intermediate read timeouts at bay.
+                    if time.monotonic() - last_yield_ts >= keepalive_interval:
+                        yield ": keepalive\n\n"
+                        last_yield_ts = time.monotonic()
+                    await asyncio.sleep(0.1)
+                    continue
+                if event is None:
+                    break
+                yield f"event: agent_event\ndata: {event.model_dump_json()}\n\n"
+                last_yield_ts = time.monotonic()
 
-        yield "event: done\ndata: {}\n\n"
+            if result_holder and isinstance(result_holder[0], DeepthoughtResponse):
+                yield f"event: result\ndata: {result_holder[0].model_dump_json()}\n\n"
+            elif result_holder and isinstance(result_holder[0], Exception):
+                error_msg = json.dumps({"error": str(result_holder[0])})
+                yield f"event: error\ndata: {error_msg}\n\n"
+
+            yield "event: done\ndata: {}\n\n"
+            done_sent = True
+        except asyncio.CancelledError:
+            # Client disconnected; propagate so FastAPI can clean up.
+            raise
+        finally:
+            if not done_sent:
+                try:
+                    yield 'event: done\ndata: {"reason":"interrupted"}\n\n'
+                except Exception:
+                    # Client already gone — nothing we can do.
+                    pass
 
     return StreamingResponse(
         _generate(),

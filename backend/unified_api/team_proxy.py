@@ -28,6 +28,7 @@ Usage from a mount function::
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -76,6 +77,7 @@ async def proxy_request(
     *,
     team_key: str = "",
     timeout: float | None = None,
+    stream: bool | None = None,
 ) -> Response:
     """Forward a FastAPI *request* to *target_base_url*/*path* and return the response.
 
@@ -86,6 +88,11 @@ async def proxy_request(
         and log correlation. If empty, a shared default client is used.
     timeout:
         Per-team timeout in seconds (from ``TeamConfig.timeout_seconds``).
+    stream:
+        Explicit SSE-intent flag. When ``True`` the per-request read timeout is
+        disabled so sparse SSE streams are not cut mid-chunk by the client's
+        default read deadline. When ``None`` (default) the path is inspected:
+        any path ending in ``/stream`` is treated as streaming.
     """
     effective_key = team_key or "_default"
 
@@ -111,8 +118,17 @@ async def proxy_request(
 
     body = await request.body()
 
+    # SSE routes: disable read timeout for this request so long idle gaps between
+    # events don't surface as ERR_INCOMPLETE_CHUNKED_ENCODING in the browser. The
+    # shared client keeps its default timeout for non-streaming traffic.
+    is_streaming = stream if stream is not None else path.rstrip("/").endswith("/stream")
+    per_request_timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0) if is_streaming else None
+
     try:
-        req = client.build_request(method=request.method, url=url, headers=headers, content=body)
+        build_kwargs: dict = {"method": request.method, "url": url, "headers": headers, "content": body}
+        if per_request_timeout is not None:
+            build_kwargs["timeout"] = per_request_timeout
+        req = client.build_request(**build_kwargs)
         resp = await client.send(req, stream=True)
     except httpx.HTTPError as exc:
         circuit_breaker.record_failure(effective_key)
@@ -142,8 +158,22 @@ async def proxy_request(
             except httpx.HTTPError as exc:
                 logger.error(
                     "Proxy upstream disconnected mid-stream: %s %s -> %s: %s",
-                    request.method, request.url.path, url, exc,
+                    request.method,
+                    request.url.path,
+                    url,
+                    exc,
                 )
+                # Emit a canonical SSE terminator so the browser closes cleanly
+                # instead of reporting ERR_INCOMPLETE_CHUNKED_ENCODING.
+                err_payload = json.dumps(
+                    {
+                        "error": "upstream_stream_error",
+                        "type": type(exc).__name__,
+                        "detail": str(exc),
+                    }
+                )
+                yield f"event: error\ndata: {err_payload}\n\n".encode()
+                yield b"event: done\ndata: {}\n\n"
             finally:
                 await resp.aclose()
 
