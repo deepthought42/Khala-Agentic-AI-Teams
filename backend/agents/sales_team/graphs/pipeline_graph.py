@@ -36,7 +36,11 @@ def build_pipeline_graph(
     include_nurture:
         Whether to include the nurture path from qualification.
     """
-    insights_ctx = f"\n\nLearning insights from prior campaigns:\n{learning_insights}" if learning_insights else ""
+    insights_ctx = (
+        f"\n\nLearning insights from prior campaigns:\n{learning_insights}"
+        if learning_insights
+        else ""
+    )
 
     builder = GraphBuilder()
     builder.set_graph_id("sales_pipeline")

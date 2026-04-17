@@ -23,9 +23,18 @@ from typing import Any, Optional
 from strands import Agent as StrandsAgent
 from strands_tools import current_time, http_request, python_repl
 
+from .models import ProspectDossier
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOLS = [http_request, python_repl, current_time]
+
+# Dossiers below this confidence drop to the company_soft_opener angle.
+_PERSONALIZATION_CONFIDENCE_THRESHOLD = 0.6
+
+# How many items we carry into the prompt from each dossier list. Keeps the
+# rendered block bounded regardless of how rich the dossier is.
+_DOSSIER_LIST_TOP_K = 5
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +117,8 @@ Every message must be:
 - **Priority** — create urgency tied to a real trigger, not artificial pressure.
 
 ### Sales Hacker Cadence (Jeb Blount)
-Build a 6-touch sequence:
-1. Day 1: Personalized email (pain-first)
+Build a 6-touch sequence per variant:
+1. Day 1: Personalized email (pain-first, angle-led)
 2. Day 3: Cold call with voicemail
 3. Day 5: Follow-up email referencing the call attempt
 4. Day 8: LinkedIn connection request with value note
@@ -122,12 +131,75 @@ Elevator pitch: One sentence on what you do and who you help.
 Pivot to pain: "We work with [title] at [ICP companies] who struggle with [pain]. Is that on your radar at all?"
 Book the meeting: "I'd love to learn more about your situation — are you open to 15 minutes [day]?"
 
+## Personalization Contract (hard rules — violations invalidate the variant)
+1. The Day-1 opener sentence MUST cite at least ONE specific item from the
+   provided `## Prospect Dossier` block:
+     - publications[]             (name the title + venue)
+     - recent_activity[]          (name the event + rough date)
+     - trigger_events[]           (name the trigger + implication)
+     - mutual_connection_angles[] (name the shared entity)
+2. Do NOT cite a detail that is not in the dossier. Do not infer from the
+   company name alone. If the dossier is empty or its `confidence` is
+   below the threshold stated in the prompt header, the ONLY allowed
+   angle is `company_soft_opener`.
+3. For every cited detail in an email body, emit an entry in
+   `evidence_citations` identifying the dossier field path
+   (e.g. "publications[2]") and — where the dossier provides one — a
+   `source_url` drawn from `dossier.sources`. Do NOT invent URLs.
+4. If you cannot meet rules 1–3 for a non-fallback angle, emit the
+   `company_soft_opener` template and set
+   `personalization_grade = "fallback"` — do NOT fake intimacy.
+
+## Angle Selection
+Pick the angle with the strongest evidence in the dossier:
+- trigger_event       — recent funding, reorg, leadership change, product launch
+- thought_leadership  — the prospect has published or spoken on a topic the
+                        product touches
+- mutual_connection   — shared employer, school, community, or open-source project
+- peer_proof          — a named customer the prospect will recognize (use the
+                        case_studies the caller provides)
+- company_soft_opener — company-level trigger only, no person-level claim;
+                        this is the required angle when dossier confidence
+                        is below the configured threshold
+
+## Variants
+Produce exactly N variants where N is the integer in the caller's
+"Produce N variants" instruction. Each variant MUST use a DIFFERENT angle
+— never repeat an angle across variants. Rank by expected reply rate in
+each variant's `rationale`.
+
 ## Output Format
-Return a JSON object with keys:
-- email_sequence: array of {day, subject_line, body, personalization_tokens, call_to_action}
-- call_script: full call script as a string
-- linkedin_message: connection request copy
-- sequence_rationale: brief explanation of angle chosen
+Return a single JSON object with this exact shape:
+{
+  "variants": [
+    {
+      "angle": "<one of: trigger_event | thought_leadership | mutual_connection | peer_proof | company_soft_opener>",
+      "email_sequence": [
+        {
+          "day": 1,
+          "subject_line": "...",
+          "body": "...",
+          "personalization_tokens": ["first_name", "..."],
+          "call_to_action": "...",
+          "evidence_citations": [
+            {
+              "claim": "...",
+              "dossier_field": "trigger_events[0]",
+              "source_url": "https://...",
+              "strength": "strong"
+            }
+          ]
+        }
+      ],
+      "call_script": "...",
+      "linkedin_message": "...",
+      "rationale": "...",
+      "personalization_grade": "high"
+    }
+  ]
+}
+
+Do not wrap the JSON in prose. Do not include Markdown fences.
 """
 
 _QUALIFIER_SYSTEM_PROMPT = """You are a Lead Qualification Specialist with deep expertise in BANT, MEDDIC,
@@ -581,11 +653,93 @@ class DossierBuilderAgent:
         return _call_agent(self._agent, prompt)
 
 
+def _truncate(items: list, k: int = _DOSSIER_LIST_TOP_K) -> list:
+    return items[:k] if len(items) > k else items
+
+
+def _render_dossier_for_prompt(dossier: ProspectDossier) -> str:
+    """Render a ProspectDossier as a compact Markdown block for the outreach prompt.
+
+    Deterministic. Truncates long lists to top-K so the rendered block stays
+    within a bounded token budget regardless of dossier thickness. Empty
+    sections are omitted so the model never sees an empty heading.
+    """
+    lines: list[str] = [f"## Prospect Dossier (confidence: {dossier.confidence:.2f})"]
+
+    # --- Identity ---
+    identity_bits: list[str] = []
+    name_title = dossier.full_name
+    if dossier.current_title or dossier.current_company:
+        name_title = f"{name_title} — {dossier.current_title} at {dossier.current_company}".strip()
+    identity_bits.append(f"- Name: {name_title}")
+    if dossier.location:
+        identity_bits.append(f"- Location: {dossier.location}")
+    if dossier.linkedin_url:
+        identity_bits.append(f"- LinkedIn: {dossier.linkedin_url}")
+    if dossier.personal_site:
+        identity_bits.append(f"- Personal site: {dossier.personal_site}")
+    lines.append("### Identity")
+    lines.extend(identity_bits)
+
+    if dossier.executive_summary:
+        lines.append("### Executive Summary")
+        lines.append(dossier.executive_summary)
+
+    if dossier.trigger_events:
+        lines.append("### Trigger Events")
+        for ev in _truncate(dossier.trigger_events):
+            lines.append(f"- {ev}")
+
+    if dossier.publications:
+        lines.append("### Publications")
+        for p in _truncate(dossier.publications):
+            bits = [f"[{p.kind}] {p.title}"]
+            if p.venue:
+                bits.append(f"— {p.venue}")
+            if p.date:
+                bits.append(f"({p.date})")
+            url_suffix = f"\n  {p.url}" if p.url else ""
+            lines.append(f"- {' '.join(bits)}{url_suffix}")
+
+    if dossier.recent_activity:
+        lines.append("### Recent Activity")
+        for a in _truncate(dossier.recent_activity):
+            lines.append(f"- {a}")
+
+    if dossier.conversation_hooks:
+        lines.append("### Conversation Hooks")
+        for h in _truncate(dossier.conversation_hooks):
+            lines.append(f"- {h}")
+
+    if dossier.mutual_connection_angles:
+        lines.append("### Mutual Connection Angles")
+        for m in _truncate(dossier.mutual_connection_angles):
+            lines.append(f"- {m}")
+
+    if dossier.stated_beliefs:
+        lines.append("### Stated Beliefs")
+        for b in _truncate(dossier.stated_beliefs):
+            lines.append(f"- {b}")
+
+    if dossier.topics_of_interest:
+        lines.append("### Topics of Interest")
+        lines.append(", ".join(_truncate(dossier.topics_of_interest, 10)))
+
+    if dossier.sources:
+        lines.append("### Sources (only these URLs may be cited)")
+        for s in dossier.sources:
+            lines.append(f"- {s}")
+
+    return "\n".join(lines)
+
+
 @dataclass
 class OutreachAgent:
     """SDR/BDR: crafts hyper-personalized cold outreach sequences.
 
     Grounded in Salesfolk, Jill Konrath SNAP, and Jeb Blount's 6-touch cadence.
+    Requires a ProspectDossier per call — every personalization claim in the
+    generated copy must trace back to a cited dossier field.
     """
 
     role: str = "Outreach Specialist (SDR/BDR)"
@@ -597,22 +751,32 @@ class OutreachAgent:
     def generate_sequence(
         self,
         prospect_json: str,
+        dossier: ProspectDossier,
         product_name: str,
         value_proposition: str,
         case_studies: str,
         company_context: str,
         insights_context: Optional[str] = None,
+        variant_count: int = 3,
     ) -> str:
+        dossier_block = _render_dossier_for_prompt(dossier)
         prompt = _with_insights(
-            f"Create a complete 6-touch outreach sequence for this prospect:\n{prospect_json}\n\n"
+            f"Confidence threshold for person-level personalization: "
+            f"{_PERSONALIZATION_CONFIDENCE_THRESHOLD}. If the dossier's confidence is below "
+            f"this threshold, every variant MUST use the company_soft_opener angle.\n\n"
+            f"{dossier_block}\n\n"
+            f"---\n\n"
+            f"Produce {variant_count} variants for this prospect:\n{prospect_json}\n\n"
             f"Product: {product_name}\n"
             f"Value proposition: {value_proposition}\n"
             f"Company context: {company_context}\n"
             f"Customer wins to reference: {case_studies}\n\n"
             "Apply Salesfolk personalization, SNAP principles, and the Jeb Blount 6-touch cadence. "
-            "Use the learning context above (if any) to replicate high-reply subject line angles "
-            "and avoid outreach patterns associated with low response rates. "
-            "Return a JSON object with email_sequence, call_script, linkedin_message, sequence_rationale.",
+            "Enforce the Personalization Contract — every person-level claim in an email body "
+            "must be paired with an evidence_citation whose dossier_field is a real path and "
+            "whose source_url (when non-null) is one of the URLs listed under '### Sources' "
+            "above. Use the learning context above (if any) to replicate high-reply angles. "
+            "Return a single JSON object matching the schema in the system prompt.",
             insights_context,
         )
         return _call_agent(self._agent, prompt)

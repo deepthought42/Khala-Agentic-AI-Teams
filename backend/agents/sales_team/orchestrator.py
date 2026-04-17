@@ -10,6 +10,7 @@ from typing import Callable, List, Optional
 from uuid import uuid4
 
 from .agents import (
+    _PERSONALIZATION_CONFIDENCE_THRESHOLD,
     CloserAgent,
     DecisionMakerMapperAgent,
     DiscoveryAgent,
@@ -28,6 +29,8 @@ from .models import (
     DeepResearchRequest,
     DeepResearchResult,
     DiscoveryPlan,
+    EmailTouch,
+    EvidenceCitation,
     IdealCustomerProfile,
     LearningInsights,
     MEDDICScore,
@@ -35,6 +38,7 @@ from .models import (
     ObjectionHandler,
     OutcomeResult,
     OutreachSequence,
+    OutreachVariant,
     PipelineCoachingReport,
     PipelineStage,
     ProposalRequest,
@@ -243,24 +247,188 @@ def _qual_from_json(raw: str, prospect: Prospect) -> Optional[QualificationScore
         return None
 
 
-def _outreach_from_json(raw: str, prospect: Prospect) -> Optional[OutreachSequence]:
-    from .models import EmailTouch
+_ALLOWED_ANGLES = {
+    "trigger_event",
+    "thought_leadership",
+    "mutual_connection",
+    "peer_proof",
+    "company_soft_opener",
+}
 
+
+def _verify_citations(
+    touch_data: dict, dossier: ProspectDossier, prospect_id: str, dossier_id: str
+) -> tuple[List[EvidenceCitation], bool]:
+    """Strip citations whose source_url isn't listed in dossier.sources.
+
+    Returns the verified list and a flag indicating whether any citation was
+    stripped (used to downgrade the variant's personalization_grade).
+    """
+    allowed_urls = set(dossier.sources or [])
+    verified: List[EvidenceCitation] = []
+    stripped = False
+    for cit in touch_data.get("evidence_citations", []) or []:
+        if not isinstance(cit, dict):
+            continue
+        url = cit.get("source_url")
+        if url and url not in allowed_urls:
+            logger.warning(
+                "sales.outreach.citation_unverified prospect_id=%s dossier_id=%s url=%s",
+                prospect_id,
+                dossier_id,
+                url,
+            )
+            stripped = True
+            continue
+        try:
+            verified.append(EvidenceCitation(**cit))
+        except Exception as exc:
+            logger.warning("Could not parse EvidenceCitation: %s — %s", cit, exc)
+    return verified, stripped
+
+
+def _build_fallback_variant(prospect: Prospect) -> OutreachVariant:
+    """Minimal company_soft_opener variant used when the model fails to produce one
+    for a low-confidence dossier."""
+    opener = (
+        f"Saw the work coming out of {prospect.company_name} — wanted to ask whether you're "
+        "the right person to talk to about improvements in this area. Happy to share what "
+        "we've seen at similar companies if useful."
+    )
+    return OutreachVariant(
+        angle="company_soft_opener",
+        email_sequence=[
+            EmailTouch(
+                day=1,
+                subject_line=f"Quick question for {prospect.company_name}",
+                body=opener,
+                call_to_action="Are you open to a 15-minute call next week?",
+            )
+        ],
+        rationale="Dossier confidence below threshold — using company-level soft opener.",
+        personalization_grade="fallback",
+    )
+
+
+def _outreach_from_json(
+    raw: str, prospect: Prospect, dossier: ProspectDossier
+) -> Optional[OutreachSequence]:
     data = _parse_json(raw, {})
     if not isinstance(data, dict):
         return None
+
+    low_confidence = dossier.confidence < _PERSONALIZATION_CONFIDENCE_THRESHOLD
+    variants: List[OutreachVariant] = []
+
+    for v in data.get("variants", []) or []:
+        if not isinstance(v, dict):
+            continue
+        angle = v.get("angle")
+        if angle not in _ALLOWED_ANGLES:
+            logger.warning(
+                "sales.outreach.unknown_angle prospect_id=%s angle=%s", prospect.id, angle
+            )
+            continue
+
+        email_seq: List[EmailTouch] = []
+        any_stripped = False
+        for e in v.get("email_sequence", []) or []:
+            if not isinstance(e, dict):
+                continue
+            verified, stripped = _verify_citations(e, dossier, prospect.id, dossier.dossier_id)
+            any_stripped = any_stripped or stripped
+            try:
+                email_seq.append(
+                    EmailTouch(
+                        day=e.get("day", 0),
+                        subject_line=e.get("subject_line", ""),
+                        body=e.get("body", ""),
+                        personalization_tokens=e.get("personalization_tokens", []) or [],
+                        call_to_action=e.get("call_to_action", ""),
+                        evidence_citations=verified,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Could not build EmailTouch: %s — %s", e, exc)
+
+        grade = v.get("personalization_grade", "medium")
+        if grade not in ("high", "medium", "low", "fallback"):
+            grade = "medium"
+
+        # Enforcement 1: if a non-fallback angle's Day-1 email has zero
+        # verified citations, force fallback — model skipped the contract.
+        if angle != "company_soft_opener" and email_seq:
+            day1 = next((t for t in email_seq if t.day <= 1), email_seq[0])
+            if not day1.evidence_citations:
+                logger.warning(
+                    "sales.outreach.missing_citations prospect_id=%s dossier_id=%s angle=%s",
+                    prospect.id,
+                    dossier.dossier_id,
+                    angle,
+                )
+                grade = "fallback"
+
+        # Enforcement 2: if any citation was stripped, downgrade to "low".
+        if any_stripped and grade in ("high", "medium"):
+            grade = "low"
+
+        try:
+            variants.append(
+                OutreachVariant(
+                    angle=angle,
+                    email_sequence=email_seq,
+                    call_script=v.get("call_script", ""),
+                    linkedin_message=v.get("linkedin_message", ""),
+                    rationale=v.get("rationale", ""),
+                    personalization_grade=grade,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not build OutreachVariant: %s", exc)
+
+    # Enforcement 3: confidence gate. If the dossier is below threshold, the
+    # only allowed angle is company_soft_opener — drop everything else.
+    if low_confidence:
+        overridden = [v for v in variants if v.angle != "company_soft_opener"]
+        for v in overridden:
+            logger.warning(
+                "sales.outreach.confidence_override prospect_id=%s dossier_id=%s "
+                "confidence=%.2f original_angle=%s",
+                prospect.id,
+                dossier.dossier_id,
+                dossier.confidence,
+                v.angle,
+            )
+        variants = [v for v in variants if v.angle == "company_soft_opener"]
+        if not variants:
+            variants = [_build_fallback_variant(prospect)]
+
+    if not variants:
+        logger.warning("sales.outreach.no_variants prospect_id=%s — emitting fallback", prospect.id)
+        variants = [_build_fallback_variant(prospect)]
+
     try:
-        email_seq = [EmailTouch(**e) for e in data.get("email_sequence", [])]
-        return OutreachSequence(
+        seq = OutreachSequence(
             prospect=prospect,
-            email_sequence=email_seq,
-            call_script=data.get("call_script", ""),
-            linkedin_message=data.get("linkedin_message", ""),
-            sequence_rationale=data.get("sequence_rationale", ""),
+            dossier_id=dossier.dossier_id,
+            dossier_confidence=dossier.confidence,
+            variants=variants,
         )
     except Exception as exc:
         logger.warning("Could not build OutreachSequence: %s", exc)
         return None
+
+    logger.info(
+        "sales.outreach.generated prospect_id=%s dossier_id=%s variants_count=%d "
+        "angles=%s grades=%s confidence=%.2f",
+        prospect.id,
+        dossier.dossier_id,
+        len(seq.variants),
+        [v.angle for v in seq.variants],
+        [v.personalization_grade for v in seq.variants],
+        dossier.confidence,
+    )
+    return seq
 
 
 def _nurture_from_json(
@@ -458,6 +626,31 @@ class SalesPodOrchestrator:
         except ValueError:
             return False
 
+    def load_dossiers_for_prospects(self, prospects: List[Prospect]) -> dict[str, ProspectDossier]:
+        """Batch-load dossiers for the prospects we're about to run outreach on.
+
+        Returns a map keyed by prospect.id. Prospects without a saved dossier
+        are simply absent from the map — the caller decides whether to skip
+        them. Safe to call when Postgres is unreachable (returns empty map).
+
+        Public so HTTP handlers can build the ``dossier_map`` argument for
+        :meth:`outreach_only` by prospect id.
+        """
+        ids = [p.id for p in prospects if p.id]
+        if not ids:
+            return {}
+        try:
+            from .dossier_store import DossierStore
+
+            return DossierStore().get_dossiers_by_prospect_ids(ids)
+        except Exception as exc:
+            logger.warning(
+                "DossierStore unavailable for outreach dossier lookup — skipping all "
+                "outreach for this run. Error: %s",
+                exc,
+            )
+            return {}
+
     def run(
         self,
         request: SalesPipelineRequest,
@@ -519,12 +712,27 @@ class SalesPodOrchestrator:
         if self._should_run(PipelineStage.OUTREACH, entry):
             update("outreach", 20)
             logger.info("Sales pod [%s]: outreach stage for %d prospects", job_id, len(prospects))
+            dossier_map = self.load_dossiers_for_prospects(prospects)
             sequences: List[OutreachSequence] = []
             for p in prospects:
+                dossier = dossier_map.get(p.id)
+                if dossier is None:
+                    logger.warning(
+                        "sales.outreach.dossier_missing prospect_id=%s company=%s",
+                        p.id,
+                        p.company_name,
+                    )
+                    continue
                 raw = self.outreach.generate_sequence(
-                    p.model_dump_json(indent=2), product, vp, cases, ctx, insights_ctx
+                    p.model_dump_json(indent=2),
+                    dossier,
+                    product,
+                    vp,
+                    cases,
+                    ctx,
+                    insights_ctx,
                 )
-                seq = _outreach_from_json(raw, p)
+                seq = _outreach_from_json(raw, p, dossier)
                 if seq:
                     sequences.append(seq)
             result.outreach_sequences = sequences
@@ -740,24 +948,40 @@ class SalesPodOrchestrator:
     def outreach_only(
         self,
         prospects: List[Prospect],
+        dossier_map: dict[str, ProspectDossier],
         product_name: str,
         value_proposition: str,
         case_study_snippets: List[str],
         company_context: str,
     ) -> List[OutreachSequence]:
+        """Generate outreach sequences for a set of prospects.
+
+        Every prospect must have a dossier in ``dossier_map`` keyed by
+        ``prospect.id``. Prospects without a dossier are skipped with a
+        ``sales.outreach.dossier_missing`` log line.
+        """
         ctx = self._load_insights_ctx()
         cases = "\n".join(case_study_snippets)
         sequences = []
         for p in prospects:
+            dossier = dossier_map.get(p.id)
+            if dossier is None:
+                logger.warning(
+                    "sales.outreach.dossier_missing prospect_id=%s company=%s",
+                    p.id,
+                    p.company_name,
+                )
+                continue
             raw = self.outreach.generate_sequence(
                 p.model_dump_json(indent=2),
+                dossier,
                 product_name,
                 value_proposition,
                 cases,
                 company_context,
                 ctx,
             )
-            seq = _outreach_from_json(raw, p)
+            seq = _outreach_from_json(raw, p, dossier)
             if seq:
                 sequences.append(seq)
         return sequences

@@ -143,51 +143,84 @@
           <mat-expansion-panel class="inner-panel">
             <mat-expansion-panel-header>
               <mat-panel-title>{{ seq.prospect.company_name }}</mat-panel-title>
-              <mat-panel-description>{{ seq.email_sequence.length }} email touches</mat-panel-description>
+              <mat-panel-description>
+                {{ seq.variants.length }} variant(s) · dossier confidence
+                {{ seq.dossier_confidence.toFixed(2) }}
+              </mat-panel-description>
             </mat-expansion-panel-header>
 
-            @if (seq.sequence_rationale) {
-              <div class="rationale-block">
-                <mat-icon>lightbulb</mat-icon>
-                <span>{{ seq.sequence_rationale }}</span>
-              </div>
-            }
+            @for (variant of seq.variants; track $index) {
+              <div class="variant-block">
+                <div class="variant-header">
+                  <span class="variant-angle">{{ variant.angle }}</span>
+                  <span class="variant-grade grade-{{ variant.personalization_grade }}">
+                    {{ variant.personalization_grade }}
+                  </span>
+                </div>
 
-            <div class="email-sequence">
-              @for (touch of seq.email_sequence; track touch.day) {
-                <div class="email-touch">
-                  <div class="touch-day">Day {{ touch.day + 1 }}</div>
-                  <div class="touch-body">
-                    <div class="touch-subject">{{ touch.subject_line }}</div>
-                    <pre class="touch-text">{{ touch.body }}</pre>
-                    @if (touch.call_to_action) {
-                      <div class="touch-cta">
-                        <mat-icon>arrow_forward</mat-icon>
-                        {{ touch.call_to_action }}
-                      </div>
-                    }
+                @if (variant.rationale) {
+                  <div class="rationale-block">
+                    <mat-icon>lightbulb</mat-icon>
+                    <span>{{ variant.rationale }}</span>
                   </div>
-                </div>
-              }
-            </div>
+                }
 
-            @if (seq.call_script) {
-              <div class="script-block">
-                <div class="script-label">
-                  <mat-icon>phone</mat-icon>
-                  Call Script
+                <div class="email-sequence">
+                  @for (touch of variant.email_sequence; track touch.day) {
+                    <div class="email-touch">
+                      <div class="touch-day">Day {{ touch.day + 1 }}</div>
+                      <div class="touch-body">
+                        <div class="touch-subject">{{ touch.subject_line }}</div>
+                        <pre class="touch-text">{{ touch.body }}</pre>
+                        @if (touch.call_to_action) {
+                          <div class="touch-cta">
+                            <mat-icon>arrow_forward</mat-icon>
+                            {{ touch.call_to_action }}
+                          </div>
+                        }
+                        @if (touch.evidence_citations.length) {
+                          <div class="touch-citations">
+                            <div class="citations-label">
+                              <mat-icon>link</mat-icon>
+                              Evidence
+                            </div>
+                            @for (cit of touch.evidence_citations; track $index) {
+                              <div class="citation">
+                                <span class="citation-field">{{ cit.dossier_field }}</span>
+                                <span class="citation-claim">{{ cit.claim }}</span>
+                                @if (cit.source_url) {
+                                  <a [href]="cit.source_url" target="_blank" rel="noopener">
+                                    source
+                                  </a>
+                                }
+                              </div>
+                            }
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  }
                 </div>
-                <pre class="script-text">{{ seq.call_script }}</pre>
-              </div>
-            }
 
-            @if (seq.linkedin_message) {
-              <div class="script-block">
-                <div class="script-label">
-                  <mat-icon>person_add</mat-icon>
-                  LinkedIn Message
-                </div>
-                <p class="script-text">{{ seq.linkedin_message }}</p>
+                @if (variant.call_script) {
+                  <div class="script-block">
+                    <div class="script-label">
+                      <mat-icon>phone</mat-icon>
+                      Call Script
+                    </div>
+                    <pre class="script-text">{{ variant.call_script }}</pre>
+                  </div>
+                }
+
+                @if (variant.linkedin_message) {
+                  <div class="script-block">
+                    <div class="script-label">
+                      <mat-icon>person_add</mat-icon>
+                      LinkedIn Message
+                    </div>
+                    <p class="script-text">{{ variant.linkedin_message }}</p>
+                  </div>
+                }
               </div>
             }
           </mat-expansion-panel>
