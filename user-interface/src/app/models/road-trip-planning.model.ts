@@ -173,11 +173,11 @@ export const DEFAULT_TRIP: TripRequest = {
 };
 
 /** Order + labels for the context panel. */
-export const TRIP_CONTEXT_SCHEMA: ReadonlyArray<{
+export const TRIP_CONTEXT_SCHEMA: readonly {
   key: TripSlotKey;
   label: string;
   required: boolean;
-}> = [
+}[] = [
   { key: 'start_location', label: 'Start', required: true },
   { key: 'end_location', label: 'End', required: false },
   { key: 'trip_duration_days', label: 'Duration', required: false },
@@ -190,7 +190,7 @@ export const TRIP_CONTEXT_SCHEMA: ReadonlyArray<{
 ];
 
 /** Minimum slots that must be filled before the /plan call is valid. */
-export const REQUIRED_SLOTS: ReadonlyArray<TripSlotKey> = [
+export const REQUIRED_SLOTS: readonly TripSlotKey[] = [
   'start_location',
   'travelers',
 ];
