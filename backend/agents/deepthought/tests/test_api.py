@@ -177,8 +177,8 @@ def test_stream_endpoint(mock_orch_cls):
 
 
 @patch("deepthought.api.main.DeepthoughtOrchestrator")
-def test_stream_starts_with_starting_comment(mock_orch_cls):
-    """First bytes of the SSE body include `: starting` before any event frame."""
+def test_stream_starts_with_stream_open_comment(mock_orch_cls):
+    """First bytes of the SSE body include `: stream open` before any event frame."""
     from deepthought.models import AgentResult, DeepthoughtResponse
 
     mock_orch = MagicMock()
@@ -203,10 +203,10 @@ def test_stream_starts_with_starting_comment(mock_orch_cls):
 
     assert resp.status_code == 200
     body = resp.text
-    starting_idx = body.find(": starting")
+    open_idx = body.find(": stream open")
     first_event_idx = body.find("event:")
-    assert starting_idx != -1, "expected `: starting` comment frame"
-    assert first_event_idx == -1 or starting_idx < first_event_idx
+    assert open_idx != -1, "expected `: stream open` comment frame"
+    assert first_event_idx == -1 or open_idx < first_event_idx
 
 
 @patch("deepthought.api.main.DeepthoughtOrchestrator")

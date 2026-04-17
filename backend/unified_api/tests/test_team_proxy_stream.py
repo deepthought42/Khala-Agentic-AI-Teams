@@ -104,7 +104,7 @@ def test_stream_yields_terminator_on_upstream_read_timeout():
     text = body.decode("utf-8")
     assert "event: agent_event" in text
     assert "event: error" in text
-    assert "upstream_stream_error" in text
+    assert "upstream disconnected" in text
     assert text.rstrip().endswith("event: done\ndata: {}")
 
 

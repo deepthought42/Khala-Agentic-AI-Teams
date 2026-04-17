@@ -7,7 +7,6 @@ import logging
 import os
 import queue
 import threading
-import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,42 +90,43 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
-    # Keepalive interval in seconds. Overridable for tests and ops; we fall back
-    # to a safe default on malformed values so one bad env var cannot 500 every
-    # streaming request.
-    _keepalive_raw = os.getenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "10")
+    # How long the stream may go without emitting any bytes before we send
+    # a keepalive comment. Must be shorter than any intermediate proxy's
+    # read-idle timeout (nginx/cloudflare defaults are ~60s). Overridable via
+    # env var for tests and ops; falls back to a safe default on malformed
+    # values so one bad env var cannot 500 every streaming request.
+    _heartbeat_raw = os.getenv("DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS", "10")
     try:
-        keepalive_interval = float(_keepalive_raw)
-        if keepalive_interval <= 0:
-            raise ValueError("non-positive keepalive interval")
+        heartbeat_interval = float(_heartbeat_raw)
+        if heartbeat_interval <= 0:
+            raise ValueError("non-positive heartbeat interval")
     except (TypeError, ValueError):
         logger.warning(
             "Invalid DEEPTHOUGHT_STREAM_KEEPALIVE_SECONDS=%r; using default 10s",
-            _keepalive_raw,
+            _heartbeat_raw,
         )
-        keepalive_interval = 10.0
+        heartbeat_interval = 10.0
 
     async def _generate():
-        # Emit bytes immediately so intermediaries (proxies, LBs) see liveness
-        # before the orchestrator's blocking classify/LLM call begins.
-        yield ": starting\n\n"
-        last_yield_ts = time.monotonic()
+        loop = asyncio.get_event_loop()
+        # Immediate open-stream marker — guarantees the client sees bytes within
+        # ~100ms even if classification + first agent spawn takes a while.
+        yield ": stream open\n\n"
+        last_byte_time = loop.time()
 
         while True:
             try:
                 event = event_queue.get_nowait()
             except queue.Empty:
-                # Periodic SSE comment keepalive — ignored by EventSource clients
-                # but keeps intermediate read timeouts at bay.
-                if time.monotonic() - last_yield_ts >= keepalive_interval:
+                if loop.time() - last_byte_time >= heartbeat_interval:
                     yield ": keepalive\n\n"
-                    last_yield_ts = time.monotonic()
+                    last_byte_time = loop.time()
                 await asyncio.sleep(0.1)
                 continue
             if event is None:
                 break
             yield f"event: agent_event\ndata: {event.model_dump_json()}\n\n"
-            last_yield_ts = time.monotonic()
+            last_byte_time = loop.time()
 
         # Orchestrator completed. Errors are surfaced here via result_holder —
         # this path also guarantees a trailing `event: done` frame even when the
@@ -137,6 +137,12 @@ async def ask_stream(request: DeepthoughtRequest) -> StreamingResponse:
             error_msg = json.dumps({"error": str(result_holder[0])})
             yield f"event: error\ndata: {error_msg}\n\n"
 
+        # Terminate the stream cleanly on the normal completion path. We
+        # deliberately do NOT emit this from a finally block: if the client
+        # disconnects, Python raises GeneratorExit inside the generator, and
+        # yielding during cleanup raises "async generator ignored GeneratorExit".
+        # A disconnected client cannot receive `done` anyway, so emitting it
+        # only on normal completion is both correct and sufficient.
         yield "event: done\ndata: {}\n\n"
         # No try/finally with yields: yielding during async-generator finalization
         # (e.g. client disconnect triggers aclose()) raises

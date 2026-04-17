@@ -62,8 +62,12 @@ def get_team_client(team_key: str, timeout: float | None = None) -> httpx.AsyncC
     """
     if team_key not in _team_clients:
         t = timeout or _DEFAULT_TIMEOUT
+        # Default timeout applies to non-streaming requests: bounded read-timeout
+        # ensures a stalled upstream doesn't hang the proxy indefinitely and that
+        # the circuit breaker gets a chance to record the failure. SSE requests
+        # override `read` to None at build_request time (see proxy_request).
         _team_clients[team_key] = httpx.AsyncClient(
-            timeout=httpx.Timeout(t, connect=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=t, write=t, pool=10.0),
             follow_redirects=False,
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
@@ -118,17 +122,34 @@ async def proxy_request(
 
     body = await request.body()
 
-    # SSE routes: disable read timeout for this request so long idle gaps between
-    # events don't surface as ERR_INCOMPLETE_CHUNKED_ENCODING in the browser. The
-    # shared client keeps its default timeout for non-streaming traffic.
-    is_streaming = stream if stream is not None else path.rstrip("/").endswith("/stream")
-    per_request_timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0) if is_streaming else None
+    # If the client is asking for an SSE response (via Accept header or via an
+    # explicit `stream=` override, or the path heuristically ends in /stream),
+    # override the read timeout for this single request so long idle gaps
+    # between chunks don't truncate the stream. Non-streaming calls keep the
+    # bounded client default.
+    accept_header = request.headers.get("accept", "").lower()
+    is_sse_request = (
+        stream if stream is not None else "text/event-stream" in accept_header or path.rstrip("/").endswith("/stream")
+    )
+    effective_timeout = (
+        httpx.Timeout(
+            connect=10.0,
+            read=None,
+            write=timeout or _DEFAULT_TIMEOUT,
+            pool=10.0,
+        )
+        if is_sse_request
+        else httpx.USE_CLIENT_DEFAULT
+    )
 
     try:
-        build_kwargs: dict = {"method": request.method, "url": url, "headers": headers, "content": body}
-        if per_request_timeout is not None:
-            build_kwargs["timeout"] = per_request_timeout
-        req = client.build_request(**build_kwargs)
+        req = client.build_request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body,
+            timeout=effective_timeout,
+        )
         resp = await client.send(req, stream=True)
     except httpx.HTTPError as exc:
         circuit_breaker.record_failure(effective_key)
@@ -163,16 +184,10 @@ async def proxy_request(
                     url,
                     exc,
                 )
-                # Emit a canonical SSE terminator so the browser closes cleanly
-                # instead of reporting ERR_INCOMPLETE_CHUNKED_ENCODING.
-                err_payload = json.dumps(
-                    {
-                        "error": "upstream_stream_error",
-                        "type": type(exc).__name__,
-                        "detail": str(exc),
-                    }
-                )
-                yield f"event: error\ndata: {err_payload}\n\n".encode()
+                # Emit a clean terminating frame so downstream clients see a
+                # proper stream close instead of ERR_INCOMPLETE_CHUNKED_ENCODING.
+                error_payload = json.dumps({"error": "upstream disconnected", "detail": type(exc).__name__})
+                yield f"event: error\ndata: {error_payload}\n\n".encode()
                 yield b"event: done\ndata: {}\n\n"
             finally:
                 await resp.aclose()

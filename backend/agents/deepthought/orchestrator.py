@@ -150,7 +150,7 @@ class DeepthoughtOrchestrator:
 
     def _register_spawn(self, spec: AgentSpec) -> bool:
         """Track a newly spawned agent.  Returns False to veto if budget exhausted."""
-        budget_warning: AgentEvent | None = None
+        budget_warning_event: AgentEvent | None = None
         with self._lock:
             if self._agents_spawned >= self._agent_budget:
                 logger.warning(
@@ -159,14 +159,13 @@ class DeepthoughtOrchestrator:
                     spec.name,
                     spec.depth,
                 )
-                budget_warning = AgentEvent(
+                budget_warning_event = AgentEvent(
                     event_type=AgentEventType.BUDGET_WARNING,
                     agent_id=spec.agent_id,
                     agent_name=spec.name,
                     depth=spec.depth,
                     detail=f"Budget exhausted ({self._agent_budget}), agent vetoed",
                 )
-                # Fall through below to emit via _collect_event after releasing the lock.
             else:
                 self._agents_spawned += 1
                 if spec.depth > self._max_depth_reached:
@@ -178,12 +177,14 @@ class DeepthoughtOrchestrator:
                     self._agents_spawned,
                     self._agent_budget,
                 )
-                return True
-        # Lock released. Emit the budget warning through _collect_event so SSE streams
-        # see it; _collect_event re-acquires self._lock, so this must happen outside.
-        if budget_warning is not None:
-            self._collect_event(budget_warning)
-        return False
+        # Route the budget-warning through _collect_event (outside the lock) so
+        # the SSE stream's monkey-patched collector sees it. The previous direct
+        # append to self._events bypassed streaming and only showed up in the
+        # final response payload.
+        if budget_warning_event is not None:
+            self._collect_event(budget_warning_event)
+            return False
+        return True
 
     def _collect_event(self, event: AgentEvent) -> None:
         """Thread-safe event collection for streaming."""
