@@ -2547,6 +2547,28 @@ def _live_paper_enabled() -> bool:
 _live_paper_stop_controllers: Dict[str, Any] = {}
 
 
+# Default fees used when the request omits explicit overrides. Sits at module
+# scope so tests can exercise the resolution logic directly.
+_DEFAULT_TX_COST_BPS = 5.0
+_DEFAULT_SLIPPAGE_BPS = 2.0
+
+
+def _resolve_fee_overrides(request: "RunPaperTradingRequest") -> tuple[float, float]:
+    """Return ``(transaction_cost_bps, slippage_bps)`` for the live config.
+
+    Uses explicit ``None`` checks instead of ``or`` so a caller asking for
+    zero-fee / zero-slippage experiments isn't silently bumped to the
+    defaults — ``0.0`` is falsy but semantically meaningful here.
+    """
+    tx = (
+        request.transaction_cost_bps
+        if request.transaction_cost_bps is not None
+        else _DEFAULT_TX_COST_BPS
+    )
+    slip = request.slippage_bps if request.slippage_bps is not None else _DEFAULT_SLIPPAGE_BPS
+    return tx, slip
+
+
 def _run_live_paper_trading_background(
     session_id: str,
     lab_record_id: str,
@@ -2581,12 +2603,13 @@ def _run_live_paper_trading_background(
 
         strategy_timeframe = request.timeframe or getattr(strategy, "timeframe", None) or "1m"
 
+        tx_cost, slip = _resolve_fee_overrides(request)
         bt_config = _BC(
             start_date=datetime.now(tz=timezone.utc).date().isoformat(),
             end_date=datetime.now(tz=timezone.utc).date().isoformat(),
             initial_capital=request.initial_capital,
-            transaction_cost_bps=request.transaction_cost_bps or 5.0,
-            slippage_bps=request.slippage_bps or 2.0,
+            transaction_cost_bps=tx_cost,
+            slippage_bps=slip,
             metrics_engine="legacy",
         )
         paper_cfg = PaperTradeConfig(
@@ -2777,20 +2800,34 @@ def _recover_orphaned_paper_trading_sessions() -> None:
         return
 
     now_iso = datetime.now(tz=timezone.utc).isoformat()
+    # Active statuses that indicate an in-flight session. PR 1 only used
+    # RUNNING; PR 2's live path transitions through OPENING → WARMING_UP →
+    # LIVE. A SIGKILL during any of those leaves the row orphaned; without
+    # recovery the new per-strategy concurrency guard (409) would lock out
+    # future runs for that strategy indefinitely.
+    _active_statuses = {
+        PaperTradingStatus.RUNNING,
+        PaperTradingStatus.OPENING,
+        PaperTradingStatus.WARMING_UP,
+        PaperTradingStatus.LIVE,
+    }
     recovered = 0
     for raw in raw_sessions:
         try:
             session = PaperTradingSession(**raw) if isinstance(raw, dict) else raw
         except Exception:
             continue
-        if session.status != PaperTradingStatus.RUNNING:
+        if session.status not in _active_statuses:
             continue
         session.status = PaperTradingStatus.FAILED
         session.completed_at = now_iso
-        session.divergence_analysis = (
-            "Paper trading did not complete — the worker process exited before finalizing "
-            "the session. Re-run the paper trade from the Strategy Lab."
+        session.terminated_reason = "process_exit"
+        session.error = (
+            "Paper trading did not complete — the worker process exited before "
+            "finalizing the session. Re-run the paper trade from the Strategy Lab."
         )
+        # Preserve the legacy free-form field too so older clients still read a message.
+        session.divergence_analysis = session.error
         try:
             with _lock:
                 _paper_trading_sessions[session.session_id] = session
@@ -2803,7 +2840,7 @@ def _recover_orphaned_paper_trading_sessions() -> None:
 
     if recovered:
         logger.info(
-            "Paper-trade recovery: marked %d orphaned running session(s) as failed",
+            "Paper-trade recovery: marked %d orphaned active session(s) as failed",
             recovered,
         )
 

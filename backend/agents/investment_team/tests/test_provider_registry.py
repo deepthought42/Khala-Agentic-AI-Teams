@@ -200,6 +200,76 @@ def test_describe_all_reports_has_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert polygon_row["has_key"] is True
 
 
+# ---------------------------------------------------------------------------
+# Env-var overrides (INVESTMENT_{LIVE,HISTORICAL}_PROVIDER_*)
+# ---------------------------------------------------------------------------
+
+
+def test_env_live_override_forces_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Operator env override must beat the free default."""
+    reg = _registry_with_defaults()
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "coinbase")
+    adapter = reg.resolve(asset_class="crypto", direction="live")
+    assert adapter.capabilities.name == "coinbase"
+
+
+def test_env_live_override_beats_paid_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env override outranks paid-with-key; only request-level explicit beats it."""
+    reg = _registry_with_defaults()
+    monkeypatch.setenv("POLYGON_API_KEY_TEST", "sekret")
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "binance")
+    adapter = reg.resolve(asset_class="crypto", direction="live")
+    assert adapter.capabilities.name == "binance"
+
+
+def test_explicit_request_pin_beats_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    reg = _registry_with_defaults()
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "coinbase")
+    adapter = reg.resolve(asset_class="crypto", direction="live", explicit="binance")
+    assert adapter.capabilities.name == "binance"
+
+
+def test_historical_env_override_uses_separate_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Historical and live env vars are independent knobs."""
+    reg = _registry_with_defaults()
+    # Set only LIVE; historical should still hit the free default.
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "coinbase")
+    monkeypatch.delenv("INVESTMENT_HISTORICAL_PROVIDER_CRYPTO", raising=False)
+    live_adapter = reg.resolve(asset_class="crypto", direction="live")
+    hist_adapter = reg.resolve(asset_class="crypto", direction="historical")
+    assert live_adapter.capabilities.name == "coinbase"
+    assert hist_adapter.capabilities.name == "binance"
+
+
+def test_invalid_env_override_falls_back_silently(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A misconfigured env var must not wedge the server."""
+    reg = _registry_with_defaults()
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "nonexistent_provider")
+    adapter = reg.resolve(asset_class="crypto", direction="live")
+    # Falls through to paid-with-key (none set) → free default.
+    assert adapter.capabilities.name == "binance"
+
+
+def test_env_override_for_unsupported_asset_class_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the pinned provider doesn't support the class, fall back cleanly."""
+    reg = _registry_with_defaults()
+    # binance only supports crypto; asking for equities with a binance pin
+    # should ignore the pin and fall back through the selection chain. In
+    # this registry there's no equities provider, so LookupError is expected.
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_EQUITIES", "binance")
+    with pytest.raises(LookupError):
+        reg.resolve(asset_class="equities", direction="live")
+
+
+def test_empty_env_var_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    reg = _registry_with_defaults()
+    monkeypatch.setenv("INVESTMENT_LIVE_PROVIDER_CRYPTO", "   ")
+    adapter = reg.resolve(asset_class="crypto", direction="live")
+    assert adapter.capabilities.name == "binance"
+
+
 def test_registering_duplicate_name_raises() -> None:
     reg = _registry_with_defaults()
     with pytest.raises(ValueError, match="already registered"):

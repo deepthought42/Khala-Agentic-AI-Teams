@@ -175,20 +175,31 @@ class ProviderRegistry:
         direction: str,
         explicit: Optional[str],
     ) -> Optional[_Registration]:
-        # 1. Explicit wins.
+        # 1. Explicit (request-level) wins.
         if explicit is not None:
-            if explicit not in self._registrations:
-                raise KeyError(f"provider {explicit!r} is not registered")
-            reg = self._registrations[explicit]
-            if asset_class not in reg.capabilities.supports:
-                raise ValueError(
-                    f"provider {explicit!r} does not support asset_class={asset_class!r}"
-                )
-            if not _has_direction(reg, direction):
-                raise ValueError(f"provider {explicit!r} does not support direction={direction!r}")
-            return reg
+            return self._resolve_pinned(explicit, asset_class=asset_class, direction=direction)
 
-        # 2. Paid provider with API key configured.
+        # 2. Env-var override (operator-level). Documented as
+        #    INVESTMENT_LIVE_PROVIDER_{CRYPTO,EQUITIES,FX} for live streams and
+        #    INVESTMENT_HISTORICAL_PROVIDER_{...} for historical.
+        env_pinned = _env_override_for(asset_class=asset_class, direction=direction)
+        if env_pinned is not None:
+            # A misconfigured env var shouldn't wedge the server — log and fall
+            # through to paid/default selection if the pinned provider isn't
+            # usable.
+            try:
+                return self._resolve_pinned(
+                    env_pinned, asset_class=asset_class, direction=direction
+                )
+            except (KeyError, ValueError) as exc:
+                logger.warning(
+                    "env override %s=%r ignored: %s",
+                    _env_var_name(asset_class=asset_class, direction=direction),
+                    env_pinned,
+                    exc,
+                )
+
+        # 3. Paid provider with API key configured.
         for reg in self._registrations.values():
             if not reg.capabilities.is_paid:
                 continue
@@ -205,12 +216,12 @@ class ProviderRegistry:
                 )
                 return reg
 
-        # 3. Free default for this asset class.
+        # 4. Free default for this asset class.
         for reg in self._registrations.values():
             if asset_class in reg.default_for and _has_direction(reg, direction):
                 return reg
 
-        # 4. Any free provider that supports it (last-resort).
+        # 5. Any free provider that supports it (last-resort).
         for reg in self._registrations.values():
             if reg.capabilities.is_paid:
                 continue
@@ -218,6 +229,40 @@ class ProviderRegistry:
                 return reg
 
         return None
+
+    def _resolve_pinned(
+        self,
+        name: str,
+        *,
+        asset_class: str,
+        direction: str,
+    ) -> _Registration:
+        """Shared pin-resolution used by explicit and env-override paths."""
+        if name not in self._registrations:
+            raise KeyError(f"provider {name!r} is not registered")
+        reg = self._registrations[name]
+        if asset_class not in reg.capabilities.supports:
+            raise ValueError(f"provider {name!r} does not support asset_class={asset_class!r}")
+        if not _has_direction(reg, direction):
+            raise ValueError(f"provider {name!r} does not support direction={direction!r}")
+        return reg
+
+
+def _env_var_name(*, asset_class: str, direction: str) -> str:
+    """Return the env-var name that overrides selection for this combination."""
+    prefix = (
+        "INVESTMENT_LIVE_PROVIDER_" if direction == "live" else "INVESTMENT_HISTORICAL_PROVIDER_"
+    )
+    return f"{prefix}{asset_class.upper()}"
+
+
+def _env_override_for(*, asset_class: str, direction: str) -> Optional[str]:
+    """Read the ``INVESTMENT_{LIVE,HISTORICAL}_PROVIDER_*`` env var, if set."""
+    raw = os.environ.get(_env_var_name(asset_class=asset_class, direction=direction))
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 def _has_direction(reg: _Registration, direction: str) -> bool:
