@@ -891,9 +891,11 @@ def _run_real_data_backtest(
                 f"{(service_result.error or '')[:500]}"
             ),
         )
-    if service_result.error and not run.trades:
-        # Strategy subprocess failed to produce any trades AND emitted an error
-        # — surface as 422 (same contract the sandbox used for exec failures).
+    if service_result.error:
+        # Any service-level error must fail the request — mid-run crashes
+        # append closed trades *before* raising, so a non-empty ledger here
+        # still represents a partial/failed execution and must not be
+        # reported as a successful backtest.
         raise HTTPException(
             status_code=422,
             detail=f"Strategy code execution failed: {service_result.error[:500]}",

@@ -105,11 +105,18 @@ def run_strategy_code(
             stderr=(service_result.error or "")[:2000],
             execution_time_seconds=elapsed,
         )
-    if service_result.error and not run.trades:
-        # Strategy subprocess raised / failed to initialise — the harness
-        # captures a tb in ``service_result.error``.
+    if service_result.error:
+        # Any surfaced service error — initialisation failure, mid-run
+        # strategy crash after earlier fills, harness protocol break —
+        # must fail the run. ``TradingService.run`` appends closed trades
+        # to ``result.trades`` *before* raising ``StrategyRuntimeError``,
+        # so a non-empty trade ledger here indicates *partial* execution,
+        # not a successful one. Surface as ``runtime_error`` so the
+        # orchestrator's refinement loop can act on it; carry the partial
+        # trades through for diagnostic visibility.
         return StrategyRunResult(
             success=False,
+            trades=run.trades,
             error_type=_RUNTIME_ERROR_TYPE,
             stderr=service_result.error[:2000],
             execution_time_seconds=elapsed,

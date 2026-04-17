@@ -225,12 +225,20 @@ class PaperTradingAgent:
             )
             session.completed_at = datetime.now(tz=timezone.utc).isoformat()
             return session
-        if service_result.error and not run.trades:
+        if service_result.error:
+            # Any service-level error is terminal — partial trade ledgers
+            # from mid-run crashes must NOT be reported as a completed
+            # paper-trading session (that would let a broken strategy
+            # clear the "ready_for_live" verdict on truncated data).
             logger.warning(
-                "Paper trading strategy execution failed: %s",
+                "Paper trading strategy execution failed with %d partial trade(s): %s",
+                len(run.trades),
                 service_result.error[:500],
             )
             session.status = PaperTradingStatus.FAILED
+            # Carry the partial trades through on the failed session so
+            # humans can diagnose what happened before the crash.
+            session.trades = run.trades
             session.divergence_analysis = (
                 f"Strategy code execution failed: {service_result.error[:500]}"
             )
