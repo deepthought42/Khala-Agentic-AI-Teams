@@ -1,17 +1,16 @@
 <p align="center">
-  <img src="docs/assets/khala-banner.png" alt="Khala — Many minds. One objective. Yours." width="100%"/>
+  <img src="docs/assets/khala-banner.png" alt="Khala — Many teams. One mind. One objective. Yours." width="100%"/>
 </p>
 
 <h1 align="center">Khala</h1>
 
 <p align="center">
-  <em>Many minds. One objective… yours.</em><br/>
-  <sub>A system for building and running agentic teams that act as one mind</sub>
+  <em>Many teams. One mind. One objective. Yours.</em><br/>
+  <sub>A personal project for building agentic AI teams that actually work together — and, eventually, build themselves</sub>
 </p>
 
 <p align="center">
-  <strong>An open-source system for creating, managing, and working alongside agentic teams</strong><br/>
-  <sub>Today: a roster of 20 specialist teams behind one gateway. Tomorrow: whatever teams you and it design together.</sub>
+  <strong>🌐 <a href="https://deepthought42.github.io/Khala-Agentic-AI-Teams/">Live site</a></strong> · <strong>📖 You're reading the README</strong>
 </p>
 
 <p align="center">
@@ -43,9 +42,14 @@ The teams share infrastructure — the gateway with its optional security pre-sc
 
 **And Khala is built to grow its own roster.** The real project here isn't the current 20 teams — it's the system that *makes* agentic teams and lets them operate as one mind. Describe a new team in plain English to the **Agentic Team Provisioning** team and it will design the roster and the process with you (and hand off to Agent Provisioning for the sandbox), or register one yourself in [`backend/unified_api/config.py`](backend/unified_api/config.py). Every lesson learned building the current teams feeds back into how the next ones get built.
 
-> **Many minds. One objective. Yours.**
+> **Many teams. One mind. One objective. Yours.**
+
+### What Khala actually is
+
+A personal project to figure out how to build agentic AI teams that actually work together. The honest arc: a vibe-coded experiment turning into a real engineered system, and from there into the thing I'm really after — **an agentic AI that can look at a problem, decide what kind of team would solve it, spin up ephemeral specialist agents to do the work, learn from what landed and what didn't, and keep the agents that earn their keep.** The 20 teams here today are the substrate for that learning, not the destination. Follow along.
 
 <p align="center">
+  <a href="https://deepthought42.github.io/Khala-Agentic-AI-Teams/">🌐 Live site</a> ·
   <a href="#quickstart">🚀 Quickstart</a> ·
   <a href="ARCHITECTURE.md">📐 Architecture</a> ·
   <a href="#meet-the-current-roster">👥 Meet the roster</a> ·
@@ -75,7 +79,7 @@ The teams share infrastructure — the gateway with its optional security pre-sc
 
 ## Meet the current roster
 
-Today Khala ships with 20 teams, grouped into four *cells* — failure-isolated neighborhoods that share infrastructure and deploy together. This is the current roster, not the ceiling: Khala is a system for making and running agentic teams, and the list grows every release. The authoritative source is always [`backend/unified_api/config.py`](backend/unified_api/config.py).
+Today Khala ships with 20 specialist teams behind one gateway, grouped loosely for navigation into Core Dev, Business, Content, and Personal. This is the **current** roster, not the ceiling — Khala is a system for *making* agentic teams, and the list grows (and prunes itself) as we learn what's useful. The authoritative source is always [`backend/unified_api/config.py`](backend/unified_api/config.py).
 
 ### 🛠️ Core Dev — build, plan, and evolve software
 
@@ -267,5 +271,5 @@ More reference:
 See [`LICENSE`](LICENSE).
 
 <p align="center">
-  <sub>Built by humans and their Khala.  ·  Many minds. One objective. Yours.</sub>
+  <sub>Built by humans and their Khala.  ·  Many teams. One mind. One objective. Yours.</sub>
 </p>

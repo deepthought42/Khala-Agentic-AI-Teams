@@ -6,55 +6,55 @@
 
 const TEAMS = [
   // Core Dev
-  { cell: 'core', name: 'Software Engineering', route: '/api/software-engineering',
+  { group: 'core', name: 'Software Engineering', route: '/api/software-engineering',
     desc: 'Full dev-team simulation: architecture, planning, coding, review, release.' },
-  { cell: 'core', name: 'Planning V3', route: '/api/planning-v3',
+  { group: 'core', name: 'Planning V3', route: '/api/planning-v3',
     desc: 'Client-facing discovery and PRDs; hands off to dev and UX.' },
-  { cell: 'core', name: 'Coding Team', route: '/api/coding-team',
+  { group: 'core', name: 'Coding Team', route: '/api/coding-team',
     desc: 'SE sub-team: tech lead plus stack specialists with a task graph.' },
-  { cell: 'core', name: 'AI Systems', route: '/api/ai-systems',
+  { group: 'core', name: 'AI Systems', route: '/api/ai-systems',
     desc: 'Spec-driven factory that builds new AI agent systems.' },
-  { cell: 'core', name: 'Agent Provisioning', route: '/api/agent-provisioning',
+  { group: 'core', name: 'Agent Provisioning', route: '/api/agent-provisioning',
     desc: 'Stands up agent environments — databases, git, docker.' },
-  { cell: 'core', name: 'Agentic Team Provisioning', route: '/api/agentic-team-provisioning',
+  { group: 'core', name: 'Agentic Team Provisioning', route: '/api/agentic-team-provisioning',
     desc: 'Designs new teams and their processes by conversation.' },
-  { cell: 'core', name: 'User Agent Founder', route: '/api/user-agent-founder',
+  { group: 'core', name: 'User Agent Founder', route: '/api/user-agent-founder',
     desc: 'Autonomous founder agent that drives the SE team end-to-end.' },
-  { cell: 'core', name: 'Deepthought', route: '/api/deepthought',
+  { group: 'core', name: 'Deepthought', route: '/api/deepthought',
     desc: 'Recursive self-organizing agent that spawns its own sub-agents.' },
 
   // Business
-  { cell: 'business', name: 'Market Research', route: '/api/market-research',
+  { group: 'business', name: 'Market Research', route: '/api/market-research',
     desc: 'User discovery and product-concept viability research.' },
-  { cell: 'business', name: 'SOC2 Compliance', route: '/api/soc2-compliance',
+  { group: 'business', name: 'SOC2 Compliance', route: '/api/soc2-compliance',
     desc: 'Audit workflow through SOC2 certification.' },
-  { cell: 'business', name: 'Investment', route: '/api/investment',
+  { group: 'business', name: 'Investment', route: '/api/investment',
     desc: 'Financial advisor (IPS, proposals) + Strategy Lab (ideation, backtests).' },
-  { cell: 'business', name: 'AI Sales Team', route: '/api/sales',
+  { group: 'business', name: 'AI Sales Team', route: '/api/sales',
     desc: 'Full B2B sales pod: prospect → qualify → nurture → close.' },
-  { cell: 'business', name: 'Startup Advisor', route: '/api/startup-advisor',
+  { group: 'business', name: 'Startup Advisor', route: '/api/startup-advisor',
     desc: 'Persistent conversational advisor with probing dialogue.' },
 
   // Content
-  { cell: 'content', name: 'Blogging', route: '/api/blogging',
+  { group: 'content', name: 'Blogging', route: '/api/blogging',
     desc: 'Research → planning → draft → copy-edit → publish pipeline.' },
-  { cell: 'content', name: 'Social Marketing', route: '/api/social-marketing',
+  { group: 'content', name: 'Social Marketing', route: '/api/social-marketing',
     desc: 'Cross-platform campaigns with per-platform specialists.' },
-  { cell: 'content', name: 'Branding', route: '/api/branding',
+  { group: 'content', name: 'Branding', route: '/api/branding',
     desc: 'Brand strategy, moodboards, and design/writing standards.' },
 
   // Personal
-  { cell: 'personal', name: 'Personal Assistant', route: '/api/personal-assistant',
+  { group: 'personal', name: 'Personal Assistant', route: '/api/personal-assistant',
     desc: 'Email, calendar, tasks, deals, reservations.' },
-  { cell: 'personal', name: 'Accessibility Audit', route: '/api/accessibility-audit',
+  { group: 'personal', name: 'Accessibility Audit', route: '/api/accessibility-audit',
     desc: 'WCAG 2.2 and Section 508 auditing for web and mobile.' },
-  { cell: 'personal', name: 'Nutrition & Meal Planning', route: '/api/nutrition-meal-planning',
+  { group: 'personal', name: 'Nutrition & Meal Planning', route: '/api/nutrition-meal-planning',
     desc: 'Personalized meal plans that learn from your feedback.' },
-  { cell: 'personal', name: 'Road Trip Planning', route: '/api/road-trip-planning',
+  { group: 'personal', name: 'Road Trip Planning', route: '/api/road-trip-planning',
     desc: 'Profiling, route optimization, activity recs, logistics.' }
 ];
 
-const CELL_LABEL = {
+const GROUP_LABEL = {
   core: 'Core Dev',
   business: 'Business',
   content: 'Content',
@@ -66,13 +66,13 @@ function renderRoster(filter = 'all') {
   const grid = document.getElementById('roster-grid');
   if (!grid) return;
 
-  const items = filter === 'all' ? TEAMS : TEAMS.filter(t => t.cell === filter);
+  const items = filter === 'all' ? TEAMS : TEAMS.filter(t => t.group === filter);
 
   grid.innerHTML = items.map(t => `
-    <article class="team-card reveal" data-cell="${t.cell}">
+    <article class="team-card reveal" data-group="${t.group}">
       <div class="team-head">
         <h3 class="team-name">${t.name}</h3>
-        <span class="team-tag">${CELL_LABEL[t.cell]}</span>
+        <span class="team-tag">${GROUP_LABEL[t.group]}</span>
       </div>
       <p class="team-route">${t.route}</p>
       <p class="team-desc">${t.desc}</p>
