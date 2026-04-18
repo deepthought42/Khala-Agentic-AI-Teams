@@ -3,18 +3,23 @@
 Profiles are stored whole in the ``nutrition_profiles.profile`` JSONB
 column keyed by ``client_id``. Saves use upsert semantics so there is at
 most one current row per client (matching the pre-migration file layout).
+
+SPEC-002 adds:
+- Biometric append-only log (``nutrition_biometric_log``) and history query.
+- Clinician-override log (``nutrition_clinical_overrides_log``).
+- ``profile_version`` monotonic increment on every save.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from shared_postgres import Json, dict_row, get_conn
 from shared_postgres.metrics import timed_query
 
-from ..models import ClientProfile
+from ..models import BiometricHistoryEntry, ClientProfile
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +52,11 @@ def get_profile(client_id: str) -> Optional[ClientProfile]:
 
 @timed_query(store=_STORE, op="save_profile")
 def save_profile(client_id: str, profile: ClientProfile) -> None:
-    """Save client profile via upsert. Mutates ``profile.updated_at`` as a side effect."""
+    """Save client profile via upsert. Mutates ``profile.updated_at`` and
+    bumps ``profile_version`` as a side effect."""
     profile.client_id = client_id
     profile.updated_at = _now_iso()
+    profile.profile_version = (profile.profile_version or 0) + 1
     ts = datetime.now(tz=timezone.utc)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -64,8 +71,116 @@ def save_profile(client_id: str, profile: ClientProfile) -> None:
 def create_profile(client_id: str) -> ClientProfile:
     """Create a new empty profile for client_id and save it. Returns the new profile."""
     profile = ClientProfile(client_id=client_id)
+    # Start at 0 so the bump in save_profile lands at 1.
+    profile.profile_version = 0
     save_profile(client_id, profile)
     return profile
+
+
+# --- SPEC-002: biometric append-only log ---------------------------------
+
+
+@timed_query(store=_STORE, op="log_biometric")
+def log_biometric(
+    client_id: str,
+    field: str,
+    value_numeric: Optional[float] = None,
+    value_text: Optional[str] = None,
+    unit: Optional[str] = None,
+    source: str = "manual",
+    recorded_by: Optional[str] = None,
+) -> None:
+    """Append one biometric change to nutrition_biometric_log.
+
+    ``field`` is the name of the ClientProfile field that changed
+    (e.g. ``"weight_kg"``, ``"activity_level"``, ``"body_fat_pct"``).
+    Either ``value_numeric`` or ``value_text`` should be set depending
+    on whether the field is numeric.
+
+    No-op at this layer if both values are None — the caller decides
+    whether that's an error.
+    """
+    if value_numeric is None and value_text is None:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO nutrition_biometric_log "
+            "(client_id, field, value_numeric, value_text, unit, source, recorded_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (client_id, field, value_numeric, value_text, unit, source, recorded_by),
+        )
+
+
+@timed_query(store=_STORE, op="get_biometric_history")
+def get_biometric_history(
+    client_id: str,
+    field: Optional[str] = None,
+    since: Optional[datetime] = None,
+    limit: int = 200,
+) -> List[BiometricHistoryEntry]:
+    """Return biometric log rows, newest first.
+
+    When ``field`` is provided, scopes to that field only (common for
+    weight-trend charts). ``since`` is an absolute UTC timestamp; if
+    None we return the latest ``limit`` rows regardless of age.
+    """
+    where = ["client_id = %s"]
+    params: list = [client_id]
+    if field is not None:
+        where.append("field = %s")
+        params.append(field)
+    if since is not None:
+        where.append("recorded_at >= %s")
+        params.append(since)
+    sql = (
+        "SELECT field, value_numeric, value_text, unit, source, "
+        "       recorded_at, recorded_by "
+        "FROM nutrition_biometric_log "
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY recorded_at DESC LIMIT %s"
+    )
+    params.append(limit)
+    with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+    return [
+        BiometricHistoryEntry(
+            field=row["field"],
+            value_numeric=row["value_numeric"],
+            value_text=row["value_text"],
+            unit=row["unit"],
+            source=row["source"],
+            recorded_at=row["recorded_at"].isoformat() if row["recorded_at"] else "",
+            recorded_by=row["recorded_by"],
+        )
+        for row in rows
+    ]
+
+
+# --- SPEC-002: clinician override audit ----------------------------------
+
+
+@timed_query(store=_STORE, op="log_clinical_override")
+def log_clinical_override(
+    client_id: str,
+    key: str,
+    value_numeric: Optional[float],
+    author: str = "admin",
+    reason: Optional[str] = None,
+) -> None:
+    """Append one clinician override change to the audit table.
+
+    Called once per key that changed when the admin endpoint writes a
+    new override dict to the profile. ``value_numeric`` can be None to
+    record a removal.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO nutrition_clinical_overrides_log "
+            "(client_id, key, value_numeric, reason, author) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (client_id, key, value_numeric, reason, author),
+        )
 
 
 class ClientProfileStore:
@@ -87,6 +202,45 @@ class ClientProfileStore:
 
     def create_profile(self, client_id: str) -> ClientProfile:
         return create_profile(client_id)
+
+    def log_biometric(
+        self,
+        client_id: str,
+        field: str,
+        value_numeric: Optional[float] = None,
+        value_text: Optional[str] = None,
+        unit: Optional[str] = None,
+        source: str = "manual",
+        recorded_by: Optional[str] = None,
+    ) -> None:
+        log_biometric(
+            client_id,
+            field,
+            value_numeric=value_numeric,
+            value_text=value_text,
+            unit=unit,
+            source=source,
+            recorded_by=recorded_by,
+        )
+
+    def get_biometric_history(
+        self,
+        client_id: str,
+        field: Optional[str] = None,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> List[BiometricHistoryEntry]:
+        return get_biometric_history(client_id, field=field, since=since, limit=limit)
+
+    def log_clinical_override(
+        self,
+        client_id: str,
+        key: str,
+        value_numeric: Optional[float],
+        author: str = "admin",
+        reason: Optional[str] = None,
+    ) -> None:
+        log_clinical_override(client_id, key, value_numeric, author=author, reason=reason)
 
 
 # ---------------------------------------------------------------------------

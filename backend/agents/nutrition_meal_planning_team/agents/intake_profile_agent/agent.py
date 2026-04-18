@@ -4,45 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, Dict, Optional
 
 from strands import Agent
 
+from llm_service import extract_json_from_response
+
 from ...models import ClientProfile, ProfileUpdateRequest
 
+# Re-export the fallback merger under its historical private name so
+# the existing import surface stays stable. Pure-logic lives in
+# ``structural`` (no strands dependency) per SPEC-002 W4.
+from .structural import merge_profile_structural as _merge_profile_structural  # noqa: F401
+
 logger = logging.getLogger(__name__)
-
-
-def _merge_profile_structural(
-    client_id: str,
-    current: Optional[ClientProfile],
-    update: Optional[ProfileUpdateRequest],
-) -> ClientProfile:
-    """Apply update onto current without LLM (fallback when the model is unavailable)."""
-    data: Dict[str, Any] = (
-        current.model_dump() if current else ClientProfile(client_id=client_id).model_dump()
-    )
-    if not update:
-        data["client_id"] = client_id
-        return ClientProfile.model_validate(data)
-    patch = update.model_dump(exclude_none=True)
-    for key in ("dietary_needs", "allergies_and_intolerances"):
-        if key in patch:
-            data[key] = patch[key]
-    for key in ("household", "lifestyle", "preferences", "goals"):
-        if key not in patch:
-            continue
-        sub = patch[key]
-        if sub is None:
-            continue
-        existing = data.get(key) or {}
-        if isinstance(existing, dict) and isinstance(sub, dict):
-            data[key] = {**existing, **sub}
-        else:
-            data[key] = sub
-    data["client_id"] = client_id
-    return ClientProfile.model_validate(data)
 
 
 SYSTEM_PROMPT = """You are an expert intake specialist for a personal nutrition and meal planning service.
@@ -54,9 +29,16 @@ The profile must include:
 - allergies_and_intolerances: list of strings (e.g. nuts, shellfish, gluten)
 - lifestyle: max_cooking_time_minutes (int or null), lunch_context ("office" or "remote"), equipment_constraints (list), other_constraints (string)
 - preferences: cuisines_liked, cuisines_disliked, ingredients_disliked (lists), preferences_free_text (string)
-- goals: goal_type (e.g. maintain, lose_weight, gain_weight, muscle), notes (string)
+- goals: goal_type (e.g. maintain, lose_weight, gain_weight, muscle), target_weight_kg (number or null), rate_kg_per_week (number 0..1 or null), started_at (ISO string or null), notes (string)
+- biometrics: sex ("female"|"male"|"other"|"unspecified"), age_years (integer 2..120 or null), height_cm (number 50..260 or null), weight_kg (number 20..400 or null), body_fat_pct (number 3..75 or null), activity_level ("sedentary"|"light"|"moderate"|"active"|"very_active"), timezone (IANA zone), preferred_units ("metric"|"imperial")
+- clinical: conditions (list of canonical tags, e.g. "hypertension", "t2_diabetes"; unknown items belong in conditions_freetext), medications (class tags, e.g. "warfarin", "ssri"; unknown items belong in medications_freetext), reproductive_state ("none"|"pregnant_t1"|"pregnant_t2"|"pregnant_t3"|"lactating"|"postpartum"), ed_history_flag (boolean)
 
-If the user did not specify something, infer sensible defaults or leave empty lists/empty strings. Never invent allergies.
+UNIT RULES — strict:
+- Height is always in centimeters. Never accept or emit feet / inches.
+- Weight is always in kilograms. Never accept or emit pounds.
+- If the user clearly specified imperial units, the upstream API has already converted them; trust what you receive.
+
+If the user did not specify something, infer sensible defaults or leave empty lists/empty strings. Never invent allergies or medical conditions. Never invent biometrics — leave them null if the user has not provided them.
 Output only valid JSON matching the structure above, with no markdown or explanation."""
 
 
@@ -94,11 +76,12 @@ class IntakeProfileAgent:
         try:
             result = self._agent(prompt)
             raw = str(result).strip()
-            # Strip markdown code fences if present
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError) as e:
+            # Use llm_service's canonical JSON extractor (SPEC-002 W4):
+            # tolerates code fences, trailing text, and common model quirks
+            # without the regex-strip-and-hope approach this module used
+            # previously.
+            data = extract_json_from_response(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             logger.warning("Intake profile JSON extraction failed: %s", e)
             return _merge_profile_structural(client_id, current_profile, update)
         except Exception as e:
@@ -106,4 +89,11 @@ class IntakeProfileAgent:
             return _merge_profile_structural(client_id, current_profile, update)
 
         data["client_id"] = client_id
-        return ClientProfile.model_validate(data)
+        try:
+            return ClientProfile.model_validate(data)
+        except Exception as e:
+            # Pydantic rejected the LLM's output (e.g. implausible
+            # weight, bad activity_level). Fall back to structural
+            # merge so the user's write still persists.
+            logger.warning("Intake profile LLM output failed schema validation: %s", e)
+            return _merge_profile_structural(client_id, current_profile, update)

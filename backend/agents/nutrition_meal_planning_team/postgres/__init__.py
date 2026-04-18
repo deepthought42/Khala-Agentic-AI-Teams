@@ -52,11 +52,46 @@ SCHEMA = TeamSchema(
         )""",
         """CREATE INDEX IF NOT EXISTS idx_nutrition_recommendations_client_time
             ON nutrition_recommendations(client_id, recommended_at DESC)""",
+        # --- SPEC-002 additions (biometric + clinical audit trails) ---
+        # Append-only log of every biometric write. ``nutrition_profiles``
+        # already carries the latest value inside its JSONB; this table
+        # is the time-series view SPEC-002 / ADR-006 read for charts
+        # and weight-trend events. Future device integrations
+        # (SPEC-019) ride on top of the same shape.
+        """CREATE TABLE IF NOT EXISTS nutrition_biometric_log (
+            id              BIGSERIAL PRIMARY KEY,
+            client_id       TEXT NOT NULL,
+            field           TEXT NOT NULL,
+            value_numeric   DOUBLE PRECISION,
+            value_text      TEXT,
+            unit            TEXT,
+            source          TEXT NOT NULL,
+            recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+            recorded_by     TEXT
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_nutrition_biometric_log_client_field_time
+            ON nutrition_biometric_log(client_id, field, recorded_at DESC)""",
+        # Audit log for clinician-authored numeric overrides on the
+        # profile (e.g. ``{"bmi_floor": 19.5}``). Every write produces
+        # a row; the live value lives on ClientProfile.clinical.
+        """CREATE TABLE IF NOT EXISTS nutrition_clinical_overrides_log (
+            id              BIGSERIAL PRIMARY KEY,
+            client_id       TEXT NOT NULL,
+            key             TEXT NOT NULL,
+            value_numeric   DOUBLE PRECISION,
+            reason          TEXT,
+            author          TEXT NOT NULL,
+            recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_nutrition_clinical_overrides_log_client_time
+            ON nutrition_clinical_overrides_log(client_id, recorded_at DESC)""",
     ],
     table_names=[
         "nutrition_profiles",
         "nutrition_conversations",
         "nutrition_plans",
         "nutrition_recommendations",
+        "nutrition_biometric_log",
+        "nutrition_clinical_overrides_log",
     ],
 )
