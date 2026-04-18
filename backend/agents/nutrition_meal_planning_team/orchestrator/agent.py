@@ -414,11 +414,13 @@ class NutritionMealPlanningOrchestrator:
             bio.preferred_units = patch.preferred_units
             changes.append(("preferred_units", None, bio.preferred_units, None))
 
-        if patch.measured_at is not None:
+        measured_at_changed = False
+        if patch.measured_at is not None and patch.measured_at != bio.measured_at:
             bio.measured_at = patch.measured_at
-            # measured_at is metadata, not a value — no audit row.
+            measured_at_changed = True
+            # measured_at is metadata, not a numeric value — no audit row.
 
-        if changes:
+        if changes or measured_at_changed:
             self.profile_store.save_profile(client_id, profile)
             for field, vnum, vtext, unit in changes:
                 self.profile_store.log_biometric(
@@ -442,8 +444,13 @@ class NutritionMealPlanningOrchestrator:
         """Return biometric log rows for the client, newest first."""
         since_dt: Optional[datetime] = None
         if since_iso:
+            # ``datetime.fromisoformat`` on Python 3.10 rejects the
+            # trailing ``Z`` shorthand common in RFC3339. Normalize
+            # it to ``+00:00`` so callers can pass standard API
+            # timestamps without having to pre-process them.
+            normalized = since_iso[:-1] + "+00:00" if since_iso.endswith("Z") else since_iso
             try:
-                since_dt = datetime.fromisoformat(since_iso)
+                since_dt = datetime.fromisoformat(normalized)
                 if since_dt.tzinfo is None:
                     since_dt = since_dt.replace(tzinfo=timezone.utc)
             except ValueError:

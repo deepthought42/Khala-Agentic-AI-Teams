@@ -386,6 +386,26 @@ class BiometricPatchRequest(BaseModel):
             raise ValueError("preferred_units must be 'metric' or 'imperial'")
         return v
 
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: Optional[str]) -> Optional[str]:
+        # Validate at the request boundary so the orchestrator's
+        # direct assignment (`bio.timezone = patch.timezone`) can't
+        # persist an unknown zone that later breaks profile reads.
+        if v is None:
+            return v
+        try:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown IANA timezone: {v}") from exc
+        except Exception:
+            # Missing tzdata on host — accept (same tolerance as
+            # BiometricInfo._validate_timezone).
+            return v
+        return v
+
 
 class ClinicalPatchRequest(BaseModel):
     """Body for PATCH /profile/{client_id}/clinical.
