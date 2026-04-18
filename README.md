@@ -31,12 +31,12 @@
 
 Under the hood, Khala is a FastAPI gateway that mounts role-separated specialist teams under `/api/<team>` — each one a team-lead agent coordinating specialists over Pydantic contracts. But the point isn't the wiring. The point is that every team plugs into the same shared mind, so you can bring them in on whatever you're working on:
 
-- **Work with Khala to turn a spec into shipped code** → the Software Engineering team runs Discovery → Design → Execution → Integration alongside you: planning, code + tests + docs in parallel backend/frontend queues, merging to a `development` branch when the quality gates pass.
-- **Work with it on a market** → Market Research pairs with you on user discovery and concept viability; Planning V3 turns the conversation into a PRD the dev teams can run with.
-- **Work with it on a launch** → Blogging (research → planning → draft → copy-edit → gates) writes with you; Social Marketing builds per-platform campaigns with you; the Sales team runs B2B prospecting, qualification, and close with you.
-- **Work with it on compliance** → SOC2 Compliance drives the audit workflow; Accessibility Audit reports WCAG 2.2 / Section 508 findings for web and mobile.
-- **Work with it on a portfolio** → the Investment team pairs a Financial Advisor (IPS, proposals, memos) with a Strategy Lab (ideation, backtests) behind one API prefix.
-- **Work with it on an ambiguous problem** → **Deepthought** recursively spawns the specialist sub-agents it needs to decompose and answer the question with you.
+- **Ship a spec into code** → the Software Engineering team runs Discovery → Design → Execution → Integration alongside you: planning, code + tests + docs in parallel backend/frontend queues, merging to a `development` branch when the quality gates pass.
+- **Figure out a market** → Market Research pairs with you on user discovery and concept viability; Planning V3 turns the conversation into a PRD the dev teams can run with.
+- **Plan a launch** → Blogging (research → planning → draft → copy-edit → gates) writes with you; Social Marketing builds per-platform campaigns with you; the Sales team runs B2B prospecting, qualification, and close with you.
+- **Pass an audit** → SOC2 Compliance drives the workflow; Accessibility Audit reports WCAG 2.2 / Section 508 findings for web and mobile.
+- **Run a portfolio** → the Investment team pairs a Financial Advisor (IPS, proposals, memos) with a Strategy Lab (ideation, backtests) behind one API prefix.
+- **Poke at something ambiguous** → **Deepthought** recursively spawns the specialist sub-agents it needs to decompose and answer the question with you.
 
 The teams share infrastructure — the gateway with its optional security pre-scan, a shared Postgres schema registry for migrated teams, a shared artifact cache, and a pluggable LLM client (Ollama Cloud, local Ollama, or Claude). Set `TEMPORAL_ADDRESS` and the teams that export Temporal workflows switch from in-process threads to durable executions that survive restarts; teams without workflows keep using threads.
 
@@ -47,6 +47,8 @@ The teams share infrastructure — the gateway with its optional security pre-sc
 ### What Khala actually is
 
 A personal project to figure out how to build agentic AI teams that actually work together. The honest arc: a vibe-coded experiment turning into a real engineered system, and from there into the thing I'm really after — **an agentic AI that can look at a problem, decide what kind of team would solve it, spin up ephemeral specialist agents to do the work, learn from what landed and what didn't, and keep the agents that earn their keep.** The 20 teams here today are the substrate for that learning, not the destination. Follow along.
+
+If you want to build, tinker, and help push the frontier of multi-agent systems — welcome aboard.
 
 <p align="center">
   <a href="https://deepthought42.github.io/Khala-Agentic-AI-Teams/">🌐 Live site</a> ·
@@ -62,18 +64,18 @@ A personal project to figure out how to build agentic AI teams that actually wor
 
 ## Why Khala?
 
-- **🌩️ One gateway, one mind** — every team mounts under `/api/<team-slug>` behind a single FastAPI server (with an optional security pre-scan, `SECURITY_GATEWAY_ENABLED`, on by default), so the whole roster is addressable — and collaborates — as one.
-- **⚡ Opt-in durability** — set `TEMPORAL_ADDRESS` and teams that ship Temporal workflows switch from in-process threads to durable executions that survive server restarts (Temporal 1.24.2). Other teams keep running as background threads.
-- **🧠 Bring your own LLM** — unified client for Ollama Cloud, local Ollama, or Claude via `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_MODEL`. A few teams expose per-role overrides (e.g. `ARCHITECT_MODEL_SPECIALIST`, `BLOG_PLANNING_MODEL`).
-- **🏗️ Real engineering inside the SE team** — 4-phase pipeline (Discovery → Design → Execution → Integration), parallel backend/frontend worker queues, a planning cache that short-circuits re-plans when spec/architecture/overview are unchanged, per-task quality gates (lint, build, code review, acceptance verifier, security, QA, DbC, tech-lead review — plus an accessibility gate on frontend tasks), and a Repair Agent for crash recovery.
-- **📊 Observability built in** — every FastAPI service in the Docker stack is auto-instrumented by `prometheus-fastapi-instrumentator`; Prometheus + a provisioned Grafana dashboard ship in `docker-compose.yml`.
-- **🧬 Built to grow its own roster** — new teams aren't a plugin afterthought; they're the product. Design one by conversation with Agentic Team Provisioning, or register it yourself in `TEAM_CONFIGS` and it mounts at `/api/<slug>` on restart.
-- **🚀 One command to launch the stack** — `docker compose up --build` brings up Postgres, Temporal, every team microservice, the Unified API proxy, the Angular UI, Prometheus, and Grafana. (Healthchecks and first-run image builds mean it's minutes, not seconds.)
+- **🌩️ One gateway, one mind.** Every team mounts under `/api/<team-slug>` behind a single FastAPI server with an optional security pre-scan. The whole roster is addressable — and collaborates — as one.
+- **⚡ Crashes become replays, not restarts.** Set `TEMPORAL_ADDRESS` and workflow-enabled teams run durably on Temporal 1.24.2. Everyone else keeps running as background threads.
+- **🧠 Bring your own LLM.** Ollama Cloud, local Ollama, or Claude — switch via `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_MODEL`. A few teams take per-role overrides (e.g. `BLOG_PLANNING_MODEL`).
+- **🏗️ A real dev team, not a code snippet generator.** Four phases, parallel backend/frontend queues, eight quality gates per task, and a Repair Agent when something explodes. [See the pipeline →](ARCHITECTURE.md)
+- **📊 Observability built in.** Every service is auto-instrumented by `prometheus-fastapi-instrumentator`; Prometheus + a provisioned Grafana dashboard ship in the Compose file.
+- **🧬 Built to grow its own roster.** New teams aren't a plugin afterthought — they're the product. Describe one to Agentic Team Provisioning, or register it yourself in `TEAM_CONFIGS`.
+- **🚀 One command to launch the stack.** `docker compose up --build` brings up Postgres, Temporal, every team, the Unified API, the UI, Prometheus, and Grafana. Minutes, not seconds.
 
 ---
 
 > [!WARNING]
-> **Khala is experimental.** The agents in this project are active research, not a production-ready product. Outputs can be incomplete, inconsistent, or just plain wrong; APIs change without notice; a team that shipped a feature yesterday may hit a wall today. Run it in isolated environments, keep humans in the loop for anything that matters, and treat every generated artifact (code, audits, trades, compliance reports) as a draft that needs review before you rely on it. If you're looking for a hardened platform with SLAs, this isn't it — yet. If you're looking to build, tinker, and help push the frontier of multi-agent systems, welcome aboard.
+> **Khala is experimental.** The agents in this project are active research, not a production-ready product. Outputs can be incomplete, inconsistent, or just plain wrong; APIs change without notice; a team that shipped a feature yesterday may hit a wall today. Run it in isolated environments, keep humans in the loop for anything that matters, and treat every generated artifact (code, audits, trades, compliance reports) as a draft that needs review before you rely on it. If you're looking for a hardened platform with SLAs, this isn't it — yet.
 
 ---
 
@@ -85,41 +87,41 @@ Today Khala ships with 20 specialist teams behind one gateway, grouped loosely f
 
 | Team | Route | What it does |
 |---|---|---|
-| **Software Engineering** | `/api/software-engineering` | Full dev-team simulation: architecture, planning, coding, review, release |
-| **Planning V3** | `/api/planning-v3` | Client-facing discovery and PRDs; hands off to dev/UX |
-| **Coding Team** | `/api/coding-team` | SE sub-team: tech lead + stack specialists with a task graph |
-| **AI Systems** | `/api/ai-systems` | Spec-driven factory that builds new AI agent systems |
-| **Agent Provisioning** | `/api/agent-provisioning` | Stands up agent environments (databases, git, docker) |
-| **Agentic Team Provisioning** | `/api/agentic-team-provisioning` | Designs new teams and their processes by conversation |
-| **User Agent Founder** | `/api/user-agent-founder` | Autonomous "founder" agent that drives the SE team |
-| **Deepthought** | `/api/deepthought` | Recursive self-organizing agent that spawns its own sub-agents |
+| **Software Engineering** | `/api/software-engineering` | The whole pod — PM, architect, devs, reviewer, release captain. Hand it a spec, get a merged PR. |
+| **Planning V3** | `/api/planning-v3` | Turns a fuzzy idea into a PRD the dev teams can actually build from. |
+| **Coding Team** | `/api/coding-team` | A tech lead and a stack of specialists, wired to a task graph. The SE team's engine room. |
+| **AI Systems** | `/api/ai-systems` | A factory that reads a spec and builds the AI agent system it describes. |
+| **Agent Provisioning** | `/api/agent-provisioning` | Stands up the sandbox — database, git, docker — so a new agent can actually run. |
+| **Agentic Team Provisioning** | `/api/agentic-team-provisioning` | Describe the team you wish you had; it designs the roster and the process for you. |
+| **User Agent Founder** | `/api/user-agent-founder` | An autonomous "founder" that drives the SE team the way a real one would. |
+| **Deepthought** | `/api/deepthought` | Asks itself what specialists it needs, spawns them, synthesizes the answer. Turtles all the way down. |
 
 ### 💼 Business — the grown-up functions
 
 | Team | Route | What it does |
 |---|---|---|
-| **Market Research** | `/api/market-research` | User discovery and product-concept viability research |
-| **SOC2 Compliance** | `/api/soc2-compliance` | SOC2 audit and certification workflow |
-| **Investment** | `/api/investment` | Financial advisor (IPS, proposals) + Strategy Lab (ideation, backtests) |
-| **AI Sales Team** | `/api/sales` | Full B2B sales pod: prospect → qualify → nurture → close |
-| **Startup Advisor** | `/api/startup-advisor` | Persistent conversational advisor with probing dialogue |
+| **Market Research** | `/api/market-research` | User discovery and concept viability, without the consultant invoice. |
+| **SOC2 Compliance** | `/api/soc2-compliance` | Walks your org through the audit workflow end to end. |
+| **Investment** | `/api/investment` | Advisor writes the plan (IPS, proposals, memos). Strategy Lab stress-tests it against the tape. |
+| **AI Sales Team** | `/api/sales` | The full B2B pod — prospect, qualify, nurture, close. |
+| **Startup Advisor** | `/api/startup-advisor` | A persistent advisor with probing dialogue that picks up right where you left off. |
 
 ### ✍️ Content — ideas into words into reach
 
 | Team | Route | What it does |
 |---|---|---|
-| **Blogging** | `/api/blogging` | Research → planning → draft → copy-edit → publish |
-| **Social Marketing** | `/api/social-marketing` | Cross-platform campaigns with per-platform specialists |
-| **Branding** | `/api/branding` | Brand strategy, moodboards, and design/writing standards |
+| **Blogging** | `/api/blogging` | Research → planning → draft → copy-edit → publish. Nine agents, one editor's brain. |
+| **Social Marketing** | `/api/social-marketing` | Cross-platform campaigns built by per-platform specialists who know the medium. |
+| **Branding** | `/api/branding` | Brand strategy, moodboards, and the writing and design standards to match. |
 
 ### 🧘 Personal — life, optimized
 
 | Team | Route | What it does |
 |---|---|---|
-| **Personal Assistant** | `/api/personal-assistant` | Email, calendar, tasks, deals, reservations |
-| **Accessibility Audit** | `/api/accessibility-audit` | WCAG 2.2 and Section 508 auditing for web and mobile |
-| **Nutrition & Meal Planning** | `/api/nutrition-meal-planning` | Personalized meal plans that learn from your feedback |
-| **Road Trip Planning** | `/api/road-trip-planning` | Profiling, route optimization, activity recommendations, logistics |
+| **Personal Assistant** | `/api/personal-assistant` | Email, calendar, tasks, deals, reservations — the mundane stuff, handled. |
+| **Accessibility Audit** | `/api/accessibility-audit` | WCAG 2.2 and Section 508 findings for web and mobile, without the slow consultancy. |
+| **Nutrition & Meal Planning** | `/api/nutrition-meal-planning` | Personalized meal plans that learn what you actually ate and liked. |
+| **Road Trip Planning** | `/api/road-trip-planning` | Tell it where, who, and what you care about. It builds the day-by-day and reworks it on the fly. |
 
 > …and more on the way. Run `GET /teams` on a live instance for the authoritative roster.
 
