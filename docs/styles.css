@@ -267,6 +267,14 @@ strong { font-weight: 600; color: var(--ink); }
 }
 .hero-lede em { font-style: italic; color: var(--ink); }
 
+.hero-tagline {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  margin: 0 0 28px;
+}
+
 .hero-ctas {
   display: flex;
   gap: 14px;
@@ -565,7 +573,7 @@ strong { font-weight: 600; color: var(--ink); }
   position: absolute;
   top: 0; left: 0;
   width: 3px; height: 100%;
-  background: var(--cell-accent, var(--violet));
+  background: var(--group-accent, var(--violet));
   opacity: 0.7;
 }
 .team-card:hover {
@@ -573,10 +581,10 @@ strong { font-weight: 600; color: var(--ink); }
   border-color: var(--border-strong);
   box-shadow: 0 12px 32px -16px rgba(139, 92, 255, 0.4);
 }
-.team-card[data-cell="core"] { --cell-accent: var(--cyan); }
-.team-card[data-cell="business"] { --cell-accent: var(--gold); }
-.team-card[data-cell="content"] { --cell-accent: var(--magenta); }
-.team-card[data-cell="personal"] { --cell-accent: var(--violet); }
+.team-card[data-group="core"] { --group-accent: var(--cyan); }
+.team-card[data-group="business"] { --group-accent: var(--gold); }
+.team-card[data-group="content"] { --group-accent: var(--magenta); }
+.team-card[data-group="personal"] { --group-accent: var(--violet); }
 
 .team-head {
   display: flex;
@@ -594,7 +602,7 @@ strong { font-weight: 600; color: var(--ink); }
 .team-tag {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--cell-accent);
+  color: var(--group-accent);
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
