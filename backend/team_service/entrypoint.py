@@ -21,16 +21,22 @@ logger = logging.getLogger("team_service")
 
 
 class _HealthCheckFilter(logging.Filter):
-    """Suppress health-check access log lines unless the logger is at DEBUG level."""
+    """Suppress successful health-check and metrics-scrape access log lines.
+
+    Non-2xx responses still pass through so failures are visible.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno <= logging.DEBUG:
             return True  # Always show in debug mode
         msg = record.getMessage()
-        return not ("GET /health" in msg and "200" in msg)
+        if "200" not in msg:
+            return True
+        return not ("GET /health" in msg or "GET /metrics" in msg)
 
 
-# Apply to uvicorn's access logger so health probes don't fill the logs.
+# Apply to uvicorn's access logger so health probes and Prometheus scrapes
+# don't fill the logs.
 logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
 TEAM_MODULE = os.environ["TEAM_MODULE"]
