@@ -238,9 +238,35 @@ def test_market_research_synchronous_has_null_job_id(
     body = resp.json()
     assert body["ok"] is True
     assert body["job_id"] is None
+    # The full upstream body is surfaced so the dashboard can render it,
+    # since there's no job to poll for synchronous teams.
+    assert body["upstream_body"] == {"status": "ok", "summary": "..."}
     # And the conversation is NOT linked to any job.
     store = TeamAssistantConversationStore(team_key="market_research")
     assert store.get_by_job_id("") is None
+
+
+def test_social_marketing_launch_injects_llm_model_name(
+    fake_pg: dict,
+    upstream: _UpstreamHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: upstream requires llm_model_name; assistant must supply it."""
+    _stub_agent(monkeypatch)
+    monkeypatch.setenv("LLM_MODEL", "llama3.1")
+    upstream.response_body = {"job_id": "sm-1", "status": "queued", "message": "ok"}
+    client, cid = _seed_conversation(
+        "social_marketing",
+        context={"client_id": "client-a", "brand_id": "brand-b"},
+    )
+
+    resp = client.post(f"/launch?conversation_id={cid}")
+    assert resp.status_code == 200, resp.text
+
+    sent = json.loads(upstream.requests[0]["body"])
+    assert sent["client_id"] == "client-a"
+    assert sent["brand_id"] == "brand-b"
+    assert sent["llm_model_name"] == "llama3.1"
 
 
 def test_no_launch_spec_returns_400(
