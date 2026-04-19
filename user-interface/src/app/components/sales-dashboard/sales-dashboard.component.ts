@@ -1,20 +1,218 @@
-import { Component } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatCardModule } from '@angular/material/card';
+import { Subject, Subscription, timer, of } from 'rxjs';
+import { catchError, startWith, switchMap } from 'rxjs/operators';
 import { TeamAssistantChatComponent } from '../team-assistant-chat/team-assistant-chat.component';
 import { DashboardShellComponent } from '../../shared/dashboard-shell/dashboard-shell.component';
+import { SalesPipelineFormComponent } from '../sales-pipeline-form/sales-pipeline-form.component';
+import { SalesJobsPanelComponent } from '../sales-jobs-panel/sales-jobs-panel.component';
+import { SalesPipelineResultsComponent } from '../sales-pipeline-results/sales-pipeline-results.component';
+import { SalesApiService } from '../../services/sales-api.service';
+import type {
+  SalesPipelineJobListItem,
+  SalesPipelineStatusResponse,
+} from '../../models';
+
+const JOBS_POLL_MS = 15000;
+const STATUS_POLL_MS = 10000;
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 @Component({
   selector: 'app-sales-dashboard',
   standalone: true,
   imports: [
+    CommonModule,
     MatIconModule,
     MatButtonModule,
+    MatProgressBarModule,
+    MatCardModule,
     TeamAssistantChatComponent,
     DashboardShellComponent,
+    SalesPipelineFormComponent,
+    SalesJobsPanelComponent,
+    SalesPipelineResultsComponent,
   ],
   templateUrl: './sales-dashboard.component.html',
   styleUrl: './sales-dashboard.component.scss',
 })
-export class SalesDashboardComponent {
+export class SalesDashboardComponent implements OnInit, OnDestroy {
+  private readonly api = inject(SalesApiService);
+
+  view: 'chat' | 'form' | 'jobs' = 'chat';
+  launchContext: Record<string, unknown> | null = null;
+
+  jobs: SalesPipelineJobListItem[] = [];
+  selectedJobId: string | null = null;
+  selectedJobStatus: SalesPipelineStatusResponse | null = null;
+
+  listError: string | null = null;
+  statusError: string | null = null;
+  cancelling = false;
+
+  private readonly refreshTrigger$ = new Subject<void>();
+  private jobsSub: Subscription | null = null;
+  private statusSub: Subscription | null = null;
+
+  // --- Lifecycle ---------------------------------------------------------
+
+  ngOnInit(): void {
+    this.jobsSub = this.refreshTrigger$
+      .pipe(
+        startWith(undefined as void),
+        switchMap(() => timer(0, JOBS_POLL_MS)),
+        switchMap(() =>
+          this.api.listPipelineJobs(false).pipe(
+            catchError((err) => {
+              this.listError = err?.error?.detail ?? err?.message ?? 'Failed to load jobs';
+              return of([] as SalesPipelineJobListItem[]);
+            }),
+          ),
+        ),
+      )
+      .subscribe((jobs) => {
+        this.listError = null;
+        this.jobs = jobs;
+        if (this.view === 'chat' && jobs.length > 0 && !this.launchContext) {
+          // First-time-load nudge: if there are existing jobs and we haven't
+          // started a new campaign in this session, land on the jobs view.
+          this.view = 'jobs';
+        }
+        // If the selected job got deleted upstream, clear it.
+        if (this.selectedJobId && !jobs.find((j) => j.job_id === this.selectedJobId)) {
+          this.clearSelectedJob();
+        }
+      });
+  }
+
+  ngOnDestroy(): void {
+    this.jobsSub?.unsubscribe();
+    this.statusSub?.unsubscribe();
+    this.refreshTrigger$.complete();
+  }
+
+  // --- Navigation --------------------------------------------------------
+
+  showChat(): void {
+    this.view = 'chat';
+    this.launchContext = null;
+  }
+
+  showJobs(): void {
+    this.view = 'jobs';
+  }
+
+  backToChat(): void {
+    this.view = 'chat';
+  }
+
+  // --- Chat → form handoff ----------------------------------------------
+
+  onReadyToLaunch(context: Record<string, unknown>): void {
+    this.launchContext = context;
+    this.view = 'form';
+  }
+
+  // --- Form → real launch -----------------------------------------------
+
+  onPipelineStarted(jobId: string): void {
+    this.launchContext = null;
+    this.view = 'jobs';
+    this.selectJob(jobId);
+    // Refresh the list immediately so the new job appears without waiting
+    // for the next poll tick.
+    this.refreshTrigger$.next();
+  }
+
+  // --- Jobs panel interactions ------------------------------------------
+
+  selectJob(jobId: string): void {
+    if (this.selectedJobId === jobId) return;
+    this.selectedJobId = jobId;
+    this.selectedJobStatus = null;
+    this.statusError = null;
+    this.startStatusPolling(jobId);
+  }
+
+  deleteJob(jobId: string): void {
+    if (!confirm('Delete this pipeline run? This cannot be undone.')) return;
+    this.api.deleteJob(jobId).subscribe({
+      next: () => {
+        if (this.selectedJobId === jobId) this.clearSelectedJob();
+        this.refreshTrigger$.next();
+      },
+      error: (err) => {
+        this.listError = err?.error?.detail ?? err?.message ?? 'Failed to delete job';
+      },
+    });
+  }
+
+  cancelSelectedJob(): void {
+    const jobId = this.selectedJobId;
+    if (!jobId || this.cancelling) return;
+    this.cancelling = true;
+    this.api.cancelJob(jobId).subscribe({
+      next: () => {
+        this.cancelling = false;
+        this.refreshTrigger$.next();
+      },
+      error: (err) => {
+        this.cancelling = false;
+        this.statusError = err?.error?.detail ?? err?.message ?? 'Failed to cancel job';
+      },
+    });
+  }
+
+  // --- Selected-job status polling --------------------------------------
+
+  private startStatusPolling(jobId: string): void {
+    this.statusSub?.unsubscribe();
+    this.statusSub = timer(0, STATUS_POLL_MS)
+      .pipe(
+        switchMap(() =>
+          this.api.getPipelineStatus(jobId).pipe(
+            catchError((err) => {
+              this.statusError =
+                err?.error?.detail ?? err?.message ?? 'Failed to load job status';
+              return of<SalesPipelineStatusResponse | null>(null);
+            }),
+          ),
+        ),
+      )
+      .subscribe((status) => {
+        if (!status || this.selectedJobId !== jobId) return;
+        this.statusError = null;
+        this.selectedJobStatus = status;
+        if (this.isTerminal(status.status)) {
+          this.statusSub?.unsubscribe();
+          this.statusSub = null;
+        }
+      });
+  }
+
+  private clearSelectedJob(): void {
+    this.selectedJobId = null;
+    this.selectedJobStatus = null;
+    this.statusError = null;
+    this.statusSub?.unsubscribe();
+    this.statusSub = null;
+  }
+
+  // --- Helpers -----------------------------------------------------------
+
+  isTerminal(status: string | undefined): boolean {
+    return !!status && TERMINAL_STATUSES.has(status);
+  }
+
+  stageLabel(stage: string | undefined): string {
+    if (!stage) return '';
+    return stage.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  get runningJobsCount(): number {
+    return this.jobs.filter((j) => j.status === 'running' || j.status === 'pending').length;
+  }
 }
