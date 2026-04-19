@@ -17,4 +17,9 @@ import { DashboardShellComponent } from '../../shared/dashboard-shell/dashboard-
   styleUrl: './sales-dashboard.component.scss',
 })
 export class SalesDashboardComponent {
+  latestJobId: string | null = null;
+
+  onWorkflowLaunched(event: { job_id: string | null; conversation_id: string }): void {
+    this.latestJobId = event.job_id;
+  }
 }
