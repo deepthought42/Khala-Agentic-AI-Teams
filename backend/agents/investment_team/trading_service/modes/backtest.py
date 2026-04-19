@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ...execution.cost_stress import CostStressReport, CostStressRow
 from ...market_data_service import OHLCVBar
 from ...models import BacktestConfig, BacktestResult, StrategySpec, TradeRecord
 from ...trade_simulator import compute_metrics
@@ -80,16 +81,16 @@ def run_backtest(
             "(provider-driven)"
         )
 
-    if has_legacy:
-        stream = HistoricalReplayStream(market_data, timeframe=timeframe)
-    else:
+    def _build_stream() -> object:
+        if has_legacy:
+            return HistoricalReplayStream(market_data, timeframe=timeframe)
         reg = registry or default_registry()
         provider = reg.resolve(
             asset_class=asset_class,
             direction="historical",
             explicit=provider_id,
         )
-        stream = ProviderHistoricalStream(
+        return ProviderHistoricalStream(
             provider=provider,
             symbols=symbols,
             asset_class=asset_class,
@@ -98,12 +99,25 @@ def run_backtest(
             timeframe=timeframe,
         )
 
-    service = TradingService(
-        strategy_code=strategy.strategy_code,
-        config=config,
-        risk_limits=strategy.risk_limits,
-    )
-    service_result = service.run(stream)
+    def _run_once(
+        run_config: BacktestConfig,
+    ) -> tuple[TradingServiceResult, BacktestResult]:
+        stream = _build_stream()
+        service = TradingService(
+            strategy_code=strategy.strategy_code,
+            config=run_config,
+            risk_limits=strategy.risk_limits,
+        )
+        outcome = service.run(stream)
+        run_metrics = compute_metrics(
+            outcome.trades,
+            run_config.initial_capital,
+            run_config.start_date,
+            run_config.end_date,
+        )
+        return outcome, run_metrics
+
+    service_result, metrics = _run_once(config)
 
     if service_result.error and not service_result.trades:
         logger.warning(
@@ -112,20 +126,84 @@ def run_backtest(
             service_result.error[:200],
         )
 
-    metrics = compute_metrics(
-        service_result.trades,
-        config.initial_capital,
-        config.start_date,
-        config.end_date,
-    )
+    update: Dict[str, object] = {}
+
     # Phase 3: propagate the drawdown / look-ahead termination reason from
     # the TradingService layer into the persisted BacktestResult so the API
     # and downstream recording layers can surface it without peeking at the
     # raw service_result.
     if service_result.terminated_reason:
-        metrics = metrics.model_copy(update={"terminated_reason": service_result.terminated_reason})
+        update["terminated_reason"] = service_result.terminated_reason
+
+    # Phase 4: signals-per-bar is computed off the bars that actually
+    # reached the strategy subprocess.  For the legacy path the count is
+    # the sum of ``len(bars)`` across symbols; the provider-stream path
+    # sets ``bars_delivered`` on the service_result (populated by
+    # HistoricalReplayStream / ProviderHistoricalStream when available).
+    bar_count = _count_bars(has_legacy, market_data)
+    if bar_count > 0:
+        signals_per_bar = len(service_result.trades) / bar_count
+        update["signals_per_bar"] = round(signals_per_bar, 6)
+        if config.min_signals_per_bar and signals_per_bar < config.min_signals_per_bar:
+            update.setdefault("reject_reason", "low_signals_per_bar")
+
+    # Phase 4: cost-stress replay.  Only runs when the flag is on; reuses
+    # the legacy path's pre-fetched market data so we don't re-pull from
+    # providers between multipliers.
+    if config.cost_stress and config.cost_stress_multipliers:
+        report = CostStressReport()
+        for multiplier in config.cost_stress_multipliers:
+            _, stress_metrics = _run_once(_scaled_cost_config(config, multiplier))
+            report.rows.append(
+                CostStressRow(
+                    multiplier=multiplier,
+                    sharpe_ratio=stress_metrics.sharpe_ratio,
+                    annualized_return_pct=stress_metrics.annualized_return_pct,
+                    max_drawdown_pct=stress_metrics.max_drawdown_pct,
+                    trade_count=len(service_result.trades),
+                )
+            )
+        update["cost_stress_results"] = report.to_payload()
+
+        # Gate: fail when Sharpe at the 2x multiplier drops below the
+        # configured floor.  Only fires when the floor was set and a 2x
+        # row is present.
+        if config.min_sharpe_at_2x is not None:
+            row_2x = report.at(2.0)
+            if row_2x is not None and row_2x.sharpe_ratio < config.min_sharpe_at_2x:
+                update.setdefault("reject_reason", "fails_cost_stress")
+
+    if update:
+        metrics = metrics.model_copy(update=update)
+
     return BacktestRunResult(
         result=metrics,
         trades=service_result.trades,
         service_result=service_result,
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def _scaled_cost_config(base: BacktestConfig, multiplier: float) -> BacktestConfig:
+    return base.model_copy(
+        update={
+            "transaction_cost_bps": base.transaction_cost_bps * multiplier,
+            "slippage_bps": base.slippage_bps * multiplier,
+            # Avoid recursion: the replayed runs are plain backtests.
+            "cost_stress": False,
+            "min_signals_per_bar": 0.0,
+        }
+    )
+
+
+def _count_bars(
+    has_legacy: bool,
+    market_data: Optional[Dict[str, List[OHLCVBar]]],
+) -> int:
+    if has_legacy and market_data:
+        return sum(len(v) for v in market_data.values())
+    return 0

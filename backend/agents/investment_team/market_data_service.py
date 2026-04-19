@@ -13,7 +13,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional, Sequence
 
 import httpx
 from pydantic import BaseModel
@@ -53,6 +53,29 @@ class OHLCVBar(BaseModel):
 
 # Type alias for a fetch function used in the provider chain.
 _FetchFn = Callable[[str, str, str, str], List[OHLCVBar]]
+
+
+def compute_adv_from_bars(
+    bars: Sequence[OHLCVBar],
+    *,
+    lookback: int = 20,
+) -> Optional[float]:
+    """Trailing-N-bar mean of ``close * volume`` (USD) from an OHLCV list.
+
+    Pure helper — kept at module scope so unit tests and the cost-stress
+    harness can compute ADV from synthetic fixtures without instantiating
+    a ``MarketDataService`` or hitting the network.  Returns ``None`` when
+    the series is shorter than ``lookback`` or every bar has zero volume.
+    """
+    if not bars or lookback <= 0:
+        return None
+    window = list(bars)[-lookback:]
+    if len(window) < lookback:
+        return None
+    dollar_volume = [b.close * b.volume for b in window if b.volume > 0 and b.close > 0]
+    if not dollar_volume:
+        return None
+    return sum(dollar_volume) / len(dollar_volume)
 
 
 class MarketDataService:
@@ -95,6 +118,50 @@ class MarketDataService:
                 logger.warning("Provider failed for %s (%s): %s", symbol, ac, exc)
         logger.warning("All providers exhausted for %s (%s)", symbol, ac)
         return []
+
+    # ------------------------------------------------------------------
+    # Liquidity (Phase 4): average daily dollar volume over the trailing
+    # 20 bars.  Consumed by ``SpreadPlusImpactCostModel`` to size the
+    # market-impact term per symbol.
+    # ------------------------------------------------------------------
+
+    _adv_cache: Dict[tuple, tuple[float, float]] = {}
+    _ADV_CACHE_TTL_SEC: float = 3600.0
+
+    def avg_dollar_volume_20d(
+        self,
+        symbol: str,
+        asset_class: str,
+        *,
+        as_of: Optional[str] = None,
+        lookback: int = 20,
+    ) -> Optional[float]:
+        """Return the trailing-N-bar mean of ``close * volume`` in USD.
+
+        ``as_of`` defaults to today.  Results are memoized on ``(symbol,
+        asset_class, as_of, lookback)`` for ``_ADV_CACHE_TTL_SEC`` seconds
+        so the orchestrator can query ADV per-symbol cheaply during a
+        run.  Returns ``None`` when the provider chain is exhausted — the
+        cost model's impact term collapses to the flat half-spread in
+        that case.
+        """
+        as_of_str = as_of or date.today().isoformat()
+        key = (symbol, asset_class, as_of_str, int(lookback))
+        now = time.monotonic()
+        cached = type(self)._adv_cache.get(key)
+        if cached is not None:
+            cached_value, cached_ts = cached
+            if now - cached_ts < self._ADV_CACHE_TTL_SEC:
+                return cached_value if cached_value >= 0 else None
+
+        # Pull lookback * ~1.6 calendar days so weekends / holidays leave
+        # enough trading bars after filtering.  Extra bars are truncated.
+        end_dt = date.fromisoformat(as_of_str[:10])
+        start_dt = end_dt - timedelta(days=max(lookback * 2, 30))
+        bars = self.fetch_ohlcv_range(symbol, asset_class, start_dt.isoformat(), end_dt.isoformat())
+        adv = compute_adv_from_bars(bars, lookback=lookback)
+        type(self)._adv_cache[key] = (adv if adv is not None else -1.0, now)
+        return adv
 
     def get_symbols_for_strategy(self, strategy: StrategySpec) -> List[str]:
         """Return relevant symbols based on the strategy's asset class."""

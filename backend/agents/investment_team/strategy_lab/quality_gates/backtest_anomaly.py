@@ -17,10 +17,19 @@ class BacktestAnomalyDetector:
         self,
         metrics: BacktestResult,
         trades: List[TradeRecord],
+        *,
+        mode: str = "backtest",
     ) -> List[QualityGateResult]:
+        """Run anomaly checks.
+
+        ``mode="backtest"`` (default) runs the full gate set; ``mode="paper"``
+        relaxes gates that assume a multi-year backtest window so short
+        paper-trading sessions don't false-trigger on "too few trades".
+        """
         results: List[QualityGateResult] = []
 
-        # 1. Zero trades
+        # 1. Zero trades (always flagged — even in paper mode a non-trading
+        # strategy is a hard failure).
         if not trades:
             results.append(
                 QualityGateResult(
@@ -32,8 +41,11 @@ class BacktestAnomalyDetector:
             )
             return results
 
-        # 2. Too few trades
-        if len(trades) < 5:
+        # 2. Too few trades — backtest-only: paper sessions run over short
+        # windows (a few weeks at most) so a <5-trade minimum is
+        # inappropriate.  The signals_per_bar floor in BacktestConfig
+        # is the paper-mode equivalent.
+        if mode != "paper" and len(trades) < 5:
             results.append(
                 QualityGateResult(
                     gate_name=GATE,

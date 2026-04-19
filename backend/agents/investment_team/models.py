@@ -259,6 +259,36 @@ class BacktestConfig(BaseModel):
             "DGS3MO (when FRED_API_KEY is set) → RFR_DEFAULT=0.04."
         ),
     )
+    # Phase 4: liquidity & cost-stress knobs.
+    cost_stress: bool = Field(
+        default=False,
+        description=(
+            "When True, run_backtest replays the strategy at each cost "
+            "multiplier in ``cost_stress_multipliers`` and records the "
+            "resulting Sharpe/return/MaxDD in ``BacktestResult.cost_stress_results``."
+        ),
+    )
+    cost_stress_multipliers: List[float] = Field(
+        default_factory=lambda: [1.0, 2.0, 3.0],
+        description="Multipliers applied to transaction_cost_bps and slippage_bps.",
+    )
+    min_sharpe_at_2x: Optional[float] = Field(
+        default=None,
+        description=(
+            "When set and cost_stress is enabled, run_backtest fails the "
+            "strategy (reject_reason='fails_cost_stress') if its Sharpe at "
+            "the 2x multiplier drops below this threshold."
+        ),
+    )
+    min_signals_per_bar: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Minimum trades/bar ratio required for the run to be considered "
+            "informative.  Set to 0 to disable (default).  Non-zero values "
+            "produce reject_reason='low_signals_per_bar' when violated."
+        ),
+    )
 
 
 # Asset-class-aware fee defaults.  Crypto uses Kraken taker fees (lowest
@@ -303,6 +333,10 @@ class BacktestResult(BaseModel):
     # condition (look-ahead, data error) short-circuited the run.  None
     # means the run completed through end-of-stream.
     terminated_reason: Optional[str] = None
+    # Phase 4: liquidity- and cost-stress diagnostics.
+    signals_per_bar: Optional[float] = None
+    cost_stress_results: Optional[List[Dict[str, Any]]] = None
+    reject_reason: Optional[str] = None
 
 
 class TradeRecord(BaseModel):
