@@ -1,0 +1,50 @@
+{
+  "config": {
+    "bars_per_symbol": 252,
+    "end_date": "2024-12-31",
+    "initial_capital": 100000.0,
+    "start_date": "2024-01-01",
+    "symbols": [
+      "AAA",
+      "BBB"
+    ]
+  },
+  "metrics_daily": {
+    "alpha_pct": null,
+    "annualized_return_pct": 0.0,
+    "beta": null,
+    "calmar_ratio": 0.0,
+    "information_ratio": null,
+    "max_drawdown_duration_days": 0,
+    "max_drawdown_pct": 0.0,
+    "metrics_engine": "daily",
+    "profit_factor": 0.0,
+    "risk_free_rate": 0.04,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_return_pct": 0.0,
+    "volatility_pct": 0.0,
+    "win_rate_pct": 0.0
+  },
+  "metrics_legacy": {
+    "alpha_pct": null,
+    "annualized_return_pct": 0.0,
+    "beta": null,
+    "calmar_ratio": null,
+    "information_ratio": null,
+    "max_drawdown_duration_days": null,
+    "max_drawdown_pct": 0.0,
+    "metrics_engine": "legacy",
+    "profit_factor": 0.0,
+    "risk_free_rate": null,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": null,
+    "total_return_pct": 0.0,
+    "volatility_pct": 0.0,
+    "win_rate_pct": 0.0
+  },
+  "trades": {
+    "count": 0,
+    "trades": []
+  }
+}

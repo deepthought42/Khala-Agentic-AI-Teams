@@ -1,0 +1,159 @@
+{
+  "config": {
+    "bars_per_symbol": 252,
+    "end_date": "2024-12-31",
+    "initial_capital": 100000.0,
+    "start_date": "2024-01-01",
+    "symbols": [
+      "AAA",
+      "BBB"
+    ]
+  },
+  "metrics_daily": {
+    "alpha_pct": null,
+    "annualized_return_pct": -0.13,
+    "beta": null,
+    "calmar_ratio": -1.0,
+    "information_ratio": null,
+    "max_drawdown_duration_days": 239,
+    "max_drawdown_pct": 0.13,
+    "metrics_engine": "daily",
+    "profit_factor": 0.0,
+    "risk_free_rate": 0.04,
+    "sharpe_ratio": -95.44,
+    "sortino_ratio": -105.59,
+    "total_return_pct": -0.13,
+    "volatility_pct": 0.04,
+    "win_rate_pct": 0.0
+  },
+  "metrics_legacy": {
+    "alpha_pct": null,
+    "annualized_return_pct": -0.13,
+    "beta": null,
+    "calmar_ratio": null,
+    "information_ratio": null,
+    "max_drawdown_duration_days": null,
+    "max_drawdown_pct": 0.13,
+    "metrics_engine": "legacy",
+    "profit_factor": 0.0,
+    "risk_free_rate": null,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": null,
+    "total_return_pct": -0.13,
+    "volatility_pct": 0.0,
+    "win_rate_pct": 0.0
+  },
+  "trades": {
+    "count": 9,
+    "trades": [
+      {
+        "entry_date": "2024-02-06",
+        "exit_date": "2024-02-22",
+        "gross_pnl": -12.9,
+        "hold_days": 16,
+        "net_pnl": -12.9,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 1
+      },
+      {
+        "entry_date": "2024-03-12",
+        "exit_date": "2024-03-29",
+        "gross_pnl": -13.2,
+        "hold_days": 17,
+        "net_pnl": -13.2,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 2
+      },
+      {
+        "entry_date": "2024-04-16",
+        "exit_date": "2024-05-03",
+        "gross_pnl": -13.2,
+        "hold_days": 17,
+        "net_pnl": -13.2,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 3
+      },
+      {
+        "entry_date": "2024-05-21",
+        "exit_date": "2024-06-06",
+        "gross_pnl": -17.8,
+        "hold_days": 16,
+        "net_pnl": -17.8,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 4
+      },
+      {
+        "entry_date": "2024-06-25",
+        "exit_date": "2024-07-12",
+        "gross_pnl": -18.1,
+        "hold_days": 17,
+        "net_pnl": -18.1,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 5
+      },
+      {
+        "entry_date": "2024-07-30",
+        "exit_date": "2024-08-16",
+        "gross_pnl": -18.1,
+        "hold_days": 17,
+        "net_pnl": -18.1,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 6
+      },
+      {
+        "entry_date": "2024-09-03",
+        "exit_date": "2024-09-19",
+        "gross_pnl": -12.8,
+        "hold_days": 16,
+        "net_pnl": -12.8,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 7
+      },
+      {
+        "entry_date": "2024-10-08",
+        "exit_date": "2024-10-25",
+        "gross_pnl": -13.2,
+        "hold_days": 17,
+        "net_pnl": -13.2,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 8
+      },
+      {
+        "entry_date": "2024-11-12",
+        "exit_date": "2024-11-29",
+        "gross_pnl": -13.2,
+        "hold_days": 17,
+        "net_pnl": -13.2,
+        "outcome": "loss",
+        "shares": 10.0,
+        "side": "long",
+        "symbol": "BBB",
+        "trade_num": 9
+      }
+    ]
+  }
+}
