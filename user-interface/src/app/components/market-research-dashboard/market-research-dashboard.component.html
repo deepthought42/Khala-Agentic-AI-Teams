@@ -18,4 +18,16 @@
     ]"
     (workflowLaunched)="onWorkflowLaunched($event)"
   />
+  @if (lastResult) {
+    <section class="mr-result">
+      <header class="mr-result-header">
+        <h3>Research result</h3>
+        <button mat-stroked-button type="button" (click)="clearResult()">
+          <mat-icon>close</mat-icon>
+          Clear
+        </button>
+      </header>
+      <pre class="mr-result-body">{{ lastResultJson }}</pre>
+    </section>
+  }
 </app-dashboard-shell>

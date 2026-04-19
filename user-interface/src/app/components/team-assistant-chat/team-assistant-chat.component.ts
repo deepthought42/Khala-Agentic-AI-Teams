@@ -53,10 +53,19 @@ export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewC
   /** Hide the "Launch workflow" button entirely (teams with no runnable workflow). */
   @Input() hideLaunchButton = false;
 
-  /** Emitted after the backend launch completes. */
+  /**
+   * Emitted after the backend launch completes. For async teams, consumers
+   * typically read ``job_id`` and navigate to a jobs view. For synchronous
+   * teams (market_research, branding, nutrition, deepthought, road_trip,
+   * agentic_team_provisioning, investment), ``job_id`` is ``null`` and the
+   * actual results are carried in ``upstream_body`` — dashboards that
+   * embed a sync team should read that directly.
+   */
   @Output() workflowLaunched = new EventEmitter<{
     job_id: string | null;
     conversation_id: string;
+    upstream_status: number;
+    upstream_body: Record<string, unknown>;
   }>();
   /** Emitted when a conversation is loaded/created, so parent can track the ID. */
   @Output() conversationLoaded = new EventEmitter<string>();
@@ -120,6 +129,8 @@ export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewC
         this.workflowLaunched.emit({
           job_id: r.job_id,
           conversation_id: r.conversation_id,
+          upstream_status: r.upstream_status,
+          upstream_body: r.upstream_body,
         });
       },
       error: (err) => {
