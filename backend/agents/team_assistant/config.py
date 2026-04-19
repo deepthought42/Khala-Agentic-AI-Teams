@@ -10,10 +10,16 @@ launch (e.g. the personal assistant, which is CRUD-only).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, List
 
 from team_assistant.launch_spec import BuiltBody, LaunchSpec, declarative_builder
+
+# Fallback when neither the conversation context nor the LLM_MODEL env var
+# supplies a model name. Matches docker/.env.example so local dev works
+# out of the box.
+_DEFAULT_LLM_MODEL = "qwen3.5:397b-cloud"
 
 
 @dataclass
@@ -71,6 +77,32 @@ def _se_body_builder(context: dict[str, Any]) -> BuiltBody:
         files={"spec_file": ("initial_spec.md", spec_text.encode("utf-8"), "text/markdown")},
         path_override="/api/software-engineering/run-team/upload",
     )
+
+
+def _social_marketing_body_builder(context: dict[str, Any]) -> BuiltBody:
+    """Social Marketing: always inject ``llm_model_name``.
+
+    The upstream ``RunMarketingTeamRequest`` makes ``llm_model_name``
+    required, so a launch that forgets it fails validation with 422. We
+    resolve it in priority order: conversation context → ``LLM_MODEL``
+    env var → bundled default. The rest of the fields are copied
+    declaratively, same as before.
+    """
+    llm_model_name = (
+        str(context.get("llm_model_name") or "").strip()
+        or os.environ.get("LLM_MODEL", "").strip()
+        or _DEFAULT_LLM_MODEL
+    )
+    body: dict[str, Any] = {
+        "client_id": context["client_id"],
+        "brand_id": context["brand_id"],
+        "llm_model_name": llm_model_name,
+    }
+    for key in ("goals", "cadence_posts_per_day", "duration_days"):
+        value = context.get(key)
+        if value is not None and value != "":
+            body[key] = value
+    return BuiltBody(json=body)
 
 
 def _accessibility_body_builder(context: dict[str, Any]) -> BuiltBody:
@@ -376,6 +408,10 @@ TEAM_ASSISTANT_CONFIGS: dict[str, TeamAssistantConfig] = {
             },
             {"key": "cadence_posts_per_day", "description": "Number of posts per day"},
             {"key": "duration_days", "description": "Campaign duration in days"},
+            {
+                "key": "llm_model_name",
+                "description": "Override the LLM model (defaults to LLM_MODEL env var)",
+            },
         ],
         welcome_message=(
             "Welcome! I'm your Social Media Marketing assistant. I help plan campaigns that "
@@ -394,10 +430,7 @@ TEAM_ASSISTANT_CONFIGS: dict[str, TeamAssistantConfig] = {
         ],
         launch_spec=LaunchSpec(
             path="/api/social-marketing/social-marketing/run",
-            body_builder=declarative_builder(
-                required=["client_id", "brand_id"],
-                optional=["goals", "cadence_posts_per_day", "duration_days"],
-            ),
+            body_builder=_social_marketing_body_builder,
         ),
     ),
     # -----------------------------------------------------------------------

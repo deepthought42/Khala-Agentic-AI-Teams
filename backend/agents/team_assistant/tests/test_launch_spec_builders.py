@@ -236,6 +236,49 @@ def test_user_agent_founder_emits_empty_body() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_social_marketing_builder_injects_llm_model_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the user didn't pick a model, fall back to LLM_MODEL env var."""
+    monkeypatch.setenv("LLM_MODEL", "llama3.1")
+    built = _builder("social_marketing")(
+        {
+            "client_id": "c-1",
+            "brand_id": "b-1",
+            "goals": ["engagement"],
+        }
+    )
+    assert built.json == {
+        "client_id": "c-1",
+        "brand_id": "b-1",
+        "llm_model_name": "llama3.1",
+        "goals": ["engagement"],
+    }
+
+
+def test_social_marketing_builder_prefers_context_value_over_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MODEL", "llama3.1")
+    built = _builder("social_marketing")(
+        {
+            "client_id": "c-1",
+            "brand_id": "b-1",
+            "llm_model_name": "mistral",
+        }
+    )
+    assert built.json["llm_model_name"] == "mistral"
+
+
+def test_social_marketing_builder_uses_hardcoded_default_when_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No context value, no env var → bundled docker/.env.example default."""
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    built = _builder("social_marketing")({"client_id": "c-1", "brand_id": "b-1"})
+    assert built.json["llm_model_name"] == "qwen3.5:397b-cloud"
+
+
 def test_sales_body_builder_decomposes_icp() -> None:
     built = _builder("sales_team")(
         {
