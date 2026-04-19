@@ -289,6 +289,21 @@ class BacktestConfig(BaseModel):
             "produce reject_reason='low_signals_per_bar' when violated."
         ),
     )
+    # Phase 5 (partial): intraday_mode opts the run into stricter data-source
+    # checks — specifically, CoinGecko's ``/market_chart`` OHLCV is
+    # reconstructed from hourly snapshots and is unreliable as an intraday
+    # signal source.  ``check_intraday_data_source`` raises
+    # ``IntradayDataError`` when ``intraday_mode=True`` and the only provider
+    # that supplied bars for a symbol is CoinGecko.
+    intraday_mode: bool = Field(
+        default=False,
+        description=(
+            "True opts the run into intraday data-source safety checks. "
+            "Must be explicit; timeframe alone is not enough because the "
+            "strategy may still be daily-bar even when minute data is "
+            "available."
+        ),
+    )
 
 
 # Asset-class-aware fee defaults.  Crypto uses Kraken taker fees (lowest

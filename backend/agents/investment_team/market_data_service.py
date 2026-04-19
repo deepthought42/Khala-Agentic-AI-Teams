@@ -93,6 +93,12 @@ class MarketDataService:
 
     def __init__(self, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
+        # Phase 5 (partial): records which provider supplied bars for each
+        # symbol on the most recent fetch.  Read by
+        # ``execution.intraday_guard.check_intraday_data_source`` to
+        # hard-fail intraday runs that fell back to CoinGecko's synthesized
+        # OHLCV.  Empty dict on init; populated lazily.
+        self.provider_used: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,10 +115,13 @@ class MarketDataService:
     ) -> List[OHLCVBar]:
         """Fetch OHLCV data for an explicit date range with automatic fallback."""
         ac = normalize_asset_class(asset_class)
-        for fetch_fn in self._get_provider_chain(ac):
+        for slug, fetch_fn in self._get_named_provider_chain(ac):
             try:
                 bars = fetch_fn(symbol, ac, start_date, end_date)
                 if bars:
+                    # Phase 5 (partial): record the winning provider so the
+                    # intraday-safety guard can inspect it post-fetch.
+                    self.provider_used[symbol] = slug
                     return bars
             except Exception as exc:
                 logger.warning("Provider failed for %s (%s): %s", symbol, ac, exc)
@@ -187,11 +196,21 @@ class MarketDataService:
         )
 
     def fetch_multi_symbol_range(
-        self, symbols: List[str], asset_class: str, start_date: str, end_date: str
+        self,
+        symbols: List[str],
+        asset_class: str,
+        start_date: str,
+        end_date: str,
+        *,
+        intraday_mode: bool = False,
     ) -> Dict[str, List[OHLCVBar]]:
         """Fetch OHLCV data for multiple symbols over an explicit date range.
 
-        Uses a thread pool to fetch symbols in parallel.
+        Uses a thread pool to fetch symbols in parallel.  When
+        ``intraday_mode=True`` runs the Phase 5 intraday-safety guard after
+        all symbols resolve — raises ``IntradayDataError`` if any symbol's
+        bars came from a provider that's unsafe at intraday granularity
+        (CoinGecko today).
         """
         result: Dict[str, List[OHLCVBar]] = {}
         workers = min(len(symbols), 5)
@@ -208,6 +227,16 @@ class MarketDataService:
                         result[sym] = bars
                 except Exception as exc:
                     logger.warning("Failed to fetch %s: %s", sym, exc)
+
+        if intraday_mode:
+            from .execution.intraday_guard import check_intraday_data_source
+
+            check_intraday_data_source(
+                intraday_mode=True,
+                provider_used={
+                    sym: self.provider_used[sym] for sym in result if sym in self.provider_used
+                },
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -216,11 +245,27 @@ class MarketDataService:
 
     def _get_provider_chain(self, asset_class: str) -> list[_FetchFn]:
         """Return an ordered list of fetch functions for the given asset class."""
+        return [fn for _, fn in self._get_named_provider_chain(asset_class)]
+
+    def _get_named_provider_chain(self, asset_class: str) -> list[tuple[str, _FetchFn]]:
+        """Ordered ``(slug, fetch_fn)`` pairs for the given asset class.
+
+        The slug is stable across monkey-patching in tests — it's what the
+        intraday-safety guard inspects when deciding whether to hard-fail
+        a run that fell back to an unreliable OHLCV source.
+        """
         if asset_class == "crypto":
-            return [self._fetch_yahoo, self._fetch_twelve_data, self._fetch_coingecko]
-        chain: list[_FetchFn] = [self._fetch_yahoo, self._fetch_twelve_data]
+            return [
+                ("yahoo", self._fetch_yahoo),
+                ("twelve_data", self._fetch_twelve_data),
+                ("coingecko", self._fetch_coingecko),
+            ]
+        chain: list[tuple[str, _FetchFn]] = [
+            ("yahoo", self._fetch_yahoo),
+            ("twelve_data", self._fetch_twelve_data),
+        ]
         if _ALPHA_VANTAGE_API_KEY:
-            chain.append(self._fetch_alphavantage)
+            chain.append(("alphavantage", self._fetch_alphavantage))
         return chain
 
     # ------------------------------------------------------------------
