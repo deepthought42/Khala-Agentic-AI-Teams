@@ -147,6 +147,175 @@ def test_deepthought_builder_passes_message_and_optional_depth() -> None:
     assert built.json == {"message": "What is love?", "max_depth": 3}
 
 
-@pytest.mark.parametrize("team_key", ["personal_assistant", "sales_team"])
+@pytest.mark.parametrize("team_key", ["personal_assistant", "startup_advisor"])
 def test_no_launch_spec_for_teams_without_workflows(team_key: str) -> None:
     assert TEAM_ASSISTANT_CONFIGS[team_key].launch_spec is None
+
+
+# ---------------------------------------------------------------------------
+# Track B: the 6 newly-onboarded teams
+# ---------------------------------------------------------------------------
+
+
+def test_branding_declarative_builder() -> None:
+    built = _builder("branding")(
+        {
+            "company_name": "Acme",
+            "company_description": "Sells anvils.",
+            "target_audience": "cartoon coyotes",
+            "values": "reliability",
+        }
+    )
+    assert built.json == {
+        "company_name": "Acme",
+        "company_description": "Sells anvils.",
+        "target_audience": "cartoon coyotes",
+        "values": "reliability",
+    }
+
+
+def test_investment_builder_coerces_numeric_strings() -> None:
+    """Conversation stores values as strings; the builder must cast to float/int."""
+    built = _builder("investment")(
+        {
+            "user_id": "u-1",
+            "risk_tolerance": "moderate",
+            "max_drawdown_tolerance_pct": "20",  # string from the conversation
+            "time_horizon_years": "10",
+            "annual_gross_income": "150000",
+            "tax_state": "CA",
+        }
+    )
+    assert built.json == {
+        "user_id": "u-1",
+        "risk_tolerance": "moderate",
+        "max_drawdown_tolerance_pct": 20.0,
+        "time_horizon_years": 10,
+        "annual_gross_income": 150000.0,
+        "tax_state": "CA",
+    }
+
+
+def test_investment_builder_preserves_native_numeric_values() -> None:
+    built = _builder("investment")(
+        {
+            "user_id": "u-2",
+            "risk_tolerance": "aggressive",
+            "max_drawdown_tolerance_pct": 35.5,
+            "time_horizon_years": 20,
+            "annual_gross_income": 500000,
+        }
+    )
+    assert built.json["max_drawdown_tolerance_pct"] == 35.5
+    assert built.json["time_horizon_years"] == 20
+    assert built.json["annual_gross_income"] == 500000.0
+
+
+def test_nutrition_builder_declarative() -> None:
+    built = _builder("nutrition_meal_planning")({"client_id": "c-1", "message": "build me a plan"})
+    assert built.json == {"client_id": "c-1", "message": "build me a plan"}
+
+
+def test_agentic_team_provisioning_declarative() -> None:
+    built = _builder("agentic_team_provisioning")(
+        {"name": "QA Pod", "description": "handles QA automation"}
+    )
+    assert built.json == {"name": "QA Pod", "description": "handles QA automation"}
+
+
+def test_user_agent_founder_emits_empty_body() -> None:
+    """POST /start takes no parameters; the builder should send an empty JSON body."""
+    built = _builder("user_agent_founder")({})
+    assert built.json == {}
+    assert built.files is None
+    assert built.path_override is None
+
+
+# ---------------------------------------------------------------------------
+# Track C: sales redesign
+# ---------------------------------------------------------------------------
+
+
+def test_sales_body_builder_decomposes_icp() -> None:
+    built = _builder("sales_team")(
+        {
+            "product_name": "Khala",
+            "value_proposition": "One API to run 20 agentic teams",
+            "icp_industry": "SaaS, FinTech, DevTools",
+            "icp_job_titles": "VP Engineering, CTO, Head of Platform",
+            "icp_pain_points": "slow AI integration\nvendor lock-in\ncompliance overhead",
+            "icp_company_size_min": "50",
+            "icp_company_size_max": "2000",
+            "icp_geographic_focus": "US, EU",
+            "icp_tech_stack": "AWS, Kubernetes",
+            "icp_disqualifying_traits": "solo consultant\nno cloud",
+            "company_context": "YC W24 company",
+            "case_study_snippets": "Acme ships 3x faster\nBeta Inc cut cost 40%",
+            "entry_stage": "PROSPECTING",
+            "max_prospects": "25",
+        }
+    )
+    assert built.json == {
+        "product_name": "Khala",
+        "value_proposition": "One API to run 20 agentic teams",
+        "entry_stage": "prospecting",
+        "max_prospects": 25,
+        "icp": {
+            "industry": ["SaaS", "FinTech", "DevTools"],
+            "job_titles": ["VP Engineering", "CTO", "Head of Platform"],
+            "pain_points": ["slow AI integration", "vendor lock-in", "compliance overhead"],
+            "company_size_min": 50,
+            "company_size_max": 2000,
+            "budget_range_usd": "$10k-$100k/yr",
+            "geographic_focus": ["US", "EU"],
+            "tech_stack_keywords": ["AWS", "Kubernetes"],
+            "disqualifying_traits": ["solo consultant", "no cloud"],
+        },
+        "company_context": "YC W24 company",
+        "case_study_snippets": ["Acme ships 3x faster", "Beta Inc cut cost 40%"],
+    }
+
+
+def test_sales_body_builder_uses_defaults_for_optional_fields() -> None:
+    built = _builder("sales_team")(
+        {
+            "product_name": "Khala",
+            "value_proposition": "One API",
+            "icp_industry": "SaaS",
+            "icp_job_titles": "CTO",
+            "icp_pain_points": "slow integration",
+        }
+    )
+    icp = built.json["icp"]
+    assert icp["company_size_min"] == 10
+    assert icp["company_size_max"] == 5000
+    assert icp["budget_range_usd"] == "$10k-$100k/yr"
+    assert icp["geographic_focus"] == []
+    assert built.json["entry_stage"] == "prospecting"
+    assert built.json["max_prospects"] == 5
+
+
+def test_sales_body_builder_clamps_max_prospects_into_range() -> None:
+    built = _builder("sales_team")(
+        {
+            "product_name": "Khala",
+            "value_proposition": "v",
+            "icp_industry": "x",
+            "icp_job_titles": "y",
+            "icp_pain_points": "z",
+            "max_prospects": "500",
+        }
+    )
+    assert built.json["max_prospects"] == 100
+
+    built2 = _builder("sales_team")(
+        {
+            "product_name": "Khala",
+            "value_proposition": "v",
+            "icp_industry": "x",
+            "icp_job_titles": "y",
+            "icp_pain_points": "z",
+            "max_prospects": "0",
+        }
+    )
+    assert built2.json["max_prospects"] == 1

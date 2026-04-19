@@ -277,3 +277,89 @@ def test_unknown_conversation_returns_404(
     client, _cid = _seed_conversation("blogging", context={"brief": "x"})
     resp = client.post("/launch?conversation_id=missing-cid")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Track B: cases for the newly onboarded teams
+# ---------------------------------------------------------------------------
+
+
+def test_branding_synchronous_returns_team_output(
+    fake_pg: dict, upstream: _UpstreamHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Branding returns results inline with no job_id — the conversation must not be linked."""
+    _stub_agent(monkeypatch)
+    upstream.response_body = {"summary": "brand built", "artifacts": []}
+    client, cid = _seed_conversation(
+        "branding",
+        context={
+            "company_name": "Acme",
+            "company_description": "sells anvils",
+            "target_audience": "coyotes",
+        },
+    )
+
+    resp = client.post(f"/launch?conversation_id={cid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["job_id"] is None
+    assert body["upstream_body"] == {"summary": "brand built", "artifacts": []}
+    assert upstream.requests[0]["path"] == "/api/branding/run"
+
+
+def test_user_agent_founder_async_links_job(
+    fake_pg: dict, upstream: _UpstreamHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /start now returns {job_id: ...} (renamed from run_id)."""
+    _stub_agent(monkeypatch)
+    upstream.response_body = {"job_id": "uaf-7", "status": "pending"}
+    client, cid = _seed_conversation("user_agent_founder", context={})
+
+    resp = client.post(f"/launch?conversation_id={cid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["job_id"] == "uaf-7"
+    assert upstream.requests[0]["path"] == "/api/user-agent-founder/start"
+    assert json.loads(upstream.requests[0]["body"]) == {}
+
+    store = TeamAssistantConversationStore(team_key="user_agent_founder")
+    assert store.get_by_job_id("uaf-7") == cid
+
+
+def test_startup_advisor_400_no_launch_spec(
+    fake_pg: dict, upstream: _UpstreamHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """startup_advisor has no required fields AND no launch_spec — readiness passes, 400 on launch."""
+    _stub_agent(monkeypatch)
+    client, cid = _seed_conversation("startup_advisor", context={})
+    resp = client.post(f"/launch?conversation_id={cid}")
+    assert resp.status_code == 400
+    assert "no launch workflow" in resp.json()["detail"].lower()
+    assert upstream.requests == []
+
+
+def test_investment_builder_sends_numeric_fields_as_numbers(
+    fake_pg: dict, upstream: _UpstreamHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration check: the investment builder's numeric coercion survives JSON serialisation."""
+    _stub_agent(monkeypatch)
+    upstream.response_body = {"profile_id": "p-1", "ips": "..."}
+    client, cid = _seed_conversation(
+        "investment",
+        context={
+            "user_id": "u-7",
+            "risk_tolerance": "aggressive",
+            "max_drawdown_tolerance_pct": "30",
+            "time_horizon_years": "15",
+            "annual_gross_income": "250000",
+        },
+    )
+
+    resp = client.post(f"/launch?conversation_id={cid}")
+    assert resp.status_code == 200, resp.text
+
+    sent = json.loads(upstream.requests[0]["body"])
+    assert sent["max_drawdown_tolerance_pct"] == 30.0
+    assert sent["time_horizon_years"] == 15
+    assert sent["annual_gross_income"] == 250000.0

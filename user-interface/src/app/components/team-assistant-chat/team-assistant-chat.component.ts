@@ -50,19 +50,10 @@ export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewC
   @Input() fields: TeamAssistantFieldSpec[] = [];
   /** When set, use this specific conversation instead of the singleton. */
   @Input() conversationId: string | null = null;
-  /**
-   * When true, "Launch workflow" POSTs to `{teamApiUrl}/launch` on the backend
-   * (which dispatches the team's real run endpoint in-process) and emits
-   * `workflowLaunched` with the returned `job_id`. When false (default), the
-   * legacy behaviour is preserved: `launchWorkflow` is emitted with the raw
-   * context so the parent can translate and POST it.
-   */
-  @Input() useBackendLaunch = false;
   /** Hide the "Launch workflow" button entirely (teams with no runnable workflow). */
   @Input() hideLaunchButton = false;
 
-  @Output() launchWorkflow = new EventEmitter<Record<string, unknown>>();
-  /** Emitted after the backend launch completes (only when `useBackendLaunch` is true). */
+  /** Emitted after the backend launch completes. */
   @Output() workflowLaunched = new EventEmitter<{
     job_id: string | null;
     conversation_id: string;
@@ -120,34 +111,29 @@ export class TeamAssistantChatComponent implements OnInit, OnChanges, AfterViewC
   }
 
   onLaunch(): void {
-    if (this.useBackendLaunch) {
-      if (!this.teamApiUrl) return;
-      this.loading = true;
-      this.error = null;
-      this.api.launch(this.teamApiUrl, this.conversationId ?? undefined).subscribe({
-        next: (r) => {
-          this.loading = false;
-          this.workflowLaunched.emit({
-            job_id: r.job_id,
-            conversation_id: r.conversation_id,
-          });
-        },
-        error: (err) => {
-          this.loading = false;
-          const detail = err?.error?.detail;
-          if (detail && typeof detail === 'object') {
-            this.error = detail.error === 'missing_required_fields'
-              ? `Still missing: ${(detail.missing ?? []).join(', ')}`
-              : detail.message ?? JSON.stringify(detail);
-          } else {
-            this.error = detail ?? err?.message ?? 'Failed to launch workflow';
-          }
-        },
-      });
-      return;
-    }
-    // Legacy path: parent dashboard translates the context and launches.
-    this.launchWorkflow.emit({ ...this.context });
+    if (!this.teamApiUrl) return;
+    this.loading = true;
+    this.error = null;
+    this.api.launch(this.teamApiUrl, this.conversationId ?? undefined).subscribe({
+      next: (r) => {
+        this.loading = false;
+        this.workflowLaunched.emit({
+          job_id: r.job_id,
+          conversation_id: r.conversation_id,
+        });
+      },
+      error: (err) => {
+        this.loading = false;
+        const detail = err?.error?.detail;
+        if (detail && typeof detail === 'object') {
+          this.error = detail.error === 'missing_required_fields'
+            ? `Still missing: ${(detail.missing ?? []).join(', ')}`
+            : detail.message ?? JSON.stringify(detail);
+        } else {
+          this.error = detail ?? err?.message ?? 'Failed to launch workflow';
+        }
+      },
+    });
   }
 
   retryLoad(): void {

@@ -14,7 +14,6 @@
       {key: 'cadence_posts_per_day', label: 'Posts per day', placeholder: 'Number of posts per day'},
       {key: 'duration_days', label: 'Duration (days)', placeholder: 'Campaign length in days'}
     ]"
-    [useBackendLaunch]="true"
     (workflowLaunched)="onWorkflowLaunched($event)"
   />
   @if (latestJobId) {
