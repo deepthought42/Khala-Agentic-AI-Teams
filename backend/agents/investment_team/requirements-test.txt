@@ -1,0 +1,4 @@
+# Test-only deps for the Investment Strategy Lab.  Not imported by production
+# code; installed in CI via ``pip install -r investment_team/requirements-test.txt``
+# after the shared agents requirements file.
+hypothesis>=6.100,<7.0

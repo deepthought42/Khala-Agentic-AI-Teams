@@ -13,7 +13,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional, Sequence
 
 import httpx
 from pydantic import BaseModel
@@ -55,6 +55,29 @@ class OHLCVBar(BaseModel):
 _FetchFn = Callable[[str, str, str, str], List[OHLCVBar]]
 
 
+def compute_adv_from_bars(
+    bars: Sequence[OHLCVBar],
+    *,
+    lookback: int = 20,
+) -> Optional[float]:
+    """Trailing-N-bar mean of ``close * volume`` (USD) from an OHLCV list.
+
+    Pure helper — kept at module scope so unit tests and the cost-stress
+    harness can compute ADV from synthetic fixtures without instantiating
+    a ``MarketDataService`` or hitting the network.  Returns ``None`` when
+    the series is shorter than ``lookback`` or every bar has zero volume.
+    """
+    if not bars or lookback <= 0:
+        return None
+    window = list(bars)[-lookback:]
+    if len(window) < lookback:
+        return None
+    dollar_volume = [b.close * b.volume for b in window if b.volume > 0 and b.close > 0]
+    if not dollar_volume:
+        return None
+    return sum(dollar_volume) / len(dollar_volume)
+
+
 class MarketDataService:
     """Fetches real market data with automatic multi-source fallback.
 
@@ -70,6 +93,12 @@ class MarketDataService:
 
     def __init__(self, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
+        # Phase 5 (partial): records which provider supplied bars for each
+        # symbol on the most recent fetch.  Read by
+        # ``execution.intraday_guard.check_intraday_data_source`` to
+        # hard-fail intraday runs that fell back to CoinGecko's synthesized
+        # OHLCV.  Empty dict on init; populated lazily.
+        self.provider_used: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,15 +115,62 @@ class MarketDataService:
     ) -> List[OHLCVBar]:
         """Fetch OHLCV data for an explicit date range with automatic fallback."""
         ac = normalize_asset_class(asset_class)
-        for fetch_fn in self._get_provider_chain(ac):
+        for slug, fetch_fn in self._get_named_provider_chain(ac):
             try:
                 bars = fetch_fn(symbol, ac, start_date, end_date)
                 if bars:
+                    # Phase 5 (partial): record the winning provider so the
+                    # intraday-safety guard can inspect it post-fetch.
+                    self.provider_used[symbol] = slug
                     return bars
             except Exception as exc:
                 logger.warning("Provider failed for %s (%s): %s", symbol, ac, exc)
         logger.warning("All providers exhausted for %s (%s)", symbol, ac)
         return []
+
+    # ------------------------------------------------------------------
+    # Liquidity (Phase 4): average daily dollar volume over the trailing
+    # 20 bars.  Consumed by ``SpreadPlusImpactCostModel`` to size the
+    # market-impact term per symbol.
+    # ------------------------------------------------------------------
+
+    _adv_cache: Dict[tuple, tuple[float, float]] = {}
+    _ADV_CACHE_TTL_SEC: float = 3600.0
+
+    def avg_dollar_volume_20d(
+        self,
+        symbol: str,
+        asset_class: str,
+        *,
+        as_of: Optional[str] = None,
+        lookback: int = 20,
+    ) -> Optional[float]:
+        """Return the trailing-N-bar mean of ``close * volume`` in USD.
+
+        ``as_of`` defaults to today.  Results are memoized on ``(symbol,
+        asset_class, as_of, lookback)`` for ``_ADV_CACHE_TTL_SEC`` seconds
+        so the orchestrator can query ADV per-symbol cheaply during a
+        run.  Returns ``None`` when the provider chain is exhausted — the
+        cost model's impact term collapses to the flat half-spread in
+        that case.
+        """
+        as_of_str = as_of or date.today().isoformat()
+        key = (symbol, asset_class, as_of_str, int(lookback))
+        now = time.monotonic()
+        cached = type(self)._adv_cache.get(key)
+        if cached is not None:
+            cached_value, cached_ts = cached
+            if now - cached_ts < self._ADV_CACHE_TTL_SEC:
+                return cached_value if cached_value >= 0 else None
+
+        # Pull lookback * ~1.6 calendar days so weekends / holidays leave
+        # enough trading bars after filtering.  Extra bars are truncated.
+        end_dt = date.fromisoformat(as_of_str[:10])
+        start_dt = end_dt - timedelta(days=max(lookback * 2, 30))
+        bars = self.fetch_ohlcv_range(symbol, asset_class, start_dt.isoformat(), end_dt.isoformat())
+        adv = compute_adv_from_bars(bars, lookback=lookback)
+        type(self)._adv_cache[key] = (adv if adv is not None else -1.0, now)
+        return adv
 
     def get_symbols_for_strategy(self, strategy: StrategySpec) -> List[str]:
         """Return relevant symbols based on the strategy's asset class."""
@@ -120,11 +196,21 @@ class MarketDataService:
         )
 
     def fetch_multi_symbol_range(
-        self, symbols: List[str], asset_class: str, start_date: str, end_date: str
+        self,
+        symbols: List[str],
+        asset_class: str,
+        start_date: str,
+        end_date: str,
+        *,
+        intraday_mode: bool = False,
     ) -> Dict[str, List[OHLCVBar]]:
         """Fetch OHLCV data for multiple symbols over an explicit date range.
 
-        Uses a thread pool to fetch symbols in parallel.
+        Uses a thread pool to fetch symbols in parallel.  When
+        ``intraday_mode=True`` runs the Phase 5 intraday-safety guard after
+        all symbols resolve — raises ``IntradayDataError`` if any symbol's
+        bars came from a provider that's unsafe at intraday granularity
+        (CoinGecko today).
         """
         result: Dict[str, List[OHLCVBar]] = {}
         workers = min(len(symbols), 5)
@@ -141,6 +227,16 @@ class MarketDataService:
                         result[sym] = bars
                 except Exception as exc:
                     logger.warning("Failed to fetch %s: %s", sym, exc)
+
+        if intraday_mode:
+            from .execution.intraday_guard import check_intraday_data_source
+
+            check_intraday_data_source(
+                intraday_mode=True,
+                provider_used={
+                    sym: self.provider_used[sym] for sym in result if sym in self.provider_used
+                },
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -149,11 +245,27 @@ class MarketDataService:
 
     def _get_provider_chain(self, asset_class: str) -> list[_FetchFn]:
         """Return an ordered list of fetch functions for the given asset class."""
+        return [fn for _, fn in self._get_named_provider_chain(asset_class)]
+
+    def _get_named_provider_chain(self, asset_class: str) -> list[tuple[str, _FetchFn]]:
+        """Ordered ``(slug, fetch_fn)`` pairs for the given asset class.
+
+        The slug is stable across monkey-patching in tests — it's what the
+        intraday-safety guard inspects when deciding whether to hard-fail
+        a run that fell back to an unreliable OHLCV source.
+        """
         if asset_class == "crypto":
-            return [self._fetch_yahoo, self._fetch_twelve_data, self._fetch_coingecko]
-        chain: list[_FetchFn] = [self._fetch_yahoo, self._fetch_twelve_data]
+            return [
+                ("yahoo", self._fetch_yahoo),
+                ("twelve_data", self._fetch_twelve_data),
+                ("coingecko", self._fetch_coingecko),
+            ]
+        chain: list[tuple[str, _FetchFn]] = [
+            ("yahoo", self._fetch_yahoo),
+            ("twelve_data", self._fetch_twelve_data),
+        ]
         if _ALPHA_VANTAGE_API_KEY:
-            chain.append(self._fetch_alphavantage)
+            chain.append(("alphavantage", self._fetch_alphavantage))
         return chain
 
     # ------------------------------------------------------------------
@@ -190,11 +302,16 @@ class MarketDataService:
                     wait = 2 ** (attempt + 1)
                     logger.warning(
                         "yfinance failed for %s, retrying in %ds (attempt %d): %s",
-                        yf_symbol, wait, attempt + 1, exc,
+                        yf_symbol,
+                        wait,
+                        attempt + 1,
+                        exc,
                     )
                     time.sleep(wait)
                     continue
-                logger.warning("yfinance failed for %s after %d attempts: %s", yf_symbol, max_retries, exc)
+                logger.warning(
+                    "yfinance failed for %s after %d attempts: %s", yf_symbol, max_retries, exc
+                )
                 return []
 
             if df is not None and not df.empty:
@@ -202,10 +319,17 @@ class MarketDataService:
 
             if attempt < max_retries - 1:
                 wait = 2 ** (attempt + 1)
-                logger.warning("No data from yfinance for %s, retrying in %ds (attempt %d)", yf_symbol, wait, attempt + 1)
+                logger.warning(
+                    "No data from yfinance for %s, retrying in %ds (attempt %d)",
+                    yf_symbol,
+                    wait,
+                    attempt + 1,
+                )
                 time.sleep(wait)
             else:
-                logger.warning("No data from yfinance for %s after %d attempts", yf_symbol, max_retries)
+                logger.warning(
+                    "No data from yfinance for %s after %d attempts", yf_symbol, max_retries
+                )
 
         return []
 
@@ -236,7 +360,9 @@ class MarketDataService:
                     data = resp.json()
 
                 if data.get("status") == "error":
-                    logger.warning("Twelve Data error for %s: %s", td_symbol, data.get("message", ""))
+                    logger.warning(
+                        "Twelve Data error for %s: %s", td_symbol, data.get("message", "")
+                    )
                     return []
 
                 values = data.get("values")
@@ -263,7 +389,9 @@ class MarketDataService:
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 429 and attempt < max_retries - 1:
                     wait = 2 ** (attempt + 1)
-                    logger.warning("Twelve Data rate limited for %s, retrying in %ds", td_symbol, wait)
+                    logger.warning(
+                        "Twelve Data rate limited for %s, retrying in %ds", td_symbol, wait
+                    )
                     time.sleep(wait)
                     continue
                 logger.warning("Twelve Data HTTP error for %s: %s", td_symbol, exc)
@@ -421,7 +549,9 @@ class MarketDataService:
                         open=round(float(entry.get("1. open", entry.get("1a. open (USD)", 0))), 4),
                         high=round(float(entry.get("2. high", entry.get("2a. high (USD)", 0))), 4),
                         low=round(float(entry.get("3. low", entry.get("3a. low (USD)", 0))), 4),
-                        close=round(float(entry.get("4. close", entry.get("4a. close (USD)", 0))), 4),
+                        close=round(
+                            float(entry.get("4. close", entry.get("4a. close (USD)", 0))), 4
+                        ),
                         volume=float(entry.get("5. volume", entry.get("5. market cap (USD)", 0))),
                     )
                 )

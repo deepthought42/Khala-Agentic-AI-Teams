@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .execution.risk_filter import RiskLimits
 
 
 class RiskTolerance(str, Enum):
@@ -198,10 +200,25 @@ class StrategySpec(BaseModel):
     entry_rules: List[str] = Field(default_factory=list)
     exit_rules: List[str] = Field(default_factory=list)
     sizing_rules: List[str] = Field(default_factory=list)
-    risk_limits: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 3: risk_limits is validated at spec construction time.  Dicts
+    # authored by the LLM (or persisted before this field was typed) are
+    # accepted and routed through ``RiskLimits.from_legacy_dict``, which
+    # silently drops unknown keys so old specs stay deserializable.
+    risk_limits: RiskLimits = Field(default_factory=RiskLimits)
     speculative: bool = False
     strategy_code: Optional[str] = None
     audit: AuditContext = Field(default_factory=AuditContext)
+
+    @field_validator("risk_limits", mode="before")
+    @classmethod
+    def _coerce_risk_limits(cls, v: Any) -> Any:
+        if v is None:
+            return RiskLimits()
+        if isinstance(v, RiskLimits):
+            return v
+        if isinstance(v, dict):
+            return RiskLimits.from_legacy_dict(v)
+        return v
 
 
 class ValidationCheck(BaseModel):
@@ -240,6 +257,51 @@ class BacktestConfig(BaseModel):
             "Annualized risk-free rate as a fraction (e.g. 0.04 = 4%). "
             "``None`` resolves via STRATEGY_LAB_RISK_FREE_RATE env → FRED "
             "DGS3MO (when FRED_API_KEY is set) → RFR_DEFAULT=0.04."
+        ),
+    )
+    # Phase 4: liquidity & cost-stress knobs.
+    cost_stress: bool = Field(
+        default=False,
+        description=(
+            "When True, run_backtest replays the strategy at each cost "
+            "multiplier in ``cost_stress_multipliers`` and records the "
+            "resulting Sharpe/return/MaxDD in ``BacktestResult.cost_stress_results``."
+        ),
+    )
+    cost_stress_multipliers: List[float] = Field(
+        default_factory=lambda: [1.0, 2.0, 3.0],
+        description="Multipliers applied to transaction_cost_bps and slippage_bps.",
+    )
+    min_sharpe_at_2x: Optional[float] = Field(
+        default=None,
+        description=(
+            "When set and cost_stress is enabled, run_backtest fails the "
+            "strategy (reject_reason='fails_cost_stress') if its Sharpe at "
+            "the 2x multiplier drops below this threshold."
+        ),
+    )
+    min_signals_per_bar: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Minimum trades/bar ratio required for the run to be considered "
+            "informative.  Set to 0 to disable (default).  Non-zero values "
+            "produce reject_reason='low_signals_per_bar' when violated."
+        ),
+    )
+    # Phase 5 (partial): intraday_mode opts the run into stricter data-source
+    # checks — specifically, CoinGecko's ``/market_chart`` OHLCV is
+    # reconstructed from hourly snapshots and is unreliable as an intraday
+    # signal source.  ``check_intraday_data_source`` raises
+    # ``IntradayDataError`` when ``intraday_mode=True`` and the only provider
+    # that supplied bars for a symbol is CoinGecko.
+    intraday_mode: bool = Field(
+        default=False,
+        description=(
+            "True opts the run into intraday data-source safety checks. "
+            "Must be explicit; timeframe alone is not enough because the "
+            "strategy may still be daily-bar even when minute data is "
+            "available."
         ),
     )
 
@@ -282,6 +344,14 @@ class BacktestResult(BaseModel):
     beta: Optional[float] = None
     information_ratio: Optional[float] = None
     metrics_engine: str = "legacy"
+    # Phase 3: set when the drawdown circuit-breaker or a hard termination
+    # condition (look-ahead, data error) short-circuited the run.  None
+    # means the run completed through end-of-stream.
+    terminated_reason: Optional[str] = None
+    # Phase 4: liquidity- and cost-stress diagnostics.
+    signals_per_bar: Optional[float] = None
+    cost_stress_results: Optional[List[Dict[str, Any]]] = None
+    reject_reason: Optional[str] = None
 
 
 class TradeRecord(BaseModel):

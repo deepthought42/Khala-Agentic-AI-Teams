@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from agents.investment_team.market_lab_data.models import MarketLabContext, StrategyLabDataRequest
@@ -18,10 +19,19 @@ from llm_service.interface import LLMClient
 
 
 class _FakeLLM(LLMClient):
-    """Returns valid JSON for signal brief vs ideation prompts."""
+    """Returns valid JSON for signal brief vs ideation prompts.
+
+    The production code now treats the injected ``llm_client`` as a Strands
+    ``Agent`` and invokes it via ``agent(prompt)``; ``__call__`` delegates
+    to ``complete_json`` and returns the JSON payload as a string so
+    callers can ``json.loads(str(result))``.
+    """
 
     def __init__(self) -> None:
         self.prompts: List[str] = []
+
+    def __call__(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+        return json.dumps(self.complete_json(prompt))
 
     def complete_json(
         self,

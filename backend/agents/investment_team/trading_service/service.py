@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional
 
+from ..execution.bar_safety import LookAheadError
 from ..execution.risk_filter import RiskFilter, RiskLimits
 from ..models import BacktestConfig, TradeRecord
 from .data_stream.protocol import BarEvent, EndOfStreamEvent, StreamEvent
@@ -38,6 +39,11 @@ class TradingServiceResult:
     #: dropped as a belt-and-suspenders guard — strategies should check
     #: ``ctx.is_warmup``. Populated only during paper-trade warm-up phase.
     warmup_orders_dropped: int = 0
+    #: Number of non-warmup bars delivered to the strategy.  Phase 4's
+    #: ``signals_per_bar`` diagnostic divides ``len(trades) / bars_processed``.
+    #: Populated for every ``run`` regardless of data source (legacy
+    #: pre-fetched vs provider-driven).
+    bars_processed: int = 0
 
 
 class TradingService:
@@ -48,11 +54,19 @@ class TradingService:
         *,
         strategy_code: str,
         config: BacktestConfig,
-        risk_limits: Optional[Dict] = None,
+        risk_limits: Optional["RiskLimits | Dict"] = None,
     ) -> None:
         self.strategy_code = strategy_code
         self.config = config
-        self._risk = RiskFilter(RiskLimits.from_legacy_dict(risk_limits or {}))
+        # Phase 3: StrategySpec.risk_limits is now a validated RiskLimits
+        # instance; keep accepting raw dicts for callers that haven't
+        # migrated (the backtest API still carries a ``Dict[str, Any]`` at
+        # the request boundary).
+        if isinstance(risk_limits, RiskLimits):
+            limits = risk_limits
+        else:
+            limits = RiskLimits.from_legacy_dict(risk_limits or {})
+        self._risk = RiskFilter(limits)
 
     # ------------------------------------------------------------------
 
@@ -165,6 +179,12 @@ class TradingService:
                         is_warmup=is_warmup,
                     )
 
+                    if not is_warmup:
+                        # Track only post-warmup bars — Phase 4's
+                        # signals_per_bar diagnostic divides trades by
+                        # bars the strategy could actually have signaled on.
+                        result.bars_processed += 1
+
                     if is_warmup:
                         if resp.orders:
                             result.warmup_orders_dropped += len(resp.orders)
@@ -204,6 +224,13 @@ class TradingService:
                     )
 
                 harness.send_end()
+            except LookAheadError as exc:
+                # Parent-side look-ahead guard fired inside the fill
+                # simulator: classify the same way as a subprocess-side
+                # violation so operators see a single error category.
+                result.error = str(exc)
+                result.lookahead_violation = True
+                return result
             except StrategyRuntimeError as exc:
                 result.error = str(exc)
                 result.lookahead_violation = exc.etype == "lookahead_violation"
