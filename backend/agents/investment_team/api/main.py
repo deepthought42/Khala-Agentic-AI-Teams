@@ -86,6 +86,9 @@ from investment_team.shared.job_store import (
     get_job as _bt_get_job,
 )
 from investment_team.shared.job_store import (
+    is_job_cancelled as _bt_is_job_cancelled,
+)
+from investment_team.shared.job_store import (
     list_jobs as _bt_list_jobs,
 )
 from investment_team.shared.job_store import (
@@ -732,8 +735,12 @@ def _run_backtest_background(
     notes: Optional[str],
 ) -> None:
     try:
+        if _bt_is_job_cancelled(job_id):
+            return
         _bt_update_job(job_id, status=_BT_JOB_STATUS_RUNNING)
         result, trades = _run_real_data_backtest(strategy, config)
+        if _bt_is_job_cancelled(job_id):
+            return
         backtest_id = f"bt-{uuid.uuid4().hex[:8]}"
         now = _now()
         record = BacktestRecord(
@@ -757,9 +764,13 @@ def _run_backtest_background(
             backtest_id=backtest_id,
         )
     except HTTPException as exc:
+        if _bt_is_job_cancelled(job_id):
+            return
         _bt_update_job(job_id, status=_BT_JOB_STATUS_FAILED, error=str(exc.detail))
     except Exception as exc:
         logger.exception("Backtest job %s failed", job_id)
+        if _bt_is_job_cancelled(job_id):
+            return
         _bt_update_job(job_id, status=_BT_JOB_STATUS_FAILED, error=str(exc))
 
 

@@ -22,6 +22,7 @@ from market_research_team.shared.job_store import (
     create_job,
     delete_job,
     get_job,
+    is_job_cancelled,
     list_jobs,
     update_job,
 )
@@ -76,11 +77,17 @@ def _run_market_research_background(
     job_id: str, mission: ResearchMission, human_review: HumanReview
 ) -> None:
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = MarketResearchOrchestrator().run(mission, human_review)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except Exception as e:
         logger.exception("Market research job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 

@@ -37,6 +37,7 @@ from ..shared.job_store import (
     JOB_STATUS_RUNNING,
     create_job,
     get_job,
+    is_job_cancelled,
     update_job,
 )
 
@@ -234,38 +235,62 @@ def get_profile_completeness_route(client_id: str):
 def _run_nutrition_plan_job(job_id: str, body: NutritionPlanRequest) -> None:
     """Background: run nutrition plan, store result in job."""
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = orchestrator.get_nutrition_plan(body)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except ValueError as e:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e), not_found=True)
     except Exception as e:
         logger.exception("Nutrition plan job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 
 def _run_nutrition_regenerate_job(job_id: str, client_id: str) -> None:
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = orchestrator.regenerate_nutrition_plan(client_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except ValueError as e:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e), not_found=True)
     except Exception as e:
         logger.exception("Nutrition regenerate job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 
 def _run_meal_plan_job(job_id: str, body: MealPlanRequest) -> None:
     """Background: run meal plan, store result in job."""
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = orchestrator.get_meal_plan(body)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except ValueError as e:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e), not_found=True)
     except Exception as e:
         logger.exception("Meal plan job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 
@@ -277,7 +302,7 @@ def _submit_thread_job(job_id: str, target, args) -> None:
 def post_plan_nutrition_route(body: NutritionPlanRequest):
     """Submit an async nutrition plan job. Poll GET /jobs/{job_id} for the result."""
     job_id = str(uuid4())
-    create_job(job_id, status=JOB_STATUS_PENDING, request=body.model_dump(), kind="nutrition_plan")
+    create_job(job_id, request=body.model_dump(), kind="nutrition_plan")
     _submit_thread_job(job_id, _run_nutrition_plan_job, (job_id, body))
     return {"job_id": job_id, "status": JOB_STATUS_PENDING}
 
@@ -292,7 +317,6 @@ def post_plan_nutrition_regenerate_route(client_id: str):
     job_id = str(uuid4())
     create_job(
         job_id,
-        status=JOB_STATUS_PENDING,
         client_id=client_id,
         kind="nutrition_regenerate",
     )
@@ -318,7 +342,7 @@ def get_plan_nutrition_rationale_route(client_id: str):
 def post_plan_meals_route(body: MealPlanRequest):
     """Submit an async meal plan job. Poll GET /jobs/{job_id} for the result."""
     job_id = str(uuid4())
-    create_job(job_id, status=JOB_STATUS_PENDING, request=body.model_dump(), kind="meal_plan")
+    create_job(job_id, request=body.model_dump(), kind="meal_plan")
     try:
         from nutrition_meal_planning_team.temporal.client import is_temporal_enabled
         from nutrition_meal_planning_team.temporal.start_workflow import start_meal_plan_workflow

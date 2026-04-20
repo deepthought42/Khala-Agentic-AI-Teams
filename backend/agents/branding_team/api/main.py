@@ -41,6 +41,7 @@ from branding_team.shared.job_store import (
     create_job,
     delete_job,
     get_job,
+    is_job_cancelled,
     list_jobs,
     update_job,
 )
@@ -613,6 +614,8 @@ def _run_branding_background(
     target_phase: Optional[BrandPhase],
 ) -> None:
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = orchestrator.run(
             mission=mission,
@@ -625,9 +628,13 @@ def _run_branding_background(
             include_design_assets=include_design_assets,
             target_phase=target_phase,
         )
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except Exception as e:
         logger.exception("Branding job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 

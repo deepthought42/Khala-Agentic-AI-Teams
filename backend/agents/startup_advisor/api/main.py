@@ -23,6 +23,7 @@ from startup_advisor.shared.job_store import (
     create_job,
     delete_job,
     get_job,
+    is_job_cancelled,
     list_jobs,
     update_job,
 )
@@ -226,13 +227,19 @@ class SendMessageJobListResponse(BaseModel):
 
 def _run_advisor_message_background(job_id: str, message: str) -> None:
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         result = _process_advisor_message(message)
+        if is_job_cancelled(job_id):
+            return
         update_job(
             job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump(mode="json")
         )
     except Exception as exc:
         logger.exception("Startup advisor job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(exc))
 
 

@@ -27,6 +27,7 @@ from deepthought.shared.job_store import (
     create_job,
     delete_job,
     get_job,
+    is_job_cancelled,
     list_jobs,
     update_job,
 )
@@ -88,12 +89,18 @@ class DeepthoughtJobListResponse(BaseModel):
 
 def _run_deepthought_background(job_id: str, request: DeepthoughtRequest) -> None:
     try:
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_RUNNING)
         orchestrator = DeepthoughtOrchestrator()
         result = orchestrator.process_message(request)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_COMPLETED, result=result.model_dump())
     except Exception as e:
         logger.exception("Deepthought job %s failed", job_id)
+        if is_job_cancelled(job_id):
+            return
         update_job(job_id, status=JOB_STATUS_FAILED, error=str(e))
 
 

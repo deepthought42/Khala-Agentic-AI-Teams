@@ -26,6 +26,7 @@ __all__ = [
     "create_job",
     "delete_job",
     "get_job",
+    "is_job_cancelled",
     "list_jobs",
     "update_job",
 ]
@@ -69,6 +70,12 @@ def cancel_job(job_id: str) -> bool:
         return False
     _client().update_job(job_id, status=JOB_STATUS_CANCELLED)
     return True
+
+
+def is_job_cancelled(job_id: str) -> bool:
+    """Return True if the job exists and has been marked cancelled."""
+    job = _client().get_job(job_id)
+    return job is not None and job.get("status") == JOB_STATUS_CANCELLED
 
 
 def delete_job(job_id: str) -> bool:
