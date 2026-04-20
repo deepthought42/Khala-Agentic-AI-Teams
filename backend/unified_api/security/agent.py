@@ -55,9 +55,17 @@ _add_rule(r"\$\(rm\s+", "Command substitution with rm detected.")
 _add_rule(r"`rm\s+", "Backtick command with rm detected.")
 _add_rule(r"&\s*&\s*del\s+", "Shell/command chaining with del detected.")
 
-# Path traversal
-_add_rule(r"\.\./", "Path traversal sequence (e.g. '..') detected.")
-_add_rule(r"\.\.\\", "Path traversal sequence (e.g. '..\\') detected.")
+# Path traversal.
+# The `../` and `..\` rules require a path-boundary prefix (start of string,
+# newline, `/`, `\`, `"`, `'`, or `=`) so incidental occurrences in free-form
+# body text — e.g. a Windows path mentioned in an LLM-generated product spec —
+# don't trip the detector. Real attacks always appear at a path boundary
+# (URLs, query parameters, JSON string starts, header values). Encoded
+# variants keep the loose match because URL-encoded `../` is rarely typed by
+# humans and almost always hostile.
+_PATH_TRAVERSAL_PREFIX = r"(?:^|[\n/\\\"'=])"
+_add_rule(_PATH_TRAVERSAL_PREFIX + r"\.\./", "Path traversal sequence (e.g. '..') detected.")
+_add_rule(_PATH_TRAVERSAL_PREFIX + r"\.\.\\", "Path traversal sequence (e.g. '..\\') detected.")
 _add_rule(r"%2e%2e%2f", "Path traversal sequence (encoded) detected.")
 _add_rule(r"%2e%2e/", "Path traversal sequence (encoded) detected.")
 _add_rule(r"\.\.%2f", "Path traversal sequence (encoded) detected.")
