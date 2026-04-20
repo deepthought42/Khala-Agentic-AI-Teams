@@ -547,7 +547,10 @@ export interface ClearStrategyLabStorageResponse {
 
 export type StrategyLabPhase =
   | 'ideating' | 'coding' | 'backtesting'
-  | 'analyzing' | 'complete';
+  | 'analyzing'
+  | 'paper_trading' | 'paper_trading_complete'
+  | 'paper_trading_skipped' | 'paper_trading_failed'
+  | 'complete';
 
 export interface QualityGateResult {
   gate_name: string;
