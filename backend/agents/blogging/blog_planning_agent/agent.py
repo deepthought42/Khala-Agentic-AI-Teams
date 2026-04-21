@@ -284,3 +284,54 @@ class BlogPlanningAgent:
             f"Planning did not converge after {max_iter} iterations",
             failure_reason=PlanningFailureReason.MAX_ITERATIONS_REACHED.value,
         )
+
+
+class _BlogPlanningAgentRunner:
+    """Zero-arg-constructor shim over :class:`BlogPlanningAgent`.
+
+    The shared invoke dispatcher (``shared_agent_invoke.dispatch``) passes a
+    single raw JSON ``body: dict`` to ``.run``. The real ``BlogPlanningAgent``
+    takes a ``PlanningInput`` plus a required ``length_policy`` keyword. This
+    runner bridges the two — for sandbox/Agent-Console usage only. Production
+    code continues to instantiate :class:`BlogPlanningAgent` directly.
+    """
+
+    def __init__(self, agent: BlogPlanningAgent, length_policy: LengthPolicy) -> None:
+        self._agent = agent
+        self._default_length_policy = length_policy
+
+    def run(self, body: dict) -> dict:
+        from shared.content_profile import resolve_length_policy_from_request_dict
+
+        if not isinstance(body, dict):
+            raise TypeError(f"blogging.planner body must be a dict, got {type(body).__name__}")
+
+        lp_block = body.get("length_policy")
+        if isinstance(lp_block, dict) and lp_block:
+            length_policy = resolve_length_policy_from_request_dict(lp_block)
+        else:
+            length_policy = self._default_length_policy
+
+        planning_input_block = body.get("planning_input", body)
+        planning_input = PlanningInput.model_validate(planning_input_block)
+
+        result = self._agent.run(planning_input, length_policy=length_policy)
+        return result.model_dump(mode="json")
+
+
+def make_blog_planning_agent() -> _BlogPlanningAgentRunner:
+    """Zero-arg factory consumed by the Agent Console sandbox (issue #263).
+
+    Wires an ``llm_service``-provided LLM client (env-configured: Ollama in
+    production, ``DummyLLMClient`` when ``LLM_PROVIDER=dummy``) into a
+    :class:`BlogPlanningAgent` and returns a runner that accepts a JSON body
+    from :class:`shared_agent_invoke.shim`.
+    """
+    from shared.content_profile import ContentProfile, resolve_length_policy
+
+    from llm_service import get_client
+
+    llm_client = get_client("blog_planning")
+    agent = BlogPlanningAgent(llm_client=llm_client)
+    default_policy = resolve_length_policy(content_profile=ContentProfile.standard_article)
+    return _BlogPlanningAgentRunner(agent, default_policy)
