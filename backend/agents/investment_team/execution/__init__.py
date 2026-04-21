@@ -16,8 +16,11 @@ from .cost_model import (
 from .metrics import (
     EquityCurve,
     PerformanceMetrics,
+    bootstrap_sharpe_ci,
     build_equity_curve_from_trades,
+    compute_deflated_sharpe,
     compute_performance_metrics,
+    summarize_return_moments,
 )
 from .risk_filter import RiskFilter, RiskLimits
 from .risk_free_rate import get_risk_free_rate
@@ -43,12 +46,15 @@ __all__ = [
     "RiskLimits",
     "SpreadPlusImpactCostModel",
     "benchmark_for_strategy",
+    "bootstrap_sharpe_ci",
     "build_cost_model",
     "build_equity_curve_from_trades",
     "build_purged_walk_forward",
+    "compute_deflated_sharpe",
     "compute_performance_metrics",
     "filter_trades_in_fold_training",
     "filter_trades_in_range",
     "get_risk_free_rate",
     "max_hold_days_from_trades",
+    "summarize_return_moments",
 ]
