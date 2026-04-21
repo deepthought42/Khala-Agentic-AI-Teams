@@ -239,3 +239,78 @@ def test_fold_properties_delegate_to_test_range():
     )
     assert f.test_start == date(2022, 1, 3)
     assert f.test_end == date(2022, 6, 30)
+
+
+# ---------------------------------------------------------------------------
+# Schema round-trip for step 3 extensions (BacktestConfig, BacktestResult)
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_config_accepts_walk_forward_fields():
+    from investment_team.models import BacktestConfig
+
+    cfg = BacktestConfig(
+        start_date="2022-01-03",
+        end_date="2022-12-30",
+        walk_forward_enabled=True,
+        n_folds=5,
+        embargo_days=10,
+        min_oos_trades=30,
+        dsr_threshold=0.95,
+        max_is_oos_degradation_pct=25.0,
+        benchmark_composition="60_40",
+    )
+    assert cfg.n_folds == 5
+    assert cfg.walk_forward_enabled is True
+    assert cfg.benchmark_composition == "60_40"
+
+
+def test_backtest_config_defaults_preserve_legacy_callers():
+    from investment_team.models import BacktestConfig
+
+    cfg = BacktestConfig(start_date="2022-01-03", end_date="2022-12-30")
+    assert cfg.n_folds == 5
+    assert cfg.embargo_days == 0
+    assert cfg.walk_forward_enabled is True
+
+
+def test_backtest_config_rejects_invalid_n_folds():
+    from investment_team.models import BacktestConfig
+
+    with pytest.raises(Exception):
+        BacktestConfig(start_date="2022-01-03", end_date="2022-12-30", n_folds=0)
+
+
+def test_backtest_result_accepts_walk_forward_diagnostics():
+    from investment_team.models import BacktestResult
+
+    r = BacktestResult(
+        total_return_pct=12.5,
+        annualized_return_pct=10.0,
+        volatility_pct=15.0,
+        sharpe_ratio=0.9,
+        max_drawdown_pct=8.0,
+        win_rate_pct=55.0,
+        profit_factor=1.4,
+        deflated_sharpe=0.72,
+        sharpe_ci_low=0.4,
+        sharpe_ci_high=1.3,
+        is_sharpe=1.2,
+        oos_sharpe=0.9,
+        is_oos_degradation_pct=25.0,
+        oos_trade_count=42,
+        n_trials_when_accepted=85,
+        acceptance_reason="all four criteria met",
+        regime_results=[{"regime": "vix_q1", "sharpe": 1.1, "beat_benchmark": True}],
+        fold_results=[{"fold_index": 0, "oos_sharpe": 0.8}],
+    )
+    assert r.deflated_sharpe == 0.72
+    assert r.oos_trade_count == 42
+    assert r.regime_results[0]["regime"] == "vix_q1"
+
+
+def test_backtest_result_legacy_fields_still_required():
+    from investment_team.models import BacktestResult
+
+    with pytest.raises(Exception):
+        BacktestResult()  # missing required core metrics
