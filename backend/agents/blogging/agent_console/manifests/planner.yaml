@@ -22,4 +22,4 @@ sandbox:
   manifest_path: default.yaml
   access_tier: standard
 source:
-  entrypoint: blogging.blog_planning_agent.agent:BlogPlanningAgent
+  entrypoint: blogging.blog_planning_agent.agent:make_blog_planning_agent
