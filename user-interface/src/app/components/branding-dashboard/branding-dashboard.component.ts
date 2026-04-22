@@ -24,7 +24,6 @@ import { BrandActivityStripComponent } from '../brand-activity-strip/brand-activ
 import type {
   Brand,
   BrandActivity,
-  BrandActivityKind,
   BrandingMissionSnapshot,
   BrandingQuestion,
   BrandingSessionResponse,
@@ -641,7 +640,7 @@ export class BrandingDashboardComponent implements OnInit, OnDestroy {
   }
 
   onActivityOpen(activity: BrandActivity): void {
-    this.openActivityArtifacts(activity.brandId, activity.kind);
+    this.openActivityArtifacts(activity.brandId);
   }
 
   onActivityRetry(brand: Brand, activity: BrandActivity): void {
@@ -668,7 +667,7 @@ export class BrandingDashboardComponent implements OnInit, OnDestroy {
    * the Chat tab (which hosts the preview panel) — precise per-phase anchoring
    * will arrive with the phase stepper in #277.
    */
-  private openActivityArtifacts(brandId: string, _kind?: BrandActivityKind): void {
+  private openActivityArtifacts(brandId: string): void {
     const brand = this.brands.find((b) => b.id === brandId);
     if (brand) {
       this.resumeOrStartBrand(brand);
