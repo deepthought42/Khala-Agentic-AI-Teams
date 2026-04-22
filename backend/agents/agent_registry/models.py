@@ -33,6 +33,8 @@ class SandboxSpec(BaseModel):
 
     manifest_path: str | None = "default.yaml"
     access_tier: Literal["minimal", "standard", "elevated", "full"] = "standard"
+    env: dict[str, str] = Field(default_factory=dict)
+    extra_pip: list[str] = Field(default_factory=list)
 
 
 class SourceInfo(BaseModel):
