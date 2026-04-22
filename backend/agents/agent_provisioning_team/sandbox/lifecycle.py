@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -90,7 +89,7 @@ class Lifecycle:
                 if await provisioner_mod.is_running(existing.container_id):
                     existing.last_used_at = now()
                     self._persist()
-                    return self._handle(existing)
+                    return SandboxHandle.from_state(existing)
                 logger.info(
                     "Sandbox for %s marked WARM but container %s is gone; re-provisioning",
                     agent_id,
@@ -98,14 +97,13 @@ class Lifecycle:
                 )
 
             container_name = provisioner_mod.container_name_for(agent_id)
-            # Sweep away any zombie container from a prior run that died before
-            # we could update state. Safe: `stop_container` is idempotent.
-            await self._best_effort_reap(container_name)
+            # Sweep any zombie container from a prior run. `docker rm -f` is
+            # idempotent against missing containers; timeouts are surfaced.
+            await provisioner_mod.stop_container(container_name)
 
             logger.info("Provisioning sandbox for %s (container %s)", agent_id, container_name)
             st = state_mod.new_state(agent_id=agent_id, team=team, container_name=container_name)
             self._state[agent_id] = st
-            self._persist()
 
             try:
                 container_id = await provisioner_mod.run_container(
@@ -114,27 +112,17 @@ class Lifecycle:
                 host_port = await provisioner_mod.inspect_host_port(container_id)
                 st.container_id = container_id
                 st.host_port = host_port
-                self._persist()
                 await self._wait_healthy(host_port)
                 st.status = SandboxStatus.WARM
-                st.error = None
                 st.last_used_at = now()
                 self._persist()
-                return self._handle(st)
+                return SandboxHandle.from_state(st)
             except Exception as exc:
                 logger.exception("Sandbox provisioning failed for %s", agent_id)
                 st.status = SandboxStatus.ERROR
                 st.error = str(exc)
                 self._persist()
-                return self._handle(st)
-
-    async def release(self, agent_id: str) -> None:
-        """Mark the sandbox as idle-eligible. Does not tear down — the reaper decides."""
-        st = self._state.get(agent_id)
-        if st is None:
-            return
-        st.last_used_at = now()
-        self._persist()
+                return SandboxHandle.from_state(st)
 
     async def teardown(self, agent_id: str) -> None:
         """Explicitly stop the sandbox for ``agent_id`` and evict from state."""
@@ -154,7 +142,7 @@ class Lifecycle:
 
     async def list_active(self) -> list[SandboxHandle]:
         """Return a handle for every sandbox currently tracked in state."""
-        return [self._handle(st) for st in list(self._state.values())]
+        return [SandboxHandle.from_state(st) for st in list(self._state.values())]
 
     async def note_activity(self, agent_id: str) -> None:
         """Bump ``last_used_at`` for ``agent_id``. Called after a successful invoke."""
@@ -231,36 +219,6 @@ class Lifecycle:
                     pass
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 5.0)
-
-    async def _best_effort_reap(self, container_name: str) -> None:
-        """If a container with ``container_name`` exists from a prior run, remove it."""
-        try:
-            await provisioner_mod.stop_container(container_name)
-        except provisioner_mod.DockerError as exc:
-            logger.debug(
-                "best-effort reap of %s failed (likely already gone): %s", container_name, exc
-            )
-
-    def _handle(self, st: SandboxState) -> SandboxHandle:
-        idle = None
-        if st.last_used_at is not None:
-            idle = int((datetime.now(timezone.utc) - st.last_used_at).total_seconds())
-        url = None
-        if st.status == SandboxStatus.WARM and st.host_port is not None:
-            url = f"http://127.0.0.1:{st.host_port}"
-        return SandboxHandle(
-            agent_id=st.agent_id,
-            team=st.team,
-            status=st.status,
-            url=url,
-            container_name=st.container_name,
-            container_id=st.container_id,
-            host_port=st.host_port,
-            created_at=st.created_at,
-            last_used_at=st.last_used_at,
-            idle_seconds=idle,
-            error=st.error,
-        )
 
     def _persist(self) -> None:
         try:

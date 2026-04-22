@@ -17,13 +17,10 @@ import os
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from threading import Lock
 
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
-
-_lock = Lock()
 
 
 class SandboxStatus(str, Enum):
@@ -50,7 +47,7 @@ class SandboxState(BaseModel):
 
 
 class SandboxHandle(BaseModel):
-    """Caller-facing view returned by ``Lifecycle.acquire()``."""
+    """Caller-facing view derived from :class:`SandboxState`."""
 
     agent_id: str
     team: str
@@ -67,6 +64,28 @@ class SandboxHandle(BaseModel):
     last_used_at: datetime | None = None
     idle_seconds: int | None = None
     error: str | None = None
+
+    @classmethod
+    def from_state(cls, st: SandboxState) -> SandboxHandle:
+        url = (
+            f"http://127.0.0.1:{st.host_port}"
+            if st.status == SandboxStatus.WARM and st.host_port is not None
+            else None
+        )
+        idle = int((now() - st.last_used_at).total_seconds()) if st.last_used_at else None
+        return cls(
+            agent_id=st.agent_id,
+            team=st.team,
+            status=st.status,
+            url=url,
+            container_name=st.container_name,
+            container_id=st.container_id,
+            host_port=st.host_port,
+            created_at=st.created_at,
+            last_used_at=st.last_used_at,
+            idle_seconds=idle,
+            error=st.error,
+        )
 
 
 def now() -> datetime:
@@ -100,17 +119,8 @@ def state_file_path() -> Path:
 
 
 def idle_teardown_seconds() -> int:
-    """Read ``AGENT_PROVISIONING_SANDBOX_IDLE_MINUTES`` (default 5) from the env.
-
-    Falls back to ``SANDBOX_IDLE_TEARDOWN_MINUTES`` for shared configuration
-    with the legacy per-team reaper; when neither is set, the per-agent
-    lifecycle reaps after 5 minutes (shorter than the per-team default of 15
-    because individual agent sandboxes are cheaper to churn).
-    """
-    raw = os.environ.get("AGENT_PROVISIONING_SANDBOX_IDLE_MINUTES")
-    if raw is None:
-        raw = os.environ.get("SANDBOX_IDLE_TEARDOWN_MINUTES", "5")
-    return int(raw) * 60
+    """Read ``AGENT_PROVISIONING_SANDBOX_IDLE_MINUTES`` (default 5) from the env."""
+    return int(os.environ.get("AGENT_PROVISIONING_SANDBOX_IDLE_MINUTES", "5")) * 60
 
 
 def boot_timeout_seconds() -> int:
@@ -128,37 +138,28 @@ def sandbox_network() -> str:
     return os.environ.get("AGENT_PROVISIONING_SANDBOX_NETWORK", "khala-sandbox")
 
 
-def _serialise(state: dict[str, SandboxState]) -> str:
-    return json.dumps(
-        {agent_id: s.model_dump(mode="json") for agent_id, s in state.items()},
-        indent=2,
-        sort_keys=True,
-    )
-
-
 def load(path: Path) -> dict[str, SandboxState]:
     """Load state from disk. Missing file → empty dict. Corrupt file → warn + empty."""
-    with _lock:
-        if not path.exists():
-            return {}
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not load sandbox state from %s: %s", path, exc)
+        return {}
+    out: dict[str, SandboxState] = {}
+    for agent_id, entry in (raw or {}).items():
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Could not load sandbox state from %s: %s", path, exc)
-            return {}
-        out: dict[str, SandboxState] = {}
-        for agent_id, entry in (raw or {}).items():
-            try:
-                out[agent_id] = SandboxState.model_validate(entry)
-            except Exception as exc:
-                logger.warning("Dropping malformed sandbox state entry %s: %s", agent_id, exc)
-        return out
+            out[agent_id] = SandboxState.model_validate(entry)
+        except Exception as exc:
+            logger.warning("Dropping malformed sandbox state entry %s: %s", agent_id, exc)
+    return out
 
 
 def save(path: Path, state: dict[str, SandboxState]) -> None:
     """Atomically persist ``state`` to ``path`` (tmpfile + rename)."""
-    with _lock:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(_serialise(state), encoding="utf-8")
-        os.replace(tmp, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {agent_id: s.model_dump(mode="json") for agent_id, s in state.items()}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
