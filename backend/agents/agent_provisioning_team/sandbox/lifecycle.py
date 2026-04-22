@@ -125,7 +125,13 @@ class Lifecycle:
                 return SandboxHandle.from_state(st)
 
     async def teardown(self, agent_id: str) -> None:
-        """Explicitly stop the sandbox for ``agent_id`` and evict from state."""
+        """Explicitly stop the sandbox for ``agent_id`` and evict from state.
+
+        State is only evicted after Docker confirms the container is gone:
+        ``stop_container`` raises :class:`DockerError` for real failures
+        (e.g. daemon unreachable), which we propagate so the caller (or the
+        reaper's next tick) can retry against a sandbox that is still alive.
+        """
         lock = self._locks.setdefault(agent_id, asyncio.Lock())
         async with lock:
             st = self._state.get(agent_id)
@@ -133,10 +139,7 @@ class Lifecycle:
                 return
             logger.info("Tearing down sandbox for %s", agent_id)
             if st.container_id:
-                try:
-                    await provisioner_mod.stop_container(st.container_id)
-                except provisioner_mod.DockerError as exc:
-                    logger.warning("teardown for %s reported non-zero: %s", agent_id, exc)
+                await provisioner_mod.stop_container(st.container_id)
             self._state.pop(agent_id, None)
             self._persist()
 
@@ -189,10 +192,15 @@ class Lifecycle:
             if st.status != SandboxStatus.WARM:
                 continue
             idle = (current - st.last_used_at).total_seconds()
-            if idle > threshold:
-                logger.info("Reaping idle sandbox %s (idle=%.0fs)", agent_id, idle)
+            if idle <= threshold:
+                continue
+            logger.info("Reaping idle sandbox %s (idle=%.0fs)", agent_id, idle)
+            try:
                 await self.teardown(agent_id)
-                torn_down.append(agent_id)
+            except provisioner_mod.DockerError:
+                logger.exception("Teardown failed for %s; will retry next tick", agent_id)
+                continue
+            torn_down.append(agent_id)
         return torn_down
 
     # ------------------------------------------------------------------

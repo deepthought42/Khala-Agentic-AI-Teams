@@ -125,6 +125,20 @@ async def test_teardown_removes_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_teardown_preserves_state_when_docker_errors(tmp_path: Path) -> None:
+    # When `stop_container` raises a DockerError (daemon unreachable, etc.),
+    # state must NOT be evicted — we need the record to retry against the
+    # still-alive container on the next tick.
+    lc = _lifecycle(tmp_path)
+    with _patched_registry(), _patched_docker() as d:
+        await lc.acquire("blogging.planner")
+        d.stop.side_effect = provisioner_mod.DockerError("docker daemon unreachable")
+        with pytest.raises(provisioner_mod.DockerError):
+            await lc.teardown("blogging.planner")
+    assert "blogging.planner" in lc._state
+
+
+@pytest.mark.asyncio
 async def test_note_activity_updates_last_used(tmp_path: Path) -> None:
     lc = _lifecycle(tmp_path)
     with _patched_registry(), _patched_docker():
@@ -158,6 +172,33 @@ async def test_reap_preserves_fresh_sandbox(tmp_path: Path) -> None:
         reaped = await lc.reap_once(threshold=3600)
     assert reaped == []
     assert "blogging.planner" in lc._state
+
+
+@pytest.mark.asyncio
+async def test_reap_once_continues_after_teardown_failure(tmp_path: Path) -> None:
+    # If one sandbox's teardown hits a DockerError, the reaper should log and
+    # continue so sibling sandboxes still get reclaimed this tick.
+    lc = _lifecycle(tmp_path)
+    with _patched_registry(), _patched_docker() as d:
+        await lc.acquire("blogging.planner")
+        await lc.acquire("blogging.writer")
+        for aid in ("blogging.planner", "blogging.writer"):
+            lc._state[aid].last_used_at = lc._state[aid].last_used_at - timedelta(minutes=30)
+
+        # Fail the first teardown, succeed the second.
+        calls = {"n": 0}
+
+        async def flaky_stop(_container_id: str) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise provisioner_mod.DockerError("daemon blip")
+
+        d.stop.side_effect = flaky_stop
+        reaped = await lc.reap_once(threshold=60)
+
+    # Exactly one sandbox torn down; the other remains for the next tick.
+    assert len(reaped) == 1
+    assert len(lc._state) == 1
 
 
 @pytest.mark.asyncio
@@ -203,9 +244,45 @@ def test_build_run_argv_applies_hardening() -> None:
 
 
 def test_container_name_is_dns_safe() -> None:
-    assert container_name_for("blogging.planner") == "khala-sbx-blogging.planner"
-    assert container_name_for("weird agent/name!") == "khala-sbx-weird-agent-name"
-    assert container_name_for("") == "khala-sbx-agent"
+    name = container_name_for("blogging.planner")
+    assert name.startswith("khala-sbx-blogging.planner-")
+    # readable prefix + 8 lowercase-hex char digest suffix.
+    suffix = name.rsplit("-", 1)[1]
+    assert len(suffix) == 8
+    assert all(c in "0123456789abcdef" for c in suffix)
+    # Deterministic.
+    assert container_name_for("blogging.planner") == name
+    # Empty id still yields a valid container name.
+    assert container_name_for("").startswith("khala-sbx-agent-")
+
+
+@pytest.mark.asyncio
+async def test_stop_container_is_idempotent_on_missing_container() -> None:
+    with patch.object(
+        provisioner_mod,
+        "_exec",
+        new=AsyncMock(return_value=(1, "", "Error: No such container: abc")),
+    ):
+        await provisioner_mod.stop_container("abc")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_stop_container_raises_on_real_failure() -> None:
+    with patch.object(
+        provisioner_mod,
+        "_exec",
+        new=AsyncMock(return_value=(1, "", "Cannot connect to the Docker daemon")),
+    ):
+        with pytest.raises(provisioner_mod.DockerError):
+            await provisioner_mod.stop_container("abc")
+
+
+def test_container_name_is_collision_resistant_under_sanitization() -> None:
+    # Two ids that sanitize to the same readable prefix still get distinct
+    # container names, so the acquire-time zombie reap cannot accidentally
+    # tear down another agent's live sandbox.
+    assert container_name_for("agent/1") != container_name_for("agent-1")
+    assert container_name_for("a b") != container_name_for("a-b")
 
 
 @pytest.mark.asyncio

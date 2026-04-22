@@ -15,6 +15,7 @@ unchanged for the non-sandbox provisioning path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -51,14 +52,18 @@ def _fail(argv: list[str], rc: int, stderr: str) -> DockerError:
 
 
 def container_name_for(agent_id: str) -> str:
-    """Deterministic, DNS-safe container name for ``agent_id``.
+    """Deterministic, DNS-safe, collision-resistant container name for ``agent_id``.
 
-    Docker requires ``[a-zA-Z0-9][a-zA-Z0-9_.-]*`` — dots in agent ids like
-    ``blogging.planner`` are fine, but any other non-[A-Za-z0-9_.-] char is
-    replaced with ``-``.
+    Docker requires ``[a-zA-Z0-9][a-zA-Z0-9_.-]*``. The readable prefix is the
+    sanitised agent id (truncated); the 8-char sha1 suffix keeps the mapping
+    one-to-one so two ids that happen to sanitise the same way (e.g.
+    ``agent/1`` vs ``agent-1``) still get distinct container names — the
+    acquire-time zombie reap would otherwise tear down a sibling's live
+    container.
     """
-    safe = _CONTAINER_NAME_RE.sub("-", agent_id).strip("-")
-    return f"khala-sbx-{safe or 'agent'}"
+    safe = (_CONTAINER_NAME_RE.sub("-", agent_id).strip("-") or "agent")[:40]
+    digest = hashlib.sha1(agent_id.encode("utf-8")).hexdigest()[:8]
+    return f"khala-sbx-{safe}-{digest}"
 
 
 async def _exec(cmd: list[str], *, timeout_s: int = 30) -> tuple[int, str, str]:
@@ -175,9 +180,18 @@ async def is_running(container_id: str) -> bool:
 
 
 async def stop_container(container_id: str) -> None:
-    """Stop and remove ``container_id``. Idempotent; missing container is not an error.
+    """Stop and remove ``container_id``.
 
     ``docker rm -f`` stops running containers before removing them, so a single
-    call covers both the happy path and the zombie-container case.
+    call covers both the happy path and the zombie-container case. Missing
+    containers are treated as idempotent success; any other non-zero exit
+    (daemon unreachable, permissions, etc.) raises :class:`DockerError` so
+    callers don't silently evict state while the container is still alive.
     """
-    await _exec(["docker", "rm", "-f", container_id])
+    argv = ["docker", "rm", "-f", container_id]
+    rc, _, stderr = await _exec(argv)
+    if rc == 0:
+        return
+    if "no such container" in stderr.lower():
+        return
+    raise _fail(argv, rc, stderr)
