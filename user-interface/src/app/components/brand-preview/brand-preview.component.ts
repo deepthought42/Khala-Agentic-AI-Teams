@@ -1,19 +1,45 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { trigger, transition, style, animate } from '@angular/animations';
 import { MatCardModule } from '@angular/material/card';
-import { MatTabsModule } from '@angular/material/tabs';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
-import type { BrandingMissionSnapshot, BrandingTeamOutput, ColorPalette } from '../../models';
+import type {
+  BrandingMissionSnapshot,
+  BrandingTeamOutput,
+  BrandPhase,
+  ColorPalette,
+} from '../../models';
+
+type PhaseRenderStatus = 'not_started' | 'in_progress' | 'completed';
+
+interface PhaseSpec {
+  phase: BrandPhase;
+  label: string;
+  icon: string;
+}
+
+/** Pipeline order mirrors backend `PHASE_ORDER` in graphs/shared.py. */
+const PHASES: readonly PhaseSpec[] = [
+  { phase: 'strategic_core', label: 'Strategic Core', icon: 'hub' },
+  { phase: 'narrative_messaging', label: 'Narrative', icon: 'edit_note' },
+  { phase: 'visual_identity', label: 'Visual', icon: 'palette' },
+  { phase: 'channel_activation', label: 'Channel', icon: 'campaign' },
+  { phase: 'governance', label: 'Governance', icon: 'verified' },
+];
+
+const STATUS_LABELS: Record<PhaseRenderStatus, string> = {
+  completed: 'Completed',
+  in_progress: 'In progress',
+  not_started: 'Not started',
+};
 
 @Component({
   selector: 'app-brand-preview',
   standalone: true,
   imports: [
     MatCardModule,
-    MatTabsModule,
     MatExpansionModule,
     MatIconModule,
     MatButtonModule,
@@ -34,12 +60,16 @@ export class BrandPreviewComponent {
   @Input() mission: BrandingMissionSnapshot | null = null;
   @Input() latestOutput: BrandingTeamOutput | null = null;
   @Output() saveAsBrand = new EventEmitter<void>();
+  @Output() selectPalette = new EventEmitter<number>();
+
+  readonly phases = PHASES;
+
+  brandBookOpen = false;
 
   get hasOutput(): boolean {
     return this.latestOutput != null;
   }
 
-  /** True when mission has at least basic info worth showing. */
   get hasMissionData(): boolean {
     const m = this.mission;
     if (!m) return false;
@@ -53,26 +83,8 @@ export class BrandPreviewComponent {
     );
   }
 
-  /** True when there is anything to display (mission or output). */
   get hasContent(): boolean {
     return this.hasOutput || this.hasMissionData;
-  }
-
-  /** Rough percentage of mission fields that have meaningful data. */
-  get completionPercent(): number {
-    const m = this.mission;
-    if (!m) return 0;
-    let filled = 0;
-    const total = 8;
-    if (m.company_name && m.company_name !== 'TBD') filled++;
-    if (m.company_description && m.company_description !== 'To be discussed.') filled++;
-    if (m.target_audience && m.target_audience !== 'TBD') filled++;
-    if ((m.values?.length ?? 0) > 0) filled++;
-    if ((m.differentiators?.length ?? 0) > 0) filled++;
-    if (m.desired_voice && m.desired_voice !== 'clear, confident, human') filled++;
-    if ((m.color_palettes?.length ?? 0) > 0 || (m.color_inspiration?.length ?? 0) > 0) filled++;
-    if (m.visual_style || m.typography_preference) filled++;
-    return Math.round((filled / total) * 100);
   }
 
   get missionValues(): string[] {
@@ -102,20 +114,6 @@ export class BrandPreviewComponent {
     return idx >= 0 && idx < palettes.length ? palettes[idx] : null;
   }
 
-  get colorStories(): string[] {
-    const out = this.latestOutput;
-    if (!out?.mood_boards?.length) {
-      return out?.design_system?.foundation_tokens ?? [];
-    }
-    const colors: string[] = [];
-    for (const mb of out.mood_boards) {
-      if (mb.color_story.length) {
-        colors.push(...mb.color_story);
-      }
-    }
-    return [...new Set(colors)];
-  }
-
   /** Return a CSS color for swatch display; supports hex or leaves as-is for names. */
   parseColor(token: string): string {
     const t = (token || '').trim();
@@ -126,5 +124,70 @@ export class BrandPreviewComponent {
 
   isPaletteSelected(index: number): boolean {
     return this.selectedPaletteIndex === index;
+  }
+
+  onSelectPalette(index: number): void {
+    this.selectPalette.emit(index);
+  }
+
+  /**
+   * Render status for a phase. Prefers the backend `phase_gates` signal; falls
+   * back to `phaseHasOutput` when gates are absent (e.g. older fixtures).
+   */
+  phaseStatus(phase: BrandPhase): PhaseRenderStatus {
+    const gate = this.latestOutput?.phase_gates?.find((g) => g.phase === phase);
+    if (gate) {
+      if (gate.status === 'approved') return 'completed';
+      if (gate.status === 'in_progress' || gate.status === 'pending_review') return 'in_progress';
+      return 'not_started';
+    }
+    return this.phaseHasOutput(phase) ? 'completed' : 'not_started';
+  }
+
+  phaseStatusLabel(phase: BrandPhase): string {
+    return STATUS_LABELS[this.phaseStatus(phase)];
+  }
+
+  phaseHasOutput(phase: BrandPhase): boolean {
+    const out = this.latestOutput;
+    if (!out) return false;
+    switch (phase) {
+      case 'strategic_core':
+        return !!out.codification || !!out.mission_summary;
+      case 'narrative_messaging':
+        return !!out.writing_guidelines;
+      case 'visual_identity':
+        return (out.mood_boards?.length ?? 0) > 0 || !!out.design_system || this.missionPalettes.length > 0;
+      case 'channel_activation':
+        return !!out.creative_refinement || !!out.design_asset_result;
+      case 'governance':
+        return (out.brand_guidelines?.length ?? 0) > 0 || (out.wiki_backlog?.length ?? 0) > 0;
+      default:
+        return false;
+    }
+  }
+
+  openBrandBook(): void {
+    if (this.latestOutput?.brand_book?.content) {
+      this.brandBookOpen = true;
+    }
+  }
+
+  closeBrandBook(): void {
+    this.brandBookOpen = false;
+  }
+
+  downloadBrandBook(): void {
+    const content = this.latestOutput?.brand_book?.content;
+    if (!content) return;
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'brand-book.md';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   }
 }

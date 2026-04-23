@@ -133,6 +133,29 @@ export class BrandingDashboardComponent implements OnInit, OnDestroy {
     this.syncQueryParams();
   }
 
+  /**
+   * Handle a palette selection click from the brand preview. Optimistically
+   * updates the local mission so the UI reflects the choice immediately.
+   * TODO(#279): send the selection through the chat assistant so the backend
+   * persists it; the current palette-selection path runs via conversational
+   * intent rather than a dedicated REST endpoint.
+   */
+  onSelectPalette(index: number): void {
+    if (this.conversationMission) {
+      this.conversationMission = { ...this.conversationMission, selected_palette_index: index };
+    }
+    if (this.selectedBrand) {
+      const updated: Brand = {
+        ...this.selectedBrand,
+        mission: { ...this.selectedBrand.mission, selected_palette_index: index },
+      };
+      this.selectedBrand = updated;
+      // Also patch `brands` so syncBrandPreviewFromSelection() doesn't
+      // rehydrate selectedBrand from a stale entry and revert the choice.
+      this.brands = this.brands.map((b) => (b.id === updated.id ? updated : b));
+    }
+  }
+
   /** Handle auto-created brand from chat: refresh brands and select it. */
   onBrandAutoCreated(brandId: string): void {
     if (!this.selectedClient) return;
