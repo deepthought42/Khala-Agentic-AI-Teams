@@ -5,6 +5,7 @@ Executes phases sequentially with progress callbacks for real-time tracking.
 """
 
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from .models import (
@@ -35,6 +36,17 @@ _install_log_filter()
 logger = logging.getLogger(__name__)
 
 JobUpdater = Callable[..., None]
+
+
+class ProvisioningShutdownError(Exception):
+    """Raised when the provisioning workflow is cancelled mid-flight
+    because the FastAPI app is shutting down. After raising, the orchestrator
+    has already invoked `_compensate()` to roll back partial state."""
+
+    def __init__(self, agent_id: str, phase: str) -> None:
+        self.agent_id = agent_id
+        self.phase = phase
+        super().__init__(f"Provisioning for {agent_id} cancelled during {phase}")
 
 
 # Backwards-compat alias for callers/tests that imported the old name.
@@ -73,6 +85,7 @@ class ProvisioningOrchestrator:
         job_updater: Optional[JobUpdater] = None,
         skip_phases: Optional[set] = None,
         prior_results: Optional[Dict[str, Any]] = None,
+        shutdown_event: Optional[threading.Event] = None,
     ) -> ProvisioningResult:
         """
         Execute the full provisioning workflow through all phases.
@@ -84,6 +97,9 @@ class ProvisioningOrchestrator:
             job_updater: Optional callback for progress updates.
             skip_phases: Set of Phase values to skip (already completed on a prior run).
             prior_results: Dict of phase results from a prior run keyed by phase value string.
+            shutdown_event: Optional threading.Event that signals cooperative
+                cancellation at phase boundaries. When set, the orchestrator
+                compensates and raises ProvisioningShutdownError.
 
         Returns:
             ProvisioningResult with complete provisioning information
@@ -100,8 +116,22 @@ class ProvisioningOrchestrator:
         if skip_phases:
             logger.info("Resuming workflow — skipping completed phases: %s", [p.value for p in skip_phases])
 
+        # Tracks the latest tool_results the orchestrator has produced, so a
+        # shutdown check mid-workflow can pass them to `_compensate()` to
+        # deprovision any tools that succeeded before cancellation.
+        tool_results_ref: List[Any] = []
+
         def _set_phase(name: str) -> None:
             _phase_var.set(name)
+
+        def _check_shutdown(phase_name: str) -> None:
+            if shutdown_event is not None and shutdown_event.is_set():
+                logger.warning(
+                    "Shutdown signalled for agent=%s during %s; compensating",
+                    agent_id, phase_name,
+                )
+                self._compensate(agent_id, tool_results_ref)
+                raise ProvisioningShutdownError(agent_id=agent_id, phase=phase_name)
 
         def _update(
             current_phase: Optional[str] = None,
@@ -133,6 +163,7 @@ class ProvisioningOrchestrator:
 
         # -- SETUP --
         _set_phase(Phase.SETUP.value)
+        _check_shutdown(Phase.SETUP.value)
         if Phase.SETUP in skip_phases and prior_results.get("setup"):
             setup_result = restore_setup(prior_results["setup"])
             logger.info("Skipping SETUP (already completed)")
@@ -154,6 +185,7 @@ class ProvisioningOrchestrator:
 
         # -- CREDENTIAL_GENERATION --
         _set_phase(Phase.CREDENTIAL_GENERATION.value)
+        _check_shutdown(Phase.CREDENTIAL_GENERATION.value)
         if Phase.CREDENTIAL_GENERATION in skip_phases and prior_results.get("credential_generation"):
             cred_result = restore_credentials(prior_results["credential_generation"])
             logger.info("Skipping CREDENTIAL_GENERATION (already completed)")
@@ -178,6 +210,7 @@ class ProvisioningOrchestrator:
 
         # -- ACCOUNT_PROVISIONING --
         _set_phase(Phase.ACCOUNT_PROVISIONING.value)
+        _check_shutdown(Phase.ACCOUNT_PROVISIONING.value)
         if Phase.ACCOUNT_PROVISIONING in skip_phases and prior_results.get("account_provisioning"):
             account_result = restore_account_provisioning(prior_results["account_provisioning"])
             logger.info("Skipping ACCOUNT_PROVISIONING (already completed)")
@@ -214,8 +247,11 @@ class ProvisioningOrchestrator:
                     error=account_result.error or "Account provisioning failed",
                 )
 
+            tool_results_ref[:] = list(account_result.tool_results or [])
+
         # -- ACCESS_AUDIT --
         _set_phase(Phase.ACCESS_AUDIT.value)
+        _check_shutdown(Phase.ACCESS_AUDIT.value)
         if Phase.ACCESS_AUDIT in skip_phases and prior_results.get("access_audit"):
             audit_result = prior_results["access_audit"]
             logger.info("Skipping ACCESS_AUDIT (already completed)")
@@ -229,6 +265,7 @@ class ProvisioningOrchestrator:
 
         # -- DOCUMENTATION --
         _set_phase(Phase.DOCUMENTATION.value)
+        _check_shutdown(Phase.DOCUMENTATION.value)
         if Phase.DOCUMENTATION in skip_phases and prior_results.get("documentation"):
             doc_result = restore_documentation(prior_results["documentation"])
             logger.info("Skipping DOCUMENTATION (already completed)")
@@ -246,6 +283,7 @@ class ProvisioningOrchestrator:
 
         # -- DELIVER --
         _set_phase(Phase.DELIVER.value)
+        _check_shutdown(Phase.DELIVER.value)
         _update(current_phase=Phase.DELIVER.value, progress=95, status_text="Finalizing provisioning...")
         deliver_result = run_deliver(
             agent_id=agent_id, environment=setup_result.environment,
