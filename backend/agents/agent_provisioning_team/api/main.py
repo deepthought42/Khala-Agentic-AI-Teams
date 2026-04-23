@@ -4,8 +4,13 @@ FastAPI endpoints for the Agent Provisioning Team.
 Provides REST API for provisioning, status tracking, and deprovisioning.
 """
 
+import asyncio
+import contextlib
+import logging
+import os
 import threading
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -25,7 +30,7 @@ from ..models import (
     ProvisionRequest,
     ProvisionStatusResponse,
 )
-from ..orchestrator import ProvisioningOrchestrator
+from ..orchestrator import ProvisioningOrchestrator, ProvisioningShutdownError
 from ..phases.deliver import redact_credentials_for_response
 from ..shared.job_store import (
     JOB_STATUS_COMPLETED,
@@ -34,6 +39,7 @@ from ..shared.job_store import (
     create_job,
     get_job,
     list_jobs,
+    mark_all_running_jobs_failed,
     mark_job_completed,
     mark_job_failed,
     mark_job_running,
@@ -49,12 +55,145 @@ from ..shared.job_store import (
     reset_job as store_reset_job,
 )
 
+logger = logging.getLogger(__name__)
+
 init_otel(service_name="agent-provisioning-team", team_key="agent_provisioning")
+
+
+# Bounded-concurrency config. Defaults tuned for a single pod; override via env.
+PROVISION_MAX_WORKERS = int(os.getenv("PROVISION_MAX_WORKERS", "8"))
+PROVISION_MAX_QUEUE_DEPTH = int(os.getenv("PROVISION_MAX_QUEUE_DEPTH", "32"))
+SHUTDOWN_GRACE_S = float(os.getenv("SHUTDOWN_GRACE_S", "30"))
+COMPENSATE_TIMEOUT_S = float(os.getenv("COMPENSATE_TIMEOUT_S", "15"))
+
+_executor: Optional[ThreadPoolExecutor] = None
+_shutdown_event: threading.Event = threading.Event()
+_inflight: Dict[str, Future] = {}
+_inflight_lock = threading.Lock()
+
+
+def _ensure_executor() -> ThreadPoolExecutor:
+    """Lazy-init the provisioning executor.
+
+    Normally created by the lifespan hook; this fallback covers tests that
+    use `TestClient(app)` without entering its context manager."""
+    global _executor
+    if _executor is None or _executor._shutdown:  # noqa: SLF001
+        _executor = ThreadPoolExecutor(
+            max_workers=PROVISION_MAX_WORKERS,
+            thread_name_prefix="provision-worker",
+        )
+    return _executor
+
+
+def _queue_depth() -> int:
+    """Count of tasks waiting for a slot. Uses _work_queue (private but stable
+    across CPython 3.10+; documented in cpython/Lib/concurrent/futures/thread.py)."""
+    ex = _executor
+    if ex is None:
+        return 0
+    return ex._work_queue.qsize()  # noqa: SLF001
+
+
+def _reject_if_saturated() -> None:
+    """Raise HTTP 429 when the pending queue exceeds PROVISION_MAX_QUEUE_DEPTH.
+    Call BEFORE `create_job()` so we don't leave orphan PENDING rows."""
+    if _queue_depth() >= PROVISION_MAX_QUEUE_DEPTH:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Provisioning queue saturated "
+                f"({PROVISION_MAX_QUEUE_DEPTH} jobs waiting). Retry later."
+            ),
+        )
+
+
+def _submit_provisioning_job(job_id: str, *args: Any, **kwargs: Any) -> None:
+    """Submit to the bounded executor and track the future for shutdown."""
+    executor = _ensure_executor()
+    kwargs.setdefault("shutdown_event", _shutdown_event)
+    future = executor.submit(_run_provisioning_background, job_id, *args, **kwargs)
+    with _inflight_lock:
+        _inflight[job_id] = future
+
+    def _cleanup(_f: Future) -> None:
+        with _inflight_lock:
+            _inflight.pop(job_id, None)
+
+    future.add_done_callback(_cleanup)
+
+
+def _safe_compensate(agent_id: str) -> None:
+    try:
+        orchestrator._compensate(agent_id, [])  # noqa: SLF001
+    except Exception:
+        logger.exception("Compensate raised for agent=%s", agent_id)
+
+
+async def _graceful_shutdown() -> None:
+    """Signal cooperative cancel, drain the executor within SHUTDOWN_GRACE_S,
+    compensate any still-running job with COMPENSATE_TIMEOUT_S per job, then
+    backstop with mark_all_running_jobs_failed."""
+    _shutdown_event.set()
+
+    executor = _executor
+    if executor is not None:
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: executor.shutdown(wait=True, cancel_futures=True),
+                ),
+                timeout=SHUTDOWN_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Provisioning executor did not drain within %.1fs", SHUTDOWN_GRACE_S
+            )
+
+    try:
+        active_jobs = list_jobs(running_only=True)
+    except Exception:
+        logger.exception("list_jobs failed during shutdown; skipping per-job compensate")
+        active_jobs = []
+
+    for job in active_jobs:
+        agent_id = job.get("agent_id")
+        if not agent_id:
+            continue
+        t = threading.Thread(target=_safe_compensate, args=(agent_id,), daemon=True)
+        t.start()
+        t.join(timeout=COMPENSATE_TIMEOUT_S)
+        if t.is_alive():
+            logger.warning(
+                "Compensate for agent=%s exceeded %.1fs; moving on",
+                agent_id, COMPENSATE_TIMEOUT_S,
+            )
+
+    try:
+        mark_all_running_jobs_failed("shutdown")
+    except Exception:
+        logger.exception("mark_all_running_jobs_failed failed during shutdown")
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    _ensure_executor()
+    _shutdown_event.clear()
+    app.state.executor = _executor
+    app.state.shutdown_event = _shutdown_event
+    try:
+        yield
+    finally:
+        await _graceful_shutdown()
+
 
 app = FastAPI(
     title="Agent Provisioning API",
     description="API for provisioning sandboxed environments and tool accounts for AI agents",
     version="1.0.0",
+    lifespan=lifespan,
 )
 instrument_fastapi_app(app, team_key="agent_provisioning")
 
@@ -76,8 +215,9 @@ def _run_provisioning_background(
     access_tier: AccessTier,
     skip_phases: Optional[set] = None,
     prior_results: Optional[Dict[str, Any]] = None,
+    shutdown_event: Optional[threading.Event] = None,
 ) -> None:
-    """Background thread function for running provisioning workflow."""
+    """Executor-target function for running the provisioning workflow."""
     try:
         mark_job_running(job_id)
 
@@ -115,6 +255,7 @@ def _run_provisioning_background(
             job_updater=job_updater,
             skip_phases=skip_phases,
             prior_results=prior_results,
+            shutdown_event=shutdown_event,
         )
 
         if result.success:
@@ -123,6 +264,9 @@ def _run_provisioning_background(
         else:
             mark_job_failed(job_id, error=result.error or "Provisioning failed")
 
+    except ProvisioningShutdownError as e:
+        # Orchestrator has already compensated; just record terminal state.
+        mark_job_failed(job_id, error=f"Shutdown during {e.phase}")
     except Exception as e:
         mark_job_failed(job_id, error=str(e))
 
@@ -136,8 +280,23 @@ def _run_provisioning_background(
 )
 def start_provisioning(request: ProvisionRequest) -> ProvisionJobResponse:
     """Start a new provisioning job."""
-    job_id = str(uuid.uuid4())
+    # Check Temporal availability up front so we only apply thread-pool
+    # backpressure to the thread path (Temporal has its own queueing).
+    temporal_enabled = False
+    start_temporal_workflow = None
+    try:
+        from agent_provisioning_team.temporal.client import is_temporal_enabled
+        from agent_provisioning_team.temporal.start_workflow import start_provisioning_workflow
 
+        temporal_enabled = is_temporal_enabled()
+        start_temporal_workflow = start_provisioning_workflow
+    except ImportError:
+        pass
+
+    if not temporal_enabled:
+        _reject_if_saturated()
+
+    job_id = str(uuid.uuid4())
     create_job(
         job_id=job_id,
         agent_id=request.agent_id,
@@ -145,31 +304,25 @@ def start_provisioning(request: ProvisionRequest) -> ProvisionJobResponse:
         access_tier=request.access_tier.value,
     )
 
-    try:
-        from agent_provisioning_team.temporal.client import is_temporal_enabled
-        from agent_provisioning_team.temporal.start_workflow import start_provisioning_workflow
+    if temporal_enabled:
+        start_temporal_workflow(
+            job_id,
+            request.agent_id,
+            request.manifest_path,
+            request.access_tier.value,
+        )
+        return ProvisionJobResponse(
+            job_id=job_id,
+            status=JOB_STATUS_RUNNING,
+            message="Provisioning started (Temporal). Poll GET /provision/status/{job_id} for progress.",
+        )
 
-        if is_temporal_enabled():
-            start_provisioning_workflow(
-                job_id,
-                request.agent_id,
-                request.manifest_path,
-                request.access_tier.value,
-            )
-            return ProvisionJobResponse(
-                job_id=job_id,
-                status=JOB_STATUS_RUNNING,
-                message="Provisioning started (Temporal). Poll GET /provision/status/{job_id} for progress.",
-            )
-    except ImportError:
-        pass
-
-    thread = threading.Thread(
-        target=_run_provisioning_background,
-        args=(job_id, request.agent_id, request.manifest_path, request.access_tier),
-        daemon=True,
+    _submit_provisioning_job(
+        job_id,
+        request.agent_id,
+        request.manifest_path,
+        request.access_tier,
     )
-    thread.start()
 
     return ProvisionJobResponse(
         job_id=job_id,
@@ -311,15 +464,17 @@ def resume_provision_job(job_id: str) -> ProvisionJobResponse:
 
     skip = {Phase(p) for p in completed if p in {ph.value for ph in Phase}}
 
+    _reject_if_saturated()
     update_job(job_id, status=JOB_STATUS_RUNNING, error=None)
 
-    thread = threading.Thread(
-        target=_run_provisioning_background,
-        args=(job_id, agent_id, manifest_path, data.get("access_tier", "standard")),
-        kwargs={"skip_phases": skip, "prior_results": phase_results},
-        daemon=True,
+    _submit_provisioning_job(
+        job_id,
+        agent_id,
+        manifest_path,
+        data.get("access_tier", "standard"),
+        skip_phases=skip,
+        prior_results=phase_results,
     )
-    thread.start()
 
     return ProvisionJobResponse(job_id=job_id, status="running", message="Job resumed. Skipping completed phases.")
 
@@ -343,14 +498,15 @@ def restart_provision_job(job_id: str) -> ProvisionJobResponse:
     if not agent_id or not manifest_path:
         raise HTTPException(status_code=400, detail="Job is missing agent_id or manifest_path.")
 
+    _reject_if_saturated()
     store_reset_job(job_id)
 
-    thread = threading.Thread(
-        target=_run_provisioning_background,
-        args=(job_id, agent_id, manifest_path, data.get("access_tier", "standard")),
-        daemon=True,
+    _submit_provisioning_job(
+        job_id,
+        agent_id,
+        manifest_path,
+        data.get("access_tier", "standard"),
     )
-    thread.start()
 
     return ProvisionJobResponse(job_id=job_id, status="running", message="Job restarted from scratch.")
 
