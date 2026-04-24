@@ -514,3 +514,61 @@ def test_merge_from_failure_does_not_halt_run(
     assert state["errored_cycles"] == 1
     assert state["completed_batches"] == 1
     assert state["errored_details"][0].get("reason") == "tracker_merge_failed"
+
+
+def test_restart_accepts_completed_with_errors(
+    empty_lab_state: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """completed_with_errors is a terminal outcome of the same workflow as
+    completed; restart must accept it (reviewer P2)."""
+    from fastapi.testclient import TestClient
+
+    # Seed a run that is already in the new terminal state.
+    request = RunStrategyLabRequest(batch_size=1, batch_count=1)
+    run_id = "run-test-restart-cwe"
+    _seed_run_state(run_id, request)
+    lab_main._active_runs[run_id]["status"] = "completed_with_errors"
+
+    # Stub the worker thread so restart doesn't actually run the pipeline.
+    started: List[str] = []
+
+    class _FakeThread:
+        def __init__(self, *_a: Any, **kw: Any) -> None:
+            started.append(kw.get("name", ""))
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(lab_main.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(lab_main, "_persist_run_state", lambda *a, **kw: None)
+
+    client = TestClient(lab_main.app)
+    resp = client.post(f"/strategy-lab/runs/{run_id}/restart")
+    # Before the fix this returned 400 ("job not restartable").
+    assert resp.status_code == 200, resp.text
+    assert started, "restart should have dispatched the worker thread"
+
+
+def test_sse_stream_short_circuits_completed_with_errors(
+    empty_lab_state: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SSE endpoint must treat completed_with_errors as terminal so reconnecting
+    clients get snapshot + done instead of hanging in 'running' (reviewer P1)."""
+    from fastapi.testclient import TestClient
+
+    request = RunStrategyLabRequest(batch_size=1, batch_count=1)
+    run_id = "run-test-sse-cwe"
+    _seed_run_state(run_id, request)
+    lab_main._active_runs[run_id]["status"] = "completed_with_errors"
+    lab_main._active_runs[run_id]["errored_cycles"] = 1
+
+    monkeypatch.setattr(lab_main, "_persist_run_state", lambda *a, **kw: None)
+
+    client = TestClient(lab_main.app)
+    with client.stream("GET", f"/strategy-lab/runs/{run_id}/stream") as resp:
+        assert resp.status_code == 200
+        body = b"".join(resp.iter_bytes())
+    text = body.decode()
+    # Must contain both the snapshot and the terminal done event.
+    assert '"type": "snapshot"' in text
+    assert '"type": "done"' in text

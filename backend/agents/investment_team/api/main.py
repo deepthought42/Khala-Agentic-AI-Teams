@@ -216,6 +216,15 @@ def _now() -> str:
 # Strategy Lab run tracking models
 # ---------------------------------------------------------------------------
 
+# All terminal statuses a strategy lab run can land in. Kept local to this
+# module because "completed_with_errors" is a lab-specific concept and the
+# shared job_service_client constants don't know about it. Used by the SSE
+# stream short-circuit, status reconciliation, and restart gating so a
+# freshly-introduced terminal state can't silently diverge.
+STRATEGY_LAB_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
+)
+
 
 class StrategyLabRunStartResponse(BaseModel):
     """Returned immediately when a strategy lab batch is started."""
@@ -2135,8 +2144,12 @@ def restart_strategy_lab_run(run_id: str) -> StrategyLabRunStartResponse:
         state = _active_runs.get(run_id)
     if not state:
         state = _load_run_from_job_service(run_id)
+    # "completed_with_errors" is a terminal outcome of the same workflow as
+    # "completed" and must be restartable. Extend the shared set locally
+    # rather than leaking a lab-specific status into job_service_client.
+    _lab_restartable = RESTARTABLE_STATUSES | {"completed_with_errors"}
     try:
-        validate_job_for_action(state, run_id, RESTARTABLE_STATUSES, "restarted")
+        validate_job_for_action(state, run_id, _lab_restartable, "restarted")
     except ValueError as exc:
         code = 404 if "not found" in str(exc) else 400
         raise HTTPException(status_code=code, detail=str(exc)) from exc
@@ -2224,7 +2237,7 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
     updated to match — this handles external cancellation via the generic
     job proxy or the Jobs Dashboard.
     """
-    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+    _TERMINAL = STRATEGY_LAB_TERMINAL_STATUSES
 
     try:
         client = _get_lab_run_job_client()
@@ -2279,7 +2292,7 @@ def list_strategy_lab_runs() -> ActiveRunsResponse:
 )
 def get_strategy_lab_run_status(run_id: str) -> StrategyLabRunStatusResponse:
     """Snapshot of a single run's progress. Use for polling when SSE is unavailable."""
-    _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+    _TERMINAL = STRATEGY_LAB_TERMINAL_STATUSES
 
     with _lock:
         state = _active_runs.get(run_id)
@@ -2337,7 +2350,7 @@ async def stream_strategy_lab_run(run_id: str) -> StreamingResponse:
         return f"data: {json_module.dumps(data, default=str)}\n\n"
 
     # If the run is already terminal, send snapshot + done immediately.
-    if state.get("status") in ("completed", "failed"):
+    if state.get("status") in STRATEGY_LAB_TERMINAL_STATUSES:
 
         async def _terminal_gen():
             yield _sse_line(
