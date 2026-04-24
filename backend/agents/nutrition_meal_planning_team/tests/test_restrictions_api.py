@@ -155,3 +155,55 @@ def test_flag_off_leaves_resolution_empty(client, monkeypatch):
     assert data["ambiguous"] == []
     assert data["unresolved"] == []
     assert data["kb_version"] == ""
+
+
+def test_resolve_ambiguous_rejects_unoffered_candidate(client, flag_on):
+    """Ambiguity reviewer is the resolver, not the client. A chosen
+    candidate that doesn't match any of the offered ones for that raw
+    must be rejected so a malicious / buggy client can't persist a
+    weaker tag set under the guise of an answer.
+    """
+    client.put(
+        "/profile/sp_v1",
+        json={"allergies_and_intolerances": ["nuts"], "dietary_needs": []},
+    )
+    # nuts is offered with peanut / tree_nut / both. Submitting
+    # ``[dairy]`` is not among the offered candidates.
+    r = client.post(
+        "/profile/sp_v1/restrictions/resolve-ambiguous",
+        json={
+            "raw": "nuts",
+            "chosen_candidate": {
+                "raw": "nuts",
+                "allergen_tags": ["dairy"],
+                "confidence": 1.0,
+                "source": "user",
+                "rule": "category",
+            },
+        },
+    )
+    assert r.status_code == 400
+    # Profile state is unchanged.
+    after = client.get("/profile/sp_v1/restrictions").json()
+    assert len(after["ambiguous"]) == 1
+    assert all(e["raw"] != "nuts" for e in after["resolved"])
+
+
+def test_reresolve_is_noop_when_flag_off(client, monkeypatch):
+    """``POST .../reresolve`` must not quietly turn the resolver on
+    for a single profile when the rollout flag is off."""
+    monkeypatch.delenv("NUTRITION_RESTRICTION_RESOLVER", raising=False)
+    client.put(
+        "/profile/sp_v2",
+        json={
+            "allergies_and_intolerances": ["vegan", "cashew"],
+            "dietary_needs": [],
+        },
+    )
+    r = client.post("/profile/sp_v2/restrictions/reresolve")
+    assert r.status_code == 200
+    data = r.json()
+    # No resolution should have been written.
+    assert data["resolved"] == []
+    assert data["ambiguous"] == []
+    assert data["kb_version"] == ""
