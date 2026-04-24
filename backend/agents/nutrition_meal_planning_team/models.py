@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # SPEC-006: import only the taxonomy enums. ``ingredient_kb.taxonomy`` is a
 # pure stdlib module, so this is cycle-safe. Never import from
@@ -652,3 +653,59 @@ class ChatResponse(BaseModel):
     nutrition_plan: Optional[NutritionPlan] = None
     meal_suggestions: List[MealRecommendationWithId] = Field(default_factory=list)
     feedback_recorded: bool = False
+
+
+# SPEC-015 §4.4 — pantry API (W5) ------------------------------------------
+
+
+class PantryItemCreate(BaseModel):
+    """POST /pantry/{client_id}/items body.
+
+    Exactly one of ``canonical_id`` or ``raw_name`` must be supplied.
+    ``quantity_grams`` is derived server-side from ``display_qty`` +
+    ``display_unit`` via ``ingredient_kb.units.convert_to_grams``.
+    """
+
+    canonical_id: Optional[str] = None
+    raw_name: Optional[str] = None
+    display_qty: float
+    display_unit: str
+    expires_on: Optional[date] = None
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_identity(self) -> "PantryItemCreate":
+        has_cid = bool(self.canonical_id and self.canonical_id.strip())
+        has_raw = bool(self.raw_name and self.raw_name.strip())
+        if has_cid == has_raw:
+            raise ValueError("exactly one of canonical_id or raw_name is required")
+        return self
+
+
+class PantryItemPatch(BaseModel):
+    """PUT /pantry/{client_id}/items/{canonical_id} body.
+
+    Omitted fields are left untouched. Explicit ``null`` clears a
+    nullable column. ``quantity_grams`` is NOT NULL in the schema, so
+    ``null`` there is ignored by the store.
+    """
+
+    quantity_grams: Optional[float] = None
+    display_qty: Optional[float] = None
+    display_unit: Optional[str] = None
+    expires_on: Optional[date] = None
+    notes: Optional[str] = None
+
+
+class PantryItemOut(BaseModel):
+    """Wire response shape for a pantry item."""
+
+    client_id: str
+    canonical_id: str
+    quantity_grams: float
+    display_qty: Optional[float] = None
+    display_unit: Optional[str] = None
+    expires_on: Optional[date] = None
+    notes: str = ""
+    added_at: str = ""
+    updated_at: str = ""
