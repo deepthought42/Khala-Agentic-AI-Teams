@@ -119,6 +119,41 @@ class TestGetAndUpdate:
         with pytest.raises(InvalidQuantity):
             store.update_item(client_id, "flour", quantity_grams=0)
 
+    def test_update_clears_nullable_fields_on_explicit_none(self, store, client_id):
+        store.add_or_increment_item(
+            client_id,
+            "meat",
+            100.0,
+            display_qty=0.5,
+            display_unit="kg",
+            expires_on=_today() + timedelta(days=2),
+            notes="thawing",
+        )
+        updated = store.update_item(
+            client_id,
+            "meat",
+            display_qty=None,
+            display_unit=None,
+            expires_on=None,
+            notes=None,
+        )
+        assert updated.display_qty is None
+        assert updated.display_unit is None
+        assert updated.expires_on is None
+        assert updated.notes == ""  # _row_to_item coerces NULL notes to ""
+
+    def test_update_without_passing_nullable_fields_keeps_them(self, store, client_id):
+        expiry = _today() + timedelta(days=5)
+        store.add_or_increment_item(
+            client_id, "yogurt", 200.0, display_unit="g", expires_on=expiry, notes="back of fridge"
+        )
+        # No nullable kwargs passed — all four should stay intact.
+        updated = store.update_item(client_id, "yogurt", quantity_grams=250.0)
+        assert updated.quantity_grams == 250.0
+        assert updated.display_unit == "g"
+        assert updated.expires_on == expiry
+        assert updated.notes == "back of fridge"
+
 
 class TestDelete:
     def test_delete_returns_true_when_present(self, store, client_id):

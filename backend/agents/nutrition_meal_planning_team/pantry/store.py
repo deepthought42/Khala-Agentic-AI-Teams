@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 _STORE = "nutrition_meal_planning"
 
+# Sentinel used by ``update_item`` to distinguish "field omitted" (keep
+# existing value) from "set to NULL" (explicit clear). Callers that want
+# to clear a nullable column pass ``None``; default-argument behaviour
+# (the sentinel) leaves the column untouched.
+_UNSET: Any = object()
+
 SortMode = Literal["expiring", "name", "added_desc"]
 
 _SORT_CLAUSES: dict[SortMode, str] = {
@@ -108,36 +114,44 @@ def update_item(
     canonical_id: str,
     *,
     quantity_grams: Optional[float] = None,
-    display_qty: Optional[float] = None,
-    display_unit: Optional[str] = None,
-    expires_on: Optional[date] = None,
-    notes: Optional[str] = None,
+    display_qty: Any = _UNSET,
+    display_unit: Any = _UNSET,
+    expires_on: Any = _UNSET,
+    notes: Any = _UNSET,
 ) -> PantryItem:
     """Update selected columns on an existing pantry row.
 
     Raises :class:`PantryItemNotFound` if the row does not exist.
     Unlike :func:`add_or_increment_item`, this replaces ``quantity_grams``
     outright (setting, not incrementing).
+
+    For the four nullable columns (``display_qty``, ``display_unit``,
+    ``expires_on``, ``notes``) this function uses a sentinel-based API:
+    omitting the argument leaves the column untouched, while passing
+    ``None`` explicitly clears it to SQL ``NULL``. ``quantity_grams`` is
+    ``NOT NULL`` in the schema, so ``None`` there means "don't update".
     """
     if quantity_grams is not None and quantity_grams <= 0:
         raise InvalidQuantity(f"quantity_grams must be positive, got {quantity_grams!r}")
 
     # Build the SET clause dynamically so unspecified fields are not touched.
+    # For nullable columns, only the sentinel ``_UNSET`` means "skip"; an
+    # explicit ``None`` is a request to clear the column.
     fields: list[str] = []
     params: list[Any] = []
     if quantity_grams is not None:
         fields.append("quantity_grams = %s")
         params.append(quantity_grams)
-    if display_qty is not None:
+    if display_qty is not _UNSET:
         fields.append("display_qty = %s")
         params.append(display_qty)
-    if display_unit is not None:
+    if display_unit is not _UNSET:
         fields.append("display_unit = %s")
         params.append(display_unit)
-    if expires_on is not None:
+    if expires_on is not _UNSET:
         fields.append("expires_on = %s")
         params.append(expires_on)
-    if notes is not None:
+    if notes is not _UNSET:
         fields.append("notes = %s")
         params.append(notes)
     if not fields:
