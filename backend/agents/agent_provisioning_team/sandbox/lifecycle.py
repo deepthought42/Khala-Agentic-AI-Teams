@@ -30,6 +30,7 @@ import httpx
 from . import provisioner as provisioner_mod
 from . import state as state_mod
 from .state import (
+    COLD_START_LOG_PREFIX,
     SandboxHandle,
     SandboxState,
     SandboxStatus,
@@ -90,7 +91,6 @@ class Lifecycle:
                 if await provisioner_mod.is_running(existing.container_id):
                     existing.last_used_at = now()
                     self._persist()
-                    # Warm-path: boot_ms is None — caller can distinguish cold from warm.
                     return SandboxHandle.from_state(existing)
                 logger.info(
                     "Sandbox for %s marked WARM but container %s is gone; re-provisioning",
@@ -125,7 +125,8 @@ class Lifecycle:
                 self._persist()
                 boot_ms = int((time.perf_counter() - cold_start) * 1000)
                 logger.info(
-                    "sandbox.cold_start agent_id=%s team=%s image=%s boot_ms=%d",
+                    "%s agent_id=%s team=%s image=%s boot_ms=%d",
+                    COLD_START_LOG_PREFIX,
                     agent_id,
                     team,
                     sandbox_image(),

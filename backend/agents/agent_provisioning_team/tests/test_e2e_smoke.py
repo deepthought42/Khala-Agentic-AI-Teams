@@ -35,6 +35,8 @@ from typing import Any
 import httpx
 import pytest
 
+from agent_provisioning_team.sandbox.state import resolve_cache_path
+
 E2E_ENABLED = os.environ.get("KHALA_E2E") == "1"
 
 pytestmark = pytest.mark.skipif(
@@ -51,8 +53,7 @@ def _perf_log_path() -> Path:
     override = os.environ.get("KHALA_E2E_PERF_LOG")
     if override:
         return Path(override)
-    cache = os.environ.get("AGENT_CACHE", "/tmp/agents")
-    return Path(cache) / "agent_provisioning" / "phase6_perf.jsonl"
+    return resolve_cache_path("agent_provisioning", "phase6_perf.jsonl")
 
 
 def _write_perf_sample(sample: dict[str, Any]) -> None:
@@ -158,7 +159,6 @@ async def _invoke(client: httpx.AsyncClient, agent_id: str, body: dict[str, Any]
 async def test_smoke_invoke(agent_id: str, team: str, payload: dict[str, Any]) -> None:
     """Cold + warm invoke per agent: response 200, runs row written, container exists."""
     async with httpx.AsyncClient(timeout=httpx.Timeout(INVOKE_TIMEOUT_S)) as client:
-        # Cold path — provisions the sandbox.
         cold_start = time.perf_counter()
         cold = await _invoke(client, agent_id, payload)
         cold_total_ms = int((time.perf_counter() - cold_start) * 1000)
@@ -175,7 +175,6 @@ async def test_smoke_invoke(agent_id: str, team: str, payload: dict[str, Any]) -
         running = _docker_ps_for(agent_id)
         assert len(running) == 1, f"expected exactly one sandbox for {agent_id}, got {len(running)}"
 
-        # Warm path — same agent, no provisioning cost.
         warm_start = time.perf_counter()
         warm = await _invoke(client, agent_id, payload)
         warm_total_ms = int((time.perf_counter() - warm_start) * 1000)
@@ -184,32 +183,22 @@ async def test_smoke_invoke(agent_id: str, team: str, payload: dict[str, Any]) -
             "warm invoke must reuse the same sandbox"
         )
 
-    _write_perf_sample(
-        {
-            "agent_id": agent_id,
-            "team": team,
-            "phase": "cold",
-            "total_ms": cold_total_ms,
-            "sandbox_url": sandbox_url,
-        }
-    )
-    _write_perf_sample(
-        {
-            "agent_id": agent_id,
-            "team": team,
-            "phase": "warm",
-            "total_ms": warm_total_ms,
-            "sandbox_url": sandbox_url,
-        }
-    )
-
-    # Verify a row landed in agent_console_runs (best-effort persistence on the
-    # proxy means we just need at least one OK row recorded for this agent).
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
         runs = await client.get(f"{API_BASE}/api/agents/{agent_id}/runs", params={"limit": 5})
     assert runs.status_code == 200, f"runs lookup failed: {runs.status_code} {runs.text[:200]}"
-    rows = runs.json()
-    assert any(row.get("status") == "ok" for row in rows), f"no ok runs persisted for {agent_id}"
+    assert any(row.get("status") == "ok" for row in runs.json()), (
+        f"no ok runs persisted for {agent_id}"
+    )
+
+    for phase, total_ms in (("cold", cold_total_ms), ("warm", warm_total_ms)):
+        _write_perf_sample(
+            {
+                "agent_id": agent_id,
+                "team": team,
+                "phase": phase,
+                "total_ms": total_ms,
+                "sandbox_url": sandbox_url,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------

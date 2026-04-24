@@ -41,6 +41,7 @@ from agent_provisioning_team.sandbox import (
     acquire,
     note_activity,
 )
+from agent_provisioning_team.sandbox.state import COLD_START_LOG_PREFIX
 from agent_registry import AgentDetail, AgentSummary, TeamGroup, get_registry
 from agent_registry.schema_resolver import SchemaResolutionError, resolve_schema
 from shared_agent_invoke.limits import (
@@ -314,10 +315,10 @@ def _persist_run(
         trace_id = str(inner.get("trace_id") or "")
         logs_tail_raw = inner.get("logs_tail") or []
         logs_tail = [str(line) for line in logs_tail_raw if line is not None]
-        # Phase 6: prepend a sandbox.cold_start marker so operators can read
-        # cold-vs-warm timings off the runs table without a schema migration.
+        # Surface cold-start latency in logs_tail so the runs table stays
+        # schema-stable; a dedicated column can come later (#302).
         if boot_ms is not None:
-            logs_tail = [f"sandbox.cold_start boot_ms={boot_ms}", *logs_tail]
+            logs_tail = [f"{COLD_START_LOG_PREFIX} boot_ms={boot_ms}", *logs_tail]
         error_text = inner.get("error") if status == "error" else None
         if status == "error" and not error_text and upstream_status >= 400:
             error_text = f"HTTP {upstream_status}"

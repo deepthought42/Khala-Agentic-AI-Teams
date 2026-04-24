@@ -24,8 +24,11 @@ from pathlib import Path
 
 
 def _default_log_path() -> Path:
-    cache = os.environ.get("AGENT_CACHE", "/tmp/agents")
-    return Path(cache) / "agent_provisioning" / "phase6_perf.jsonl"
+    # Mirrors agent_provisioning_team.sandbox.state.resolve_cache_path; kept
+    # inline so this script can run without bootstrapping the agents/ tree.
+    return Path(
+        os.environ.get("AGENT_CACHE", "/tmp/agents"), "agent_provisioning", "phase6_perf.jsonl"
+    )
 
 
 def _load(path: Path) -> list[dict]:

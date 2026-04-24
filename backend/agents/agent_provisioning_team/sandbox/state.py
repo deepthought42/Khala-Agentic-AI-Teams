@@ -22,6 +22,11 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
+# Shared with the invoke proxy so a single change updates both producer and
+# consumer of the cold-start log marker.
+COLD_START_LOG_PREFIX = "sandbox.cold_start"
+
+
 class SandboxStatus(str, Enum):
     """Lifecycle states for a per-agent sandbox."""
 
@@ -110,6 +115,15 @@ def new_state(agent_id: str, team: str, container_name: str) -> SandboxState:
     )
 
 
+def resolve_cache_path(*parts: str) -> Path:
+    """Resolve ``${AGENT_CACHE:-/tmp/agents}/<parts>`` for any sandbox/test artifact.
+
+    Centralised so the half-dozen ad-hoc ``Path(os.environ.get("AGENT_CACHE", ...))``
+    spellings stay in sync.
+    """
+    return Path(os.environ.get("AGENT_CACHE", "/tmp/agents")).joinpath(*parts)
+
+
 def state_file_path() -> Path:
     """Where to persist sandbox state across restarts.
 
@@ -119,8 +133,7 @@ def state_file_path() -> Path:
     override = os.environ.get("AGENT_PROVISIONING_SANDBOX_STATE_FILE")
     if override:
         return Path(override)
-    cache = os.environ.get("AGENT_CACHE", "/tmp/agents")
-    return Path(cache) / "agent_provisioning" / "sandboxes" / "state.json"
+    return resolve_cache_path("agent_provisioning", "sandboxes", "state.json")
 
 
 def idle_teardown_seconds() -> int:
