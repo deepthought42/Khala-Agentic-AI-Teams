@@ -7,8 +7,9 @@ using ``INSERT ... ON CONFLICT`` so the semantics are race-free.
 
 from __future__ import annotations
 
+import functools
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Literal, Optional
 
 from shared_postgres import dict_row, get_conn
@@ -26,6 +27,14 @@ _STORE = "nutrition_meal_planning"
 # to clear a nullable column pass ``None``; default-argument behaviour
 # (the sentinel) leaves the column untouched.
 _UNSET: Any = object()
+
+# The full column list returned to callers, shared by every SELECT and
+# RETURNING in this module so column additions are one-line changes.
+_ITEM_COLUMNS = (
+    "client_id, canonical_id, quantity_grams, display_qty, display_unit, "
+    "expires_on, notes, added_at, updated_at"
+)
+_SELECT_ITEM = f"SELECT {_ITEM_COLUMNS} FROM nutrition_pantry"
 
 SortMode = Literal["expiring", "name", "added_desc"]
 
@@ -98,8 +107,7 @@ def add_or_increment_item(
         "  expires_on     = COALESCE(EXCLUDED.expires_on,   nutrition_pantry.expires_on), "
         "  notes          = COALESCE(EXCLUDED.notes,        nutrition_pantry.notes), "
         "  updated_at     = now() "
-        "RETURNING client_id, canonical_id, quantity_grams, display_qty, display_unit, "
-        "          expires_on, notes, added_at, updated_at"
+        f"RETURNING {_ITEM_COLUMNS}"
     )
     params = (client_id, canonical_id, quantity_grams, display_qty, display_unit, expires_on, notes)
     with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -167,8 +175,7 @@ def update_item(
     sql = (
         f"UPDATE nutrition_pantry SET {', '.join(fields)} "
         "WHERE client_id = %s AND canonical_id = %s "
-        "RETURNING client_id, canonical_id, quantity_grams, display_qty, display_unit, "
-        "          expires_on, notes, added_at, updated_at"
+        f"RETURNING {_ITEM_COLUMNS}"
     )
     with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, tuple(params))
@@ -193,9 +200,7 @@ def delete_item(client_id: str, canonical_id: str) -> bool:
 def get_item(client_id: str, canonical_id: str) -> Optional[PantryItem]:
     with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT client_id, canonical_id, quantity_grams, display_qty, display_unit, "
-            "       expires_on, notes, added_at, updated_at "
-            "FROM nutrition_pantry WHERE client_id = %s AND canonical_id = %s",
+            f"{_SELECT_ITEM} WHERE client_id = %s AND canonical_id = %s",
             (client_id, canonical_id),
         )
         row = cur.fetchone()
@@ -205,12 +210,7 @@ def get_item(client_id: str, canonical_id: str) -> Optional[PantryItem]:
 @timed_query(store=_STORE, op="pantry.list_items")
 def list_items(client_id: str, *, sort: SortMode = "expiring") -> List[PantryItem]:
     order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["expiring"])
-    sql = (
-        "SELECT client_id, canonical_id, quantity_grams, display_qty, display_unit, "
-        "       expires_on, notes, added_at, updated_at "
-        "FROM nutrition_pantry WHERE client_id = %s "
-        f"ORDER BY {order_by}"
-    )
+    sql = f"{_SELECT_ITEM} WHERE client_id = %s ORDER BY {order_by}"
     with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, (client_id,))
         return [_row_to_item(r) for r in cur.fetchall()]
@@ -225,16 +225,12 @@ def list_expiring(client_id: str, days: int = 3) -> List[PantryItem]:
     """
     if days < 0:
         raise ValueError("days must be non-negative")
-    today = datetime.now(tz=timezone.utc).date()
+    cutoff = datetime.now(tz=timezone.utc).date() + timedelta(days=days)
     sql = (
-        "SELECT client_id, canonical_id, quantity_grams, display_qty, display_unit, "
-        "       expires_on, notes, added_at, updated_at "
-        "FROM nutrition_pantry "
-        "WHERE client_id = %s AND expires_on IS NOT NULL "
+        f"{_SELECT_ITEM} WHERE client_id = %s AND expires_on IS NOT NULL "
         "  AND expires_on <= %s "
         "ORDER BY expires_on ASC, canonical_id ASC"
     )
-    cutoff = today.fromordinal(today.toordinal() + days)
     with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, (client_id, cutoff))
         return [_row_to_item(r) for r in cur.fetchall()]
@@ -267,12 +263,7 @@ class PantryStore:
         return list_expiring(client_id, days)
 
 
-_default_store: Optional[PantryStore] = None
-
-
+@functools.cache
 def get_pantry_store() -> PantryStore:
     """Return the process-wide pantry store, instantiating on first call."""
-    global _default_store
-    if _default_store is None:
-        _default_store = PantryStore()
-    return _default_store
+    return PantryStore()
