@@ -56,6 +56,24 @@
           </div>
           <span class="run-date">Started {{ run.created_at }}</span>
           <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <div class="run-actions">
+            <button
+              mat-icon-button
+              matTooltip="Stop"
+              [disabled]="!canStop(run) || isActionPending(run, 'stop')"
+              (click)="stopRun(run, $event)"
+            >
+              <mat-icon>stop</mat-icon>
+            </button>
+            <button
+              mat-icon-button
+              matTooltip="Delete"
+              [disabled]="isActionPending(run, 'delete')"
+              (click)="deleteRun(run, $event)"
+            >
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
         </div>
       }
     </div>
@@ -79,10 +97,42 @@
           @if (run.error) {
             <span class="run-error">{{ run.error }}</span>
           }
+          <div class="run-actions">
+            @if (canResume(run)) {
+              <button
+                mat-icon-button
+                matTooltip="Resume"
+                [disabled]="isActionPending(run, 'resume')"
+                (click)="resumeRun(run, $event)"
+              >
+                <mat-icon>play_arrow</mat-icon>
+              </button>
+            }
+            <button
+              mat-icon-button
+              matTooltip="Restart"
+              [disabled]="!canRestart(run) || isActionPending(run, 'restart')"
+              (click)="restartRun(run, $event)"
+            >
+              <mat-icon>restart_alt</mat-icon>
+            </button>
+            <button
+              mat-icon-button
+              matTooltip="Delete"
+              [disabled]="isActionPending(run, 'delete')"
+              (click)="deleteRun(run, $event)"
+            >
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
         </div>
       }
     </div>
   </section>
+}
+
+@if (actionError) {
+  <p class="error-text">{{ actionError }}</p>
 }
 
 <!-- ════════════════════════════════════════════════════════════════════════ -->

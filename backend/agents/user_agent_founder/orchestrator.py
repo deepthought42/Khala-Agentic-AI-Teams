@@ -385,11 +385,10 @@ def run_workflow(run_id: str, store: FounderRunStore, agent: FounderAgent) -> No
     """
     logger.info("Starting founder workflow: run_id=%s", run_id)
 
-    # Register with centralized job service so the Jobs Dashboard can track us.
-    try:
-        _job_client.create_job(run_id, status="running", label="Persona: founder workflow", current_phase="starting")
-    except Exception:
-        logger.debug("Job service create failed for %s (non-fatal)", run_id, exc_info=True)
+    # The API layer (POST /start, /job/{id}/resume, /job/{id}/restart) registers
+    # the job with the centralized job service before dispatching, so the
+    # orchestrator only needs to update status here.
+    _sync_job_status(run_id, "running", phase="starting")
 
     try:
         # Phase 1: Generate the product spec

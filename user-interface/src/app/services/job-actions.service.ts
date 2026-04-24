@@ -70,6 +70,7 @@ export class JobActionsService {
       case 'agent_provisioning': return this.prov.resumeJob(jobId);
       case 'social_marketing': return this.social.resumeJob(jobId);
       case 'investment': return this.investment.resumeRun(jobId);
+      case 'user_agent_founder': return this.persona.resumeJob(jobId);
       default: return this.generic.resume(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }
@@ -82,6 +83,7 @@ export class JobActionsService {
       case 'agent_provisioning': return this.prov.restartJob(jobId);
       case 'social_marketing': return this.social.restartJob(jobId);
       case 'investment': return this.investment.restartRun(jobId);
+      case 'user_agent_founder': return this.persona.restartJob(jobId);
       default: return this.generic.restart(SOURCE_TO_TEAM[source] ?? source, jobId);
     }
   }

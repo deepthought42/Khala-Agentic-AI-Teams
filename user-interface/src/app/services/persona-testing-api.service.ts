@@ -55,6 +55,14 @@ export class PersonaTestingApiService {
     return this.http.post(`${this.baseUrl}/job/${encodeURIComponent(jobId)}/cancel`, {});
   }
 
+  resumeJob(jobId: string): Observable<unknown> {
+    return this.http.post(`${this.baseUrl}/job/${encodeURIComponent(jobId)}/resume`, {});
+  }
+
+  restartJob(jobId: string): Observable<unknown> {
+    return this.http.post(`${this.baseUrl}/job/${encodeURIComponent(jobId)}/restart`, {});
+  }
+
   deleteJob(jobId: string): Observable<unknown> {
     return this.http.delete(`${this.baseUrl}/job/${encodeURIComponent(jobId)}`);
   }

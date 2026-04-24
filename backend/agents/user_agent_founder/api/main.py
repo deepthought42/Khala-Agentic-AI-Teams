@@ -107,6 +107,38 @@ class RunListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _dispatch_founder_run(run_id: str) -> str:
+    """Dispatch a founder run via Temporal when enabled, else a daemon thread.
+
+    Returns a short label describing which execution mode was used so the
+    caller can include it in the response message. Raises ``RuntimeError``
+    if Temporal is enabled but the workflow fails to start.
+    """
+    try:
+        from shared_temporal import is_temporal_enabled
+
+        if is_temporal_enabled():
+            from user_agent_founder.temporal.start_workflow import start_founder_workflow
+
+            start_founder_workflow(run_id)
+            logger.info("Founder workflow started via Temporal: run_id=%s", run_id)
+            return "Temporal"
+    except ImportError:
+        pass
+
+    store = get_founder_store()
+    agent = FounderAgent()
+    thread = threading.Thread(
+        target=run_workflow,
+        args=(run_id, store, agent),
+        name=f"founder-workflow-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("Founder workflow thread started: run_id=%s", run_id)
+    return "thread"
+
+
 @app.post("/start", response_model=StartRunResponse)
 def start_founder_workflow() -> StartRunResponse:
     """Kick off the autonomous founder workflow.
@@ -116,21 +148,35 @@ def start_founder_workflow() -> StartRunResponse:
     2. Submit it to the SE team for product analysis
     3. Answer all SE team questions autonomously
     4. Trigger the full SE team build pipeline
+
+    The run is registered with the centralized job service **before**
+    dispatch so it appears in the Jobs Dashboard immediately.
     """
+    from user_agent_founder.shared import job_store
+
     store = get_founder_store()
-    agent = FounderAgent()
     run_id = store.create_run()
 
-    thread = threading.Thread(
-        target=run_workflow,
-        args=(run_id, store, agent),
-        name=f"founder-workflow-{run_id[:8]}",
-        daemon=True,
+    job_store.create_job(
+        run_id,
+        status="running",
+        label="Testing Personas workflow",
+        current_phase="starting",
     )
-    thread.start()
-    logger.info("Founder workflow thread started: run_id=%s", run_id)
 
-    return StartRunResponse(job_id=run_id)
+    try:
+        mode = _dispatch_founder_run(run_id)
+    except Exception as exc:
+        logger.exception("Failed to dispatch founder workflow for %s", run_id)
+        job_store.update_job(run_id, status="failed", error=f"Dispatch failed: {exc}"[:500])
+        store.update_run(run_id, status="failed", error=f"Dispatch failed: {exc}"[:1000])
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {exc}") from exc
+
+    return StartRunResponse(
+        job_id=run_id,
+        status="running",
+        message=f"Founder workflow started ({mode}). Poll GET /status/{run_id} for progress.",
+    )
 
 
 @app.get("/status/{run_id}", response_model=RunStatusResponse)
@@ -400,14 +446,16 @@ class FounderJobListResponse(BaseModel):
     jobs: list[FounderJobSummary]
 
 
+_CANCELLABLE_STATUSES = frozenset({"pending", "running"})
+
+
 @app.get("/jobs", response_model=FounderJobListResponse)
 def list_jobs(running_only: bool = False) -> FounderJobListResponse:
     """List founder workflow jobs from the centralized job service."""
-    from job_service_client import JobServiceClient
+    from user_agent_founder.shared import job_store
 
-    client = JobServiceClient(team="user_agent_founder")
     statuses = ["running", "pending"] if running_only else None
-    raw = client.list_jobs(statuses=statuses)
+    raw = job_store.list_jobs(statuses=statuses)
     jobs = []
     for j in raw:
         data = j.get("data", j)
@@ -415,7 +463,7 @@ def list_jobs(running_only: bool = False) -> FounderJobListResponse:
             FounderJobSummary(
                 job_id=j.get("job_id", ""),
                 status=j.get("status", data.get("status", "unknown")),
-                label=data.get("label", "Persona: founder workflow"),
+                label=data.get("label", "Testing Personas workflow"),
                 current_phase=data.get("current_phase"),
                 created_at=j.get("created_at", data.get("created_at")),
                 error=data.get("error"),
@@ -427,23 +475,108 @@ def list_jobs(running_only: bool = False) -> FounderJobListResponse:
 @app.post("/job/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict[str, str]:
     """Cancel a running founder workflow job."""
-    from job_service_client import JobServiceClient
+    from user_agent_founder.shared import job_store
 
-    client = JobServiceClient(team="user_agent_founder")
-    client.update_job(job_id, status="cancelled", error="Cancelled by user")
-    # Also update the Postgres store
+    try:
+        job_store.validate_job_for_action(
+            job_store.get_job(job_id), job_id, _CANCELLABLE_STATUSES, "cancelled"
+        )
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    job_store.update_job(job_id, status="cancelled", error="Cancelled by user")
     store = get_founder_store()
     store.update_run(job_id, status="failed", error="Cancelled by user")
     return {"status": "cancelled", "job_id": job_id}
 
 
+@app.post("/job/{job_id}/resume", response_model=StartRunResponse)
+def resume_job(job_id: str) -> StartRunResponse:
+    """Resume a failed or interrupted founder workflow.
+
+    The founder workflow has no user inputs, so "resume" re-runs the
+    three phases from the beginning — the store retains any previous
+    decisions and chat history for audit.
+    """
+    from user_agent_founder.shared import job_store
+
+    try:
+        job_store.validate_job_for_action(
+            job_store.get_job(job_id), job_id, job_store.RESUMABLE_STATUSES, "resumed"
+        )
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    job_store.update_job(job_id, status="running", error=None, current_phase="resuming")
+    store = get_founder_store()
+    store.update_run(job_id, status="pending", error=None)
+
+    try:
+        mode = _dispatch_founder_run(job_id)
+    except Exception as exc:
+        logger.exception("Failed to resume founder workflow for %s", job_id)
+        job_store.update_job(job_id, status="failed", error=f"Resume dispatch failed: {exc}"[:500])
+        raise HTTPException(status_code=500, detail=f"Failed to resume workflow: {exc}") from exc
+
+    return StartRunResponse(
+        job_id=job_id,
+        status="running",
+        message=f"Founder workflow resumed ({mode}).",
+    )
+
+
+@app.post("/job/{job_id}/restart", response_model=StartRunResponse)
+def restart_job(job_id: str) -> StartRunResponse:
+    """Restart a completed/failed/cancelled founder workflow from scratch.
+
+    Clears any prior error/phase on both the central job record and the
+    founder store row, then re-dispatches the pipeline.
+    """
+    from user_agent_founder.shared import job_store
+
+    try:
+        job_store.validate_job_for_action(
+            job_store.get_job(job_id), job_id, job_store.RESTARTABLE_STATUSES, "restarted"
+        )
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+    job_store.reset_job(job_id)
+    job_store.update_job(job_id, status="running", current_phase="starting")
+    store = get_founder_store()
+    store.update_run(job_id, status="pending", error=None)
+
+    try:
+        mode = _dispatch_founder_run(job_id)
+    except Exception as exc:
+        logger.exception("Failed to restart founder workflow for %s", job_id)
+        job_store.update_job(job_id, status="failed", error=f"Restart dispatch failed: {exc}"[:500])
+        raise HTTPException(status_code=500, detail=f"Failed to restart workflow: {exc}") from exc
+
+    return StartRunResponse(
+        job_id=job_id,
+        status="running",
+        message=f"Founder workflow restarted ({mode}).",
+    )
+
+
 @app.delete("/job/{job_id}")
 def delete_job(job_id: str) -> dict[str, str]:
-    """Delete a founder workflow job from the job service."""
-    from job_service_client import JobServiceClient
+    """Delete a founder workflow job from both the job service and store."""
+    from user_agent_founder.shared import job_store
 
-    client = JobServiceClient(team="user_agent_founder")
-    client.delete_job(job_id)
+    if job_store.get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    job_store.delete_job(job_id)
+    store = get_founder_store()
+    try:
+        store.delete_run(job_id)
+    except Exception:
+        logger.debug("Founder store delete_run failed for %s (non-fatal)", job_id, exc_info=True)
     return {"deleted": "true", "job_id": job_id}
 
 

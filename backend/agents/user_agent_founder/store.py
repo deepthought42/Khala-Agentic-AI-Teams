@@ -228,6 +228,29 @@ class FounderRunStore:
             )
             return [_row_to_run(r) for r in cur.fetchall()]
 
+    @timed_query(store=_STORE, op="delete_run")
+    def delete_run(self, run_id: str) -> bool:
+        """Delete a run and its dependent decision + chat rows.
+
+        Returns True if a run row was removed. The schema has no FK
+        cascade (see ``user_agent_founder/postgres/__init__.py``), so we
+        delete dependents explicitly in the same transaction.
+        """
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM user_agent_founder_chat_messages WHERE run_id = %s",
+                (run_id,),
+            )
+            cur.execute(
+                "DELETE FROM user_agent_founder_decisions WHERE run_id = %s",
+                (run_id,),
+            )
+            cur.execute(
+                "DELETE FROM user_agent_founder_runs WHERE run_id = %s",
+                (run_id,),
+            )
+            return cur.rowcount > 0
+
     # ── Chat messages ─────────────────────────────────────────────────
 
     @timed_query(store=_STORE, op="add_chat_message")
