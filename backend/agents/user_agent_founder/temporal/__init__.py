@@ -9,32 +9,42 @@ from temporalio import activity, workflow
 
 
 @activity.defn(name="user_agent_founder_run_pipeline")
-def run_pipeline_activity(request: dict[str, Any]) -> dict[str, Any]:
-    from user_agent_founder.orchestrator import run_workflow
+def run_pipeline_activity(run_id: str) -> dict[str, Any]:
+    """Execute the founder workflow for ``run_id``.
 
-    result = run_workflow(**(request or {}))
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    return result if isinstance(result, dict) else {"result": result}
+    Reconstructs the store + agent inside the activity because neither is
+    serialisable across the Temporal boundary. The activity is idempotent
+    from the orchestrator's perspective — ``run_workflow`` internally
+    updates both the founder store and the centralized job service on
+    every phase transition and on failure.
+    """
+    from user_agent_founder.agent import FounderAgent
+    from user_agent_founder.orchestrator import run_workflow
+    from user_agent_founder.store import get_founder_store
+
+    store = get_founder_store()
+    agent = FounderAgent()
+    run_workflow(run_id, store, agent)
+    return {"run_id": run_id}
 
 
 @workflow.defn(name="UserAgentFounderWorkflow")
 class UserAgentFounderWorkflow:
     @workflow.run
-    async def run(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def run(self, run_id: str) -> dict[str, Any]:
         return await workflow.execute_activity(
             run_pipeline_activity,
-            request,
+            run_id,
             start_to_close_timeout=timedelta(hours=2),
         )
 
 
 WORKFLOWS = [UserAgentFounderWorkflow]
 ACTIVITIES = [run_pipeline_activity]
+TASK_QUEUE = "user_agent_founder-queue"
+WORKFLOW_ID_PREFIX = "user-agent-founder-"
 
 from shared_temporal import is_temporal_enabled, start_team_worker  # noqa: E402
 
 if is_temporal_enabled():
-    start_team_worker(
-        "user_agent_founder", WORKFLOWS, ACTIVITIES, task_queue="user_agent_founder-queue"
-    )
+    start_team_worker("user_agent_founder", WORKFLOWS, ACTIVITIES, task_queue=TASK_QUEUE)
