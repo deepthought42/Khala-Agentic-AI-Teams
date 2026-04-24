@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import Counter, deque
 from datetime import datetime
@@ -378,11 +379,15 @@ async def metrics() -> SandboxMetrics:
 
 
 def _percentile(sorted_values: list[int], pct: float) -> int:
-    """Nearest-rank percentile on a pre-sorted list. Empty → 0."""
+    """Nearest-rank percentile on a pre-sorted list. Empty → 0.
+
+    Uses ``ceil(pct/100 * n)`` (the textbook nearest-rank definition) so high
+    percentiles don't underestimate for odd sample counts — e.g. n=11, p95
+    must land on index 10, not 9.
+    """
     if not sorted_values:
         return 0
-    # index = ceil(pct/100 * n) - 1, clamped into range
-    idx = max(0, min(len(sorted_values) - 1, int(round(pct / 100 * len(sorted_values))) - 1))
+    idx = max(0, min(len(sorted_values) - 1, math.ceil(pct / 100 * len(sorted_values)) - 1))
     return sorted_values[idx]
 
 

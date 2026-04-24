@@ -566,6 +566,24 @@ async def test_metrics_empty_state(tmp_path: Path) -> None:
     assert snap.reaper.threshold_s > 0
 
 
+def test_percentile_uses_nearest_rank() -> None:
+    """Regression for PR #304 Codex feedback: the helper must use ceil, not
+    round, so p95 on 11 samples lands on index 10 (the textbook nearest-rank
+    rank) rather than underestimating at index 9."""
+    from agent_provisioning_team.sandbox.lifecycle import _percentile
+
+    samples = list(range(1, 12))  # 1..11, pre-sorted
+    # p95 of 11 samples: ceil(0.95 * 11) = 11 → index 10 → value 11.
+    assert _percentile(samples, 95) == 11
+    # p50 of 11 samples: ceil(0.5 * 11) = 6 → index 5 → value 6.
+    assert _percentile(samples, 50) == 6
+    # Empty input → 0 (safe default for the all-empty /metrics snapshot).
+    assert _percentile([], 95) == 0
+    # Single sample → that sample, regardless of percentile.
+    assert _percentile([42], 50) == 42
+    assert _percentile([42], 95) == 42
+
+
 @pytest.mark.asyncio
 async def test_metrics_after_acquire_records_boot_sample(tmp_path: Path) -> None:
     """acquire() pushes a boot_ms sample and lights up the by_team/by_status
