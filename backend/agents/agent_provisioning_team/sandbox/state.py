@@ -63,9 +63,14 @@ class SandboxHandle(BaseModel):
     last_used_at: datetime | None = None
     idle_seconds: int | None = None
     error: str | None = None
+    boot_ms: int | None = Field(
+        default=None,
+        description="Cold-start latency in milliseconds — the wall-clock time from the start of "
+        "`acquire()` to a successful `/health` probe. None on warm-path returns.",
+    )
 
     @classmethod
-    def from_state(cls, st: SandboxState) -> SandboxHandle:
+    def from_state(cls, st: SandboxState, *, boot_ms: int | None = None) -> SandboxHandle:
         url = (
             f"http://127.0.0.1:{st.host_port}"
             if st.status == SandboxStatus.WARM and st.host_port is not None
@@ -84,6 +89,7 @@ class SandboxHandle(BaseModel):
             last_used_at=st.last_used_at,
             idle_seconds=idle,
             error=st.error,
+            boot_ms=boot_ms,
         )
 
 
