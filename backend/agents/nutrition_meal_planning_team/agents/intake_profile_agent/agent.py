@@ -15,7 +15,7 @@ from ...models import ClientProfile, ProfileUpdateRequest
 # Re-export the fallback merger under its historical private name so
 # the existing import surface stays stable. Pure-logic lives in
 # ``structural`` (no strands dependency) per SPEC-002 W4.
-from .restriction_hook import apply_resolver as _apply_resolver
+from .restriction_hook import apply_resolver
 from .structural import merge_profile_structural as _merge_profile_structural  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class IntakeProfileAgent:
         Merge current profile with update (if any), ask LLM to validate/complete, return ClientProfile.
         """
         profile = self._llm_merge(client_id, update, current_profile)
-        return _apply_resolver(profile)
+        return apply_resolver(profile)
 
     def _llm_merge(
         self,

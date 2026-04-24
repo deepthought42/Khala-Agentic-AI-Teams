@@ -38,23 +38,16 @@ class ShorthandEntry:
     synonyms: Tuple[str, ...] = field(default_factory=tuple)
 
 
-def _coerce_dietary(raw) -> Tuple[DietaryTag, ...]:
+def _coerce(raw, enum_cls):
+    """Map a list of YAML strings to enum members, raising
+    :class:`ShorthandError` on any unknown value.
+    """
     out = []
     for tag in raw or []:
         try:
-            out.append(DietaryTag(tag))
+            out.append(enum_cls(tag))
         except ValueError as exc:
-            raise ShorthandError(f"shorthand.yaml: unknown DietaryTag {tag!r}") from exc
-    return tuple(out)
-
-
-def _coerce_allergen(raw) -> Tuple[AllergenTag, ...]:
-    out = []
-    for tag in raw or []:
-        try:
-            out.append(AllergenTag(tag))
-        except ValueError as exc:
-            raise ShorthandError(f"shorthand.yaml: unknown AllergenTag {tag!r}") from exc
+            raise ShorthandError(f"shorthand.yaml: unknown {enum_cls.__name__} {tag!r}") from exc
     return tuple(out)
 
 
@@ -81,8 +74,8 @@ def get_shorthand_index() -> Dict[str, ShorthandEntry]:
             raise ShorthandError("shorthand.yaml entry missing 'name'")
         entry = ShorthandEntry(
             name=name,
-            forbid_dietary=_coerce_dietary(row.get("forbid_dietary")),
-            forbid_allergen=_coerce_allergen(row.get("forbid_allergen")),
+            forbid_dietary=_coerce(row.get("forbid_dietary"), DietaryTag),
+            forbid_allergen=_coerce(row.get("forbid_allergen"), AllergenTag),
             soft_constraint=row.get("soft_constraint"),
             note=row.get("note", ""),
             synonyms=tuple(row.get("synonyms") or ()),

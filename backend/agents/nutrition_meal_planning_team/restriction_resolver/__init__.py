@@ -3,6 +3,6 @@
 Public entry point: :func:`resolve_restrictions`.
 """
 
-from .resolver import FUZZY_THRESHOLD, resolve_restrictions
+from .resolver import resolve_restrictions
 
-__all__ = ["FUZZY_THRESHOLD", "resolve_restrictions"]
+__all__ = ["resolve_restrictions"]

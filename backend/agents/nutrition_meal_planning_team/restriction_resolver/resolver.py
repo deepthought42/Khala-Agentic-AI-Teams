@@ -90,7 +90,6 @@ def _mk_candidate(
     allergens: Tuple[AllergenTag, ...] = (),
     soft: Optional[str] = None,
     note: str = "",
-    rule: str = "category",
 ) -> ResolvedRestriction:
     return ResolvedRestriction(
         raw=raw,
@@ -99,7 +98,6 @@ def _mk_candidate(
         note=note,
         confidence=1.0,
         source="user",
-        rule=rule,
     )
 
 
@@ -112,8 +110,7 @@ def _build_ambiguity_table() -> Dict[str, _AmbiguityEntry]:
     table: Dict[str, _AmbiguityEntry] = {}
 
     # "nuts" / "nut" — both normalize to "nut"
-    nuts_key = normalize("nuts")
-    table[nuts_key] = _AmbiguityEntry(
+    table[normalize("nuts")] = _AmbiguityEntry(
         candidates=(
             _mk_candidate("nuts", allergens=(AllergenTag.peanut,)),
             _mk_candidate("nuts", allergens=(AllergenTag.tree_nut,)),
@@ -126,8 +123,7 @@ def _build_ambiguity_table() -> Dict[str, _AmbiguityEntry]:
     )
 
     # "seafood"
-    seafood_key = normalize("seafood")
-    table[seafood_key] = _AmbiguityEntry(
+    table[normalize("seafood")] = _AmbiguityEntry(
         candidates=(
             _mk_candidate("seafood", allergens=(AllergenTag.fish,)),
             _mk_candidate("seafood", allergens=(AllergenTag.shellfish,)),
@@ -141,25 +137,15 @@ def _build_ambiguity_table() -> Dict[str, _AmbiguityEntry]:
                 ),
             ),
         ),
-        question=("Does 'seafood' include all of fish, shellfish, and molluscs?"),
+        question="Does 'seafood' include all of fish, shellfish, and molluscs?",
     )
 
-    # "low-carb" / "low carb" — normalize drops nothing, so cover both
+    # "low-carb" / "low carb" — normalize keeps the hyphen, so cover both
     for label in ("low-carb", "low carb"):
         table[normalize(label)] = _AmbiguityEntry(
             candidates=(
-                _mk_candidate(
-                    label,
-                    soft="low_carb",
-                    note="advisory reduction only",
-                    rule="shorthand",
-                ),
-                _mk_candidate(
-                    label,
-                    soft="low_carb",
-                    note="keto-style hard restriction",
-                    rule="shorthand",
-                ),
+                _mk_candidate(label, soft="low_carb", note="advisory reduction only"),
+                _mk_candidate(label, soft="low_carb", note="keto-style hard restriction"),
             ),
             question="How strict is your low-carb preference?",
         )
@@ -167,14 +153,7 @@ def _build_ambiguity_table() -> Dict[str, _AmbiguityEntry]:
     return table
 
 
-_AMBIGUITY_TABLE: Optional[Dict[str, _AmbiguityEntry]] = None
-
-
-def _ambiguity_lookup(norm: str) -> Optional[_AmbiguityEntry]:
-    global _AMBIGUITY_TABLE
-    if _AMBIGUITY_TABLE is None:
-        _AMBIGUITY_TABLE = _build_ambiguity_table()
-    return _AMBIGUITY_TABLE.get(norm)
+_AMBIGUITY_TABLE: Dict[str, _AmbiguityEntry] = _build_ambiguity_table()
 
 
 def _cascade(
@@ -235,7 +214,7 @@ def _cascade(
         )
 
     # Rule 4: ambiguity table
-    amb = _ambiguity_lookup(norm)
+    amb = _AMBIGUITY_TABLE.get(norm)
     if amb is not None:
         return (
             None,

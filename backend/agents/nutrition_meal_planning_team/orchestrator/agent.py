@@ -109,12 +109,15 @@ class NutritionMealPlanningOrchestrator:
 
     # --- SPEC-006: restriction resolution routes -------------------------
 
-    def get_restrictions(self, client_id: str):
-        """Return the stored :class:`RestrictionResolution` for a client."""
+    def _load_profile_or_404(self, client_id: str) -> ClientProfile:
         profile = self.profile_store.get_profile(client_id)
         if profile is None:
             raise LookupError(f"profile not found: {client_id}")
-        return profile.restriction_resolution
+        return profile
+
+    def get_restrictions(self, client_id: str):
+        """Return the stored :class:`RestrictionResolution` for a client."""
+        return self._load_profile_or_404(client_id).restriction_resolution
 
     def resolve_ambiguous(self, client_id: str, req):
         """Promote a user-chosen candidate from ``ambiguous[]`` to
@@ -122,9 +125,7 @@ class NutritionMealPlanningOrchestrator:
         profile is missing; :class:`ValueError` if the raw doesn't
         match any ambiguity.
         """
-        profile = self.profile_store.get_profile(client_id)
-        if profile is None:
-            raise LookupError(f"profile not found: {client_id}")
+        profile = self._load_profile_or_404(client_id)
         rr = profile.restriction_resolution
         remaining = [a for a in rr.ambiguous if a.raw != req.raw]
         if len(remaining) == len(rr.ambiguous):
@@ -143,9 +144,7 @@ class NutritionMealPlanningOrchestrator:
         """
         from ..restriction_resolver import resolve_restrictions
 
-        profile = self.profile_store.get_profile(client_id)
-        if profile is None:
-            raise LookupError(f"profile not found: {client_id}")
+        profile = self._load_profile_or_404(client_id)
         fresh = resolve_restrictions(
             profile.allergies_and_intolerances or [],
             profile.dietary_needs or [],
