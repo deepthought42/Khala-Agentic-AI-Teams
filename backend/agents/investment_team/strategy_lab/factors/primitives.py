@@ -59,7 +59,7 @@ def ema(bars: Sequence[Any], period: int) -> float:
         return NAN
     alpha = 2.0 / (period + 1)
     val = bars[-period].close
-    for b in bars[-period + 1:]:
+    for b in bars[-period + 1 :]:
         val = alpha * b.close + (1 - alpha) * val
     return val
 
@@ -197,10 +197,7 @@ def momentum_k(bars: Sequence[Any], k: int) -> float:
     if len(bars) < k + 1:
         return NAN
     ret = math.log(bars[-1].close / bars[-1 - k].close)
-    rets = [
-        math.log(bars[i].close / bars[i - 1].close)
-        for i in range(len(bars) - k, len(bars))
-    ]
+    rets = [math.log(bars[i].close / bars[i - 1].close) for i in range(len(bars) - k, len(bars))]
     if len(rets) < 2:
         return 0.0
     mean = sum(rets) / len(rets)
@@ -247,8 +244,7 @@ def skew(bars: Sequence[Any], window: int) -> float:
     if len(bars) < window + 1:
         return NAN
     rets = [
-        math.log(bars[i].close / bars[i - 1].close)
-        for i in range(len(bars) - window, len(bars))
+        math.log(bars[i].close / bars[i - 1].close) for i in range(len(bars) - window, len(bars))
     ]
     n = len(rets)
     mean = sum(rets) / n
@@ -256,7 +252,7 @@ def skew(bars: Sequence[Any], window: int) -> float:
     if var <= 0:
         return 0.0
     std = math.sqrt(var)
-    return (sum((r - mean) ** 3 for r in rets) / n) / (std ** 3)
+    return (sum((r - mean) ** 3 for r in rets) / n) / (std**3)
 
 
 def vol_regime_state(bars: Sequence[Any], lookback: int, threshold: float) -> float:
@@ -270,8 +266,7 @@ def vol_regime_state(bars: Sequence[Any], lookback: int, threshold: float) -> fl
     if len(bars) < lookback + 1:
         return NAN
     long_rets = [
-        math.log(bars[i].close / bars[i - 1].close)
-        for i in range(len(bars) - lookback, len(bars))
+        math.log(bars[i].close / bars[i - 1].close) for i in range(len(bars) - lookback, len(bars))
     ]
     short_rets = long_rets[-short:]
     long_var = sum(r * r for r in long_rets) / len(long_rets)

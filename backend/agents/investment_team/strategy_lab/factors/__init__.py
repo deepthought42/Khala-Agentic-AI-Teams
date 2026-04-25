@@ -13,11 +13,11 @@ shipped here.
 from .compiler import compile_genome
 from .models import (
     AssetClass,
+    BoolNode,
     Genome,
     NumNode,
-    BoolNode,
-    SizingNode,
     RiskLimits,
+    SizingNode,
     parse_genome,
 )
 from .tree_edit_distance import tree_edit_distance
