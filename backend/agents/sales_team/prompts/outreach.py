@@ -125,7 +125,122 @@ Customer wins to reference: {case_studies}
 Apply Salesfolk personalization, SNAP principles, and the Jeb Blount 6-touch cadence. Enforce the Personalization Contract — every person-level claim in an email body must be paired with an evidence_citation whose dossier_field is a real path and whose source_url (when non-null) is one of the URLs listed under '### Sources' above. Use the learning context above (if any) to replicate high-reply angles. Return a single JSON object matching the schema in the system prompt."""
 
 
-FEWSHOT_EXAMPLES: FewShotExamples = []
+FEWSHOT_EXAMPLES: FewShotExamples = [
+    (
+        {
+            "dossier_confidence": 0.88,
+            "prospect": {"name": "Maya Okafor", "title": "VP Engineering", "company": "Pendant"},
+            "trigger_events": ["Series C funding (Jan 2026)"],
+            "publications": [
+                {
+                    "title": "Scaling Postgres past 10TB",
+                    "venue": "AWS re:Invent 2025",
+                    "url": "https://example.com/reinvent-2025-postgres",
+                }
+            ],
+            "product_name": "Loomchart",
+            "case_studies": "Reduced incident MTTR by 38% at Acme Bank",
+            "variant_count": 1,
+        },
+        {
+            "variants": [
+                {
+                    "angle": "thought_leadership",
+                    "personalization_grade": "high",
+                    "rationale": (
+                        "Maya's re:Invent talk on Postgres scaling pain is the strongest "
+                        "evidence; lead with it and connect to MTTR proof."
+                    ),
+                    "email_sequence": [
+                        {
+                            "day": 1,
+                            "subject_line": "Your re:Invent Postgres talk + 38% MTTR cut",
+                            "body": (
+                                "Maya — your AWS re:Invent talk on scaling Postgres past 10TB "
+                                "stuck with me, especially the bit on slow-query attribution. "
+                                "We've cut MTTR by 38% at Acme Bank by surfacing exactly that "
+                                "in real time. Open to 15 minutes Thursday at 2pm to compare notes?"
+                            ),
+                            "personalization_tokens": ["first_name"],
+                            "call_to_action": "15 minutes Thursday at 2pm?",
+                            "evidence_citations": [
+                                {
+                                    "claim": "AWS re:Invent talk on scaling Postgres past 10TB",
+                                    "dossier_field": "publications[0]",
+                                    "source_url": "https://example.com/reinvent-2025-postgres",
+                                    "strength": "strong",
+                                }
+                            ],
+                        }
+                    ],
+                    "call_script": (
+                        "Hi Maya, this is <SDR> from Loomchart — I know I'm calling out of the "
+                        "blue, do you have 27 seconds? We work with VPs of Engineering at "
+                        "Postgres-heavy SaaS shops who hit the same scaling wall you described "
+                        "at re:Invent. Worth comparing notes?"
+                    ),
+                    "linkedin_message": (
+                        "Maya — caught your re:Invent talk on scaling Postgres past 10TB. "
+                        "We've helped teams cut MTTR by 38% on exactly that pattern. Worth a "
+                        "15-minute compare-notes?"
+                    ),
+                }
+            ]
+        },
+    ),
+    (
+        {
+            "dossier_confidence": 0.42,
+            "prospect": {
+                "name": "Theo Park",
+                "title": "Director of Platform",
+                "company": "Riverbed",
+            },
+            "trigger_events": [],
+            "publications": [],
+            "product_name": "Loomchart",
+            "case_studies": "Reduced incident MTTR by 38% at Acme Bank",
+            "variant_count": 1,
+        },
+        {
+            "variants": [
+                {
+                    "angle": "company_soft_opener",
+                    "personalization_grade": "fallback",
+                    "rationale": (
+                        "Dossier confidence is below the threshold and there are no person-level "
+                        "evidence items, so the only allowed angle is company_soft_opener — no "
+                        "fabricated personal claims."
+                    ),
+                    "email_sequence": [
+                        {
+                            "day": 1,
+                            "subject_line": "Riverbed + Postgres observability",
+                            "body": (
+                                "Theo — most platform leaders at Riverbed-sized SaaS we talk to "
+                                "describe Postgres incident attribution as their biggest 'unknown "
+                                "unknown.' We helped Acme Bank cut MTTR by 38% by closing that "
+                                "exact gap. Open to a 15-minute intro Thursday at 2pm?"
+                            ),
+                            "personalization_tokens": ["first_name"],
+                            "call_to_action": "15 minutes Thursday at 2pm?",
+                            "evidence_citations": [],
+                        }
+                    ],
+                    "call_script": (
+                        "Hi Theo, this is <SDR> from Loomchart — do you have 27 seconds? We "
+                        "work with platform leaders at SaaS companies your size who struggle "
+                        "with Postgres incident attribution. Is that on your radar at all?"
+                    ),
+                    "linkedin_message": (
+                        "Theo — sending a quick note. We work with platform leaders at SaaS "
+                        "shops your size on Postgres incident attribution. Open to a brief intro?"
+                    ),
+                }
+            ]
+        },
+    ),
+]
 
 
 SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + render_fewshots(FEWSHOT_EXAMPLES)

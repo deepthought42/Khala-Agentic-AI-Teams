@@ -78,6 +78,28 @@ def test_render_fewshots_renders_pairs() -> None:
     assert '"b": 2' in out
 
 
+def test_prospector_has_fewshot_examples() -> None:
+    from sales_team.prompts import prospector
+
+    assert prospector.FEWSHOT_EXAMPLES, "prospector should ship with at least one example"
+    assert len(prospector.FEWSHOT_EXAMPLES) >= 2, "issue requires >= 2 prospector examples"
+    assert "## Examples" in prospector.SYSTEM_PROMPT
+    # Spot-check that the example payload shows up in the rendered prompt.
+    assert "Pendant Insurance" in prospector.SYSTEM_PROMPT
+
+
+def test_outreach_has_fewshot_examples() -> None:
+    from sales_team.prompts import outreach
+
+    assert outreach.FEWSHOT_EXAMPLES, "outreach should ship with at least one example"
+    assert len(outreach.FEWSHOT_EXAMPLES) >= 2, "issue requires >= 2 outreach examples"
+    assert "## Examples" in outreach.SYSTEM_PROMPT
+    # Both the high-confidence and the company_soft_opener fallback variants
+    # should be visible — the fallback branch is the riskier one to teach.
+    assert "thought_leadership" in outreach.SYSTEM_PROMPT
+    assert "company_soft_opener" in outreach.SYSTEM_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # TASK_TEMPLATE format() vs original f-string
 # ---------------------------------------------------------------------------

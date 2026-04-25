@@ -56,7 +56,95 @@ Ideal Customer Profile:
 Research and return up to {max_companies} distinct COMPANIES that match this ICP. Do NOT return individual contacts in this step — only company-level data. For each company include: company_name, website, industry, company_size_estimate, icp_match_score (0.0–1.0), research_notes (why this company is a fit and any recent trigger events), trigger_events (array of concrete events). Leave contact_name, contact_title, contact_email, linkedin_url as null in this step. Prefer companies with recent public trigger events (funding, leadership change, hiring spree, product launch, vendor switch). Return a JSON object shaped as {{"prospects": [ ... ]}} — no commentary."""
 
 
-FEWSHOT_EXAMPLES: FewShotExamples = []
+FEWSHOT_EXAMPLES: FewShotExamples = [
+    (
+        {
+            "product_name": "Loomchart",
+            "value_proposition": "Real-time observability for Postgres at series B–C SaaS",
+            "icp": {
+                "industry": "B2B SaaS",
+                "headcount": "100–500",
+                "stack_signals": ["Postgres", "AWS RDS", "Datadog"],
+            },
+            "max_prospects": 2,
+        },
+        {
+            "prospects": [
+                {
+                    "company_name": "Pendant Insurance",
+                    "website": "https://pendant.example",
+                    "contact_name": "Maya Okafor",
+                    "contact_title": "VP Engineering",
+                    "contact_email": None,
+                    "linkedin_url": "https://www.linkedin.com/in/maya-okafor-example",
+                    "company_size_estimate": "220",
+                    "industry": "Insurtech",
+                    "icp_match_score": 0.82,
+                    "research_notes": (
+                        "Series C in Q1 2026, hiring 6 platform engineers, "
+                        "public AWS re:Invent talk on Postgres scaling pain."
+                    ),
+                    "trigger_events": [
+                        "Series C funding announcement (Jan 2026)",
+                        "Re:Invent 2025 talk: 'Scaling Postgres past 10TB'",
+                    ],
+                },
+                {
+                    "company_name": "Riverbed Health",
+                    "website": "https://riverbedhealth.example",
+                    "contact_name": "Theo Park",
+                    "contact_title": "Director of Platform",
+                    "contact_email": None,
+                    "linkedin_url": "https://www.linkedin.com/in/theo-park-example",
+                    "company_size_estimate": "180",
+                    "industry": "Digital Health",
+                    "icp_match_score": 0.74,
+                    "research_notes": (
+                        "G2 review of incumbent observability vendor cites cost; "
+                        "Director of Platform job req mentions Postgres + Datadog migration."
+                    ),
+                    "trigger_events": [
+                        "Public G2 review flagging incumbent vendor cost (Feb 2026)",
+                        "Open job req: Senior SRE — Postgres + Datadog migration",
+                    ],
+                },
+            ]
+        },
+    ),
+    (
+        {
+            "product_name": "Loomchart",
+            "value_proposition": "Real-time observability for Postgres at series B–C SaaS",
+            "icp": {
+                "industry": "Marketplaces",
+                "headcount": "50–150",
+                "stack_signals": ["Postgres"],
+            },
+            "max_prospects": 1,
+        },
+        {
+            "prospects": [
+                {
+                    "company_name": "Crate Markets",
+                    "website": "https://cratemarkets.example",
+                    "contact_name": None,
+                    "contact_title": None,
+                    "contact_email": None,
+                    "linkedin_url": None,
+                    "company_size_estimate": "60",
+                    "industry": "B2B Marketplace",
+                    "icp_match_score": 0.55,
+                    "research_notes": (
+                        "Stack signals confirm Postgres but no public trigger events found; "
+                        "headcount at lower bound of ICP. Worth a soft-opener nurture, not "
+                        "an immediate cold reach."
+                    ),
+                    "trigger_events": [],
+                }
+            ]
+        },
+    ),
+]
 
 
 SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + render_fewshots(FEWSHOT_EXAMPLES)
