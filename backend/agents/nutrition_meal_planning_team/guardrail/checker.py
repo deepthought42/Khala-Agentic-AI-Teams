@@ -38,7 +38,6 @@ def check_recommendation(
 ) -> GuardrailResult:
     resolution = profile.restriction_resolution
     active_allergens = frozenset(resolution.active_allergen_tags())
-    active_dietary = frozenset(resolution.active_dietary_forbid())
     catalog = get_catalog()
 
     parsed = tuple(parse_ingredient(raw) for raw in rec.ingredients)
@@ -66,7 +65,12 @@ def check_recommendation(
         for tag in _sorted_tags(canonical.allergen_tags & active_allergens):
             hard.append(_allergen(p, tag))
 
-        for tag in _sorted_tags(canonical.dietary_tags & active_dietary):
+        # Per-food: a resolution's allergen exemption (e.g. pescatarian +
+        # fish, issue #351) drops its dietary forbid for this food only.
+        applicable_dietary = resolution.applicable_dietary_forbid(
+            frozenset(canonical.allergen_tags)
+        )
+        for tag in _sorted_tags(canonical.dietary_tags & applicable_dietary):
             hard.append(_dietary(p, tag))
 
     return GuardrailResult(

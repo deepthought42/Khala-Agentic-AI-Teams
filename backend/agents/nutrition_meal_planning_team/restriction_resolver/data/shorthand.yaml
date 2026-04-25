@@ -25,6 +25,12 @@
 - name: pescatarian
   synonyms: ["pescatarian", "pescetarian"]
   forbid_dietary: [animal]
+  # Issue #351: per-food allergen-keyed exemption. A food whose
+  # ``allergen_tags`` intersects this list bypasses the ``animal``
+  # forbid (so salmon — allergen ``fish``, dietary ``animal`` — passes,
+  # but chicken still rejects). Dairy/eggs need no exemption: they have
+  # their own ``DietaryTag`` enum members and aren't in ``forbid_dietary``.
+  allow_allergen_exemption: [fish, shellfish]
   note: "allows fish, shellfish, dairy, eggs"
 
 - name: gluten_free

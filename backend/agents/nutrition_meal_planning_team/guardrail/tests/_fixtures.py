@@ -16,6 +16,9 @@ from agents.nutrition_meal_planning_team.models import (
     ResolvedRestriction,
     RestrictionResolution,
 )
+from agents.nutrition_meal_planning_team.restriction_resolver import (
+    resolve_restrictions,
+)
 
 
 def profile_with(
@@ -45,6 +48,27 @@ def profile_with(
         client_id=client_id,
         restriction_resolution=RestrictionResolution(resolved=resolved),
     )
+
+
+def profile_from_resolver(
+    *,
+    allergies: Iterable[str] = (),
+    dietary_needs: Iterable[str] = (),
+    extra_resolved: Iterable[ResolvedRestriction] = (),
+    client_id: str = "test_client",
+) -> ClientProfile:
+    """Build a ClientProfile via the real SPEC-006 resolver cascade.
+
+    Use this when the test depends on resolver-attached metadata
+    (e.g. ``dietary_allergen_exemptions`` from the pescatarian shorthand,
+    issue #351). ``extra_resolved`` lets a test append manually-built
+    rows alongside the resolver output to model "user typed pescatarian
+    AND no animal" combinations.
+    """
+    rr = resolve_restrictions(list(allergies), list(dietary_needs))
+    if extra_resolved:
+        rr = rr.model_copy(update={"resolved": list(rr.resolved) + list(extra_resolved)})
+    return ClientProfile(client_id=client_id, restriction_resolution=rr)
 
 
 def recipe(*ingredients: str, name: str = "test recipe") -> MealRecommendation:

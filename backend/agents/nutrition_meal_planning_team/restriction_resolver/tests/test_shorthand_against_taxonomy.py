@@ -42,6 +42,19 @@ def test_every_forbid_allergen_tag_exists_in_enum():
             )
 
 
+def test_every_allow_allergen_exemption_exists_in_enum():
+    """Issue #351: ``allow_allergen_exemption`` is allergen-keyed, so
+    each value must round-trip to ``AllergenTag``. Catches drift that
+    the loader's ``_coerce`` would otherwise mask."""
+    known = {t.value for t in AllergenTag}
+    for row in _load_rows():
+        for tag in row.get("allow_allergen_exemption") or []:
+            assert tag in known, (
+                f"shorthand.yaml: row {row.get('name')!r} has unknown "
+                f"AllergenTag {tag!r} in allow_allergen_exemption"
+            )
+
+
 def test_no_duplicate_synonyms_across_rows():
     from nutrition_meal_planning_team.ingredient_kb.normalizer import normalize
 
