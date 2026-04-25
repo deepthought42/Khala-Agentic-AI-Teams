@@ -190,6 +190,7 @@ def _cascade(
                 raw=raw,
                 allergen_tags=list(sh.forbid_allergen),
                 dietary_tags_forbid=list(sh.forbid_dietary),
+                dietary_allergen_exemptions=list(sh.allow_allergen_exemption),
                 confidence=1.0,
                 source="shorthand",
                 rule="shorthand",

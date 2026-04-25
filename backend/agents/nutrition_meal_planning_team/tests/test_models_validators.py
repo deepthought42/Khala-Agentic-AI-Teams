@@ -289,3 +289,102 @@ def test_client_profile_roundtrips_restriction_resolution_through_json():
     assert p2.restriction_resolution.kb_version == "1.0.0"
     assert p2.restriction_resolution.resolved[0].raw == "vegan"
     assert DietaryTag.dairy in p2.restriction_resolution.resolved[0].dietary_tags_forbid
+
+
+# --- Issue #351: applicable_dietary_forbid (per-food allergen exemptions) ---
+
+
+def test_applicable_dietary_forbid_subtracts_per_food_allergens():
+    """A resolution carrying ``dietary_allergen_exemptions`` drops its
+    ``dietary_tags_forbid`` for foods whose allergens overlap. Models
+    pescatarian: ``forbid=[animal]``, ``exemptions=[fish, shellfish]``.
+    """
+    from nutrition_meal_planning_team.ingredient_kb.taxonomy import (
+        AllergenTag,
+        DietaryTag,
+    )
+    from nutrition_meal_planning_team.models import (
+        ResolvedRestriction,
+        RestrictionResolution,
+    )
+
+    rr = RestrictionResolution(
+        resolved=[
+            ResolvedRestriction(
+                raw="pescatarian",
+                dietary_tags_forbid=[DietaryTag.animal],
+                dietary_allergen_exemptions=[
+                    AllergenTag.fish,
+                    AllergenTag.shellfish,
+                ],
+                source="shorthand",
+                rule="shorthand",
+            )
+        ]
+    )
+    # Salmon allergens include ``fish`` → exemption fires, no forbid.
+    assert rr.applicable_dietary_forbid({AllergenTag.fish}) == set()
+    # Chicken has no allergen tags → exemption misses, ``animal`` applies.
+    assert rr.applicable_dietary_forbid(frozenset()) == {DietaryTag.animal}
+    # Unconditional union API stays unchanged for diagnostic callers.
+    assert rr.active_dietary_forbid() == {DietaryTag.animal}
+
+
+def test_applicable_dietary_forbid_does_not_leak_across_resolutions():
+    """A second row that forbids ``animal`` without exemptions still
+    triggers, even when a pescatarian row exempts the same food."""
+    from nutrition_meal_planning_team.ingredient_kb.taxonomy import (
+        AllergenTag,
+        DietaryTag,
+    )
+    from nutrition_meal_planning_team.models import (
+        ResolvedRestriction,
+        RestrictionResolution,
+    )
+
+    rr = RestrictionResolution(
+        resolved=[
+            ResolvedRestriction(
+                raw="pescatarian",
+                dietary_tags_forbid=[DietaryTag.animal],
+                dietary_allergen_exemptions=[AllergenTag.fish],
+            ),
+            ResolvedRestriction(
+                raw="no-animal",
+                dietary_tags_forbid=[DietaryTag.animal],
+            ),
+        ]
+    )
+    assert rr.applicable_dietary_forbid({AllergenTag.fish}) == {DietaryTag.animal}
+
+
+def test_applicable_dietary_forbid_ambiguous_default_strict_ignores_exemptions():
+    """SPEC-006 §6.2: ambiguous candidates fail closed pre-disambiguation.
+    Exemptions on a candidate must NOT be applied — otherwise an
+    unconfirmed candidate could silently unlock food."""
+    from nutrition_meal_planning_team.ingredient_kb.taxonomy import (
+        AllergenTag,
+        DietaryTag,
+    )
+    from nutrition_meal_planning_team.models import (
+        AmbiguousRestriction,
+        ResolvedRestriction,
+        RestrictionResolution,
+    )
+
+    rr = RestrictionResolution(
+        ambiguous=[
+            AmbiguousRestriction(
+                raw="seafood-ish",
+                candidates=[
+                    ResolvedRestriction(
+                        raw="seafood-ish",
+                        dietary_tags_forbid=[DietaryTag.animal],
+                        dietary_allergen_exemptions=[AllergenTag.fish],
+                    )
+                ],
+                question="?",
+            )
+        ]
+    )
+    assert rr.applicable_dietary_forbid({AllergenTag.fish}) == {DietaryTag.animal}

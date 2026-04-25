@@ -6,15 +6,15 @@ pescatarian + fish → pass.
 
 from __future__ import annotations
 
-import pytest
 from agents.nutrition_meal_planning_team.guardrail import (
     Severity,
     ViolationReason,
     check_recommendation,
 )
 from agents.nutrition_meal_planning_team.ingredient_kb.taxonomy import DietaryTag
+from agents.nutrition_meal_planning_team.models import ResolvedRestriction
 
-from ._fixtures import profile_with, recipe
+from ._fixtures import profile_from_resolver, profile_with, recipe
 
 
 def test_vegan_rejects_milk() -> None:
@@ -45,13 +45,10 @@ def test_pescatarian_rejects_chicken() -> None:
 
 
 def test_pescatarian_passes_fish() -> None:
-    """Pescatarian forbids `animal` for non-fish proteins, but salmon
-    parses with ``dietary_tags=[animal]`` only — so the *naive* model
-    would still reject. Per SPEC-006, the resolver omits the `animal`
-    forbid for pescatarian once fish is exempt; we model that here by
-    not putting `animal` in the active set when the user is
-    pescatarian-with-fish-OK."""
-    profile = profile_with(dietary_forbid=[])  # pescatarian-w/-fish has no active forbid here
+    """Sanity baseline: with no active dietary forbid set, salmon
+    naturally passes. Kept alongside the resolver-driven regression
+    test below as the pre-#351 sidestepped version."""
+    profile = profile_with(dietary_forbid=[])
     rec = recipe("salmon")
 
     result = check_recommendation(profile, rec)
@@ -72,25 +69,72 @@ def test_honey_forbidden_for_vegan() -> None:
     assert "animal" in tags
 
 
-@pytest.mark.skip(
-    reason=(
-        "SPEC-006 follow-up: pescatarian shorthand resolves to "
-        "forbid_dietary=[animal] but active_dietary_forbid() does not "
-        "subtract the fish exemption — see issue #351."
-    )
-)
 def test_pescatarian_resolution_passes_fish() -> None:
-    """Regression pin for the SPEC-006 exemption mechanism.
+    """Issue #351 regression pin: salmon must pass under a
+    pescatarian-shorthand-resolved profile.
 
-    Once #351 lands the resolver-level fish exemption, this test must
-    pass with a pescatarian-shorthand-resolved profile (not the
-    sidestepped empty-forbid version below)."""
-    profile = profile_with(dietary_forbid=[DietaryTag.animal])
+    Goes through the real resolver so the pescatarian
+    ``dietary_allergen_exemptions=[fish, shellfish]`` is attached. The
+    checker's per-food ``applicable_dietary_forbid`` then drops the
+    ``animal`` forbid for salmon (allergen ``fish``)."""
+    profile = profile_from_resolver(dietary_needs=["pescatarian"])
     rec = recipe("salmon")
 
     result = check_recommendation(profile, rec)
 
     assert result.passed is True
+
+
+def test_pescatarian_still_rejects_chicken_via_resolution() -> None:
+    """Pescatarian's exemption is allergen-keyed: chicken has no
+    ``fish``/``shellfish`` allergen tag, so the ``animal`` forbid still
+    applies. Confirms the exemption does not trivialise the rule."""
+    profile = profile_from_resolver(dietary_needs=["pescatarian"])
+    rec = recipe("chicken thigh")
+
+    result = check_recommendation(profile, rec)
+
+    assert result.passed is False
+    dietary = [v for v in result.violations if v.reason is ViolationReason.dietary_forbid]
+    assert any(v.tag == "animal" for v in dietary)
+
+
+def test_explicit_animal_forbid_without_pescatarian_rejects_salmon() -> None:
+    """Exemptions only apply when the resolver attached them. A user
+    who manually says ``forbid_dietary=[animal]`` (no pescatarian
+    shorthand) gets the unconditional rule — salmon still rejects."""
+    profile = profile_with(dietary_forbid=[DietaryTag.animal])
+    rec = recipe("salmon")
+
+    result = check_recommendation(profile, rec)
+
+    assert result.passed is False
+    dietary = [v for v in result.violations if v.reason is ViolationReason.dietary_forbid]
+    assert any(v.tag == "animal" for v in dietary)
+
+
+def test_pescatarian_plus_separate_animal_forbid_rejects_salmon() -> None:
+    """Exemptions are per-``ResolvedRestriction``: a second row
+    forbidding ``animal`` without exemptions still triggers, even when
+    pescatarian is also resolved. Models a user who typed both
+    "pescatarian" and "no animal"."""
+    profile = profile_from_resolver(
+        dietary_needs=["pescatarian"],
+        extra_resolved=[
+            ResolvedRestriction(
+                raw="no-animal",
+                dietary_tags_forbid=[DietaryTag.animal],
+            )
+        ],
+    )
+    rec = recipe("salmon")
+
+    result = check_recommendation(profile, rec)
+
+    assert result.passed is False
+    dietary = [v for v in result.violations if v.reason is ViolationReason.dietary_forbid]
+    assert any(v.tag == "animal" for v in dietary)
+    assert all(v.severity is Severity.hard_reject for v in dietary)
 
 
 def test_no_dietary_forbid_passes_anything() -> None:

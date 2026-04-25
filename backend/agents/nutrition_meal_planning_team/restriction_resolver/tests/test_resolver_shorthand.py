@@ -43,6 +43,21 @@ def test_pescatarian_forbids_animal_only():
     entry = _by_raw(r, "pescatarian")
     assert entry.dietary_tags_forbid == [DietaryTag.animal]
     assert "fish, shellfish" in entry.note
+    # Issue #351: shorthand attaches the per-food allergen exemption that
+    # SPEC-007's checker uses to pass salmon while still rejecting chicken.
+    assert entry.dietary_allergen_exemptions == [
+        AllergenTag.fish,
+        AllergenTag.shellfish,
+    ]
+
+
+def test_vegan_has_no_exemptions():
+    """Only shorthands that need allergen-keyed carve-outs should set
+    ``dietary_allergen_exemptions``. Vegan forbids the full animal
+    family unconditionally — default empty list."""
+    r = resolve_restrictions([], ["vegan"])
+    entry = _by_raw(r, "vegan")
+    assert entry.dietary_allergen_exemptions == []
 
 
 def test_paleo_forbids_dairy_grain_legume():

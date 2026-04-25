@@ -33,6 +33,11 @@ class ShorthandEntry:
     name: str
     forbid_dietary: Tuple[DietaryTag, ...] = ()
     forbid_allergen: Tuple[AllergenTag, ...] = ()
+    # Allergen tags that exempt this shorthand's dietary forbids on a
+    # per-food basis (issue #351). Pescatarian sets ``[fish, shellfish]``
+    # so ``forbid_dietary=[animal]`` still passes salmon. Empty for
+    # shorthands with no exemption logic.
+    allow_allergen_exemption: Tuple[AllergenTag, ...] = ()
     soft_constraint: Optional[str] = None
     note: str = ""
     synonyms: Tuple[str, ...] = field(default_factory=tuple)
@@ -76,6 +81,7 @@ def get_shorthand_index() -> Dict[str, ShorthandEntry]:
             name=name,
             forbid_dietary=_coerce(row.get("forbid_dietary"), DietaryTag),
             forbid_allergen=_coerce(row.get("forbid_allergen"), AllergenTag),
+            allow_allergen_exemption=_coerce(row.get("allow_allergen_exemption"), AllergenTag),
             soft_constraint=row.get("soft_constraint"),
             note=row.get("note", ""),
             synonyms=tuple(row.get("synonyms") or ()),

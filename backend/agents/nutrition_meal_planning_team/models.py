@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import AbstractSet, Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -205,6 +205,11 @@ class ResolvedRestriction(BaseModel):
     allergen_tags: List[AllergenTag] = Field(default_factory=list)
     dietary_tags_forbid: List[DietaryTag] = Field(default_factory=list)
     dietary_tags_require: List[DietaryTag] = Field(default_factory=list)
+    # Allergen tags that, when present on a food, exempt this resolution's
+    # ``dietary_tags_forbid`` from applying to that food. SPEC-006 §6.1
+    # pescatarian uses ``[fish, shellfish]`` to keep ``forbid_dietary=[animal]``
+    # while still passing salmon (issue #351). Empty for raw user inputs.
+    dietary_allergen_exemptions: List[AllergenTag] = Field(default_factory=list)
     matched_canonical_ids: List[str] = Field(default_factory=list)
     confidence: float = 1.0
     source: str = "user"  # "user" | "shorthand" | "clinician"
@@ -251,10 +256,43 @@ class RestrictionResolution(BaseModel):
         return out
 
     def active_dietary_forbid(self) -> Set[DietaryTag]:
-        """Union of resolved dietary-forbid tags plus the strictest
-        candidate from each unresolved ambiguity (default-strict)."""
+        """Unconditional union of resolved dietary-forbid tags plus the
+        strictest candidate from each unresolved ambiguity (default-strict).
+
+        For SPEC-007 enforcement on a specific food, prefer
+        :meth:`applicable_dietary_forbid`, which honours per-resolution
+        allergen exemptions (e.g. pescatarian + fish)."""
         out: Set[DietaryTag] = set()
         for r in self.resolved:
+            out.update(r.dietary_tags_forbid)
+        for amb in self.ambiguous:
+            strictest: Set[DietaryTag] = set()
+            for cand in amb.candidates:
+                strictest.update(cand.dietary_tags_forbid)
+            out.update(strictest)
+        return out
+
+    def applicable_dietary_forbid(
+        self, food_allergens: AbstractSet[AllergenTag]
+    ) -> Set[DietaryTag]:
+        """Dietary-forbid set for a food with the given allergen tags.
+
+        For each resolved restriction, contributes its ``dietary_tags_forbid``
+        only if its ``dietary_allergen_exemptions`` is disjoint from
+        ``food_allergens``. Pescatarian (``forbid=[animal]``,
+        ``exemptions=[fish, shellfish]``) therefore drops ``animal`` for
+        salmon (allergen ``fish``) but retains it for chicken (no allergen).
+
+        Ambiguous candidates apply unconditionally (SPEC-006 §6.2
+        default-strict): exemptions stay parked until the user disambiguates,
+        so an unresolved candidate cannot silently unlock food.
+        """
+        out: Set[DietaryTag] = set()
+        for r in self.resolved:
+            if r.dietary_allergen_exemptions and not set(r.dietary_allergen_exemptions).isdisjoint(
+                food_allergens
+            ):
+                continue
             out.update(r.dietary_tags_forbid)
         for amb in self.ambiguous:
             strictest: Set[DietaryTag] = set()
