@@ -184,7 +184,12 @@ def test_groom_handles_llm_exception_gracefully() -> None:
     store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=_BoomLLM())  # type: ignore[arg-type]
     result = agent.groom(product_id="prod-x", method="wsjf")
-    assert result.ranked == []
+    # LLM exception → empty payload → missing-stories pass surfaces
+    # every backlog story with score=0 + a manual-review rationale so
+    # downstream planning doesn't silently lose work.
+    assert [r.id for r in result.ranked] == ["s1"]
+    assert result.ranked[0].score == 0.0
+    assert "manual review" in result.ranked[0].rationale
 
 
 def test_groom_wsjf_treats_null_job_size_as_estimate_points_fallback() -> None:
@@ -305,3 +310,82 @@ def test_groom_only_sees_stories_under_requested_product() -> None:
     result_missing = agent.groom(product_id="prod-missing", method="wsjf")
     assert result_missing.ranked == []
     assert len(llm.calls) == pre_calls
+
+
+def test_groom_includes_stories_omitted_by_llm_with_score_zero() -> None:
+    # Models truncate or skip uncertain items. The agent must still
+    # surface every backlog story so downstream planning doesn't silently
+    # lose work; the omitted ones are flagged for manual review and not
+    # persisted (their existing scores stay intact).
+    stories = [_story("scored", title="alpha"), _story("missed", title="beta")]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "scored",
+                    "inputs": {
+                        "user_business_value": 5,
+                        "time_criticality": 3,
+                        "risk_reduction_or_opportunity_enablement": 1,
+                        "job_size": 3,
+                    },
+                    "rationale": "covered",
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    by_id = {r.id: r for r in result.ranked}
+    assert set(by_id) == {"scored", "missed"}
+    assert by_id["scored"].score == 3.0
+    assert by_id["missed"].score == 0.0
+    assert "manual review" in by_id["missed"].rationale
+    # Persistence covers only the LLM-scored stories — never overwrites
+    # the missed story's existing score with a synthetic zero.
+    assert {r[0] for r in store.persisted} == {"scored"}
+
+
+def test_groom_deduplicates_repeated_story_ids() -> None:
+    # Repeated id in the LLM payload — agent must keep the first scoring
+    # and ignore the rest so persisted scores stay deterministic.
+    stories = [_story("s1")]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": 8,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                    "rationale": "first",
+                },
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": 1,
+                        "time_criticality": 1,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                    "rationale": "second",
+                },
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    assert len(result.ranked) == 1
+    assert result.ranked[0].id == "s1"
+    # First payload wins → cost_of_delay=12 / job_size=4 = 3.0
+    assert result.ranked[0].score == 3.0
+    assert result.ranked[0].rationale == "first"
+    # Persistence wrote exactly one row.
+    assert store.persisted == [("s1", 3.0, None)]

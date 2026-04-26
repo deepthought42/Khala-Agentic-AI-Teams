@@ -157,6 +157,72 @@ def test_feedback_round_trip_and_status_filter() -> None:
     assert closed == []
 
 
+def test_get_backlog_tree_batches_child_reads() -> None:
+    # Regression for the N+1 fan-out: with two epics, four stories, and
+    # a task + AC per story, the request should hit the DB exactly five
+    # times (product, initiatives, epics, stories, tasks, ACs) — not
+    # 1 + 1 + (1 per epic) + (1 per story) * 2.
+    store = _store()
+    p = store.create_product(name="P", description="", vision="", author="alice")
+    i = store.create_initiative(
+        product_id=p.id, title="I", summary="", status="proposed", author="alice"
+    )
+    epic_ids: list[str] = []
+    story_ids: list[str] = []
+    for n in range(2):
+        e = store.create_epic(
+            initiative_id=i.id,
+            title=f"E{n}",
+            summary="",
+            status="proposed",
+            author="alice",
+        )
+        epic_ids.append(e.id)
+        for k in range(2):
+            s = store.create_story(
+                epic_id=e.id,
+                title=f"S{n}-{k}",
+                user_story="",
+                status="proposed",
+                estimate_points=None,
+                author="alice",
+            )
+            story_ids.append(s.id)
+            store.create_task(
+                story_id=s.id,
+                title="T",
+                description="",
+                status="todo",
+                owner=None,
+                author="alice",
+            )
+            store.create_acceptance_criterion(
+                story_id=s.id, text="must work", satisfied=False, author="alice"
+            )
+
+    tree = store.get_backlog_tree(p.id)
+    assert tree is not None
+    assert tree.product.id == p.id
+    flat_epic_ids = [e.id for e in tree.initiatives[0].epics]
+    flat_story_ids = [s.id for e in tree.initiatives[0].epics for s in e.stories]
+    assert sorted(flat_epic_ids) == sorted(epic_ids)
+    assert sorted(flat_story_ids) == sorted(story_ids)
+    # Every story has its task + AC attached (no cross-leakage from the
+    # bucketing pass).
+    for e in tree.initiatives[0].epics:
+        for s in e.stories:
+            assert len(s.tasks) == 1
+            assert len(s.acceptance_criteria) == 1
+
+
+def test_get_backlog_tree_returns_empty_initiatives_for_product_without_any() -> None:
+    store = _store()
+    p = store.create_product(name="P", description="", vision="", author="alice")
+    tree = store.get_backlog_tree(p.id)
+    assert tree is not None
+    assert tree.initiatives == []
+
+
 def test_feedback_rejects_cross_product_story_link() -> None:
     store = _store()
     p_a = store.create_product(name="A", description="", vision="", author="alice")

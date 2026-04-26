@@ -393,6 +393,14 @@ class ProductDeliveryStore:
 
     @timed_query(store=_STORE, op="get_backlog_tree")
     def get_backlog_tree(self, product_id: str) -> BacklogTree | None:
+        """Nested backlog projection for a single product.
+
+        Five queries total — one per level of the hierarchy plus the
+        product row — instead of N+1 fan-out. Children are bucketed by
+        parent id in Python and the tree is assembled in a single pass.
+        Cost is O(rows), not O(stories) round trips, so a product with
+        a few hundred stories no longer thrashes the connection pool.
+        """
         product = self.get_product(product_id)
         if product is None:
             return None
@@ -405,51 +413,85 @@ class ProductDeliveryStore:
                 (product_id,),
             )
             initiatives_raw = cur.fetchall()
-            initiatives: list[InitiativeNode] = []
-            for irow in initiatives_raw:
+            if not initiatives_raw:
+                return BacklogTree(product=product, initiatives=[])
+            initiative_ids = [i["id"] for i in initiatives_raw]
+
+            cur.execute(
+                """SELECT id, initiative_id, title, summary, status, wsjf_score, rice_score,
+                          author, created_at, updated_at
+                   FROM product_delivery_epics
+                   WHERE initiative_id = ANY(%s)
+                   ORDER BY created_at""",
+                (initiative_ids,),
+            )
+            epics_raw = cur.fetchall()
+            epic_ids = [e["id"] for e in epics_raw]
+
+            stories_raw: list[dict[str, Any]] = []
+            tasks_raw: list[dict[str, Any]] = []
+            acs_raw: list[dict[str, Any]] = []
+            if epic_ids:
                 cur.execute(
-                    """SELECT id, initiative_id, title, summary, status, wsjf_score, rice_score,
-                              author, created_at, updated_at
-                       FROM product_delivery_epics WHERE initiative_id = %s
+                    """SELECT id, epic_id, title, user_story, status, wsjf_score, rice_score,
+                              estimate_points, author, created_at, updated_at
+                       FROM product_delivery_stories
+                       WHERE epic_id = ANY(%s)
                        ORDER BY created_at""",
-                    (irow["id"],),
+                    (epic_ids,),
                 )
-                epics_raw = cur.fetchall()
-                epics: list[EpicNode] = []
-                for erow in epics_raw:
+                stories_raw = cur.fetchall()
+                story_ids = [s["id"] for s in stories_raw]
+                if story_ids:
                     cur.execute(
-                        """SELECT id, epic_id, title, user_story, status, wsjf_score, rice_score,
-                                  estimate_points, author, created_at, updated_at
-                           FROM product_delivery_stories WHERE epic_id = %s
+                        """SELECT id, story_id, title, description, status, owner,
+                                  author, created_at, updated_at
+                           FROM product_delivery_tasks
+                           WHERE story_id = ANY(%s)
                            ORDER BY created_at""",
-                        (erow["id"],),
+                        (story_ids,),
                     )
-                    stories_raw = cur.fetchall()
-                    stories: list[StoryNode] = []
-                    for srow in stories_raw:
-                        cur.execute(
-                            """SELECT id, story_id, title, description, status, owner,
-                                      author, created_at, updated_at
-                               FROM product_delivery_tasks WHERE story_id = %s
-                               ORDER BY created_at""",
-                            (srow["id"],),
-                        )
-                        tasks = [Task.model_validate(t) for t in cur.fetchall()]
-                        cur.execute(
-                            """SELECT id, story_id, text, satisfied, author,
-                                      created_at, updated_at
-                               FROM product_delivery_acceptance_criteria
-                               WHERE story_id = %s ORDER BY created_at""",
-                            (srow["id"],),
-                        )
-                        acs = [AcceptanceCriterion.model_validate(a) for a in cur.fetchall()]
-                        stories.append(
-                            StoryNode.model_validate(
-                                {**srow, "tasks": tasks, "acceptance_criteria": acs}
-                            )
-                        )
-                    epics.append(EpicNode.model_validate({**erow, "stories": stories}))
-                initiatives.append(InitiativeNode.model_validate({**irow, "epics": epics}))
+                    tasks_raw = cur.fetchall()
+                    cur.execute(
+                        """SELECT id, story_id, text, satisfied, author,
+                                  created_at, updated_at
+                           FROM product_delivery_acceptance_criteria
+                           WHERE story_id = ANY(%s)
+                           ORDER BY created_at""",
+                        (story_ids,),
+                    )
+                    acs_raw = cur.fetchall()
+
+        # Bucket children by parent id, preserving fetch order (which is
+        # already created_at thanks to the ORDER BY above).
+        tasks_by_story: dict[str, list[Task]] = {}
+        for t in tasks_raw:
+            tasks_by_story.setdefault(t["story_id"], []).append(Task.model_validate(t))
+        acs_by_story: dict[str, list[AcceptanceCriterion]] = {}
+        for a in acs_raw:
+            acs_by_story.setdefault(a["story_id"], []).append(AcceptanceCriterion.model_validate(a))
+        stories_by_epic: dict[str, list[StoryNode]] = {}
+        for srow in stories_raw:
+            stories_by_epic.setdefault(srow["epic_id"], []).append(
+                StoryNode.model_validate(
+                    {
+                        **srow,
+                        "tasks": tasks_by_story.get(srow["id"], []),
+                        "acceptance_criteria": acs_by_story.get(srow["id"], []),
+                    }
+                )
+            )
+        epics_by_initiative: dict[str, list[EpicNode]] = {}
+        for erow in epics_raw:
+            epics_by_initiative.setdefault(erow["initiative_id"], []).append(
+                EpicNode.model_validate({**erow, "stories": stories_by_epic.get(erow["id"], [])})
+            )
+        initiatives = [
+            InitiativeNode.model_validate(
+                {**irow, "epics": epics_by_initiative.get(irow["id"], [])}
+            )
+            for irow in initiatives_raw
+        ]
         return BacklogTree(product=product, initiatives=initiatives)
 
     @timed_query(store=_STORE, op="list_stories_for_product")

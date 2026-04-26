@@ -140,6 +140,7 @@ class ProductOwnerAgent:
         by_id = {s.id: s for s in stories}
         ranked: list[RankedBacklogItem] = []
         persist_rows: list[tuple[str, float | None, float | None]] = []
+        seen_ids: set[str] = set()
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             items = []
@@ -150,6 +151,16 @@ class ProductOwnerAgent:
             sid = raw.get("id")
             story = by_id.get(sid) if isinstance(sid, str) else None
             if story is None:
+                continue
+            # Models occasionally repeat the same id (truncation + retry,
+            # confused JSON). Take the first occurrence and warn on the
+            # rest so persisted scores stay deterministic instead of
+            # depending on whichever copy lands last.
+            if story.id in seen_ids:
+                logger.warning(
+                    "ProductOwnerAgent: duplicate story id %s in LLM payload; ignoring repeat",
+                    story.id,
+                )
                 continue
             inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
             rationale = str(raw.get("rationale") or "")
@@ -192,6 +203,7 @@ class ProductOwnerAgent:
                 )
                 continue
 
+            seen_ids.add(story.id)
             ranked.append(
                 RankedBacklogItem(
                     kind="story",
@@ -204,4 +216,29 @@ class ProductOwnerAgent:
                 )
             )
             persist_rows.append((story.id, wsjf_value, rice_value))
+
+        # Cover any stories the LLM omitted (truncation, skipped uncertain
+        # items). Surface them in the response with score=0 + a rationale
+        # so downstream planning sees them and can re-groom or hand-score
+        # them — silently dropping is the failure mode flagged by review.
+        for story in stories:
+            if story.id in seen_ids:
+                continue
+            logger.warning(
+                "ProductOwnerAgent: story %s missing from LLM output; including with score=0",
+                story.id,
+            )
+            ranked.append(
+                RankedBacklogItem(
+                    kind="story",
+                    id=story.id,
+                    title=story.title,
+                    score=0.0,
+                    wsjf_score=0.0 if method == "wsjf" else None,
+                    rice_score=0.0 if method == "rice" else None,
+                    rationale="LLM did not score this story; needs manual review.",
+                )
+            )
+            # Don't persist a 0 — leave the row's existing scores intact.
+            seen_ids.add(story.id)
         return ranked, persist_rows
