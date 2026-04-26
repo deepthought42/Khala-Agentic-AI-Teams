@@ -24,10 +24,12 @@ from typing import Any
 import pytest
 
 _ACTIVE_STATUSES = frozenset({"pending", "running"})
+# Mirrors backend/job_service/db.py:411-413 / 446-448 / 471-473.
 _WAITING_FIELDS = (
     "waiting_for_answers",
     "waiting_for_title_selection",
     "waiting_for_story_input",
+    "waiting_for_draft_feedback",
 )
 
 
@@ -137,11 +139,16 @@ class FakeJobServiceClient:
         waiting_field: str = "waiting_for_answers",
     ) -> list[str]:
         cutoff = datetime.now(tz=timezone.utc).timestamp() - stale_after_seconds
+        # Mirror production (``backend/job_service/db.py:404-413``): the
+        # caller-supplied ``waiting_field`` is excluded *in addition to* the
+        # other paused-for-user states.  A unit test that paused a job via,
+        # say, ``waiting_for_title_selection`` must not see it failed here.
+        waiting_fields = {waiting_field, *_WAITING_FIELDS}
         failed: list[str] = []
         for job in self._jobs.values():
             if job.get("status") not in _ACTIVE_STATUSES:
                 continue
-            if job.get(waiting_field):
+            if any(job.get(wf) for wf in waiting_fields):
                 continue
             hb = job.get("last_heartbeat_at") or job.get("updated_at") or job.get("created_at")
             try:

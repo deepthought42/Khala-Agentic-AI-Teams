@@ -49,10 +49,24 @@ class JobServiceClient:
 
     def __init__(self, team: str, base_url: str | None = None) -> None:
         self.team = team
-        resolved = base_url or _default_base_url()
-        if not resolved:
+        # Explicit base_url wins; otherwise resolve from JOB_SERVICE_URL each
+        # request via the ``_base_url`` property below.  This matters because
+        # team modules build module-level ``JobServiceClient(team=…)`` at import
+        # time — pinning the env value at construction would freeze whatever
+        # placeholder pytest's conftest had set before the integration fixture
+        # swapped in the real URL.
+        self._explicit_base_url: str | None = base_url.rstrip("/") if base_url else None
+        if not self._explicit_base_url and not _default_base_url():
             raise RuntimeError(_MISSING_URL_MSG)
-        self._base_url = resolved.rstrip("/")
+
+    @property
+    def _base_url(self) -> str:
+        if self._explicit_base_url is not None:
+            return self._explicit_base_url
+        url = _default_base_url()
+        if not url:
+            raise RuntimeError(_MISSING_URL_MSG)
+        return url.rstrip("/")
 
     # ------------------------------------------------------------------
     # HTTP helpers
