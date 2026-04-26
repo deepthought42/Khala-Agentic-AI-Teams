@@ -116,6 +116,14 @@ _STORY_COLS = (
     f"id, epic_id, title, user_story, status, wsjf_score, rice_score, "
     f"estimate_points, {_AUDIT_COLS}"
 )
+# Same projection as ``_STORY_COLS`` but every column qualified with the
+# ``s.`` alias for the ``list_stories_for_product`` JOIN. Maintained
+# explicitly (rather than via string rewriting) so substring matches
+# inside identifiers like ``epic_id`` can't corrupt the SQL.
+_STORY_COLS_ALIASED = (
+    "s.id, s.epic_id, s.title, s.user_story, s.status, s.wsjf_score, "
+    "s.rice_score, s.estimate_points, s.author, s.created_at, s.updated_at"
+)
 _TASK_COLS = f"id, story_id, title, description, status, owner, {_AUDIT_COLS}"
 _AC_COLS = f"id, story_id, text, satisfied, {_AUDIT_COLS}"
 _FEEDBACK_COLS = (
@@ -483,7 +491,7 @@ class ProductDeliveryStore:
         """Flat list of every story under a product. Used by the grooming agent."""
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                f"""SELECT {_STORY_COLS.replace("id, ", "s.id, ")}
+                f"""SELECT {_STORY_COLS_ALIASED}
                    FROM product_delivery_stories s
                    JOIN product_delivery_epics e ON e.id = s.epic_id
                    JOIN product_delivery_initiatives i ON i.id = e.initiative_id
@@ -512,48 +520,61 @@ class ProductDeliveryStore:
         # don't go through `_insert` because feedback_items needs the
         # validation-then-insert sequence inside one transaction (so a
         # concurrent delete of the linking chain can't slip past us).
+        # The INSERT is also wrapped in a FK-violation handler so a
+        # concurrent delete between validation and insert surfaces as
+        # 404, not a raw 500.
         now = _now()
         fid = _new_id()
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM product_delivery_products WHERE id = %s",
-                (product_id,),
-            )
-            if cur.fetchone() is None:
-                raise UnknownProductDeliveryEntity(f"product {product_id!r} does not exist")
-            if linked_story_id is not None:
+        try:
+            with self._conn() as conn, conn.cursor() as cur:
                 cur.execute(
-                    """SELECT i.product_id
-                       FROM product_delivery_stories s
-                       JOIN product_delivery_epics e ON e.id = s.epic_id
-                       JOIN product_delivery_initiatives i ON i.id = e.initiative_id
-                       WHERE s.id = %s""",
-                    (linked_story_id,),
+                    "SELECT 1 FROM product_delivery_products WHERE id = %s",
+                    (product_id,),
                 )
-                row = cur.fetchone()
-                if row is None:
-                    raise UnknownProductDeliveryEntity(f"story {linked_story_id!r} does not exist")
-                if row[0] != product_id:
-                    raise CrossProductFeedbackLink(
-                        f"story {linked_story_id!r} belongs to product "
-                        f"{row[0]!r}, not {product_id!r}"
+                if cur.fetchone() is None:
+                    raise UnknownProductDeliveryEntity(f"product {product_id!r} does not exist")
+                if linked_story_id is not None:
+                    cur.execute(
+                        """SELECT i.product_id
+                           FROM product_delivery_stories s
+                           JOIN product_delivery_epics e ON e.id = s.epic_id
+                           JOIN product_delivery_initiatives i ON i.id = e.initiative_id
+                           WHERE s.id = %s""",
+                        (linked_story_id,),
                     )
-            cur.execute(
-                f"""INSERT INTO product_delivery_feedback_items ({_FEEDBACK_COLS})
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    fid,
-                    product_id,
-                    source,
-                    Json(raw_payload),
-                    severity,
-                    "open",
-                    linked_story_id,
-                    author,
-                    now,
-                    now,
-                ),
-            )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise UnknownProductDeliveryEntity(
+                            f"story {linked_story_id!r} does not exist"
+                        )
+                    if row[0] != product_id:
+                        raise CrossProductFeedbackLink(
+                            f"story {linked_story_id!r} belongs to product "
+                            f"{row[0]!r}, not {product_id!r}"
+                        )
+                cur.execute(
+                    f"""INSERT INTO product_delivery_feedback_items ({_FEEDBACK_COLS})
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        fid,
+                        product_id,
+                        source,
+                        Json(raw_payload),
+                        severity,
+                        "open",
+                        linked_story_id,
+                        author,
+                        now,
+                        now,
+                    ),
+                )
+        except psycopg_errors.ForeignKeyViolation as exc:
+            # Race: a concurrent caller deleted the product or story
+            # between the validation SELECT and our INSERT. Surface as
+            # the same 404 the eager validation would have produced.
+            raise UnknownProductDeliveryEntity(
+                f"product or story for feedback item disappeared mid-write: {exc}"
+            ) from exc
         return FeedbackItem(
             id=fid,
             product_id=product_id,

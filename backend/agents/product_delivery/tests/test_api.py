@@ -558,6 +558,28 @@ def test_story_create_accepts_none_estimate_points(client: TestClient) -> None:
     assert r.status_code == 200
 
 
+@pytest.mark.parametrize("bad", ["Infinity", "-Infinity", "NaN"])
+def test_story_create_rejects_non_finite_estimate_points(client: TestClient, bad: str) -> None:
+    # Infinity passes `gt=0` but is non-finite; later it would propagate
+    # into WSJF `job_size` / RICE `effort` and serialise as null/invalid.
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+    eid = client.post(
+        "/api/product-delivery/epics",
+        json={"initiative_id": iid, "title": "E"},
+    ).json()["id"]
+    r = client.request(
+        "POST",
+        "/api/product-delivery/stories",
+        content=(f'{{"epic_id": "{eid}", "title": "S", "estimate_points": "{bad}"}}'),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422
+
+
 def test_groom_returns_503_when_llm_client_bootstrap_fails(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -37,6 +37,7 @@ from product_delivery.store import ProductDeliveryStore
 logger = logging.getLogger(__name__)
 
 _MISSING_RATIONALE = "LLM did not score this story; needs manual review."
+_MALFORMED_RATIONALE = "LLM emitted malformed scoring inputs; needs manual review."
 
 
 def _to_float(value: Any, fallback: float) -> float:
@@ -218,6 +219,20 @@ class ProductOwnerAgent:
         ranked: list[RankedBacklogItem] = []
         persist_rows: list[tuple[str, float | None, float | None]] = []
 
+        def _fallback(story: Story, rationale: str) -> RankedBacklogItem:
+            """Synthetic row for a story we couldn't score. Surfaced so
+            downstream planning sees the gap; not persisted, so existing
+            scores on the row stay intact."""
+            return RankedBacklogItem(
+                kind="story",
+                id=story.id,
+                title=story.title,
+                score=0.0,
+                wsjf_score=0.0 if method == "wsjf" else None,
+                rice_score=0.0 if method == "rice" else None,
+                rationale=rationale,
+            )
+
         for story in stories:
             raw = payload_by_id.get(story.id)
             if raw is None:
@@ -225,27 +240,22 @@ class ProductOwnerAgent:
                     "ProductOwnerAgent: story %s missing from LLM output; including with score=0",
                     story.id,
                 )
-                ranked.append(
-                    RankedBacklogItem(
-                        kind="story",
-                        id=story.id,
-                        title=story.title,
-                        score=0.0,
-                        wsjf_score=0.0 if method == "wsjf" else None,
-                        rice_score=0.0 if method == "rice" else None,
-                        rationale=_MISSING_RATIONALE,
-                    )
-                )
+                ranked.append(_fallback(story, _MISSING_RATIONALE))
                 continue
 
             inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
             try:
                 score, wsjf_value, rice_value = _score_for(method, inputs, story)
             except (TypeError, ValueError):
+                # Malformed inputs (un-coerceable strings, etc.). Surface
+                # the story with score=0 + a malformed-inputs rationale
+                # rather than dropping it silently — downstream planning
+                # would otherwise lose this work item entirely.
                 logger.warning(
-                    "ProductOwnerAgent: malformed inputs for story %s; skipping",
+                    "ProductOwnerAgent: malformed inputs for story %s; including with score=0",
                     story.id,
                 )
+                ranked.append(_fallback(story, _MALFORMED_RATIONALE))
                 continue
 
             ranked.append(

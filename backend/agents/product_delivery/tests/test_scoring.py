@@ -101,3 +101,40 @@ def test_rice_zero_effort_treated_as_one() -> None:
 def test_rice_negative_reach_floors_at_zero() -> None:
     score = rice_score(RICEInputs(reach=-50, impact=1, confidence=1, effort=2))
     assert score == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Finite-output guarantees
+# ---------------------------------------------------------------------------
+
+
+def test_wsjf_overflow_clamps_to_finite_max() -> None:
+    """Caller-supplied finite inputs that overflow during arithmetic must
+    not return ``inf`` — Starlette's JSON encoder rejects non-finite
+    floats and would raise during response serialisation otherwise.
+    """
+    import math
+    import sys
+
+    # cost_of_delay = 3 × max ≈ ±inf when summed; result must be finite.
+    huge = sys.float_info.max
+    score = wsjf_score(
+        WSJFInputs(
+            user_business_value=huge,
+            time_criticality=huge,
+            risk_reduction_or_opportunity_enablement=huge,
+            job_size=1.0,
+        )
+    )
+    assert math.isfinite(score)
+    assert score == pytest.approx(sys.float_info.max)
+
+
+def test_rice_overflow_clamps_to_finite_max() -> None:
+    import math
+    import sys
+
+    huge = sys.float_info.max
+    score = rice_score(RICEInputs(reach=huge, impact=huge, confidence=1.0, effort=1.0))
+    assert math.isfinite(score)
+    assert score == pytest.approx(sys.float_info.max)

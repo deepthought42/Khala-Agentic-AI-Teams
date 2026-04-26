@@ -124,6 +124,11 @@ _registered_teams: dict[str, bool] = {}
 # Track upstream liveness per team (updated by background health checker).
 _team_liveness: dict[str, str] = {}  # team_key -> "healthy" | "unhealthy" | "unknown"
 
+# In-process teams whose Postgres schema registration failed at startup.
+# Health reports these as "unhealthy" so operators see the broken
+# persistence instead of a green light beside endpoints that 503.
+_in_process_schema_failures: set[str] = set()
+
 # Background health check interval in seconds.
 _HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "30"))
 
@@ -246,6 +251,10 @@ async def lifespan(app: FastAPI):
         register_team_schemas(PRODUCT_DELIVERY_SCHEMA)
     except Exception:
         logger.exception("product_delivery postgres schema registration failed")
+        # Surface the failure through `/health` — the team is still
+        # mounted (so /docs and discovery work) but every persistence
+        # call will 503, so health must reflect that.
+        _in_process_schema_failures.add("product_delivery")
 
     # 1. Mount team assistant conversational sub-apps (before proxy routes).
     try:
@@ -437,9 +446,12 @@ async def health() -> UnifiedHealthResponse:
         registered = _registered_teams.get(key, False)
         liveness = _team_liveness.get(key, "unknown")
         if config.in_process:
-            # No upstream container — health rides on the unified API
-            # process itself, which is up if we're answering this call.
-            status = "healthy"
+            # No upstream container, but the in-process router still
+            # depends on Postgres for product_delivery / agent_console.
+            # If schema registration failed at startup, persistence calls
+            # will 503 — surface that here instead of always reporting
+            # "healthy".
+            status = "unhealthy" if key in _in_process_schema_failures else "healthy"
         elif registered and liveness == "healthy":
             status = "healthy"
         elif registered and liveness == "unknown":

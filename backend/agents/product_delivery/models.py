@@ -30,11 +30,30 @@ def _finite_or_none(value: float | None) -> float | None:
     if value is None:
         return None
     if not math.isfinite(value):
-        raise ValueError("score must be a finite number (NaN / Infinity not allowed)")
+        raise ValueError("value must be a finite number (NaN / Infinity not allowed)")
     return value
 
 
 FiniteScore = Annotated[float | None, AfterValidator(_finite_or_none)]
+
+
+def _positive_finite_or_none(value: float | None) -> float | None:
+    """Like ``_finite_or_none`` but also rejects values ≤ 0.
+
+    Used by ``estimate_points``: zero / negative values silently inflate
+    WSJF/RICE priority (denominators clamp to 1), and ``Infinity``
+    passes ``gt=0`` but is non-finite. ``None`` still means "unestimated".
+    """
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        raise ValueError("estimate_points must be a finite positive number")
+    if value <= 0:
+        raise ValueError("estimate_points must be > 0")
+    return value
+
+
+PositiveFiniteEstimate = Annotated[float | None, AfterValidator(_positive_finite_or_none)]
 
 # ---------------------------------------------------------------------------
 # Backlog entities
@@ -135,11 +154,11 @@ class StoryCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     user_story: str = ""
     status: str = "proposed"
-    # Strictly positive: zero / negative effort silently inflates WSJF
-    # (job_size <= 0 clamps to 1) and RICE (effort <= 0 clamps to 1),
-    # which would let bad input bubble misleading priorities into the
-    # ranking. Reject at the API boundary instead.
-    estimate_points: float | None = Field(default=None, gt=0)
+    # Strictly positive AND finite: zero / negative effort silently
+    # inflates WSJF (job_size <= 0 clamps to 1) and RICE (effort <= 0
+    # clamps to 1), and Infinity would pass `gt=0` but propagate as
+    # non-finite into scoring fallbacks. Reject at the API boundary.
+    estimate_points: PositiveFiniteEstimate = None
 
 
 class TaskCreate(BaseModel):

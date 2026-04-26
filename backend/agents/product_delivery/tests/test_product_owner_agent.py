@@ -310,6 +310,39 @@ def test_groom_treats_non_finite_inputs_as_fallback() -> None:
     assert math.isfinite(result.ranked[0].score)
 
 
+def test_groom_surfaces_malformed_inputs_with_score_zero() -> None:
+    # When an LLM returns un-coerceable values (e.g. a list where a
+    # number is expected), the agent must still surface the story in
+    # ``GroomResult.ranked`` with score=0 + a malformed-inputs rationale.
+    # Dropping it silently is the failure mode flagged by review.
+    stories = [_story("s1")]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": ["not", "a", "number"],
+                        "time_criticality": 1,
+                        "risk_reduction_or_opportunity_enablement": 1,
+                        "job_size": 3,
+                    },
+                    "rationale": "broken",
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+    assert len(result.ranked) == 1
+    assert result.ranked[0].id == "s1"
+    assert result.ranked[0].score == 0.0
+    assert "malformed" in result.ranked[0].rationale.lower()
+    # Synthetic row → no persistence (existing scores stay intact).
+    assert store.persisted == []
+
+
 def test_groom_only_sees_stories_under_requested_product() -> None:
     # Two products with disjoint stories. The agent must only score the
     # stories under the requested product — a regression to the old

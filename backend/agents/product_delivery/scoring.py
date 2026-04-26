@@ -11,13 +11,38 @@ Both formulas are well-established product-prioritisation heuristics:
   ``confidence`` is a 0..1 multiplier (60% → 0.6). Effort of zero is
   treated as 1 for the same reason as WSJF.
 
-Each function returns a ``float`` rounded to four decimals so the
-persisted ``DOUBLE PRECISION`` column is stable across re-grooms.
+Each function returns a finite ``float`` rounded to four decimals so the
+persisted ``DOUBLE PRECISION`` column is stable across re-grooms. If
+arithmetic on caller-supplied finite inputs would overflow (e.g. very
+large ``reach * impact`` in RICE), the result is clamped to a finite
+sentinel (``sys.float_info.max``) before rounding rather than returned
+as ``inf`` — non-finite scores break Starlette's JSON encoder when
+serialised back through ``/backlog`` or ``/groom``.
 """
 
 from __future__ import annotations
 
+import math
+import sys
 from dataclasses import dataclass
+
+_FINITE_MAX = sys.float_info.max
+
+
+def _finite_round(value: float) -> float:
+    """Round to 4 dp; clamp ``±inf`` to ``±sys.float_info.max`` first.
+
+    Always returns a finite float, so persistence and JSON serialisation
+    downstream can't trip on a non-finite score.
+    """
+    if not math.isfinite(value):
+        # NaN propagates through arithmetic too; treat it like +inf so
+        # the caller still gets a deterministic finite number.
+        if math.isnan(value) or value > 0:
+            value = _FINITE_MAX
+        else:
+            value = -_FINITE_MAX
+    return round(value, 4)
 
 
 @dataclass(frozen=True)
@@ -44,7 +69,7 @@ def wsjf_score(inputs: WSJFInputs) -> float:
         + max(0.0, inputs.risk_reduction_or_opportunity_enablement)
     )
     job_size = inputs.job_size if inputs.job_size > 0 else 1.0
-    return round(cost_of_delay / job_size, 4)
+    return _finite_round(cost_of_delay / job_size)
 
 
 def rice_score(inputs: RICEInputs) -> float:
@@ -55,7 +80,4 @@ def rice_score(inputs: RICEInputs) -> float:
     """
     confidence = min(1.0, max(0.0, inputs.confidence))
     effort = inputs.effort if inputs.effort > 0 else 1.0
-    return round(
-        (max(0.0, inputs.reach) * max(0.0, inputs.impact) * confidence) / effort,
-        4,
-    )
+    return _finite_round((max(0.0, inputs.reach) * max(0.0, inputs.impact) * confidence) / effort)
