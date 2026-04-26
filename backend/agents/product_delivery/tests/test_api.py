@@ -325,10 +325,23 @@ class _FakeStore:
         linked_story_id: str | None,
         author: str,
     ) -> FeedbackItem:
-        from product_delivery.store import UnknownProductDeliveryEntity
+        from product_delivery.store import (
+            CrossProductFeedbackLink,
+            UnknownProductDeliveryEntity,
+        )
 
         if product_id not in self.products:
             raise UnknownProductDeliveryEntity(f"product {product_id!r} does not exist")
+        if linked_story_id is not None:
+            story = self.stories.get(linked_story_id)
+            if story is None:
+                raise UnknownProductDeliveryEntity(f"story {linked_story_id!r} does not exist")
+            owning_product = self.initiatives[self.epics[story.epic_id].initiative_id].product_id
+            if owning_product != product_id:
+                raise CrossProductFeedbackLink(
+                    f"story {linked_story_id!r} belongs to product "
+                    f"{owning_product!r}, not {product_id!r}"
+                )
         fid = self._id()
         now = _now()
         f = FeedbackItem(
@@ -493,6 +506,85 @@ def test_feedback_create_and_list_filters_by_status(client: TestClient) -> None:
         params={"product_id": pid, "status": "closed"},
     ).json()
     assert listed_closed == []
+
+
+def test_feedback_rejects_cross_product_story_link(client: TestClient) -> None:
+    # Two products, each with one story. Linking a feedback item for
+    # product A to a story that lives under product B must be rejected.
+    pid_a = client.post("/api/product-delivery/products", json={"name": "A"}).json()["id"]
+    pid_b = client.post("/api/product-delivery/products", json={"name": "B"}).json()["id"]
+    iid_b = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid_b, "title": "I"},
+    ).json()["id"]
+    eid_b = client.post(
+        "/api/product-delivery/epics",
+        json={"initiative_id": iid_b, "title": "E"},
+    ).json()["id"]
+    sid_b = client.post(
+        "/api/product-delivery/stories",
+        json={"epic_id": eid_b, "title": "S"},
+    ).json()["id"]
+
+    resp = client.post(
+        "/api/product-delivery/feedback",
+        json={
+            "product_id": pid_a,
+            "source": "qa",
+            "linked_story_id": sid_b,
+        },
+    )
+    assert resp.status_code == 400
+    assert "belongs to product" in resp.json()["detail"]
+
+
+def test_feedback_accepts_same_product_story_link(client: TestClient) -> None:
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+    eid = client.post(
+        "/api/product-delivery/epics",
+        json={"initiative_id": iid, "title": "E"},
+    ).json()["id"]
+    sid = client.post(
+        "/api/product-delivery/stories",
+        json={"epic_id": eid, "title": "S"},
+    ).json()["id"]
+
+    resp = client.post(
+        "/api/product-delivery/feedback",
+        json={"product_id": pid, "source": "qa", "linked_story_id": sid},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["linked_story_id"] == sid
+
+
+def test_groom_returns_503_when_storage_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate a Postgres outage hitting `store.get_product` (the failure
+    # path covered by the P1 review comment). The route must return 503,
+    # not 500, so clients can retry the same way they do for the
+    # CRUD endpoints.
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+
+    from unified_api.routes import product_delivery as router_module
+
+    from product_delivery.store import ProductDeliveryStorageUnavailable
+
+    def _boom(_self, _product_id):  # type: ignore[no-untyped-def]
+        raise ProductDeliveryStorageUnavailable("postgres is down")
+
+    monkeypatch.setattr(router_module.get_store().__class__, "get_product", _boom)
+
+    resp = client.post(
+        "/api/product-delivery/groom",
+        json={"product_id": pid, "method": "wsjf"},
+    )
+    assert resp.status_code == 503
+    assert "postgres is down" in resp.json()["detail"]
 
 
 def test_groom_unknown_product_returns_404(client: TestClient) -> None:

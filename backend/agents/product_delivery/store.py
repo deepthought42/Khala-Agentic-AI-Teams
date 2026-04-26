@@ -55,6 +55,16 @@ class UnknownProductDeliveryEntity(LookupError):
     """A foreign-key target (product/initiative/epic/story) does not exist."""
 
 
+class CrossProductFeedbackLink(ValueError):
+    """A feedback item tried to link to a story under a different product.
+
+    The schema's two FKs (``product_id`` and ``linked_story_id``) cannot
+    enforce this on their own — the story is reachable only via
+    ``epic → initiative → product``. We validate at the store layer so
+    triage stays scoped to the right product.
+    """
+
+
 class ProductDeliveryStore:
     """Stateless DAL. Construct once per process; pool is shared."""
 
@@ -478,6 +488,29 @@ class ProductDeliveryStore:
         fid = _new_id()
         try:
             with self._conn() as conn, conn.cursor() as cur:
+                # When linked_story_id is set, verify the story is under the
+                # same product as the feedback item (story → epic → initiative
+                # → product). Done inside the same transaction so a concurrent
+                # delete of the linking chain can't slip a stale row past us.
+                if linked_story_id is not None:
+                    cur.execute(
+                        """SELECT i.product_id
+                           FROM product_delivery_stories s
+                           JOIN product_delivery_epics e ON e.id = s.epic_id
+                           JOIN product_delivery_initiatives i ON i.id = e.initiative_id
+                           WHERE s.id = %s""",
+                        (linked_story_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise UnknownProductDeliveryEntity(
+                            f"story {linked_story_id!r} does not exist"
+                        )
+                    if row[0] != product_id:
+                        raise CrossProductFeedbackLink(
+                            f"story {linked_story_id!r} belongs to product "
+                            f"{row[0]!r}, not {product_id!r}"
+                        )
                 cur.execute(
                     """INSERT INTO product_delivery_feedback_items
                           (id, product_id, source, raw_payload, severity, status,

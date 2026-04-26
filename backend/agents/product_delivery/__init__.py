@@ -29,6 +29,7 @@ from product_delivery.models import (
 )
 from product_delivery.scoring import rice_score, wsjf_score
 from product_delivery.store import (
+    CrossProductFeedbackLink,
     ProductDeliveryStorageUnavailable,
     ProductDeliveryStore,
     UnknownProductDeliveryEntity,
@@ -38,6 +39,7 @@ from product_delivery.store import (
 __all__ = [
     "AcceptanceCriterion",
     "BacklogTree",
+    "CrossProductFeedbackLink",
     "Epic",
     "FeedbackItem",
     "GroomRequest",

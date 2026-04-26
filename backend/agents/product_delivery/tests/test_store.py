@@ -10,6 +10,7 @@ import pytest
 
 from product_delivery.postgres import SCHEMA
 from product_delivery.store import (
+    CrossProductFeedbackLink,
     ProductDeliveryStore,
     UnknownProductDeliveryEntity,
     get_store,
@@ -154,3 +155,33 @@ def test_feedback_round_trip_and_status_filter() -> None:
 
     closed = store.list_feedback(p.id, status="closed")
     assert closed == []
+
+
+def test_feedback_rejects_cross_product_story_link() -> None:
+    store = _store()
+    p_a = store.create_product(name="A", description="", vision="", author="alice")
+    p_b = store.create_product(name="B", description="", vision="", author="alice")
+    i_b = store.create_initiative(
+        product_id=p_b.id, title="I", summary="", status="proposed", author="alice"
+    )
+    e_b = store.create_epic(
+        initiative_id=i_b.id, title="E", summary="", status="proposed", author="alice"
+    )
+    s_b = store.create_story(
+        epic_id=e_b.id,
+        title="S",
+        user_story="",
+        status="proposed",
+        estimate_points=None,
+        author="alice",
+    )
+
+    with pytest.raises(CrossProductFeedbackLink):
+        store.create_feedback_item(
+            product_id=p_a.id,
+            source="qa",
+            raw_payload={},
+            severity="normal",
+            linked_story_id=s_b.id,
+            author="alice",
+        )

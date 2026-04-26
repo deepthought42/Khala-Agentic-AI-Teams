@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from product_delivery import (
     AcceptanceCriterion,
     BacklogTree,
+    CrossProductFeedbackLink,
     Epic,
     FeedbackItem,
     GroomRequest,
@@ -215,19 +216,19 @@ def patch_scores(kind: _ScoredKind, entity_id: str, body: ScoreUpdate) -> dict[s
 def groom(body: GroomRequest) -> GroomResult:
     try:
         store = get_store()
+        if store.get_product(body.product_id) is None:
+            raise HTTPException(status_code=404, detail=f"unknown product: {body.product_id}")
+
+        from llm_service import get_client  # noqa: PLC0415 — lazy: tests stub via override
+
+        agent = ProductOwnerAgent(store=store, llm_client=get_client("product_owner"))
+        return agent.groom(
+            product_id=body.product_id,
+            method=body.method,
+            persist=body.persist,
+        )
     except ProductDeliveryStorageUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if store.get_product(body.product_id) is None:
-        raise HTTPException(status_code=404, detail=f"unknown product: {body.product_id}")
-
-    from llm_service import get_client  # noqa: PLC0415 — lazy: tests stub via override
-
-    agent = ProductOwnerAgent(store=store, llm_client=get_client("product_owner"))
-    return agent.groom(
-        product_id=body.product_id,
-        method=body.method,
-        persist=body.persist,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +247,8 @@ def create_feedback(body: FeedbackItemCreate) -> FeedbackItem:
             linked_story_id=body.linked_story_id,
             author=resolve_author(),
         )
+    except CrossProductFeedbackLink as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnknownProductDeliveryEntity as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProductDeliveryStorageUnavailable as exc:
