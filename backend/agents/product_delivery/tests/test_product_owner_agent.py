@@ -29,14 +29,20 @@ class _StubLLM:
 
 
 class _FakeStore:
-    """In-memory subset of ``ProductDeliveryStore`` used by the agent."""
+    """In-memory subset of ``ProductDeliveryStore`` used by the agent.
 
-    def __init__(self, stories: list[Story]) -> None:
-        self._stories = stories
+    Stories are keyed by ``product_id`` so tests can put two products
+    side by side and assert that ``list_stories_for_product`` only
+    returns the stories scoped to the requested product (i.e. catches
+    a regression that would leak the agent across product boundaries).
+    """
+
+    def __init__(self, stories_by_product: dict[str, list[Story]]) -> None:
+        self._stories_by_product = stories_by_product
         self.persisted: list[tuple[str, float | None, float | None]] = []
 
     def list_stories_for_product(self, product_id: str) -> list[Story]:
-        return [s for s in self._stories if s.id.startswith(product_id) or True]
+        return list(self._stories_by_product.get(product_id, []))
 
     def bulk_update_story_scores(
         self,
@@ -45,6 +51,11 @@ class _FakeStore:
         rows = list(rows)
         self.persisted.extend(rows)
         return len(rows)
+
+
+def _fake_store(*, stories: list[Story], product_id: str = "prod-x") -> _FakeStore:
+    """Most tests use a single product; this keeps the call sites short."""
+    return _FakeStore({product_id: stories})
 
 
 def _story(sid: str, *, title: str = "do thing", points: float | None = 5.0) -> Story:
@@ -92,10 +103,10 @@ def test_groom_wsjf_ranks_and_persists_scores() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
 
-    result = agent.groom(product_id="anything", method="wsjf", persist=True)
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
 
     # Sorted descending by score: s2 (4.0) then s1 (2.0)
     assert [r.id for r in result.ranked] == ["s2", "s1"]
@@ -121,9 +132,9 @@ def test_groom_rice_uses_estimate_points_when_effort_missing() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="rice", persist=False)
+    result = agent.groom(product_id="prod-x", method="rice", persist=False)
     # effort defaults to estimate_points / 4 = 2.0 → score 500
     assert result.ranked[0].score == 500.0
     assert store.persisted == []
@@ -148,17 +159,17 @@ def test_groom_skips_unknown_story_ids() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="wsjf", persist=False)
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=False)
     assert [r.id for r in result.ranked] == ["real"]
 
 
 def test_groom_returns_empty_when_backlog_empty() -> None:
-    store = _FakeStore([])
+    store = _fake_store(stories=[])
     llm = _StubLLM(payload={"items": []})
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="wsjf")
+    result = agent.groom(product_id="prod-x", method="wsjf")
     assert result.ranked == []
     # LLM should not have been called when backlog is empty
     assert llm.calls == []
@@ -170,9 +181,9 @@ def test_groom_handles_llm_exception_gracefully() -> None:
             raise RuntimeError("model unreachable")
 
     stories = [_story("s1")]
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=_BoomLLM())  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="wsjf")
+    result = agent.groom(product_id="prod-x", method="wsjf")
     assert result.ranked == []
 
 
@@ -197,9 +208,9 @@ def test_groom_wsjf_treats_null_job_size_as_estimate_points_fallback() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="wsjf", persist=False)
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=False)
     # cost_of_delay = 12; job_size falls back to estimate_points (4) → 3.0
     assert len(result.ranked) == 1
     assert result.ranked[0].score == 3.0
@@ -223,9 +234,9 @@ def test_groom_rice_treats_null_effort_as_estimate_points_fallback() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="rice", persist=False)
+    result = agent.groom(product_id="prod-x", method="rice", persist=False)
     # effort falls back to estimate_points / 4 = 2.0 → score 500
     assert len(result.ranked) == 1
     assert result.ranked[0].score == 500.0
@@ -250,9 +261,47 @@ def test_groom_wsjf_treats_null_value_components_as_zero() -> None:
             ]
         }
     )
-    store = _FakeStore(stories)
+    store = _fake_store(stories=stories)
     agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
-    result = agent.groom(product_id="x", method="wsjf", persist=False)
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=False)
     # cost_of_delay = 0 → score 0
     assert len(result.ranked) == 1
     assert result.ranked[0].score == 0.0
+
+
+def test_groom_only_sees_stories_under_requested_product() -> None:
+    # Two products with disjoint stories. The agent must only score the
+    # stories under the requested product — a regression to the old
+    # `or True` predicate (or any other cross-product leak in the real
+    # store's JOIN) would surface stories from the wrong product here.
+    a_only = [_story("s-a")]
+    b_only = [_story("s-b")]
+    store = _FakeStore({"prod-a": a_only, "prod-b": b_only})
+
+    inputs = {
+        "user_business_value": 1,
+        "time_criticality": 1,
+        "risk_reduction_or_opportunity_enablement": 1,
+        "job_size": 3,
+    }
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {"id": "s-a", "inputs": inputs, "rationale": ""},
+                {"id": "s-b", "inputs": inputs, "rationale": ""},
+            ]
+        }
+    )
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+
+    result_a = agent.groom(product_id="prod-a", method="wsjf", persist=False)
+    assert [r.id for r in result_a.ranked] == ["s-a"]
+
+    result_b = agent.groom(product_id="prod-b", method="wsjf", persist=False)
+    assert [r.id for r in result_b.ranked] == ["s-b"]
+
+    # An unknown product id has no stories and the LLM is never called.
+    pre_calls = len(llm.calls)
+    result_missing = agent.groom(product_id="prod-missing", method="wsjf")
+    assert result_missing.ranked == []
+    assert len(llm.calls) == pre_calls
