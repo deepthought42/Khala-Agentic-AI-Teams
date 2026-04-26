@@ -626,8 +626,21 @@ def test_groom_returns_503_when_llm_client_bootstrap_fails(
     # `get_client("product_owner")` can fail on misconfigured provider
     # / missing credentials. The route must surface that as 503 (not a
     # bare 500) so clients see the same "transient infra" signal they
-    # do for a Postgres outage.
+    # do for a Postgres outage. We need a non-empty backlog here —
+    # an empty backlog short-circuits before the LLM bootstrap.
     pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+    eid = client.post(
+        "/api/product-delivery/epics",
+        json={"initiative_id": iid, "title": "E"},
+    ).json()["id"]
+    client.post(
+        "/api/product-delivery/stories",
+        json={"epic_id": eid, "title": "S", "estimate_points": 5},
+    )
 
     import sys
     import types
@@ -803,6 +816,76 @@ def test_groom_unknown_product_returns_404(client: TestClient) -> None:
         json={"product_id": "nope", "method": "wsjf"},
     )
     assert resp.status_code == 404
+
+
+def test_groom_empty_backlog_does_not_bootstrap_llm(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Empty backlog short-circuits to GroomResult(ranked=[]) without any
+    # LLM call. Even if `get_client` would raise, the route must return
+    # 200 — otherwise newly-created products with zero stories 503
+    # whenever the LLM provider is down.
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+
+    import sys
+    import types
+
+    stub_module = types.ModuleType("llm_service")
+    calls: list[tuple] = []
+
+    def _boom(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise RuntimeError("LLM provider down")
+
+    stub_module.get_client = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "llm_service", stub_module)
+
+    resp = client.post(
+        "/api/product-delivery/groom",
+        json={"product_id": pid, "method": "wsjf"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ranked"] == []
+    # `get_client` must not have been called for the empty-backlog path.
+    assert calls == []
+
+
+def test_groom_returns_503_when_llm_service_import_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Module-level import errors (missing strands/ollama, broken plugin)
+    # must surface as 503, the same way `get_client` failures do — the
+    # route's error contract is "transient infra problem, retry".
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+    eid = client.post(
+        "/api/product-delivery/epics",
+        json={"initiative_id": iid, "title": "E"},
+    ).json()["id"]
+    client.post(
+        "/api/product-delivery/stories",
+        json={"epic_id": eid, "title": "S", "estimate_points": 5},
+    )
+
+    import sys
+
+    # Make `from llm_service import get_client` fail at import time.
+    class _BoomModule:
+        def __getattr__(self, name):
+            raise ImportError(f"llm_service plugin broken: {name}")
+
+    monkeypatch.setitem(sys.modules, "llm_service", _BoomModule())
+
+    resp = client.post(
+        "/api/product-delivery/groom",
+        json={"product_id": pid, "method": "wsjf"},
+    )
+    assert resp.status_code == 503
+    assert "LLM client unavailable" in resp.json()["detail"]
 
 
 def test_groom_uses_stubbed_llm_and_returns_ranked_result(

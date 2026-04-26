@@ -238,7 +238,9 @@ class GroomRequest(BaseModel):
         default=True,
         description=(
             "When True (default), persist the computed scores back onto each "
-            "story / epic / initiative row. Set to False for what-if scoring."
+            "scored **story** row. Epic and initiative rows are not updated by "
+            "grooming today — those scores are set explicitly via "
+            "PATCH /{kind}/{id}/scores. Set to False for what-if scoring."
         ),
     )
 

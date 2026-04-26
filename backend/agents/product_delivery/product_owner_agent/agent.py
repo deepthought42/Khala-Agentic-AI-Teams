@@ -269,7 +269,19 @@ class ProductOwnerAgent:
                 ranked.append(_fallback(story, _MISSING_RATIONALE))
                 continue
 
-            inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
+            inputs = raw.get("inputs")
+            if not isinstance(inputs, dict):
+                # `inputs` missing or non-object (e.g. `null`, list, string).
+                # Treating an empty dict here would silently produce a
+                # zero score and persist it, overwriting any existing
+                # real score on the row. Route through the malformed
+                # fallback so the synthetic zero stays visible-only.
+                logger.warning(
+                    "ProductOwnerAgent: non-dict inputs for story %s; including with score=0",
+                    story.id,
+                )
+                ranked.append(_fallback(story, _MALFORMED_RATIONALE))
+                continue
             try:
                 score, wsjf_value, rice_value = _score_for(method, inputs, story)
             except (TypeError, ValueError):

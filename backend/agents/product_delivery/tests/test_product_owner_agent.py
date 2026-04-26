@@ -315,6 +315,34 @@ def test_groom_treats_non_finite_inputs_as_fallback() -> None:
     assert math.isfinite(result.ranked[0].score)
 
 
+def test_groom_surfaces_non_dict_inputs_with_score_zero_no_persist() -> None:
+    # When the LLM returns `inputs: null` (or a list/string), the
+    # agent must NOT silently substitute `{}` and persist a synthetic
+    # zero — that would overwrite the row's existing real score.
+    # Route through the malformed fallback (visible-only, no persist).
+    stories = [_story("s1")]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": None,  # non-dict — must trigger fallback
+                    "rationale": "model gave up",
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+    assert len(result.ranked) == 1
+    assert result.ranked[0].id == "s1"
+    assert result.ranked[0].score == 0.0
+    assert "malformed" in result.ranked[0].rationale.lower()
+    # Critical: synthetic row must NOT be persisted.
+    assert store.persisted == []
+
+
 def test_groom_surfaces_malformed_inputs_with_score_zero() -> None:
     # When an LLM returns un-coerceable values (e.g. a list where a
     # number is expected), the agent must still surface the story in

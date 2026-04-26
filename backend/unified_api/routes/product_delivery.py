@@ -215,13 +215,26 @@ def groom(body: GroomRequest) -> GroomResult:
     if store.get_product(body.product_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown product: {body.product_id}")
 
-    from llm_service import get_client  # noqa: PLC0415 — lazy: tests stub via override
+    # Defer LLM client bootstrap until we actually need it: a product
+    # with no stories short-circuits to an empty `GroomResult` without
+    # any LLM call, so we shouldn't fail with 503 here when the LLM
+    # provider is down. The agent itself does the empty-backlog check.
+    if not store.list_stories_for_product(body.product_id):
+        agent = ProductOwnerAgent(store=store, llm_client=_NullLLMClient())
+        return agent.groom(
+            product_id=body.product_id,
+            method=body.method,
+            persist=body.persist,
+        )
 
-    # `get_client` can raise on misconfigured provider, missing credentials,
-    # or import-time failures inside the LLM stack. Surface those as 503
-    # (same shape as a Postgres outage) so clients see a consistent
-    # "transient infrastructure" signal instead of a bare 500.
+    # `get_client` (and the `llm_service` import itself) can raise on
+    # misconfigured provider, missing credentials, or module/dependency
+    # import-time failures. Surface all of those as 503 (same shape as a
+    # Postgres outage) so clients see a consistent "transient
+    # infrastructure" signal instead of a bare 500.
     try:
+        from llm_service import get_client  # noqa: PLC0415 — lazy: tests stub via override
+
         llm_client = get_client("product_owner")
     except Exception as exc:
         logger.exception("ProductOwnerAgent: LLM client bootstrap failed")
@@ -236,6 +249,20 @@ def groom(body: GroomRequest) -> GroomResult:
         method=body.method,
         persist=body.persist,
     )
+
+
+class _NullLLMClient:
+    """Sentinel client used only when the backlog is empty.
+
+    The agent never calls ``complete_json`` on the empty-backlog path
+    (it short-circuits to ``GroomResult(ranked=[])`` before any LLM
+    interaction), so this sentinel is just a typing-stable placeholder
+    that lets us avoid bootstrapping the real client when the LLM
+    provider is unavailable.
+    """
+
+    def complete_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:  # pragma: no cover
+        raise RuntimeError("_NullLLMClient.complete_json should never be called — empty backlog short-circuit only")
 
 
 # ---------------------------------------------------------------------------
