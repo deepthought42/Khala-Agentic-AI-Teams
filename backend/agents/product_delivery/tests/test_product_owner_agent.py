@@ -274,6 +274,42 @@ def test_groom_wsjf_treats_null_value_components_as_zero() -> None:
     assert result.ranked[0].score == 0.0
 
 
+def test_groom_treats_non_finite_inputs_as_fallback() -> None:
+    # Models occasionally emit `"NaN"` or `"Infinity"` for fields they
+    # refuse to commit to. `float("NaN")` succeeds but propagates into
+    # `RankedBacklogItem.score`, breaking JSON serialization downstream.
+    # `_to_float` must fall back the same way it does for None.
+    stories = [_story("s1", points=4.0)]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": 6,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 2,
+                        # Non-finite denominator — must fall back to
+                        # estimate_points (4) rather than become inf.
+                        "job_size": float("inf"),
+                    },
+                    "rationale": "",
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=False)
+    assert len(result.ranked) == 1
+    # cost_of_delay = 12; job_size falls back to estimate_points (4) → 3.0.
+    assert result.ranked[0].score == 3.0
+    # And the score is finite for the JSON encoder downstream.
+    import math
+
+    assert math.isfinite(result.ranked[0].score)
+
+
 def test_groom_only_sees_stories_under_requested_product() -> None:
     # Two products with disjoint stories. The agent must only score the
     # stories under the requested product — a regression to the old

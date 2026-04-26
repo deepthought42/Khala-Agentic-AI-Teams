@@ -14,10 +14,27 @@ The principal differences are:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """Reject NaN / ±Infinity. Pydantic happily coerces ``"NaN"`` / ``"Infinity"``
+    on plain ``float`` fields; non-finite scores break Starlette's JSON
+    encoder downstream and corrupt persisted ranking data, so we refuse
+    them at the boundary.
+    """
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        raise ValueError("score must be a finite number (NaN / Infinity not allowed)")
+    return value
+
+
+FiniteScore = Annotated[float | None, AfterValidator(_finite_or_none)]
 
 # ---------------------------------------------------------------------------
 # Backlog entities
@@ -156,8 +173,8 @@ class StatusUpdate(BaseModel):
 class ScoreUpdate(BaseModel):
     """PATCH body for setting scores on initiatives/epics/stories."""
 
-    wsjf_score: float | None = None
-    rice_score: float | None = None
+    wsjf_score: FiniteScore = None
+    rice_score: FiniteScore = None
 
 
 # ---------------------------------------------------------------------------

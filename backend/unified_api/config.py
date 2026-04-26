@@ -21,6 +21,12 @@ class TeamConfig:
     cell: str = "default"
     # Per-team proxy timeout in seconds. Long-running teams (SE pipeline) get higher timeouts.
     timeout_seconds: float = 60.0
+    # When True, this team is mounted in-process by the unified API
+    # (e.g. via ``app.include_router(...)``) rather than running in its
+    # own container. Proxy registration is skipped for these teams, but
+    # the security gateway still scans their prefix and discovery surfaces
+    # (``/teams``, ``/health``, ``/``) report them as live.
+    in_process: bool = False
 
 
 # Default port for the unified API server
@@ -224,10 +230,11 @@ TEAM_CONFIGS: dict[str, TeamConfig] = {
         timeout_seconds=120.0,
     ),
     # In-process module (not a proxy team): the unified API mounts the
-    # product_delivery router directly. Listed here with enabled=False so
-    # `_register_proxy_routes` skips proxy registration but the security
-    # gateway middleware still picks up the prefix in
-    # `_get_team_prefixes()` and scans request bodies.
+    # product_delivery router directly via `app.include_router(...)`.
+    # `in_process=True` so `_register_proxy_routes` skips proxy
+    # registration but the security gateway middleware picks up the
+    # prefix in `_get_team_prefixes()` and discovery surfaces report
+    # the team as live (`/teams`, `/health`, `/` show enabled=true).
     "product_delivery": TeamConfig(
         name="Product Delivery",
         prefix="/api/product-delivery",
@@ -235,10 +242,10 @@ TEAM_CONFIGS: dict[str, TeamConfig] = {
             "Persistent product backlog (products → initiatives → epics → stories → tasks), "
             "WSJF/RICE grooming, and feedback intake. In-process module mounted on the unified API."
         ),
-        enabled=False,
         tags=["product-delivery", "backlog", "grooming"],
         cell="core_dev",
         timeout_seconds=60.0,
+        in_process=True,
     ),
 }
 

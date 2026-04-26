@@ -105,16 +105,20 @@ def test_blogging_team_config_structure():
 def test_product_delivery_listed_for_security_gateway_scanning():
     """product_delivery is an in-process module mounted by unified_api.
 
-    It must appear in TEAM_CONFIGS so the security gateway middleware's
-    `_get_team_prefixes()` includes `/api/product-delivery` and scans
-    bodies. It is `enabled=False` so `_register_proxy_routes` skips
-    proxy registration (there is no separate container to forward to).
+    Marked `in_process=True` (and `enabled=True`) so:
+
+    * `_get_team_prefixes()` includes `/api/product-delivery` and the
+      security gateway middleware scans bodies.
+    * `_register_proxy_routes` skips proxy registration (no container).
+    * Discovery surfaces (`/teams`, `/health`, `/`) report it as live
+      because the in-process router actually serves the route.
     """
     from unified_api.middleware.security_gateway import _get_team_prefixes
 
     cfg = TEAM_CONFIGS["product_delivery"]
     assert cfg.prefix == "/api/product-delivery"
-    assert cfg.enabled is False
+    assert cfg.enabled is True
+    assert cfg.in_process is True
     assert "/api/product-delivery" in _get_team_prefixes()
 
 

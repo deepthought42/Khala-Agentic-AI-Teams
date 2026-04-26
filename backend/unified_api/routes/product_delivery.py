@@ -226,7 +226,21 @@ def groom(body: GroomRequest) -> GroomResult:
 
         from llm_service import get_client  # noqa: PLC0415 — lazy: tests stub via override
 
-        agent = ProductOwnerAgent(store=store, llm_client=get_client("product_owner"))
+        # `get_client` can raise on misconfigured provider, missing
+        # credentials, or import-time failures inside the LLM stack.
+        # Surface those as 503 (same shape as a Postgres outage) so
+        # clients see a consistent "transient infrastructure" signal
+        # instead of a 500 from a bare exception.
+        try:
+            llm_client = get_client("product_owner")
+        except Exception as exc:
+            logger.exception("ProductOwnerAgent: LLM client bootstrap failed")
+            raise HTTPException(
+                status_code=503,
+                detail=f"LLM client unavailable: {exc}",
+            ) from exc
+
+        agent = ProductOwnerAgent(store=store, llm_client=llm_client)
         return agent.groom(
             product_id=body.product_id,
             method=body.method,
@@ -266,6 +280,11 @@ def list_feedback(
     status: str | None = None,
 ) -> list[FeedbackItem]:
     try:
-        return get_store().list_feedback(product_id, status=status)
+        store = get_store()
+        # Match the 404 semantics of /backlog, /groom, and feedback POST:
+        # an unknown product is a hard error, not "no feedback yet".
+        if store.get_product(product_id) is None:
+            raise HTTPException(status_code=404, detail=f"unknown product: {product_id}")
+        return store.list_feedback(product_id, status=status)
     except ProductDeliveryStorageUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

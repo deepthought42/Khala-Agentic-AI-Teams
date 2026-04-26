@@ -160,6 +160,12 @@ def _register_proxy_routes(app: FastAPI) -> dict[str, bool]:
     enabled = get_enabled_teams()
 
     for team_key, config in enabled.items():
+        # In-process teams are served by `app.include_router(...)`; no
+        # upstream container, so no proxy. They still count as
+        # "registered" for discovery purposes since the route is live.
+        if config.in_process:
+            results[team_key] = True
+            continue
         env_var = TEAM_SERVICE_URL_ENVS.get(team_key)
         url = (os.environ.get(env_var, "").strip() if env_var else "") if env_var else ""
         if not url:
@@ -424,7 +430,11 @@ async def health() -> UnifiedHealthResponse:
     for key, config in TEAM_CONFIGS.items():
         registered = _registered_teams.get(key, False)
         liveness = _team_liveness.get(key, "unknown")
-        if registered and liveness == "healthy":
+        if config.in_process:
+            # No upstream container — health rides on the unified API
+            # process itself, which is up if we're answering this call.
+            status = "healthy"
+        elif registered and liveness == "healthy":
             status = "healthy"
         elif registered and liveness == "unknown":
             status = "healthy"  # Not yet checked — assume healthy

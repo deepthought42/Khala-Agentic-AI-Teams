@@ -479,6 +479,35 @@ def test_status_patch_404_for_unknown_id(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_score_patch_rejects_non_finite_values(client: TestClient) -> None:
+    # NaN / ±Infinity must be rejected at validation: persisting them
+    # would later break Starlette's JSON encoder when /backlog or /groom
+    # serialize the row, manifesting as a 500 long after the bad write.
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        # Send the value as a string so Pydantic's float coercion is exercised.
+        # FastAPI / requests serializes Python floats correctly, but JSON
+        # itself doesn't allow NaN — strings reach Pydantic intact.
+        r = client.post(
+            f"/api/product-delivery/initiative/{iid}/scores",
+            content=f'{{"wsjf_score": "{bad}"}}',
+            headers={"content-type": "application/json"},
+        )
+        # POST → 405 (we declared PATCH); use PATCH with the same content.
+        r = client.request(
+            "PATCH",
+            f"/api/product-delivery/initiative/{iid}/scores",
+            content=f'{{"wsjf_score": "{bad}"}}',
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 422, f"value={bad!r} should be rejected"
+
+
 def test_score_patch_empty_body_returns_400(client: TestClient) -> None:
     # Empty (or all-null) score payload is a client error, not a 404 —
     # otherwise clients can't tell "you sent nothing" from "the entity
@@ -535,6 +564,44 @@ def test_story_create_rejects_non_positive_estimate_points(client: TestClient) -
         json={"epic_id": eid, "title": "S", "estimate_points": None},
     )
     assert r.status_code == 200
+
+
+def test_groom_returns_503_when_llm_client_bootstrap_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `get_client("product_owner")` can fail on misconfigured provider
+    # / missing credentials. The route must surface that as 503 (not a
+    # bare 500) so clients see the same "transient infra" signal they
+    # do for a Postgres outage.
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+
+    import sys
+    import types
+
+    stub_module = types.ModuleType("llm_service")
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("OLLAMA_API_KEY missing")
+
+    stub_module.get_client = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "llm_service", stub_module)
+
+    resp = client.post(
+        "/api/product-delivery/groom",
+        json={"product_id": pid, "method": "wsjf"},
+    )
+    assert resp.status_code == 503
+    assert "LLM client unavailable" in resp.json()["detail"]
+    assert "OLLAMA_API_KEY missing" in resp.json()["detail"]
+
+
+def test_feedback_list_404_for_unknown_product(client: TestClient) -> None:
+    # Match the 404 semantics of /backlog, /groom, and feedback POST
+    # when the product doesn't exist. Otherwise clients can't
+    # distinguish "no feedback yet" from "you sent the wrong id".
+    r = client.get("/api/product-delivery/feedback", params={"product_id": "ghost"})
+    assert r.status_code == 404
+    assert "ghost" in r.json()["detail"]
 
 
 def test_feedback_unknown_product_with_valid_story_returns_404(client: TestClient) -> None:

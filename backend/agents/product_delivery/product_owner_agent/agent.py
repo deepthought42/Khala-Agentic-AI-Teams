@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any, Protocol
 
 from product_delivery.models import (
@@ -37,17 +38,28 @@ logger = logging.getLogger(__name__)
 
 
 def _to_float(value: Any, fallback: float) -> float:
-    """Coerce an LLM-supplied value to ``float`` with a typed fallback.
+    """Coerce an LLM-supplied value to a finite ``float`` with a typed fallback.
 
     Models routinely emit explicit ``null`` for fields they're unsure
     about (especially the denominator-shaped ones like ``job_size`` and
     ``effort``). ``float(None)`` raises ``TypeError`` and the outer
     handler skips the whole story — so we'd silently drop items from
     the ranking. Treat ``None`` (and missing) the same as the fallback.
+
+    Models also occasionally emit ``"NaN"`` or ``"Infinity"`` for fields
+    they refuse to commit to. ``float()`` accepts both, but non-finite
+    scores break Starlette's JSON encoder downstream and corrupt
+    persisted ranking data — so we treat them the same as ``None`` and
+    fall back, not raise. The outer ``try`` only catches malformed
+    values that genuinely can't be coerced; a finite fallback is the
+    safer default for a lossy LLM input.
     """
     if value is None:
         return float(fallback)
-    return float(value)
+    coerced = float(value)
+    if not math.isfinite(coerced):
+        return float(fallback)
+    return coerced
 
 
 class _LLMLike(Protocol):
