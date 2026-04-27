@@ -212,31 +212,47 @@ def _trim_to_prompt_budget(
 
     Story-count caps don't protect against a small backlog with very
     long ``user_story`` fields (Codex flagged this in PR #369). We
-    accumulate the JSON payload story-by-story and stop adding once
-    the next story would push us past the budget.
+    accumulate the indented JSON payload story-by-story and stop
+    adding once the next story would push us past the budget.
+
+    The byte estimate matches what ``_call_llm`` actually serialises
+    (via ``_serialised_list_size`` below — same ``indent=2``,
+    same separators), so the trimmer can't undercount and let an
+    indented prompt overrun the budget.
 
     Returns ``(scored, deferred)`` so deferred stories can surface in
     the result with the same ``_BACKLOG_TOO_LARGE_RATIONALE`` as the
-    story-count cap. Always keeps at least one story so a single
-    pathological story doesn't drop the entire run to "0 scored".
-    Length budget includes the ``[`` / ``]`` / `, ` JSON list overhead
-    (rough proxy: 2 + (n-1)*2 bytes; conservative for our purposes).
+    story-count cap. If even the *first* story exceeds the budget on
+    its own, it's deferred too — a pathological single story
+    should not break the budget contract and 503 the call. The result
+    in that case is ``([], [oversize])``: the route surfaces every
+    story as deferred, planner sees the gap, no LLM call made.
     """
     if not stories:
         return [], []
     kept: list[Story] = []
-    used = 2  # the enclosing `[]`
     for story in stories:
-        # Recompute the payload byte cost incrementally — `json.dumps`
-        # of one dict is cheap and avoids re-serialising the whole
-        # accumulator every iteration.
-        item_bytes = len(json.dumps(_story_payload(story)).encode("utf-8"))
-        sep_bytes = 2 if kept else 0  # `, ` between items
-        if kept and used + sep_bytes + item_bytes > byte_budget:
+        # Recompute the indented size with this story added. Slightly
+        # more expensive than incremental delta tracking, but matches
+        # `_call_llm`'s `json.dumps(..., indent=2)` exactly so the
+        # budget can't drift if the indent ever changes.
+        candidate = kept + [story]
+        if _serialised_list_size(candidate) > byte_budget:
             break
         kept.append(story)
-        used += sep_bytes + item_bytes
     return kept, stories[len(kept) :]
+
+
+def _serialised_list_size(stories: list[Story]) -> int:
+    """Byte size of the JSON list `_call_llm` will actually send.
+
+    Mirrors ``json.dumps([...], indent=2)`` exactly — including the
+    enclosing ``[`` / ``]``, the `,\\n  ` separators between items,
+    and the per-key indentation — so ``_trim_to_prompt_budget`` can't
+    undercount the payload by measuring with compact formatting and
+    let the prompt still overrun the budget.
+    """
+    return len(json.dumps([_story_payload(s) for s in stories], indent=2).encode("utf-8"))
 
 
 def _fallback_item(story: Story, method: GroomMethod, rationale: str) -> RankedBacklogItem:
@@ -396,8 +412,18 @@ class ProductOwnerAgent:
                 len(deferred_stories),
             )
 
-        scoring_payload = self._call_llm(method, scored_stories)
-        ranked, persist_rows = self._compute_ranked(method, scored_stories, scoring_payload)
+        if scored_stories:
+            scoring_payload = self._call_llm(method, scored_stories)
+            ranked, persist_rows = self._compute_ranked(method, scored_stories, scoring_payload)
+        else:
+            # Every candidate story was deferred (e.g. the only story
+            # in the backlog has a `user_story` field longer than the
+            # byte budget). Skip the LLM call entirely — sending an
+            # empty list would either produce useless 0-score output
+            # or 503 the call. Surface every story as deferred so the
+            # planner sees the gap.
+            ranked = []
+            persist_rows = []
         for deferred in deferred_stories:
             ranked.append(_fallback_item(deferred, method, _BACKLOG_TOO_LARGE_RATIONALE))
 

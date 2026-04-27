@@ -422,12 +422,6 @@ from unified_api.routes.analytics import router as analytics_router
 from unified_api.routes.integrations import router as integrations_router
 from unified_api.routes.llm_tools import router as llm_tools_router
 from unified_api.routes.llm_usage import router as llm_usage_router
-from unified_api.routes.product_delivery import (
-    register_pd_exception_handlers,
-)
-from unified_api.routes.product_delivery import (
-    router as product_delivery_router,
-)
 from unified_api.routes.sandboxes import router as sandboxes_router
 
 app.include_router(integrations_router)
@@ -440,8 +434,16 @@ app.include_router(agent_console_saved_inputs_router)
 app.include_router(agent_console_diff_router)
 # Honor the in-process team's `enabled` flag: an operator that disables
 # the team via TEAM_CONFIGS expects /api/product-delivery/* to stop
-# answering, not just disappear from /teams.
+# answering, not just disappear from /teams. Gate the *import* too —
+# Codex flagged that an unconditional import can take down unified_api
+# at startup with an import-time failure (missing transitive dep,
+# broken module, etc.) even when the team is disabled. With the gate,
+# disabling product_delivery in config skips the module graph
+# entirely.
 if TEAM_CONFIGS["product_delivery"].enabled:
+    from unified_api.routes.product_delivery import register_pd_exception_handlers
+    from unified_api.routes.product_delivery import router as product_delivery_router
+
     app.include_router(product_delivery_router)
     register_pd_exception_handlers(app)
 
@@ -557,19 +559,38 @@ def _retry_in_process_schema_registration(team_key: str) -> bool:
     Called from `/health` when the live DB probe succeeds for a team
     that was added to `_in_process_schema_failures` at startup —
     typically because Postgres wasn't reachable when the lifespan
-    fired but is reachable now. `register_team_schemas` is idempotent,
-    so re-running on a recovered DB simply applies any DDL the startup
-    attempt missed and clears the failure flag so subsequent /health
-    calls report `healthy` without a process restart.
+    fired but is reachable now. Uses `ensure_team_schema` (rather than
+    the boolean `register_team_schemas` wrapper) so we can detect
+    *partial* DDL — that helper logs-and-skips per-statement errors
+    and would otherwise return success after applying only some
+    statements, flipping `/health` to `healthy` while required tables
+    or indexes are still missing. We only clear the failure flag when
+    `applied == total`.
+
+    Synchronous (DDL is sync); the caller wraps this in
+    ``asyncio.to_thread`` so it doesn't block the event loop.
     """
     try:
         if team_key == "product_delivery":
             from product_delivery.postgres import SCHEMA as PRODUCT_DELIVERY_SCHEMA
-            from shared_postgres import register_team_schemas
+            from shared_postgres import ensure_team_schema
 
-            register_team_schemas(PRODUCT_DELIVERY_SCHEMA)
+            applied = ensure_team_schema(PRODUCT_DELIVERY_SCHEMA)
+            total = len(PRODUCT_DELIVERY_SCHEMA.statements)
+            if applied < total:
+                logger.warning(
+                    "product_delivery retry: %d/%d DDL statements applied; "
+                    "still unhealthy (some required tables or indexes are missing)",
+                    applied,
+                    total,
+                )
+                return False
             _in_process_schema_failures.discard(team_key)
-            logger.info("product_delivery: schema re-registration succeeded; clearing health flag")
+            logger.info(
+                "product_delivery: schema re-registration succeeded (%d/%d); clearing health flag",
+                applied,
+                total,
+            )
             return True
         # Other in-process teams (agent_console, team_assistant, etc.)
         # don't currently track their schema-failure flag through this
@@ -627,7 +648,10 @@ async def health() -> UnifiedHealthResponse:
                 # probe + retry both fail.
                 if db_live is None:
                     db_live = await _probe_postgres_live()
-                if db_live and _retry_in_process_schema_registration(key):
+                if db_live and await asyncio.to_thread(_retry_in_process_schema_registration, key):
+                    # DDL is synchronous; offloaded to a worker so the
+                    # event loop isn't blocked while pg processes
+                    # CREATE TABLE / CREATE INDEX during recovery.
                     status = "healthy"
                 else:
                     status = "unhealthy"

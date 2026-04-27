@@ -78,11 +78,42 @@ PositiveFiniteEstimate = Annotated[
 ]
 
 
+def _reject_blank_str(value: str) -> str:
+    """``AfterValidator``: reject whitespace-only strings.
+
+    Pydantic's ``min_length=1`` accepts ``"   "`` because it counts the
+    spaces. Without this, a whitespace-only ``status``/``name``/``title``
+    passed Pydantic, hit the store layer's stricter ``_validate_*``
+    helpers, and surfaced as a raw ``ValueError`` → 500 because the
+    domain-exception handler doesn't map ``ValueError``. Reject up
+    front so clients get a 422 with a clear "may not be blank" message.
+    """
+    if not value.strip():
+        raise ValueError("must not be blank or whitespace-only")
+    return value
+
+
 # Status string bounds shared by every create payload + StatusUpdate so
 # the create and patch contracts can't drift apart (Codex caught a case
 # where Create accepted unbounded strings while StatusUpdate enforced
-# 1..40 chars).
-StatusStr = Annotated[str, Field(min_length=1, max_length=40)]
+# 1..40 chars). The ``AfterValidator`` also rejects whitespace-only
+# values so they trip the API's 422 path instead of the store's
+# unmapped 500 path.
+StatusStr = Annotated[
+    str,
+    Field(min_length=1, max_length=40),
+    AfterValidator(_reject_blank_str),
+]
+
+# Title/name string bound — matches the store's ``_validate_title``
+# helper so blank/whitespace and oversized titles fail validation at
+# the API boundary (422), not at the store (500). Used by every
+# ``*Create.title`` field plus ``ProductCreate.name``.
+TitleStr = Annotated[
+    str,
+    Field(min_length=1, max_length=200),
+    AfterValidator(_reject_blank_str),
+]
 
 # ---------------------------------------------------------------------------
 # Backlog entities
@@ -159,28 +190,28 @@ class FeedbackItem(_AuditedRow):
 
 
 class ProductCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
+    name: TitleStr
     description: str = ""
     vision: str = ""
 
 
 class InitiativeCreate(BaseModel):
     product_id: str
-    title: str = Field(..., min_length=1, max_length=200)
+    title: TitleStr
     summary: str = ""
     status: StatusStr = "proposed"
 
 
 class EpicCreate(BaseModel):
     initiative_id: str
-    title: str = Field(..., min_length=1, max_length=200)
+    title: TitleStr
     summary: str = ""
     status: StatusStr = "proposed"
 
 
 class StoryCreate(BaseModel):
     epic_id: str
-    title: str = Field(..., min_length=1, max_length=200)
+    title: TitleStr
     user_story: str = ""
     status: StatusStr = "proposed"
     # Strictly positive AND finite: zero / negative effort silently
@@ -192,7 +223,7 @@ class StoryCreate(BaseModel):
 
 class TaskCreate(BaseModel):
     story_id: str
-    title: str = Field(..., min_length=1, max_length=200)
+    title: TitleStr
     description: str = ""
     status: StatusStr = "todo"
     owner: str | None = None

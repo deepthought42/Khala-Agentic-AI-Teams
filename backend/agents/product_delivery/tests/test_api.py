@@ -607,6 +607,52 @@ def test_initiative_create_rejects_out_of_bounds_status(
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("blank", [" ", "   ", "\t", "\n", " \t\n "])
+def test_product_create_rejects_whitespace_only_name(client: TestClient, blank: str) -> None:
+    """Whitespace-only `name` must 422 at the API, not 500 at the store.
+
+    Codex flagged that ``min_length=1`` accepts ``"   "`` because it
+    counts the spaces; the value then hit the store's ``_validate_title``
+    helper, which raises ``ValueError`` — and ``ValueError`` isn't in
+    the domain-exception map, so clients saw a 500 instead of a 4xx.
+    """
+    r = client.post("/api/product-delivery/products", json={"name": blank})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("blank", [" ", "   ", "\t", "\n"])
+def test_initiative_create_rejects_whitespace_only_title(client: TestClient, blank: str) -> None:
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    r = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": blank},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("blank", [" ", "   ", "\t"])
+def test_initiative_create_rejects_whitespace_only_status(client: TestClient, blank: str) -> None:
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    r = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I", "status": blank},
+    )
+    assert r.status_code == 422
+
+
+def test_status_patch_rejects_whitespace_only_status(client: TestClient) -> None:
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    iid = client.post(
+        "/api/product-delivery/initiatives",
+        json={"product_id": pid, "title": "I"},
+    ).json()["id"]
+    r = client.patch(
+        f"/api/product-delivery/initiative/{iid}/status",
+        json={"status": "   "},
+    )
+    assert r.status_code == 422
+
+
 def test_story_create_accepts_none_estimate_points(client: TestClient) -> None:
     """``None`` is the legitimate "unestimated" value — must still be accepted."""
     pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]

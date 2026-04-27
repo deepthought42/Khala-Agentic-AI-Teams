@@ -819,3 +819,38 @@ def test_groom_trims_by_byte_budget_when_user_stories_are_large(
     assert '"id": "s1"' in prompt
     assert '"id": "s2"' not in prompt
     assert '"id": "s3"' not in prompt
+
+
+def test_groom_defers_pathological_oversize_only_story(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single story larger than the budget must be deferred, not break it.
+
+    Codex flagged that the previous trim kept the first story
+    unconditionally — so a backlog of one pathological story would
+    overrun the budget contract and 503 the whole call. With the fix,
+    that story surfaces as deferred and the LLM is never invoked
+    (no point sending an empty list).
+    """
+    monkeypatch.setenv("PRODUCT_DELIVERY_GROOM_MAX_PROMPT_BYTES", "256")  # tiny budget
+    huge = _story("huge")
+    object.__setattr__(huge, "user_story", "x" * 4_000)  # alone > 256 bytes
+
+    llm = _StubLLM(payload={"items": []})  # never expected to be called
+    store = _fake_store(stories=[huge])
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    # Single story surfaces in the result so planner sees the gap.
+    assert len(result.ranked) == 1
+    assert result.ranked[0].id == "huge"
+    assert result.ranked[0].score == 0.0
+    assert "deferred" in result.ranked[0].rationale.lower()
+
+    # Nothing persisted (synthetic zero must not overwrite an existing
+    # score on the row).
+    assert store.persisted == []
+
+    # And, crucially, the LLM was never called — sending an empty
+    # list would either 503 the call or produce useless 0-score output.
+    assert llm.calls == []
