@@ -172,6 +172,7 @@ jobs:
         env:
           F_CI_WORKFLOW: ${{ steps.filter.outputs.ci_workflow }}
           F_SHARED_BACKEND: ${{ steps.filter.outputs.shared_backend }}
+          F_BACKEND_ANY: ${{ steps.filter.outputs.backend_any }}
           F_SOFTWARE_ENGINEERING: ${{ steps.filter.outputs.software_engineering }}
           F_BLOGGING: ${{ steps.filter.outputs.blogging }}
           F_MARKET_RESEARCH: ${{ steps.filter.outputs.market_research }}
@@ -231,10 +232,19 @@ jobs:
           fan_out = truthy(os.environ.get("F_CI_WORKFLOW", "false")) or truthy(
               os.environ.get("F_SHARED_BACKEND", "false")
           )
-          changed = {
-              k: fan_out or truthy(os.environ.get("F_" + k.upper(), "false"))
+          per_team = {
+              k: truthy(os.environ.get("F_" + k.upper(), "false"))
               for k in all_entries
           }
+          # Safety net: a backend change that doesn't match shared_backend or
+          # any per-team filter (e.g. backend/agents/api/, branding_team/, etc.
+          # which aren't in the matrix today) still runs the full team suite
+          # so we don't ship an untested cross-cutting change.
+          backend_any = truthy(os.environ.get("F_BACKEND_ANY", "false"))
+          if fan_out or (backend_any and not any(per_team.values())):
+              changed = {k: True for k in all_entries}
+          else:
+              changed = per_team
           entries = [v for k, v in all_entries.items() if changed[k]]
 
           team_services = {
@@ -337,7 +347,7 @@ jobs:
           --health-cmd="pg_isready -U postgres"
           --health-interval=2s
           --health-timeout=3s
-          --health-retries=15
+          --health-retries=25
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
@@ -441,7 +451,7 @@ jobs:
           --health-cmd="pg_isready -U postgres"
           --health-interval=2s
           --health-timeout=3s
-          --health-retries=15
+          --health-retries=25
     env:
       LLM_PROVIDER: dummy
       POSTGRES_HOST: localhost
@@ -485,8 +495,10 @@ jobs:
             tail -100 /tmp/job-service.log || true;
             kill "$JOB_SERVICE_PID" 2>/dev/null || true;
           ' EXIT
-          # 30 × 0.5s = 15s budget; the service is usually ready in 2–3s.
-          for i in $(seq 1 30); do
+          # 60 × 0.5s = 30s budget; service usually ready in 2–3s, faster
+          # polling means we proceed sooner without shrinking the cold-start
+          # safety budget.
+          for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8085/health >/dev/null; then
               echo "job-service is up after ~$((i * 5 / 10))s"
               break
@@ -499,7 +511,7 @@ jobs:
             sleep 0.5
           done
           if ! curl -sf http://127.0.0.1:8085/health >/dev/null; then
-            echo "job-service did not become healthy in 15s; tail of log:"
+            echo "job-service did not become healthy in 30s; tail of log:"
             tail -100 /tmp/job-service.log
             exit 1
           fi
