@@ -468,31 +468,76 @@ async def root() -> ApiInfoResponse:
     )
 
 
+async def _probe_postgres_live() -> bool:
+    """Run ``SELECT 1`` against the shared pool with a short timeout.
+
+    Used by the in-process team health branch so a runtime Postgres
+    outage (pool exhausted, host unreachable, FK chain broken) flips
+    those teams to ``unhealthy`` immediately instead of leaving the
+    startup-time success result frozen until the next process restart.
+    Anything that doesn't return a ``True`` quickly is treated as a
+    fail — better to flap to "unhealthy" briefly than miss a real
+    outage. Runs the sync psycopg call inside ``to_thread`` so the
+    event loop isn't blocked on a slow connect.
+    """
+
+    def _ping() -> bool:
+        from shared_postgres import get_conn, is_postgres_enabled
+
+        if not is_postgres_enabled():
+            return False
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                row = cur.fetchone()
+                return row is not None and row[0] == 1
+        except Exception:
+            return False
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_ping), timeout=2.0)
+    except asyncio.TimeoutError:
+        return False
+    except Exception:
+        return False
+
+
 @app.get("/health", response_model=UnifiedHealthResponse, tags=["health"])
 async def health() -> UnifiedHealthResponse:
     """Unified health check — reports proxy registration and upstream liveness per team."""
     teams = []
     all_healthy = True
+    # Lazily probe the live DB only if at least one in-process team
+    # would otherwise report `healthy` — avoids paying the round trip
+    # when every in-process team is already disabled or has a startup
+    # schema failure recorded.
+    db_live: bool | None = None
     for key, config in TEAM_CONFIGS.items():
         registered = _registered_teams.get(key, False)
         liveness = _team_liveness.get(key, "unknown")
         if config.in_process:
             # No upstream container, but the in-process router still
             # depends on Postgres for product_delivery / agent_console.
-            # Three states matter:
+            # Four states matter:
             #   * disabled → routes are unmounted; report "unavailable"
             #     so operators don't see a green light beside a route
             #     that 404s.
-            #   * schema registration failed → persistence calls will
-            #     503; report "unhealthy".
-            #   * otherwise the route is live and the unified API
-            #     process itself is up → "healthy".
+            #   * schema registration failed at startup → persistence
+            #     calls will 503; report "unhealthy".
+            #   * runtime DB probe fails → endpoints are actively
+            #     returning 503; report "unhealthy" (this catches
+            #     post-startup outages — pool death, host reboot, etc.
+            #     — that the startup-time failure set wouldn't).
+            #   * otherwise the route is live and Postgres is reachable
+            #     → "healthy".
             if not config.enabled:
                 status = "unavailable"
             elif key in _in_process_schema_failures:
                 status = "unhealthy"
             else:
-                status = "healthy"
+                if db_live is None:
+                    db_live = await _probe_postgres_live()
+                status = "healthy" if db_live else "unhealthy"
         elif registered and liveness == "healthy":
             status = "healthy"
         elif registered and liveness == "unknown":

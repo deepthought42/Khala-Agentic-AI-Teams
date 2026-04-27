@@ -169,6 +169,22 @@ _FEEDBACK_COLS = (
 _T = TypeVar("_T", bound=BaseModel)
 
 
+def _begin_repeatable_read(cur: Any) -> None:
+    """Pin the current transaction to ``REPEATABLE READ`` snapshot isolation.
+
+    psycopg3 in non-autocommit mode auto-begins a transaction on the
+    first statement; ``SET TRANSACTION ISOLATION LEVEL …`` issued before
+    any data-touching statement applies to that transaction. Used by
+    the multi-statement read methods (``get_backlog_tree``,
+    ``list_stories_for_product``, ``list_feedback``) so an existence
+    check + the matching read see the same snapshot — under the
+    default ``READ COMMITTED`` each statement gets its own snapshot
+    and a concurrent delete between them can return ``200 []`` for a
+    product that no longer exists.
+    """
+    cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+
+
 def _bucket_by(rows: list[dict[str, Any]], key: str, model: type[_T]) -> dict[str, list[_T]]:
     """Group raw row dicts by `parent_id` and validate them through ``model``.
 
@@ -278,7 +294,7 @@ class ProductDeliveryStore:
             product_id=product_id,
             title=title,
             summary=summary,
-            status=status,
+            status=_validate_status(status),
             author=author,
         )
 
@@ -291,7 +307,7 @@ class ProductDeliveryStore:
             initiative_id=initiative_id,
             title=title,
             summary=summary,
-            status=status,
+            status=_validate_status(status),
             author=author,
         )
 
@@ -332,7 +348,7 @@ class ProductDeliveryStore:
             story_id=story_id,
             title=title,
             description=description,
-            status=status,
+            status=_validate_status(status),
             owner=owner,
             author=author,
         )
@@ -452,16 +468,28 @@ class ProductDeliveryStore:
     def get_backlog_tree(self, product_id: str) -> BacklogTree | None:
         """Nested backlog projection for a single product.
 
-        Five queries total — one per level of the hierarchy plus the
-        product row — instead of N+1 fan-out. Children are bucketed by
-        parent id in Python and the tree is assembled in a single pass.
-        Cost is O(rows), not O(stories) round trips, so a product with
-        a few hundred stories no longer thrashes the connection pool.
+        Five queries total — product row + one per level of the hierarchy
+        — instead of N+1 fan-out. Children are bucketed by parent id in
+        Python and the tree is assembled in a single pass. Cost is
+        O(rows), not O(stories) round trips, so a product with a few
+        hundred stories no longer thrashes the connection pool.
+
+        All five SELECTs run inside a single ``REPEATABLE READ``
+        transaction so the projection comes from one consistent snapshot
+        — otherwise concurrent writes between the per-level fetches
+        could yield stale product metadata next to vanished children
+        (or vice versa).
         """
-        product = self.get_product(product_id)
-        if product is None:
-            return None
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            _begin_repeatable_read(cur)
+            cur.execute(
+                f"SELECT {_PRODUCT_COLS} FROM product_delivery_products WHERE id = %s",
+                (product_id,),
+            )
+            product_row = cur.fetchone()
+            if product_row is None:
+                return None
+            product = Product.model_validate(product_row)
             cur.execute(
                 f"""SELECT {_INITIATIVE_COLS}
                    FROM product_delivery_initiatives WHERE product_id = %s
@@ -547,11 +575,14 @@ class ProductDeliveryStore:
         """Flat list of every story under a product. Used by the grooming agent.
 
         Raises ``UnknownProductDeliveryEntity`` if the product doesn't
-        exist (the existence check + the story SELECT run in a single
-        connection so concurrent deletes can't make the route return
-        ``200 []`` for a missing product).
+        exist. The existence check + the story SELECT run inside a
+        single ``REPEATABLE READ`` transaction so they observe the same
+        snapshot — under the default ``READ COMMITTED`` a concurrent
+        delete between the two statements could otherwise return
+        ``200 []`` for a missing product.
         """
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            _begin_repeatable_read(cur)
             cur.execute(
                 "SELECT 1 FROM product_delivery_products WHERE id = %s",
                 (product_id,),
@@ -674,9 +705,11 @@ class ProductDeliveryStore:
         """List feedback items under a product.
 
         Raises ``UnknownProductDeliveryEntity`` when the product doesn't
-        exist — the existence check + the feedback SELECT run in a
-        single connection so a concurrent delete can't make the route
-        return ``200 []`` for a missing product.
+        exist. The existence check + the feedback SELECT run inside a
+        single ``REPEATABLE READ`` transaction so they observe the same
+        snapshot — under the default ``READ COMMITTED`` a concurrent
+        delete between the two statements could otherwise return
+        ``200 []`` for a missing product.
         """
         sql = f"SELECT {_FEEDBACK_COLS} FROM product_delivery_feedback_items WHERE product_id = %s"
         params: list[Any] = [product_id]
@@ -685,6 +718,7 @@ class ProductDeliveryStore:
             params.append(status)
         sql += " ORDER BY created_at DESC"
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            _begin_repeatable_read(cur)
             cur.execute(
                 "SELECT 1 FROM product_delivery_products WHERE id = %s",
                 (product_id,),

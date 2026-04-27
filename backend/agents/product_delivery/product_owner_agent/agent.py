@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from typing import Any, Callable, Protocol
 
 from product_delivery.models import (
@@ -38,6 +39,35 @@ logger = logging.getLogger(__name__)
 
 _MISSING_RATIONALE = "LLM did not score this story; needs manual review."
 _MALFORMED_RATIONALE = "LLM emitted malformed scoring inputs; needs manual review."
+_BACKLOG_TOO_LARGE_RATIONALE = (
+    "Backlog exceeded grooming prompt cap; story deferred to a later run."
+)
+
+
+def _max_stories_per_groom() -> int:
+    """Per-call cap on stories serialised into the grooming prompt.
+
+    A single LLM call has a hard context-window ceiling; serialising
+    every story in a multi-thousand-item production backlog would
+    either be silently truncated by the provider or fail the call
+    outright (which the route maps to 503, blocking *all* prioritisation
+    until the backlog shrinks). We cap at ``PRODUCT_DELIVERY_GROOM_MAX_STORIES``
+    (default 200) and surface the deferred stories in the result with
+    ``score=0`` + a "deferred" rationale so they don't disappear from
+    the planning view.
+    """
+    raw = os.environ.get("PRODUCT_DELIVERY_GROOM_MAX_STORIES")
+    if not raw:
+        return 200
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "PRODUCT_DELIVERY_GROOM_MAX_STORIES=%r is not an int; using default 200",
+            raw,
+        )
+        return 200
+    return max(1, value)
 
 
 class LLMScoringUnavailable(RuntimeError):
@@ -51,10 +81,14 @@ class LLMScoringUnavailable(RuntimeError):
 def _to_float(value: Any, fallback: float) -> float:
     """Coerce an LLM-supplied value to a finite ``float`` with a typed fallback.
 
-    Handles three lossy LLM behaviours:
+    Handles four lossy LLM behaviours:
 
     * explicit ``null`` → returns the fallback (``float(None)`` would
       otherwise raise ``TypeError`` and skip the whole story);
+    * JSON booleans (``true``/``false``) → propagates ``TypeError``
+      so the caller surfaces the story as malformed;
+      ``float(True)`` would otherwise silently produce ``1.0`` and
+      let a confused LLM rank everything identically;
     * non-finite ``"NaN"`` / ``"Infinity"`` → returns the fallback
       (those would later break Starlette's JSON encoder if persisted);
     * malformed strings → propagates ``ValueError``/``TypeError`` for
@@ -62,6 +96,11 @@ def _to_float(value: Any, fallback: float) -> float:
     """
     if value is None:
         return float(fallback)
+    if isinstance(value, bool):
+        # `isinstance(True, int)` is True, so `float(True)` returns 1.0
+        # without raising. Reject explicitly so the malformed fallback
+        # in `_compute_ranked` fires instead of silently scoring.
+        raise TypeError("LLM scoring input must be a number, not a boolean")
     coerced = float(value)
     if not math.isfinite(coerced):
         return float(fallback)
@@ -98,6 +137,26 @@ def _score_for(
         )
     )
     return rice, None, rice
+
+
+def _fallback_item(story: Story, method: GroomMethod, rationale: str) -> RankedBacklogItem:
+    """Synthetic ``score=0`` row for a story we couldn't score this run.
+
+    Surfaced in the ranked list so downstream planning sees the gap;
+    *not* persisted so existing scores on the row stay intact. Used for
+    three branches: the LLM omitted the story, the LLM emitted
+    malformed inputs for it, and the backlog was too large to fit in
+    one prompt so the story was deferred.
+    """
+    return RankedBacklogItem(
+        kind="story",
+        id=story.id,
+        title=story.title,
+        score=0.0,
+        wsjf_score=0.0 if method == "wsjf" else None,
+        rice_score=0.0 if method == "rice" else None,
+        rationale=rationale,
+    )
 
 
 def _index_payload(payload: Any) -> dict[str, dict[str, Any]]:
@@ -191,8 +250,31 @@ class ProductOwnerAgent:
                 rationale="No stories under this product yet.",
             )
 
-        scoring_payload = self._call_llm(method, stories)
-        ranked, persist_rows = self._compute_ranked(method, stories, scoring_payload)
+        # Cap stories sent to the LLM to bound prompt size — production
+        # backlogs can exceed the model context window. The deferred
+        # tail is still surfaced in the result (score=0 + deferred
+        # rationale) so callers see them; they just aren't scored this
+        # run. Order matters: we keep the oldest stories (already
+        # ``ORDER BY created_at`` from the store) so the cap is
+        # deterministic and operators can predict which stories will be
+        # scored on the next call after a backlog edit.
+        cap = _max_stories_per_groom()
+        if len(stories) > cap:
+            logger.warning(
+                "ProductOwnerAgent: backlog has %d stories; grooming first %d, deferring rest",
+                len(stories),
+                cap,
+            )
+            scored_stories = stories[:cap]
+            deferred_stories = stories[cap:]
+        else:
+            scored_stories = stories
+            deferred_stories = []
+
+        scoring_payload = self._call_llm(method, scored_stories)
+        ranked, persist_rows = self._compute_ranked(method, scored_stories, scoring_payload)
+        for deferred in deferred_stories:
+            ranked.append(_fallback_item(deferred, method, _BACKLOG_TOO_LARGE_RATIONALE))
 
         # Report the actual *persisted* count (not just `len(persist_rows)`):
         # if rows were deleted between ranking and persistence, fewer
@@ -209,6 +291,14 @@ class ProductOwnerAgent:
         total = len(stories)
         if persisted == total:
             rationale = f"Scored {persisted} stories using {method.upper()}."
+        elif deferred_stories:
+            rationale = (
+                f"Scored {persisted}/{total} stories using {method.upper()}; "
+                f"{len(deferred_stories)} deferred (backlog exceeded "
+                f"grooming cap of {cap}); "
+                f"{total - persisted - len(deferred_stories)} surfaced with "
+                f"score=0 for manual review."
+            )
         else:
             rationale = (
                 f"Scored {persisted}/{total} stories using {method.upper()}; "
@@ -280,20 +370,6 @@ class ProductOwnerAgent:
         ranked: list[RankedBacklogItem] = []
         persist_rows: list[tuple[str, float | None, float | None]] = []
 
-        def _fallback(story: Story, rationale: str) -> RankedBacklogItem:
-            """Synthetic row for a story we couldn't score. Surfaced so
-            downstream planning sees the gap; not persisted, so existing
-            scores on the row stay intact."""
-            return RankedBacklogItem(
-                kind="story",
-                id=story.id,
-                title=story.title,
-                score=0.0,
-                wsjf_score=0.0 if method == "wsjf" else None,
-                rice_score=0.0 if method == "rice" else None,
-                rationale=rationale,
-            )
-
         for story in stories:
             raw = payload_by_id.get(story.id)
             if raw is None:
@@ -301,7 +377,7 @@ class ProductOwnerAgent:
                     "ProductOwnerAgent: story %s missing from LLM output; including with score=0",
                     story.id,
                 )
-                ranked.append(_fallback(story, _MISSING_RATIONALE))
+                ranked.append(_fallback_item(story, method, _MISSING_RATIONALE))
                 continue
 
             inputs = raw.get("inputs")
@@ -315,21 +391,21 @@ class ProductOwnerAgent:
                     "ProductOwnerAgent: empty/non-dict inputs for story %s; including with score=0",
                     story.id,
                 )
-                ranked.append(_fallback(story, _MALFORMED_RATIONALE))
+                ranked.append(_fallback_item(story, method, _MALFORMED_RATIONALE))
                 continue
             try:
                 score, wsjf_value, rice_value = _score_for(method, inputs, story)
             except (TypeError, ValueError, OverflowError):
-                # Malformed inputs (un-coerceable strings, integers too
-                # large for the float64 range, etc.). Surface the story
-                # with score=0 + a malformed-inputs rationale rather
-                # than dropping it silently — downstream planning would
-                # otherwise lose this work item entirely.
+                # Malformed inputs (un-coerceable strings, booleans,
+                # integers too large for the float64 range, etc.).
+                # Surface the story with score=0 + a malformed-inputs
+                # rationale rather than dropping it silently — downstream
+                # planning would otherwise lose this work item entirely.
                 logger.warning(
                     "ProductOwnerAgent: malformed inputs for story %s; including with score=0",
                     story.id,
                 )
-                ranked.append(_fallback(story, _MALFORMED_RATIONALE))
+                ranked.append(_fallback_item(story, method, _MALFORMED_RATIONALE))
                 continue
 
             ranked.append(

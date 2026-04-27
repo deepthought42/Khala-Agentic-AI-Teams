@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
 from product_delivery.models import Story
 from product_delivery.product_owner_agent import ProductOwnerAgent
 
@@ -567,3 +569,108 @@ def test_groom_deduplicates_repeated_story_ids() -> None:
     assert result.ranked[0].rationale == "first"
     # Persistence wrote exactly one row.
     assert store.persisted == [("s1", 3.0, None)]
+
+
+@pytest.mark.parametrize("bad_value", [True, False])
+def test_groom_rejects_boolean_llm_inputs_as_malformed(bad_value: bool) -> None:
+    """`_to_float` must reject JSON booleans before they silently become 1.0/0.0.
+
+    Without this guard a confused LLM emitting booleans for any of the
+    WSJF/RICE inputs would skew rankings (every story scored as
+    ``cost_of_delay=1`` or ``=0``); we want those stories surfaced as
+    malformed so a human can re-rank them, not persisted.
+    """
+    stories = [_story("s1")]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": bad_value,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    assert len(result.ranked) == 1
+    assert result.ranked[0].score == 0.0
+    assert "malformed" in result.ranked[0].rationale.lower()
+    # Synthetic 0.0 must not be persisted — the existing score on the
+    # row stays intact.
+    assert store.persisted == []
+
+
+def test_groom_caps_prompt_size_and_defers_overflow_stories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backlogs over the cap must defer the tail rather than 503 the whole run.
+
+    The first ``cap`` stories are scored; the rest surface as score=0
+    with a "deferred" rationale and are never sent to the LLM. The LLM
+    must see exactly the capped slice (so prompt size is bounded).
+    """
+    monkeypatch.setenv("PRODUCT_DELIVERY_GROOM_MAX_STORIES", "2")
+    stories = [_story(f"s{i}") for i in range(5)]
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s0",
+                    "inputs": {
+                        "user_business_value": 8,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                },
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": 4,
+                        "time_criticality": 2,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                },
+            ]
+        }
+    )
+    store = _fake_store(stories=stories)
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    # All five stories surface in the result so deferred work isn't
+    # invisible to the planner.
+    assert len(result.ranked) == 5
+    by_id = {item.id: item for item in result.ranked}
+
+    # The two scored stories carry real scores + were persisted.
+    assert by_id["s0"].score == 3.0
+    assert by_id["s1"].score == 1.5
+    assert {r[0] for r in store.persisted} == {"s0", "s1"}
+
+    # The deferred tail surfaces with score=0 + a "deferred" rationale
+    # and was never persisted.
+    for sid in ("s2", "s3", "s4"):
+        item = by_id[sid]
+        assert item.score == 0.0
+        assert "deferred" in item.rationale.lower()
+
+    # And, crucially, the LLM only saw the capped slice.
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0]["prompt"]
+    assert '"id": "s0"' in prompt
+    assert '"id": "s1"' in prompt
+    for omitted in ("s2", "s3", "s4"):
+        assert f'"id": "{omitted}"' not in prompt
+
+    # And the rationale calls out the deferral so an operator notices.
+    assert "deferred" in result.rationale.lower()
