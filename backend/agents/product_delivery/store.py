@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, TypeVar
 from uuid import uuid4
 
+import psycopg
 from psycopg import errors as psycopg_errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
@@ -121,29 +122,70 @@ _STATUS_MAX_LEN = 40
 _TITLE_MAX_LEN = 200
 
 
-def _validate_status(value: str) -> str:
-    # `not value.strip()` rejects whitespace-only strings (`'   '`,
-    # `'\t'`) that pass the length check but represent semantically
-    # empty workflow states. Without this they'd persist and propagate
-    # through backlog + feedback projections as if they were valid
-    # statuses.
-    if not value or not value.strip() or len(value) > _STATUS_MAX_LEN:
-        raise ValueError(f"status must be 1..{_STATUS_MAX_LEN} non-blank chars; got {len(value)}")
-    return value
+def _validate_status(value: Any) -> str:
+    # `isinstance(value, str)` first: non-route callers handing in a
+    # non-string (int, dict, None) used to trip ``len(value)`` with a
+    # raw ``TypeError`` that fell past the route's exception map and
+    # surfaced as 500. Surface a domain ``ValueError`` instead so the
+    # route translates it cleanly to 422.
+    #
+    # Then strip+normalise: the API-side `_reject_blank_str` now
+    # *strips* leading/trailing whitespace too, so accidental inputs
+    # like ``"open "`` no longer become a distinct persisted state
+    # that misses exact-match filters (``GET /feedback?status=open``).
+    if not isinstance(value, str):
+        raise ValueError(f"status must be a string; got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped or len(stripped) > _STATUS_MAX_LEN:
+        raise ValueError(
+            f"status must be 1..{_STATUS_MAX_LEN} non-blank chars; got {len(stripped)}"
+        )
+    return stripped
 
 
-def _validate_title(value: str, *, label: str = "title") -> str:
+def _validate_title(value: Any, *, label: str = "title") -> str:
     """Mirror the API-level ``min_length=1, max_length=200`` bound.
 
     Used by ``create_product`` / ``create_initiative`` / ``create_epic``
     / ``create_story`` / ``create_task`` so internal callers (the
     ProductOwnerAgent, future workflow code, etc.) can't bypass route
     validation and persist empty / oversized / whitespace-only titles
-    that the HTTP contract rejects.
+    that the HTTP contract rejects. Strips leading/trailing whitespace
+    so ``"S "`` and ``"S"`` don't diverge between API and store paths.
     """
-    if not value or not value.strip() or len(value) > _TITLE_MAX_LEN:
-        raise ValueError(f"{label} must be 1..{_TITLE_MAX_LEN} non-blank chars; got {len(value)}")
-    return value
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string; got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped or len(stripped) > _TITLE_MAX_LEN:
+        raise ValueError(
+            f"{label} must be 1..{_TITLE_MAX_LEN} non-blank chars; got {len(stripped)}"
+        )
+    return stripped
+
+
+def _validate_text(value: Any, *, label: str, max_len: int | None = None) -> str:
+    """Generic non-blank string validator used by feedback ``source`` /
+    acceptance-criterion ``text``.
+
+    Matches the API-side ``_reject_blank_str`` contract: rejects empty,
+    rejects non-strings (so non-route callers handing in ``None`` or
+    a dict don't trigger ``TypeError`` past the route's exception map),
+    rejects whitespace-only, and strips leading/trailing whitespace
+    on the way out. ``max_len`` mirrors the API ``Field(max_length=…)``
+    when set; ``None`` means "no upper bound" (acceptance-criterion
+    text is unbounded at the API).
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string; got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{label} must not be blank or whitespace-only")
+    if max_len is not None and len(stripped) > max_len:
+        raise ValueError(f"{label} must be at most {max_len} chars; got {len(stripped)}")
+    return stripped
+
+
+_FEEDBACK_SOURCE_MAX_LEN = 120
 
 
 def _validate_optional_finite_score(value: float | None, *, label: str) -> float | None:
@@ -387,10 +429,13 @@ class ProductDeliveryStore:
     def create_acceptance_criterion(
         self, *, story_id: str, text: str, satisfied: bool, author: str
     ) -> AcceptanceCriterion:
+        # Mirror the API-side `_reject_blank_str` so non-route callers
+        # can't persist whitespace-only criteria that would inflate
+        # criterion counts and undermine the satisfied/total ratio.
         return self._insert(
             "ac",
             story_id=story_id,
-            text=text,
+            text=_validate_text(text, label="text"),
             satisfied=satisfied,
             author=author,
         )
@@ -652,6 +697,17 @@ class ProductDeliveryStore:
         # The INSERT is also wrapped in a FK-violation handler so a
         # concurrent delete between validation and insert surfaces as
         # 404, not a raw 500.
+        #
+        # Mirror the API-side validators so non-route callers can't
+        # bypass the HTTP contract:
+        #   * `source` — `min_length=1, max_length=120, non-blank`
+        #   * `raw_payload` — must be a dict (it's serialised as JSONB,
+        #     and `FeedbackItem.raw_payload: dict[str, Any]` will fail
+        #     model-validate on a non-dict, but only *after* the row is
+        #     committed — a 500 with a poisoned row already in the DB).
+        source = _validate_text(source, label="source", max_len=_FEEDBACK_SOURCE_MAX_LEN)
+        if not isinstance(raw_payload, dict):
+            raise ValueError(f"raw_payload must be a dict; got {type(raw_payload).__name__}")
         now = _now()
         fid = _new_id()
         try:
@@ -801,9 +857,15 @@ class _SafeConn:
 
     # psycopg query-time exceptions that mean "infra is broken"
     # (transport down, schema not deployed, pool poisoned). Each maps
-    # naturally to 503 — clients should retry. Specific subclasses are
-    # listed before broader bases so the isinstance check below picks
-    # the most precise mapping in the log line.
+    # naturally to 503 — clients should retry. Order matters only for
+    # the diagnostic log line (the most-specific match wins via the
+    # ``type(exc).__name__`` we record).
+    #
+    # Also includes the *base classes* ``OperationalError`` and
+    # ``InterfaceError`` so that transport-layer failures raised
+    # without a SQLSTATE-derived subclass (e.g. raw socket-closed
+    # errors from psycopg) still map to 503 instead of falling
+    # through as 500.
     _INFRA_EXC_TYPES = (
         psycopg_errors.UndefinedTable,
         psycopg_errors.UndefinedColumn,
@@ -813,6 +875,8 @@ class _SafeConn:
         psycopg_errors.ConnectionException,
         psycopg_errors.ConnectionFailure,
         psycopg_errors.SqlclientUnableToEstablishSqlconnection,
+        psycopg.OperationalError,
+        psycopg.InterfaceError,
     )
 
     def __init__(self) -> None:
@@ -832,14 +896,23 @@ class _SafeConn:
         if self._cm is None:
             return False
         # Always let the pool's CM tear down (commit/rollback, return
-        # connection) — we're going to *replace* the exception, not
-        # suppress it.
+        # connection). If teardown itself raises (e.g. connection lost
+        # during commit on a write path), we *must* let the caller see
+        # it — silently logging would let a route report 200 on a
+        # write that never committed. Translate it to
+        # ``ProductDeliveryStorageUnavailable`` so the route returns
+        # 503 (retryable) rather than the previous "log + return False"
+        # which lost the failure entirely.
         try:
             self._cm.__exit__(exc_type, exc, tb)
-        except Exception:  # pragma: no cover — pool teardown failures
-            # Don't lose the original error if pool teardown also
-            # raises; just log and continue to the translation step.
-            logger.warning("ProductDeliveryStore: pool teardown raised", exc_info=True)
+        except Exception as teardown_exc:  # pragma: no cover — infra paths
+            logger.warning(
+                "ProductDeliveryStore: pool teardown raised %s; mapping to "
+                "ProductDeliveryStorageUnavailable so caller doesn't report success",
+                type(teardown_exc).__name__,
+                exc_info=True,
+            )
+            raise ProductDeliveryStorageUnavailable(str(teardown_exc)) from teardown_exc
         # Translate infra-class exceptions to ProductDeliveryStorageUnavailable
         # so the route handler returns 503. Domain exceptions raised
         # by the store itself (``UnknownProductDeliveryEntity``,

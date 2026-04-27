@@ -854,3 +854,109 @@ def test_groom_defers_pathological_oversize_only_story(
     # And, crucially, the LLM was never called — sending an empty
     # list would either 503 the call or produce useless 0-score output.
     assert llm.calls == []
+
+
+def test_groom_keeps_trimming_past_oversize_story(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An oversize story in the middle must not block scoring of later small ones.
+
+    Codex flagged that the previous "break on first overflow"
+    behaviour deferred *every* story after the first oversize one,
+    so a single pathological item could permanently starve the rest
+    of the backlog. With the new continue-past-overflow trimmer, the
+    oversize story is deferred individually and later small stories
+    are still scored.
+    """
+    monkeypatch.setenv("PRODUCT_DELIVERY_GROOM_MAX_PROMPT_BYTES", "1024")
+    small_a = _story("small_a")
+    huge = _story("huge")
+    object.__setattr__(huge, "user_story", "x" * 4_000)
+    small_b = _story("small_b")
+
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "small_a",
+                    "inputs": {
+                        "user_business_value": 8,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                },
+                {
+                    "id": "small_b",
+                    "inputs": {
+                        "user_business_value": 6,
+                        "time_criticality": 2,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                },
+            ]
+        }
+    )
+    store = _fake_store(stories=[small_a, huge, small_b])
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    assert len(result.ranked) == 3
+    by_id = {item.id: item for item in result.ranked}
+    # Both small stories scored, the huge one deferred.
+    assert by_id["small_a"].score == 3.0
+    assert by_id["small_b"].score == 2.0
+    assert by_id["huge"].score == 0.0
+    assert "deferred" in by_id["huge"].rationale.lower()
+    # Rationale must call out the byte-budget cause specifically so an
+    # operator knows which env var to tune.
+    assert "prompt-byte budget" in by_id["huge"].rationale.lower()
+    # Both small stories were scored AND persisted.
+    assert {r[0] for r in store.persisted} == {"small_a", "small_b"}
+    # LLM only saw the two small stories.
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0]["prompt"]
+    assert '"id": "small_a"' in prompt
+    assert '"id": "small_b"' in prompt
+    assert '"id": "huge"' not in prompt
+
+
+def test_groom_rationale_distinguishes_count_cap_vs_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operators reading the rationale must be able to tell which control fired.
+
+    Codex flagged that the previous "backlog exceeded grooming cap"
+    text always blamed the count cap, even when the byte budget
+    triggered the deferral. Verify both paths are name-checked
+    individually.
+    """
+    monkeypatch.setenv("PRODUCT_DELIVERY_GROOM_MAX_STORIES", "1")
+    monkeypatch.setenv("PRODUCT_DELIVERY_GROOM_MAX_PROMPT_BYTES", "65536")
+    s1 = _story("s1")
+    s2 = _story("s2")
+    llm = _StubLLM(
+        payload={
+            "items": [
+                {
+                    "id": "s1",
+                    "inputs": {
+                        "user_business_value": 8,
+                        "time_criticality": 4,
+                        "risk_reduction_or_opportunity_enablement": 0,
+                        "job_size": 4,
+                    },
+                }
+            ]
+        }
+    )
+    store = _fake_store(stories=[s1, s2])
+    agent = ProductOwnerAgent(store=store, llm_client=llm)  # type: ignore[arg-type]
+    result = agent.groom(product_id="prod-x", method="wsjf", persist=True)
+
+    by_id = {item.id: item for item in result.ranked}
+    # s2 was deferred for *count-cap* reasons (cap=1, 2 stories).
+    assert "story-count cap" in by_id["s2"].rationale.lower()
+    # And the overall result rationale must call out the count-cap
+    # bucket so operators tune `PRODUCT_DELIVERY_GROOM_MAX_STORIES`,
+    # not the byte budget.
+    assert "story-count" in result.rationale.lower()

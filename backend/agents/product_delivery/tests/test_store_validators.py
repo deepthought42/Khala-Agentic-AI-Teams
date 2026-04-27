@@ -20,6 +20,7 @@ from product_delivery.store import (
     _validate_estimate_points,
     _validate_optional_finite_score,
     _validate_status,
+    _validate_text,
     _validate_title,
 )
 
@@ -252,3 +253,58 @@ def test_create_methods_validate_title_before_insert(
         )
     with pytest.raises(ValueError, match="title must"):
         call()
+
+
+# ---------------------------------------------------------------------------
+# Status validator: non-string inputs and whitespace normalisation.
+# Both flagged as P3 by Codex.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [None, 123, 4.5, [], {}, True, False])
+def test_validate_status_rejects_non_string_inputs(bad: object) -> None:
+    """Non-route callers handing in non-strings must surface a domain
+    `ValueError`, not a raw `TypeError` from `len()`."""
+    with pytest.raises(ValueError, match="status must be a string"):
+        _validate_status(bad)  # type: ignore[arg-type]
+
+
+def test_validate_status_strips_leading_trailing_whitespace() -> None:
+    # `"open "` and `"open"` must not become distinct persisted states.
+    assert _validate_status("open ") == "open"
+    assert _validate_status("  open  ") == "open"
+    assert _validate_status("\topen\n") == "open"
+
+
+def test_validate_title_rejects_non_string_inputs() -> None:
+    with pytest.raises(ValueError, match="title must be a string"):
+        _validate_title(None)  # type: ignore[arg-type]
+
+
+def test_validate_title_strips_whitespace() -> None:
+    assert _validate_title("  My Title  ") == "My Title"
+
+
+# ---------------------------------------------------------------------------
+# Generic text validator (acceptance-criterion text, feedback source).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\t", "\n"])
+def test_validate_text_rejects_blank(bad: str) -> None:
+    with pytest.raises(ValueError, match="must not be blank"):
+        _validate_text(bad, label="text")
+
+
+def test_validate_text_rejects_oversized_when_max_len_set() -> None:
+    with pytest.raises(ValueError, match="must be at most 10 chars"):
+        _validate_text("x" * 11, label="text", max_len=10)
+
+
+def test_validate_text_rejects_non_string() -> None:
+    with pytest.raises(ValueError, match="must be a string"):
+        _validate_text(None, label="text")  # type: ignore[arg-type]
+
+
+def test_validate_text_strips_whitespace() -> None:
+    assert _validate_text("  ok  ", label="text") == "ok"

@@ -176,7 +176,7 @@ async def _health_check_loop() -> None:
                 for team_key in list(_in_process_schema_failures):
                     try:
                         await loop.run_in_executor(
-                            _PROBE_EXECUTOR,
+                            _get_probe_executor(),
                             _retry_in_process_schema_registration,
                             team_key,
                         )
@@ -388,11 +388,13 @@ async def lifespan(app: FastAPI):
         logger.warning("shared_postgres close_pool failed", exc_info=True)
 
     # Shut down the dedicated health-probe executor so worker threads
-    # don't outlive the app — important under reload / test processes
-    # that recreate app state. ``cancel_futures=True`` drops queued
-    # work; in-flight DB pings finish naturally because they were
-    # already capped by the inner connection timeout.
-    _PROBE_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    # don't outlive the app. The shutdown helper also clears the
+    # module-level slot so the next lifespan startup (under reload /
+    # test harnesses that recreate app state in-process) sees a fresh
+    # executor on first probe via `_get_probe_executor()`. Codex
+    # flagged that the previous "shutdown but never recreate" pattern
+    # silently broke probe + schema retry on subsequent app starts.
+    _shutdown_probe_executor()
 
     logger.info("Shutting down Unified API Server...")
 
@@ -526,8 +528,38 @@ async def root() -> ApiInfoResponse:
 #   2. Cap the connection-acquisition wait via psycopg's own timeout
 #      knob (`pool.connection(timeout=…)`) so the worker itself can't
 #      block longer than the budget — the thread always exits cleanly.
-_PROBE_EXECUTOR = futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="pd-health-probe")
 _PROBE_DB_TIMEOUT_S = 1.5
+# The probe executor is created lazily via `_get_probe_executor()` so
+# that lifespan teardown (which calls `.shutdown()`) doesn't strand a
+# subsequent app start with a dead executor — Codex flagged that
+# tests / reload harnesses that recreate app state in-process were
+# left with no way to schedule probe or retry work after the first
+# shutdown. ``_get_probe_executor`` recreates it on demand.
+_PROBE_EXECUTOR: futures.ThreadPoolExecutor | None = None
+
+
+def _get_probe_executor() -> futures.ThreadPoolExecutor:
+    """Lazily create or recreate the dedicated probe executor.
+
+    Codex flagged that the previous module-level executor was shut
+    down on lifespan exit but never recreated. In-process restarts
+    (test harnesses, ``uvicorn --reload``) would then schedule probe
+    work onto a closed executor and silently fail. With this lazy
+    accessor every probe / retry call enters with a live executor —
+    or creates a fresh one if the previous lifespan tore it down.
+    """
+    global _PROBE_EXECUTOR
+    if _PROBE_EXECUTOR is None or getattr(_PROBE_EXECUTOR, "_shutdown", False):
+        _PROBE_EXECUTOR = futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="pd-health-probe")
+    return _PROBE_EXECUTOR
+
+
+def _shutdown_probe_executor() -> None:
+    """Shut down the probe executor and clear the slot for re-creation."""
+    global _PROBE_EXECUTOR
+    if _PROBE_EXECUTOR is not None:
+        _PROBE_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+        _PROBE_EXECUTOR = None
 
 
 async def _probe_postgres_live() -> bool:
@@ -571,7 +603,7 @@ async def _probe_postgres_live() -> bool:
         # cleanup is guaranteed by the inner timeout; this is just
         # belt-and-suspenders for the await side.
         return await asyncio.wait_for(
-            loop.run_in_executor(_PROBE_EXECUTOR, _ping),
+            loop.run_in_executor(_get_probe_executor(), _ping),
             timeout=_PROBE_DB_TIMEOUT_S + 0.5,
         )
     except asyncio.TimeoutError:
@@ -588,6 +620,74 @@ def _is_postgres_enabled_cached() -> bool:
     to drop in-process teams to ``unavailable`` rather than ``unhealthy``.
     """
     return bool(os.environ.get("POSTGRES_HOST", "").strip())
+
+
+def _expected_tables_for(team_key: str) -> list[str]:
+    """Return the list of tables an in-process team is expected to own.
+
+    Sourced from each team's ``TeamSchema.table_names`` so this stays
+    in lockstep with the schema-registry truth, no separate list.
+    """
+    if team_key == "product_delivery":
+        from product_delivery.postgres import SCHEMA as PRODUCT_DELIVERY_SCHEMA
+
+        return list(PRODUCT_DELIVERY_SCHEMA.table_names)
+    # Other in-process teams (agent_console, team_assistant, …) don't
+    # currently surface table-presence checks in /health. Add cases
+    # here as they adopt the pattern.
+    return []
+
+
+async def _verify_in_process_schema_present(team_key: str) -> bool:
+    """Check that the team's expected tables still exist in Postgres.
+
+    Codex flagged that ``SELECT 1`` alone proves connectivity but
+    *not* that the team's schema is intact — a manual ``DROP TABLE``,
+    a botched migration, or a database swap could leave product-delivery
+    endpoints returning storage errors while ``/health`` stayed green.
+    We re-confirm the table set every time this branch fires; if any
+    expected table is missing, the team flips to ``unhealthy`` and is
+    added back to ``_in_process_schema_failures`` so the background
+    loop's retry path attempts re-registration.
+
+    Runs the synchronous psycopg query inside the dedicated probe
+    executor (same pool as ``_probe_postgres_live`` and the schema
+    retry) so it can't starve the default ``to_thread`` executor.
+    """
+    expected = _expected_tables_for(team_key)
+    if not expected:
+        # No declared tables → nothing to verify. Treat as healthy
+        # (e.g. a future in-process team that doesn't own any tables).
+        return True
+
+    def _check() -> bool:
+        from shared_postgres import client as _pg_client
+        from shared_postgres import is_postgres_enabled
+
+        if not is_postgres_enabled():
+            return False
+        try:
+            pool = _pg_client._get_or_create_pool()
+            with pool.connection(timeout=_PROBE_DB_TIMEOUT_S) as conn, conn.cursor() as cur:
+                # `to_regclass` returns NULL for missing tables — fast,
+                # one round-trip, and it doesn't lock anything.
+                placeholders = ", ".join(["to_regclass(%s) IS NOT NULL"] * len(expected))
+                cur.execute(f"SELECT {placeholders}", expected)
+                row = cur.fetchone()
+                return row is not None and all(row)
+        except Exception:
+            return False
+
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_get_probe_executor(), _check),
+            timeout=_PROBE_DB_TIMEOUT_S + 0.5,
+        )
+    except asyncio.TimeoutError:
+        return False
+    except Exception:
+        return False
 
 
 def _retry_in_process_schema_registration(team_key: str) -> bool:
@@ -696,7 +796,27 @@ async def health() -> UnifiedHealthResponse:
             else:
                 if db_live is None:
                     db_live = await _probe_postgres_live()
-                status = "healthy" if db_live else "unhealthy"
+                if not db_live:
+                    status = "unhealthy"
+                else:
+                    # `SELECT 1` proves connectivity — but Codex
+                    # flagged that it doesn't prove the team's tables
+                    # are still present (a manual `DROP TABLE`,
+                    # botched migration, or DB swap can leave
+                    # endpoints 503-ing while /health stayed green).
+                    # Verify the team's expected tables exist; if any
+                    # are missing, mark the team unhealthy and queue
+                    # a background-loop retry to re-register.
+                    if await _verify_in_process_schema_present(key):
+                        status = "healthy"
+                    else:
+                        logger.warning(
+                            "%s: Postgres reachable but expected tables missing; "
+                            "marking unhealthy and queueing schema retry",
+                            key,
+                        )
+                        _in_process_schema_failures.add(key)
+                        status = "unhealthy"
         elif registered and liveness == "healthy":
             status = "healthy"
         elif registered and liveness == "unknown":

@@ -79,7 +79,8 @@ PositiveFiniteEstimate = Annotated[
 
 
 def _reject_blank_str(value: str) -> str:
-    """``AfterValidator``: reject whitespace-only strings.
+    """``AfterValidator``: reject whitespace-only strings AND
+    normalise leading/trailing whitespace.
 
     Pydantic's ``min_length=1`` accepts ``"   "`` because it counts the
     spaces. Without this, a whitespace-only ``status``/``name``/``title``
@@ -87,10 +88,17 @@ def _reject_blank_str(value: str) -> str:
     helpers, and surfaced as a raw ``ValueError`` → 500 because the
     domain-exception handler doesn't map ``ValueError``. Reject up
     front so clients get a 422 with a clear "may not be blank" message.
+
+    Also returns the *stripped* value: Codex flagged that accidental
+    inputs like ``"open "`` would otherwise be persisted as a distinct
+    state and miss exact-match filters such as ``GET /feedback?status=open``.
+    Normalising on the way in (rather than only at filter time) keeps
+    API/store/projection paths consistent.
     """
-    if not value.strip():
+    stripped = value.strip()
+    if not stripped:
         raise ValueError("must not be blank or whitespace-only")
-    return value
+    return stripped
 
 
 # Status string bounds shared by every create payload + StatusUpdate so

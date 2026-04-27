@@ -39,9 +39,10 @@ logger = logging.getLogger(__name__)
 
 _MISSING_RATIONALE = "LLM did not score this story; needs manual review."
 _MALFORMED_RATIONALE = "LLM emitted malformed scoring inputs; needs manual review."
-_BACKLOG_TOO_LARGE_RATIONALE = (
-    "Backlog exceeded grooming prompt cap; story deferred to a later run."
-)
+# `cause` is filled in per-deferral so operators can see which cap fired
+# (story count vs. prompt-byte budget) and tune the right env var. Codex
+# flagged that conflating the two pointed at the wrong control.
+_BACKLOG_TOO_LARGE_RATIONALE = "Story deferred to a later run: {cause}."
 
 
 def _max_stories_per_groom() -> int:
@@ -208,29 +209,32 @@ def _select_grooming_window(stories: list[Story], cap: int) -> tuple[list[Story]
 def _trim_to_prompt_budget(
     stories: list[Story], byte_budget: int
 ) -> tuple[list[Story], list[Story]]:
-    """Trim ``stories`` from the tail until the JSON payload fits in ``byte_budget``.
+    """Trim ``stories`` so the JSON payload fits in ``byte_budget``.
 
     Story-count caps don't protect against a small backlog with very
     long ``user_story`` fields (Codex flagged this in PR #369). We
-    accumulate the indented JSON payload story-by-story and stop
-    adding once the next story would push us past the budget.
+    accumulate the indented JSON payload story-by-story; if a story
+    would push us past the budget, we *skip that one* and try the
+    next — a single oversize story shouldn't block scoring of every
+    later (potentially small) story. Codex flagged the previous
+    "break on first overflow" version because in sustained large
+    backlogs a single pathological item could permanently defer the
+    rest of the tail across runs.
 
     The byte estimate matches what ``_call_llm`` actually serialises
-    (via ``_serialised_list_size`` below — same ``indent=2``,
-    same separators), so the trimmer can't undercount and let an
-    indented prompt overrun the budget.
+    (via ``_serialised_list_size`` below — same ``indent=2``, same
+    separators), so the trimmer can't undercount and let an indented
+    prompt overrun the budget.
 
     Returns ``(scored, deferred)`` so deferred stories can surface in
-    the result with the same ``_BACKLOG_TOO_LARGE_RATIONALE`` as the
-    story-count cap. If even the *first* story exceeds the budget on
-    its own, it's deferred too — a pathological single story
-    should not break the budget contract and 503 the call. The result
-    in that case is ``([], [oversize])``: the route surfaces every
-    story as deferred, planner sees the gap, no LLM call made.
+    the result with the byte-budget rationale. ``scored`` may be
+    empty (every candidate too large); the caller skips the LLM
+    altogether in that case.
     """
     if not stories:
         return [], []
     kept: list[Story] = []
+    deferred: list[Story] = []
     for story in stories:
         # Recompute the indented size with this story added. Slightly
         # more expensive than incremental delta tracking, but matches
@@ -238,9 +242,10 @@ def _trim_to_prompt_budget(
         # budget can't drift if the indent ever changes.
         candidate = kept + [story]
         if _serialised_list_size(candidate) > byte_budget:
-            break
+            deferred.append(story)
+            continue
         kept.append(story)
-    return kept, stories[len(kept) :]
+    return kept, deferred
 
 
 def _serialised_list_size(stories: list[Story]) -> int:
@@ -399,17 +404,23 @@ class ProductOwnerAgent:
         #      context). Trims from the tail of the size-sorted slice
         #      until the JSON fits.
         cap = _max_stories_per_groom()
-        scored_stories, deferred_stories = _select_grooming_window(stories, cap)
-        scored_stories, byte_deferred = _trim_to_prompt_budget(
-            scored_stories, _max_prompt_bytes_per_groom()
-        )
-        deferred_stories.extend(byte_deferred)
-        if deferred_stories:
+        prompt_bytes_cap = _max_prompt_bytes_per_groom()
+        scored_stories, count_deferred = _select_grooming_window(stories, cap)
+        scored_stories, byte_deferred = _trim_to_prompt_budget(scored_stories, prompt_bytes_cap)
+        # Track the deferral cause separately so the rationale points
+        # operators at the right control to tune (story-count cap vs.
+        # prompt-byte budget) — Codex flagged that conflating the two
+        # mis-diagnoses the failure in production.
+        deferred_total = len(count_deferred) + len(byte_deferred)
+        if deferred_total:
             logger.warning(
-                "ProductOwnerAgent: backlog has %d stories; grooming %d, deferring %d",
+                "ProductOwnerAgent: backlog has %d stories; grooming %d, deferring "
+                "%d (%d count-cap, %d byte-budget)",
                 len(stories),
                 len(scored_stories),
-                len(deferred_stories),
+                deferred_total,
+                len(count_deferred),
+                len(byte_deferred),
             )
 
         if scored_stories:
@@ -424,8 +435,27 @@ class ProductOwnerAgent:
             # planner sees the gap.
             ranked = []
             persist_rows = []
-        for deferred in deferred_stories:
-            ranked.append(_fallback_item(deferred, method, _BACKLOG_TOO_LARGE_RATIONALE))
+        # Distinct rationale per cause so operators can tell at a
+        # glance which cap fired — the message reads cleanly when
+        # both fire (rare) and stays accurate when only one does.
+        for deferred in count_deferred:
+            ranked.append(
+                _fallback_item(
+                    deferred,
+                    method,
+                    _BACKLOG_TOO_LARGE_RATIONALE.format(cause=f"story-count cap of {cap} exceeded"),
+                )
+            )
+        for deferred in byte_deferred:
+            ranked.append(
+                _fallback_item(
+                    deferred,
+                    method,
+                    _BACKLOG_TOO_LARGE_RATIONALE.format(
+                        cause=f"prompt-byte budget of {prompt_bytes_cap} exceeded"
+                    ),
+                )
+            )
 
         # Report the actual *persisted* count (not just `len(persist_rows)`):
         # if rows were deleted between ranking and persistence, fewer
@@ -442,12 +472,15 @@ class ProductOwnerAgent:
         total = len(stories)
         if persisted == total:
             rationale = f"Scored {persisted} stories using {method.upper()}."
-        elif deferred_stories:
+        elif deferred_total:
+            # Both causes get name-checked in the summary so an
+            # operator reading the result knows which control to tune.
             rationale = (
                 f"Scored {persisted}/{total} stories using {method.upper()}; "
-                f"{len(deferred_stories)} deferred (backlog exceeded "
-                f"grooming cap of {cap}); "
-                f"{total - persisted - len(deferred_stories)} surfaced with "
+                f"{deferred_total} deferred ({len(count_deferred)} story-count "
+                f"cap of {cap}, {len(byte_deferred)} prompt-byte budget "
+                f"of {prompt_bytes_cap}); "
+                f"{total - persisted - deferred_total} surfaced with "
                 f"score=0 for manual review."
             )
         else:
