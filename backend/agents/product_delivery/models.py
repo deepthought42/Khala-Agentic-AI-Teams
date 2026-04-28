@@ -18,7 +18,14 @@ import math
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    Field,
+    model_validator,
+)
 
 
 def _reject_bool(value: Any) -> Any:
@@ -391,8 +398,8 @@ class Sprint(_AuditedRow):
     product_id: str
     name: str
     capacity_points: float = 0.0
-    starts_at: datetime | None = None
-    ends_at: datetime | None = None
+    starts_at: AwareDatetime | None = None
+    ends_at: AwareDatetime | None = None
     status: StatusStr = "planned"
 
 
@@ -400,8 +407,12 @@ class CreateSprintRequest(BaseModel):
     product_id: str
     name: TitleStr
     capacity_points: CapacityPoints = 0.0
-    starts_at: datetime | None = None
-    ends_at: datetime | None = None
+    # `AwareDatetime` rejects naive timestamps at parse time (422),
+    # which keeps the post-validator's chronological compare from
+    # ever seeing a tz-aware vs. naive mix that would raise a raw
+    # ``TypeError`` and surface as a 500 (Codex review on PR #396).
+    starts_at: AwareDatetime | None = None
+    ends_at: AwareDatetime | None = None
     status: StatusStr = "planned"
 
     @model_validator(mode="after")
@@ -410,7 +421,8 @@ class CreateSprintRequest(BaseModel):
         # land in the database or in a synthesized sprint spec's
         # metadata (Codex review on PR #396). Equal timestamps are
         # tolerated — a zero-length sprint is degenerate but not
-        # logically invalid.
+        # logically invalid. ``AwareDatetime`` above guarantees both
+        # sides are tz-aware so the compare can't raise ``TypeError``.
         if (
             self.starts_at is not None
             and self.ends_at is not None

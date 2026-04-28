@@ -1756,6 +1756,29 @@ def test_create_sprint_rejects_inverted_window(
     assert r.status_code == 422
 
 
+def test_create_sprint_rejects_naive_datetime(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Naive timestamps (no tz suffix) must 422 — otherwise the post-
+    validator's ``ends_at < starts_at`` compare can hit a tz-aware
+    vs. naive mix and raise ``TypeError`` -> 500 (Codex review on PR #396).
+    """
+    client, _ = client_and_store
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    # Mixed: aware start, naive end.
+    r = client.post(
+        "/api/product-delivery/sprints",
+        json={
+            "product_id": pid,
+            "name": "S1",
+            "capacity_points": 5,
+            "starts_at": "2026-05-01T00:00:00Z",
+            "ends_at": "2026-05-15T00:00:00",  # no tz
+        },
+    )
+    assert r.status_code == 422
+
+
 def test_add_story_to_sprint_rejects_cross_product_assignment(
     client_and_store: tuple[TestClient, _FakeStore],
 ) -> None:

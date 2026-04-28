@@ -464,6 +464,56 @@ def _is_orchestrator_alive(job_id: str) -> bool:
     return thread is not None and thread.is_alive()
 
 
+def _preflight_sprint_scope(sprint_id: Optional[str]) -> None:
+    """Validate sprint exists *and has planned stories* before launch.
+
+    Used by `POST /run-team`, `POST /run-team/{id}/resume`, and
+    `POST /run-team/{id}/restart` to keep the failure mode synchronous
+    (4xx) instead of async (job spins up, orchestrator hard-fails on
+    empty scope). Codex review on PR #396 flagged that the
+    existence-only check still let empty sprints through.
+
+    Raises ``HTTPException`` with the appropriate status code:
+
+      * 404 if the sprint id is missing
+      * 400 if the sprint exists but has no planned stories
+      * 503 if product_delivery storage is unavailable / the module
+        can't be imported (deployment topology issue)
+    """
+    if sprint_id is None:
+        return
+    try:
+        from product_delivery import (  # noqa: PLC0415 — lazy cross-team import
+            ProductDeliveryStorageUnavailable,
+            get_store,
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"product_delivery store unavailable; cannot resolve sprint_id: {e}",
+        ) from e
+    try:
+        sprint_view = get_store().get_sprint_with_stories(sprint_id)
+    except ProductDeliveryStorageUnavailable as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"product_delivery storage unavailable; cannot resolve sprint_id: {e}",
+        ) from e
+    if sprint_view is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"sprint {sprint_id!r} does not exist",
+        )
+    if not sprint_view.stories:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sprint {sprint_id!r} has no planned stories; "
+                "run POST /api/product-delivery/sprints/{id}/plan first."
+            ),
+        )
+
+
 def _run_orchestrator_background(
     job_id: str,
     repo_path: str,
@@ -535,35 +585,13 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
             ),
         )
 
-    # Validate `sprint_id` exists *before* enqueuing the job (Codex
-    # review on PR #396) — otherwise a typo or a deleted sprint would
-    # return 200, kick off a background job, and surface as an async
-    # failure on the orchestrator side, wasting capacity and giving
-    # the client a misleading success response. Lazy import keeps the
-    # cross-team coupling soft.
-    if request.sprint_id is not None:
-        try:
-            from product_delivery import (  # noqa: PLC0415 — lazy cross-team import
-                ProductDeliveryStorageUnavailable,
-                get_store,
-            )
-        except ImportError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"product_delivery store unavailable; cannot resolve sprint_id: {e}",
-            ) from e
-        try:
-            sprint = get_store().get_sprint(request.sprint_id)
-        except ProductDeliveryStorageUnavailable as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"product_delivery storage unavailable; cannot resolve sprint_id: {e}",
-            ) from e
-        if sprint is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"sprint {request.sprint_id!r} does not exist",
-            )
+    # Validate `sprint_id` exists *and has planned scope* before
+    # enqueuing the job — otherwise a typo, a deleted sprint, or a
+    # never-planned sprint would return 200, kick off a background job,
+    # and surface as an async failure on the orchestrator side, wasting
+    # capacity and giving the client a misleading success response
+    # (Codex review on PR #396). Shared with resume/restart.
+    _preflight_sprint_scope(request.sprint_id)
 
     _start_stale_job_monitor_once()
 
@@ -1019,6 +1047,11 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
             ),
         )
 
+    # Re-validate the sprint scope on resume — the sprint may have been
+    # deleted or unplanned since the job was created. Surfaces synchronously
+    # before flipping the job to `running` (Codex review on PR #396).
+    _preflight_sprint_scope(sprint_id)
+
     update_job(
         job_id,
         status=JOB_STATUS_RUNNING,
@@ -1116,6 +1149,11 @@ def restart_run_team_job(job_id: str) -> RunTeamResponse:
                 "this job was created with sprint_id and cannot be restarted under Temporal."
             ),
         )
+
+    # Re-validate the sprint scope BEFORE `reset_job` — otherwise a
+    # restart with a deleted/unplanned sprint would discard the prior
+    # job state, then fail asynchronously. Codex review on PR #396.
+    _preflight_sprint_scope(sprint_id)
 
     reset_job(job_id, str(repo_path), job_type="run_team")
     update_job(job_id, status=JOB_STATUS_RUNNING, error=None, sprint_id=sprint_id)

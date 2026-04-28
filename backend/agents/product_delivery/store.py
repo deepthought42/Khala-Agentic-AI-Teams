@@ -303,8 +303,18 @@ def _validate_sprint_window(starts_at: datetime | None, ends_at: datetime | None
     contract rejects, and downstream code assuming chronological
     windows would silently misbehave. Equal timestamps are tolerated
     — same call as the model validator.
+
+    The model uses ``AwareDatetime`` so the route layer rejects naive
+    timestamps with a 422; this helper repeats the tz-awareness check
+    so a non-route caller passing a ``datetime.utcnow()`` doesn't
+    crash the comparison with ``TypeError`` and bypass the typed
+    domain ``ValueError`` path.
     """
-    if starts_at is not None and ends_at is not None and ends_at < starts_at:
+    if starts_at is None or ends_at is None:
+        return
+    if starts_at.tzinfo is None or ends_at.tzinfo is None:
+        raise ValueError("starts_at and ends_at must both be timezone-aware")
+    if ends_at < starts_at:
         raise ValueError("ends_at must be on or after starts_at")
 
 
@@ -1074,12 +1084,18 @@ class ProductDeliveryStore:
 
     @timed_query(store=_STORE, op="list_planned_story_ids")
     def list_planned_story_ids(self, sprint_id: str) -> list[str]:
-        """Story ids planned into ``sprint_id``, ordered by plan time."""
+        """Story ids planned into ``sprint_id``, ordered by plan time.
+
+        ``select_sprint_scope`` writes every newly-selected story with
+        the same ``planned_at`` timestamp, so the secondary
+        ``story_id`` ordering is needed to keep reads deterministic
+        across calls (Codex review on PR #396).
+        """
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT story_id FROM product_delivery_sprint_stories
                    WHERE sprint_id = %s
-                   ORDER BY planned_at""",
+                   ORDER BY planned_at, story_id""",
                 (sprint_id,),
             )
             return [row[0] for row in cur.fetchall()]
@@ -1214,17 +1230,19 @@ class ProductDeliveryStore:
             remaining_budget = max(0.0, capacity - existing_used)
             intended: list[Story] = []
             skipped: list[Story] = []
+            running_cost = 0.0
             for story in candidates:
                 # Treat unestimated stories as size-0: they're in the
                 # plan, but don't consume budget. Avoids dropping
                 # newly-created stories that haven't been pointed yet.
+                #
+                # Single accumulator keeps this loop O(n) — Codex
+                # flagged that re-summing ``intended`` per candidate
+                # was quadratic and would matter on larger backlogs.
                 cost = float(story.estimate_points) if story.estimate_points is not None else 0.0
-                running_cost = sum(
-                    float(s.estimate_points) if s.estimate_points is not None else 0.0
-                    for s in intended
-                )
                 if running_cost + cost <= remaining_budget:
                     intended.append(story)
+                    running_cost += cost
                 else:
                     skipped.append(story)
             now = _now()
