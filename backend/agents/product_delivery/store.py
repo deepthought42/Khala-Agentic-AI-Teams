@@ -1193,18 +1193,20 @@ class ProductDeliveryStore:
         """
         capacity = _validate_capacity_points(capacity_points)
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
-            _begin_repeatable_read(cur)
-            # ``SELECT ... FOR UPDATE`` on the sprint row serialises
-            # concurrent plans on the same sprint (Codex review on PR
-            # #396). REPEATABLE READ alone doesn't help here — the
-            # post-insert ``SUM`` re-query lives in the same snapshot
-            # we opened, so it can't see another transaction's commits
-            # even if they completed first. The row lock forces the
-            # second planner to wait until the first commits, then it
-            # opens a fresh snapshot via ``get_sprint_with_stories`` /
-            # the existing-load query and computes the right budget.
-            # Locks are released on transaction end (commit or rollback),
-            # so this scopes only to the duration of one ``/plan`` call.
+            # IMPORTANT: do **not** open a REPEATABLE READ snapshot here
+            # (Codex review on PR #396). Combined with `SELECT ... FOR
+            # UPDATE` on the sprint row, REPEATABLE READ would lock T2
+            # behind T1, but T2's snapshot would have been established
+            # at its first data-touching statement *before* T1 committed
+            # — so once T2 acquires the lock, its existing-load /
+            # candidate / post-insert SUM queries would still be reading
+            # from the stale snapshot, missing T1's just-committed rows.
+            # Stay on the connection's default isolation (READ COMMITTED)
+            # and rely on the row lock to serialise concurrent plans:
+            # after T2 acquires the lock, every subsequent SELECT here
+            # sees the latest committed state, including T1's inserts.
+            # Cross-sprint races on individual stories are still
+            # protected by `UNIQUE(story_id)` on the join table.
             cur.execute(
                 "SELECT product_id FROM product_delivery_sprints WHERE id = %s FOR UPDATE",
                 (sprint_id,),
@@ -1231,18 +1233,20 @@ class ProductDeliveryStore:
             # sprint, excluding terminal-status rows so done/cancelled
             # work doesn't get re-planned. ``NOT EXISTS`` is preferable
             # to ``NOT IN`` so NULL-bearing rows never leak the wrong
-            # answer. ``LOWER(s.status)`` makes the comparison
-            # case-insensitive (Codex review on PR #396) — status is a
-            # free-form TEXT column and `_validate_status` only strips
-            # whitespace, so a row stored as ``Done`` would otherwise
-            # bypass the lowercase ``TERMINAL_STORY_STATUSES`` set.
+            # answer. ``LOWER(TRIM(s.status))`` matches the
+            # ``.strip().lower()`` normalisation the orchestrator and
+            # preflight helpers do (Codex review on PR #396) — without
+            # the trim, a legacy / manually-entered row stored as
+            # ``"done "`` would slip past the planner's exclusion but
+            # still be rejected at execution time, creating planning /
+            # execution drift.
             cur.execute(
                 f"""SELECT {_STORY_COLS_ALIASED}
                    FROM product_delivery_stories s
                    JOIN product_delivery_epics e ON e.id = s.epic_id
                    JOIN product_delivery_initiatives i ON i.id = e.initiative_id
                    WHERE i.product_id = %s
-                     AND LOWER(s.status) <> ALL(%s)
+                     AND LOWER(TRIM(s.status)) <> ALL(%s)
                      AND NOT EXISTS (
                        SELECT 1 FROM product_delivery_sprint_stories ss
                        WHERE ss.story_id = s.id
@@ -1314,15 +1318,13 @@ class ProductDeliveryStore:
                         "re-run plan with a refreshed candidate set"
                     ) from exc
             # Recompute the sprint's total load from persisted state so
-            # the response reflects this transaction's view of what the
-            # database holds — not a derived snapshot that can drift
-            # locally (Codex review on PR #396). Combined with the
-            # ``SELECT ... FOR UPDATE`` on the sprint row above, this is
-            # also a *true* persisted total: any concurrent plan on the
-            # same sprint is blocked behind our row lock, so no
-            # invisible commits land outside our snapshot during this
-            # window. Same transaction → REPEATABLE READ snapshot we
-            # opened plus our own writes.
+            # the response reflects the database's true state for this
+            # sprint (Codex review on PR #396). Under READ COMMITTED
+            # plus the row lock acquired above, this SUM sees every
+            # committed row on the sprint — including any concurrent
+            # plan that landed before us (it would have committed
+            # before releasing the lock to us) and our own writes
+            # earlier in this transaction.
             cur.execute(
                 """SELECT COALESCE(SUM(s.estimate_points), 0)::float AS used
                    FROM product_delivery_sprint_stories ss
