@@ -135,10 +135,11 @@ class OrderBook:
         ``execution/bar_safety.py`` still holds on the next bar.
         """
         po = self._pending[order_id]
-        assert new_submitted_at >= po.submitted_at, (
-            f"requeue submitted_at must not regress: "
-            f"old={po.submitted_at!r} new={new_submitted_at!r}"
-        )
+        if new_submitted_at < po.submitted_at:
+            raise ValueError(
+                f"requeue submitted_at must not regress: "
+                f"old={po.submitted_at!r} new={new_submitted_at!r}"
+            )
         po.submitted_at = new_submitted_at
         po.remaining_qty = new_remaining_qty
         po.twap_slices_remaining = twap_slices_remaining
@@ -149,14 +150,24 @@ class OrderBook:
         oco_group_id: str,
         *,
         except_order_id: str,
+        parent_order_id: str,
     ) -> List[str]:
-        """Remove every pending order tagged with ``oco_group_id`` other than
+        """Remove every pending order tagged with ``oco_group_id`` whose
+        ``parent_order_id`` matches the surviving leg's parent, other than
         ``except_order_id``. Returns the list of cancelled order ids.
+
+        Scoping by ``parent_order_id`` prevents two independent brackets that
+        happen to reuse the same ``oco_group_id`` from cross-cancelling each
+        other's protective legs.
         """
         cancelled: List[str] = []
         for oid in list(self._pending.keys()):
             po = self._pending[oid]
-            if po.request.oco_group_id == oco_group_id and oid != except_order_id:
+            if (
+                po.request.oco_group_id == oco_group_id
+                and po.request.parent_order_id == parent_order_id
+                and oid != except_order_id
+            ):
                 self.remove(oid)
                 cancelled.append(oid)
         return cancelled

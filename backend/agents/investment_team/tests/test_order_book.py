@@ -112,7 +112,8 @@ def test_requeue_stale_timestamp_raises() -> None:
         submitted_at="2024-01-05",
         submitted_equity=100_000.0,
     )
-    with pytest.raises(AssertionError, match="must not regress"):
+    # Use ValueError (not assert) so the guard survives ``python -O``.
+    with pytest.raises(ValueError, match="must not regress"):
         book.requeue(
             po.order_id,
             new_remaining_qty=5.0,
@@ -193,7 +194,11 @@ def test_oco_cancel_siblings_cancels_only_siblings() -> None:
         oco_group_id="g2",
     )
 
-    cancelled = book.oco_cancel_siblings("g1", except_order_id=sibling_a.order_id)
+    cancelled = book.oco_cancel_siblings(
+        "g1",
+        except_order_id=sibling_a.order_id,
+        parent_order_id=parent.order_id,
+    )
     assert cancelled == [sibling_b.order_id]
 
     pending_ids = {po.order_id for po in book.all_pending()}
@@ -209,7 +214,79 @@ def test_oco_cancel_siblings_empty_when_no_match() -> None:
         submitted_at="2024-01-02",
         submitted_equity=100_000.0,
     )
-    assert book.oco_cancel_siblings("nonexistent", except_order_id="o0") == []
+    assert (
+        book.oco_cancel_siblings(
+            "nonexistent",
+            except_order_id="o0",
+            parent_order_id="o0",
+        )
+        == []
+    )
+
+
+def test_oco_cancel_siblings_does_not_cross_brackets() -> None:
+    """Two independent brackets that reuse the same ``oco_group_id`` (e.g. a
+    caller picks ``"oco-1"`` for every bracket) must not cross-cancel each
+    other's protective legs. Scoping by ``parent_order_id`` enforces this.
+    """
+    book = OrderBook()
+
+    parent_a = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    parent_b = book.submit(
+        _base(qty=10.0, symbol="BBB"),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+
+    a_tp = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_a.order_id,
+        oco_group_id="g-shared",
+    )
+    a_sl = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.STOP, stop_price=95.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_a.order_id,
+        oco_group_id="g-shared",
+    )
+    b_tp = book.submit_attached(
+        _base(qty=10.0, symbol="BBB", order_type=OrderType.LIMIT, limit_price=210.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_b.order_id,
+        oco_group_id="g-shared",
+    )
+    b_sl = book.submit_attached(
+        _base(qty=10.0, symbol="BBB", order_type=OrderType.STOP, stop_price=195.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_b.order_id,
+        oco_group_id="g-shared",
+    )
+
+    # A's take-profit fills → cancel A's stop, leave B untouched.
+    cancelled = book.oco_cancel_siblings(
+        "g-shared",
+        except_order_id=a_tp.order_id,
+        parent_order_id=parent_a.order_id,
+    )
+    assert cancelled == [a_sl.order_id]
+
+    pending_ids = {po.order_id for po in book.all_pending()}
+    assert pending_ids == {
+        parent_a.order_id,
+        parent_b.order_id,
+        a_tp.order_id,
+        b_tp.order_id,
+        b_sl.order_id,
+    }
 
 
 # ---------------------------------------------------------------------------
