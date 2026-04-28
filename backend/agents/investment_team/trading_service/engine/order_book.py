@@ -22,7 +22,14 @@ class PendingOrder:
     request: OrderRequest
     submitted_at: str  # timestamp of the bar on which this was accepted
     submitted_equity: float  # for audit / risk-recheck if needed
+    original_qty: float = 0.0  # immutable, set at submit (overridden by submit())
     rejection_reason: Optional[str] = None  # set if the book rejects at submit-time
+    cumulative_filled_qty: float = 0.0
+    remaining_qty: float = 0.0  # initialized to request.qty in submit()
+    twap_slices_remaining: Optional[int] = None
+    effective_stop_price: Optional[float] = None  # live trailing stop (Step 8 / #390)
+    trailing_water: Optional[float] = None  # running high (LONG) / low (SHORT); Step 8
+    armed: bool = True
 
 
 @dataclass
@@ -48,9 +55,42 @@ class OrderBook:
             request=request,
             submitted_at=submitted_at,
             submitted_equity=submitted_equity,
+            original_qty=request.qty,
+            remaining_qty=request.qty,
         )
         self._pending[order_id] = po
         self._by_symbol.setdefault(request.symbol, []).append(order_id)
+        return po
+
+    def submit_attached(
+        self,
+        request: OrderRequest,
+        *,
+        submitted_at: str,
+        submitted_equity: float,
+        parent_order_id: str,
+        oco_group_id: str,
+    ) -> PendingOrder:
+        """Submit a bracket / OCO child without re-running the strategy-side
+        ``validate_prices()`` gate. The parent order has already been risk-gated
+        at submit time; the engine-side materializer (Step 7 / #389) is
+        responsible for shape correctness of the attached leg.
+        """
+        self._next_id += 1
+        order_id = f"o{self._next_id}"
+        attached_request = request.model_copy(
+            update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
+        )
+        po = PendingOrder(
+            order_id=order_id,
+            request=attached_request,
+            submitted_at=submitted_at,
+            submitted_equity=submitted_equity,
+            original_qty=attached_request.qty,
+            remaining_qty=attached_request.qty,
+        )
+        self._pending[order_id] = po
+        self._by_symbol.setdefault(attached_request.symbol, []).append(order_id)
         return po
 
     def cancel(self, order_id: str) -> bool:
@@ -75,6 +115,57 @@ class OrderBook:
 
     def all_pending(self) -> List[PendingOrder]:
         return list(self._pending.values())
+
+    # ------------------------------------------------------------------
+    # Partial-fill requeue + bracket / OCO traversal (Trading 5/5 Step 2).
+    # No engine or service caller wires these up in Step 2 — they exist for
+    # Steps 4 / 7 / 8 (#386 / #389 / #390) to call.
+    # ------------------------------------------------------------------
+
+    def requeue(
+        self,
+        order_id: str,
+        *,
+        new_remaining_qty: float,
+        new_submitted_at: str,
+        twap_slices_remaining: Optional[int] = None,
+    ) -> PendingOrder:
+        """Single mutation point for a partial-fill remainder. Refreshes
+        ``submitted_at`` so the look-ahead guard in
+        ``execution/bar_safety.py`` still holds on the next bar.
+        """
+        po = self._pending[order_id]
+        assert new_submitted_at >= po.submitted_at, (
+            f"requeue submitted_at must not regress: "
+            f"old={po.submitted_at!r} new={new_submitted_at!r}"
+        )
+        po.submitted_at = new_submitted_at
+        po.remaining_qty = new_remaining_qty
+        po.twap_slices_remaining = twap_slices_remaining
+        return po
+
+    def oco_cancel_siblings(
+        self,
+        oco_group_id: str,
+        *,
+        except_order_id: str,
+    ) -> List[str]:
+        """Remove every pending order tagged with ``oco_group_id`` other than
+        ``except_order_id``. Returns the list of cancelled order ids.
+        """
+        cancelled: List[str] = []
+        for oid in list(self._pending.keys()):
+            po = self._pending[oid]
+            if po.request.oco_group_id == oco_group_id and oid != except_order_id:
+                self.remove(oid)
+                cancelled.append(oid)
+        return cancelled
+
+    def children_of(self, parent_order_id: str) -> List[PendingOrder]:
+        """Direct children of ``parent_order_id`` (no recursion)."""
+        return [
+            po for po in self._pending.values() if po.request.parent_order_id == parent_order_id
+        ]
 
     # ------------------------------------------------------------------
     # TIF expiry — callers pass the current bar timestamp; day orders
