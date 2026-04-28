@@ -829,7 +829,9 @@ def _run_backtest_background(
         _bt_update_job(
             job_id,
             status=_BT_JOB_STATUS_COMPLETED,
-            result=RunBacktestResponse(backtest=record).model_dump(mode="json"),
+            result=RunBacktestResponse(backtest=record).model_dump(
+                mode="json", exclude_defaults=True
+            ),
             backtest_id=backtest_id,
         )
     except HTTPException as exc:

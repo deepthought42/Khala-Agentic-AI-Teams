@@ -20,7 +20,7 @@ for future data in this process at all.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,11 +34,46 @@ class OrderType(str, Enum):
     MARKET = "market"
     LIMIT = "limit"
     STOP = "stop"
+    TRAILING_STOP = "trailing_stop"
 
 
 class TimeInForce(str, Enum):
     DAY = "day"
     GTC = "gtc"
+    IOC = "ioc"
+    FOK = "fok"
+
+
+class UnfilledPolicy(str, Enum):
+    """How the engine treats the unfilled remainder of a partially-filled order."""
+
+    DROP = "drop"
+    REQUEUE_NEXT_BAR = "requeue_next_bar"
+    TWAP_N = "twap_n"
+
+
+class FillKind(str, Enum):
+    """Whether a Fill represents the full ordered qty, a partial slice, or a rejection."""
+
+    FULL = "full"
+    PARTIAL = "partial"
+    REJECTED = "rejected"
+
+
+class StopAttachment(BaseModel):
+    """Stop-loss leg attached to an entry order; materialized into an OCO child on entry fill."""
+
+    stop_price: float
+    trail_offset: Optional[float] = None
+    trail_offset_kind: Literal["abs", "bps"] = "abs"
+    client_order_id: Optional[str] = None
+
+
+class LimitAttachment(BaseModel):
+    """Take-profit leg attached to an entry order; materialized into an OCO child on entry fill."""
+
+    limit_price: float
+    client_order_id: Optional[str] = None
 
 
 class Bar(BaseModel):
@@ -71,13 +106,37 @@ class OrderRequest(BaseModel):
     stop_price: Optional[float] = None
     tif: TimeInForce = TimeInForce.DAY
     reason: str = ""  # free-form annotation; surfaced in logs / fills
+    unfilled_policy: Optional[UnfilledPolicy] = None
+    twap_slices: Optional[int] = None
+    attached_stop_loss: Optional[StopAttachment] = None
+    attached_take_profit: Optional[LimitAttachment] = None
+    parent_order_id: Optional[str] = None
+    oco_group_id: Optional[str] = None
 
     def validate_prices(self) -> None:
-        """Enforce price presence based on ``order_type``."""
+        """Enforce order_type / tif / policy / attachment constraints."""
         if self.order_type == OrderType.LIMIT and self.limit_price is None:
             raise ValueError("limit order requires limit_price")
         if self.order_type == OrderType.STOP and self.stop_price is None:
             raise ValueError("stop order requires stop_price")
+        if self.order_type == OrderType.TRAILING_STOP and self.stop_price is None:
+            raise ValueError("trailing_stop order requires stop_price")
+        if self.tif in (TimeInForce.IOC, TimeInForce.FOK) and self.order_type not in (
+            OrderType.MARKET,
+            OrderType.LIMIT,
+        ):
+            raise ValueError(f"{self.tif.value} only valid with market or limit orders")
+        if self.unfilled_policy == UnfilledPolicy.TWAP_N:
+            if self.twap_slices is None or self.twap_slices < 2:
+                raise ValueError("twap_n policy requires twap_slices >= 2")
+        elif self.twap_slices is not None:
+            raise ValueError("twap_slices may only be set when unfilled_policy is twap_n")
+        if (
+            self.attached_stop_loss is not None or self.attached_take_profit is not None
+        ) and self.parent_order_id is not None:
+            raise ValueError(
+                "attachments may only be set on entry-creating orders (parent_order_id must be None)"
+            )
 
 
 class Fill(BaseModel):
@@ -91,6 +150,9 @@ class Fill(BaseModel):
     price: float  # post-slippage fill price
     timestamp: str
     reason: str = ""
+    fill_kind: FillKind = FillKind.FULL
+    unfilled_qty: float = 0.0
+    cumulative_filled_qty: Optional[float] = None
 
 
 class CancelRequest(BaseModel):

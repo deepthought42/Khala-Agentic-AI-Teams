@@ -188,7 +188,7 @@ class TradingService:
                         outcome = fill_sim.process_bar(cur_bar, next_bar=next_bar)
                         for fill in outcome.entry_fills + outcome.exit_fills:
                             harness.send_fill(
-                                fill=fill.model_dump(mode="json"),
+                                fill=fill.model_dump(mode="json", exclude_defaults=True),
                                 state=self._state(portfolio),
                             )
                         result.trades.extend(outcome.closed_trades)
