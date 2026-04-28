@@ -49,6 +49,21 @@ from product_delivery.models import (  # noqa: E402 — must come after sys.path
     Story,
 )
 
+# RunTeamRequest is defined in api/main.py alongside the FastAPI app —
+# importing the whole module at collection time pulls in the SE
+# pipeline. We mirror the orchestrator-loader pattern above and lazy-
+# load just the class we need from a fresh module spec.
+_api_spec = importlib.util.spec_from_file_location(
+    "software_engineering_api_main_for_test",
+    _team_dir / "api" / "main.py",
+)
+_api_main = importlib.util.module_from_spec(_api_spec)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _load_api_main() -> None:
+    _api_spec.loader.exec_module(_api_main)
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -196,6 +211,31 @@ def test_load_requirements_from_sprint_raises_on_empty_scope(patch_product_deliv
     )
     with pytest.raises(ValueError, match="no planned stories"):
         _orchestrator._load_requirements_from_sprint("sprint-empty")
+
+
+# ---------------------------------------------------------------------------
+# RunTeamRequest.sprint_id validator — Codex review on PR #396
+# ---------------------------------------------------------------------------
+
+
+def test_run_team_request_normalises_sprint_id() -> None:
+    """A real value passes through, trailing whitespace is stripped."""
+    RunTeamRequest = _api_main.RunTeamRequest
+    assert RunTeamRequest(repo_path="/tmp/x").sprint_id is None
+    assert RunTeamRequest(repo_path="/tmp/x", sprint_id="sprint-1").sprint_id == "sprint-1"
+    assert RunTeamRequest(repo_path="/tmp/x", sprint_id="  sprint-2 ").sprint_id == "sprint-2"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t", "\n", " \t\n "])
+def test_run_team_request_rejects_blank_sprint_id(blank: str) -> None:
+    """Whitespace-only ``sprint_id`` must 422 at the API boundary so a
+    mistake doesn't silently enable sprint mode (Codex review on PR #396).
+    """
+    from pydantic import ValidationError
+
+    RunTeamRequest = _api_main.RunTeamRequest
+    with pytest.raises(ValidationError):
+        RunTeamRequest(repo_path="/tmp/x", sprint_id=blank)
 
 
 def test_load_requirements_from_sprint_falls_back_when_no_acs(patch_product_delivery: Any) -> None:

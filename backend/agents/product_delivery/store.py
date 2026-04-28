@@ -90,6 +90,18 @@ class CrossProductFeedbackLink(ValueError):
     """
 
 
+class CrossProductSprintAssignment(ValueError):
+    """A story was added to a sprint under a different product.
+
+    Same shape as :class:`CrossProductFeedbackLink`: the two FKs on
+    ``product_delivery_sprint_stories`` (``sprint_id`` → sprint and
+    ``story_id`` → story) can't enforce that the story's owning product
+    matches the sprint's. Validated at the store layer so a sprint-
+    scoped SE run can't pull in unrelated work via a manual assignment.
+    Mapped to HTTP 400 by the route's exception handler.
+    """
+
+
 class StoryAlreadyPlanned(ValueError):
     """A story was already planned into another sprint.
 
@@ -202,6 +214,17 @@ def _validate_text(value: Any, *, label: str, max_len: int | None = None) -> str
 
 
 _FEEDBACK_SOURCE_MAX_LEN = 120
+
+# Story statuses that the sprint planner treats as terminal — finished
+# or abandoned work that shouldn't be re-planned into a future sprint.
+# Status is a free-form ``TEXT`` column (no enum) so we use a defensive
+# default set that covers the conventions across the codebase
+# (`done`/`completed`/`cancelled`/`closed`). Phase 2 ships lowercase
+# values; PATCH /status normalises whitespace but not case, so callers
+# storing `Done` instead of `done` would slip past — keeping this
+# strict-lowercase for now matches the rest of the team's data and a
+# future status-enum migration can normalise on the way in.
+_TERMINAL_STORY_STATUSES = frozenset({"done", "completed", "cancelled", "closed"})
 
 
 def _validate_optional_finite_score(value: float | None, *, label: str) -> float | None:
@@ -969,6 +992,14 @@ class ProductDeliveryStore:
         pair already existed (PK conflict handled via
         ``ON CONFLICT DO NOTHING``).
 
+        Validates that the story belongs to the sprint's product
+        (transitively via ``epic → initiative → product``) before
+        inserting — schema FKs only constrain the two ids individually,
+        so without this check a manual assignment could mix stories from
+        unrelated products into a sprint and surface them through
+        ``GET /sprints/{id}`` and the SE pipeline's synthesized spec.
+        Raises :class:`CrossProductSprintAssignment` (→ 400) on mismatch.
+
         Schema-level invariant: a story can be in **at most one** sprint
         at a time (``UNIQUE(story_id)`` on the join table — see
         ``postgres/__init__.py``). Trying to plant the same story into a
@@ -977,9 +1008,33 @@ class ProductDeliveryStore:
 
         FK violations on either side surface as
         ``UnknownProductDeliveryEntity`` via the route's global handler.
+        Existence + product check + insert all share one transaction so
+        a concurrent sprint or story delete can't slip past as a 500.
         """
         try:
             with self._conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """SELECT s_prod.id AS sprint_product, st_prod.id AS story_product
+                       FROM product_delivery_sprints sp
+                       CROSS JOIN product_delivery_stories st
+                       JOIN product_delivery_products s_prod ON s_prod.id = sp.product_id
+                       JOIN product_delivery_epics e ON e.id = st.epic_id
+                       JOIN product_delivery_initiatives i ON i.id = e.initiative_id
+                       JOIN product_delivery_products st_prod ON st_prod.id = i.product_id
+                       WHERE sp.id = %s AND st.id = %s""",
+                    (sprint_id, story_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise UnknownProductDeliveryEntity(
+                        f"sprint {sprint_id!r} or story {story_id!r} does not exist"
+                    )
+                sprint_product, story_product = row
+                if sprint_product != story_product:
+                    raise CrossProductSprintAssignment(
+                        f"story {story_id!r} belongs to product {story_product!r}, "
+                        f"not the sprint's product {sprint_product!r}"
+                    )
                 cur.execute(
                     """INSERT INTO product_delivery_sprint_stories
                           (sprint_id, story_id, planned_at)
@@ -989,6 +1044,9 @@ class ProductDeliveryStore:
                 )
                 return cur.rowcount > 0
         except psycopg_errors.ForeignKeyViolation as exc:
+            # Race: a concurrent caller deleted the sprint or story
+            # between the existence check and our insert. Surface as
+            # the same 404 the eager validation would have produced.
             raise UnknownProductDeliveryEntity(
                 f"sprint {sprint_id!r} or story {story_id!r} does not exist"
             ) from exc
@@ -1051,17 +1109,24 @@ class ProductDeliveryStore:
         Greedy 0/1 fit:
 
         * Candidates are stories under the sprint's product that aren't
-          already planned into *any* sprint (including this one — caller
-          uses ``add_story_to_sprint`` separately if it wants to top up
-          an existing plan). SQL ``ORDER BY wsjf_score DESC NULLS LAST,
-          created_at ASC`` makes the WSJF tie-break deterministic and
-          pushes null-WSJF stories to the tail.
+          already planned into *any* sprint **and** whose status is not
+          a terminal state (see ``_TERMINAL_STORY_STATUSES``). SQL
+          ``ORDER BY wsjf_score DESC NULLS LAST, created_at ASC`` makes
+          the WSJF tie-break deterministic and pushes null-WSJF stories
+          to the tail.
         * Stories with ``estimate_points IS NULL`` count as 0 for fit but
           stay in the candidate pool so they don't disappear from the
           plan.
         * Negative ``capacity_points`` is rejected upstream by
           ``CapacityPoints`` / ``_validate_capacity_points``; 0.0 is
           legal (zero-capacity sprint → empty plan, no inserts, no error).
+        * Re-running the planner on a partially-planned sprint accounts
+          for the existing scope: the budget for new picks is
+          ``capacity - already_used`` and the returned
+          ``used_capacity`` / ``remaining_capacity`` reflect the sprint's
+          true total load (existing + newly-selected). Without this,
+          repeated calls would each fit a fresh full-capacity batch and
+          silently over-commit.
 
         All writes happen inside a single transaction so a partial
         failure can't leave the sprint half-planned.
@@ -1077,34 +1142,52 @@ class ProductDeliveryStore:
             if sprint_row is None:
                 raise UnknownProductDeliveryEntity(f"unknown sprint: {sprint_id}")
             product_id = sprint_row["product_id"]
+            # Existing planned load on this sprint — drives the
+            # remaining-budget calculation so repeated /plan calls
+            # don't double-commit.
+            cur.execute(
+                """SELECT COALESCE(SUM(s.estimate_points), 0)::float AS used,
+                          COUNT(*)::int AS n
+                   FROM product_delivery_sprint_stories ss
+                   JOIN product_delivery_stories s ON s.id = ss.story_id
+                   WHERE ss.sprint_id = %s""",
+                (sprint_id,),
+            )
+            existing_row = cur.fetchone() or {"used": 0.0, "n": 0}
+            existing_used = float(existing_row["used"] or 0.0)
+            existing_count = int(existing_row["n"] or 0)
             # Candidates: every story under the product not already in any
-            # sprint. The ``NOT EXISTS`` subquery is preferable to ``NOT IN``
-            # so NULL-bearing rows never leak the wrong answer.
+            # sprint, excluding terminal-status rows so done/cancelled
+            # work doesn't get re-planned. ``NOT EXISTS`` is preferable
+            # to ``NOT IN`` so NULL-bearing rows never leak the wrong
+            # answer.
             cur.execute(
                 f"""SELECT {_STORY_COLS_ALIASED}
                    FROM product_delivery_stories s
                    JOIN product_delivery_epics e ON e.id = s.epic_id
                    JOIN product_delivery_initiatives i ON i.id = e.initiative_id
                    WHERE i.product_id = %s
+                     AND s.status <> ALL(%s)
                      AND NOT EXISTS (
                        SELECT 1 FROM product_delivery_sprint_stories ss
                        WHERE ss.story_id = s.id
                      )
                    ORDER BY s.wsjf_score DESC NULLS LAST, s.created_at ASC""",
-                (product_id,),
+                (product_id, list(_TERMINAL_STORY_STATUSES)),
             )
             candidates = [Story.model_validate(row) for row in cur.fetchall()]
+            remaining_budget = max(0.0, capacity - existing_used)
             selected: list[Story] = []
             skipped: list[Story] = []
-            used = 0.0
+            new_used = 0.0
             for story in candidates:
                 # Treat unestimated stories as size-0: they're in the
                 # plan, but don't consume budget. Avoids dropping
                 # newly-created stories that haven't been pointed yet.
                 cost = float(story.estimate_points) if story.estimate_points is not None else 0.0
-                if used + cost <= capacity:
+                if new_used + cost <= remaining_budget:
                     selected.append(story)
-                    used += cost
+                    new_used += cost
                 else:
                     skipped.append(story)
             now = _now()
@@ -1131,17 +1214,18 @@ class ProductDeliveryStore:
                         "concurrent planner already claimed one of the selected stories; "
                         "re-run plan with a refreshed candidate set"
                     ) from exc
-        remaining = capacity - used
+        total_used = existing_used + new_used
         rationale = (
-            f"Selected {len(selected)} stories totaling {used:g} points "
-            f"(capacity {capacity:g}); skipped {len(skipped)} for capacity."
+            f"Selected {len(selected)} new stories totaling {new_used:g} points "
+            f"({existing_count} already planned for {existing_used:g} points; "
+            f"capacity {capacity:g}); skipped {len(skipped)} for capacity."
         )
         return SprintPlanResult(
             sprint_id=sprint_id,
             selected_story_ids=[s.id for s in selected],
             skipped_story_ids=[s.id for s in skipped],
-            used_capacity=used,
-            remaining_capacity=remaining,
+            used_capacity=total_used,
+            remaining_capacity=max(0.0, capacity - total_used),
             rationale=rationale,
         )
 
@@ -1203,7 +1287,23 @@ class ProductDeliveryStore:
 
     @timed_query(store=_STORE, op="list_releases_for_sprint")
     def list_releases_for_sprint(self, sprint_id: str) -> list[Release]:
+        """List releases under a sprint.
+
+        Raises ``UnknownProductDeliveryEntity`` when the sprint doesn't
+        exist (matches the ``list_stories_for_product`` /
+        ``list_feedback`` pattern) so callers can distinguish "sprint
+        has no releases yet" from "you sent an invalid id". Both
+        statements run inside one ``REPEATABLE READ`` transaction so a
+        concurrent sprint delete can't turn a 404 into a ``200 []``.
+        """
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            _begin_repeatable_read(cur)
+            cur.execute(
+                "SELECT 1 FROM product_delivery_sprints WHERE id = %s",
+                (sprint_id,),
+            )
+            if cur.fetchone() is None:
+                raise UnknownProductDeliveryEntity(f"unknown sprint: {sprint_id}")
             cur.execute(
                 f"""SELECT {_RELEASE_COLS}
                    FROM product_delivery_releases

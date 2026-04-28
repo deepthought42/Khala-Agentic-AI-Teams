@@ -34,7 +34,9 @@ from product_delivery.models import (
     Task,
 )
 from product_delivery.store import (
+    _TERMINAL_STORY_STATUSES,
     CrossProductFeedbackLink,
+    CrossProductSprintAssignment,
     StoryAlreadyPlanned,
     UnknownProductDeliveryEntity,
 )
@@ -398,6 +400,16 @@ class _FakeStore:
             raise UnknownProductDeliveryEntity(
                 f"sprint {sprint_id!r} or story {story_id!r} does not exist"
             )
+        # Mirror the real store's transitive cross-product check.
+        sprint_product = self.sprints[sprint_id].product_id
+        story = self.stories[story_id]
+        story_initiative_id = self.epics[story.epic_id].initiative_id
+        story_product = self.initiatives[story_initiative_id].product_id
+        if sprint_product != story_product:
+            raise CrossProductSprintAssignment(
+                f"story {story_id!r} belongs to product {story_product!r}, "
+                f"not the sprint's product {sprint_product!r}"
+            )
         if (sprint_id, story_id) in self.sprint_stories:
             return False
         # Mirror the schema-level UNIQUE(story_id) constraint: a story
@@ -409,6 +421,11 @@ class _FakeStore:
 
     def list_planned_story_ids(self, sprint_id: str) -> list[str]:
         return [s for sid, s in self.sprint_stories if sid == sprint_id]
+
+    def list_releases_for_sprint(self, sprint_id: str) -> list[Release]:
+        if sprint_id not in self.sprints:
+            raise UnknownProductDeliveryEntity(f"unknown sprint: {sprint_id}")
+        return [r for r in self.releases.values() if r.sprint_id == sprint_id]
 
     def get_sprint_with_stories(self, sprint_id: str) -> SprintWithStories | None:
         sprint = self.sprints.get(sprint_id)
@@ -436,9 +453,21 @@ class _FakeStore:
         if sprint is None:
             raise UnknownProductDeliveryEntity(f"unknown sprint: {sprint_id}")
         capacity = float(capacity_points if capacity_points is not None else 0.0)
-        # Already-planned story ids across all sprints.
+        # Already-planned story ids across all sprints (mirrors the
+        # real store's `NOT EXISTS` candidate filter).
         already = {sid for _, sid in self.sprint_stories}
-        # Same ordering invariant as the real store.
+        # Existing load on *this* sprint — drives the remaining-budget
+        # calculation so repeated /plan calls don't over-commit.
+        existing_planned = [
+            self.stories[sid] for ssid, sid in self.sprint_stories if ssid == sprint_id
+        ]
+        existing_used = sum(
+            float(s.estimate_points) if s.estimate_points is not None else 0.0
+            for s in existing_planned
+        )
+        existing_count = len(existing_planned)
+        # Candidates: same product, not in any sprint, not in a terminal
+        # status — mirror the real store's WHERE clause.
         candidates = sorted(
             (
                 s
@@ -446,6 +475,7 @@ class _FakeStore:
                 if self.epics[s.epic_id].initiative_id
                 in {i.id for i in self.initiatives.values() if i.product_id == sprint.product_id}
                 and s.id not in already
+                and s.status not in _TERMINAL_STORY_STATUSES
             ),
             key=lambda s: (
                 s.wsjf_score is None,
@@ -453,27 +483,30 @@ class _FakeStore:
                 s.created_at,
             ),
         )
+        remaining_budget = max(0.0, capacity - existing_used)
         selected: list[Story] = []
         skipped: list[Story] = []
-        used = 0.0
+        new_used = 0.0
         for story in candidates:
             cost = float(story.estimate_points) if story.estimate_points is not None else 0.0
-            if used + cost <= capacity:
+            if new_used + cost <= remaining_budget:
                 selected.append(story)
-                used += cost
+                new_used += cost
             else:
                 skipped.append(story)
         for s in selected:
             self.sprint_stories.append((sprint_id, s.id))
+        total_used = existing_used + new_used
         return SprintPlanResult(
             sprint_id=sprint_id,
             selected_story_ids=[s.id for s in selected],
             skipped_story_ids=[s.id for s in skipped],
-            used_capacity=used,
-            remaining_capacity=capacity - used,
+            used_capacity=total_used,
+            remaining_capacity=max(0.0, capacity - total_used),
             rationale=(
-                f"Selected {len(selected)} stories totaling {used:g} points "
-                f"(capacity {capacity:g}); skipped {len(skipped)} for capacity."
+                f"Selected {len(selected)} new stories totaling {new_used:g} points "
+                f"({existing_count} already planned for {existing_used:g} points; "
+                f"capacity {capacity:g}); skipped {len(skipped)} for capacity."
             ),
         )
 
@@ -1570,6 +1603,157 @@ def test_get_sprint_404_when_missing(client: TestClient) -> None:
 def test_sprint_plan_404_when_sprint_missing(client: TestClient) -> None:
     r = client.post("/api/product-delivery/sprints/missing/plan", json={})
     assert r.status_code == 404
+
+
+def test_sprint_plan_re_run_does_not_over_commit_capacity(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Re-running plan on a partially-planned sprint must respect existing scope.
+
+    Codex flagged on PR #396 that the previous implementation always
+    started ``used`` at 0.0, so a second `/plan` call would fit
+    another full-capacity batch on top of the first.
+    """
+    client, fake = client_and_store
+    pid = _make_product_with_stories(
+        client,
+        fake,
+        stories=[
+            {"title": "a", "estimate_points": 3, "wsjf": 9.0},
+            {"title": "b", "estimate_points": 3, "wsjf": 5.0},
+            {"title": "c", "estimate_points": 3, "wsjf": 1.0},
+        ],
+    )
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 5},
+    ).json()["id"]
+    plan1 = client.post(
+        f"/api/product-delivery/sprints/{sid}/plan", json={"capacity_points": 5}
+    ).json()
+    # First call fits one 3-point story (highest WSJF) under capacity 5.
+    assert len(plan1["selected_story_ids"]) == 1
+    assert plan1["used_capacity"] == 3.0
+    assert plan1["remaining_capacity"] == 2.0
+
+    plan2 = client.post(
+        f"/api/product-delivery/sprints/{sid}/plan", json={"capacity_points": 5}
+    ).json()
+    # Second call: budget is `5 - 3 = 2`, no remaining 3-point story
+    # fits, so nothing new is selected. Total used is still 3.0.
+    assert plan2["selected_story_ids"] == []
+    assert plan2["used_capacity"] == 3.0
+    assert plan2["remaining_capacity"] == 2.0
+
+
+def test_sprint_plan_skips_done_stories(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Stories in a terminal status are not re-planned (Codex review on PR #396)."""
+    client, fake = client_and_store
+    stories = [
+        {"title": "active", "estimate_points": 1, "wsjf": 5.0},
+        {"title": "done", "estimate_points": 1, "wsjf": 9.0},  # higher WSJF, but done
+    ]
+    pid = _make_product_with_stories(client, fake, stories=stories)
+    # Mark the second story as done via the fake bucket directly.
+    done_id = stories[1]["_id"]
+    fake.stories[done_id] = fake.stories[done_id].model_copy(update={"status": "done"})
+
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 100},
+    ).json()["id"]
+    plan = client.post(
+        f"/api/product-delivery/sprints/{sid}/plan", json={"capacity_points": 100}
+    ).json()
+    # Only the active story is selected; the done one is filtered out
+    # before the capacity check (so it doesn't appear in skipped either).
+    titles = {fake.stories[s].title for s in plan["selected_story_ids"]}
+    assert titles == {"active"}
+    assert done_id not in plan["selected_story_ids"]
+    assert done_id not in plan["skipped_story_ids"]
+
+
+def test_plan_endpoint_accepts_empty_body(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """``POST /sprints/{id}/plan`` should work with no body — falls back
+    to the sprint row's stored capacity (Codex review on PR #396).
+    """
+    client, fake = client_and_store
+    pid = _make_product_with_stories(
+        client,
+        fake,
+        stories=[{"title": "a", "estimate_points": 1, "wsjf": 5.0}],
+    )
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 5},
+    ).json()["id"]
+    # No body at all.
+    r1 = client.post(f"/api/product-delivery/sprints/{sid}/plan")
+    assert r1.status_code == 200, r1.text
+    # Empty JSON body.
+    r2 = client.post(f"/api/product-delivery/sprints/{sid}/plan", json={})
+    assert r2.status_code == 200, r2.text
+
+
+def test_create_sprint_rejects_inverted_window(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """``ends_at < starts_at`` must 422 (Codex review on PR #396)."""
+    client, _ = client_and_store
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    r = client.post(
+        "/api/product-delivery/sprints",
+        json={
+            "product_id": pid,
+            "name": "S1",
+            "capacity_points": 5,
+            "starts_at": "2026-05-01T00:00:00Z",
+            "ends_at": "2026-04-01T00:00:00Z",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_add_story_to_sprint_rejects_cross_product_assignment(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """A story under product A cannot be added to a sprint under product B
+    (Codex review on PR #396). Mapped to 400 by the route handler.
+    """
+    client, fake = client_and_store
+    # Product A with a story
+    pid_a = _make_product_with_stories(
+        client,
+        fake,
+        stories=[{"title": "a-story", "estimate_points": 1, "wsjf": 5.0}],
+    )
+    story_a_id = next(s.id for s in fake.stories.values() if s.title == "a-story")
+    # Product B with a sprint
+    pid_b = client.post("/api/product-delivery/products", json={"name": "B"}).json()["id"]
+    sprint_b = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid_b, "name": "B-1", "capacity_points": 5},
+    ).json()["id"]
+    # Manual cross-product assignment via fake store — the real store
+    # rejects with `CrossProductSprintAssignment` and the route maps
+    # it to 400.
+    with pytest.raises(CrossProductSprintAssignment):
+        fake.add_story_to_sprint(sprint_id=sprint_b, story_id=story_a_id)
+    # Sanity: same-product still works.
+    assert pid_a != pid_b
+
+
+def test_list_releases_for_sprint_404_when_sprint_missing(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """`list_releases_for_sprint` distinguishes 404 from 200 [] (Codex review)."""
+    _, fake = client_and_store
+    with pytest.raises(UnknownProductDeliveryEntity):
+        fake.list_releases_for_sprint("missing")
 
 
 def test_add_story_to_sprint_409_when_story_already_in_other_sprint(

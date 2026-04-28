@@ -17,13 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from product_delivery import (
     AcceptanceCriterion,
     BacklogTree,
     CrossProductFeedbackLink,
+    CrossProductSprintAssignment,
     Epic,
     FeedbackItem,
     GroomRequest,
@@ -72,6 +73,10 @@ router = APIRouter(prefix="/api/product-delivery", tags=["product-delivery"])
 
 _EXC_STATUS: dict[type[Exception], int] = {
     CrossProductFeedbackLink: 400,
+    # Adding a story to a sprint under a different product is also a
+    # 400 — the schema FKs can't enforce the transitive
+    # epic→initiative→product invariant, so we validate at the store.
+    CrossProductSprintAssignment: 400,
     UnknownProductDeliveryEntity: 404,
     # `UNIQUE(story_id)` on `product_delivery_sprint_stories` enforces
     # one-sprint-per-story; concurrent planners or explicit re-plans
@@ -302,16 +307,22 @@ def create_sprint(body: CreateSprintRequest) -> Sprint:
 
 
 @router.post("/sprints/{sprint_id}/plan", response_model=SprintPlanResult)
-def plan_sprint(sprint_id: str, body: SprintPlanRequest) -> SprintPlanResult:
+def plan_sprint(
+    sprint_id: str,
+    body: SprintPlanRequest | None = Body(default=None),  # noqa: B008 — FastAPI requires Body() at the dependency boundary
+) -> SprintPlanResult:
     """Run capacity-aware story selection for ``sprint_id``.
 
     A missing sprint surfaces as 404 via ``UnknownProductDeliveryEntity``
     raised inside the agent (delegating to ``select_sprint_scope`` /
-    ``get_sprint``). ``capacity_points=None`` falls back to the
-    sprint row's stored capacity.
+    ``get_sprint``). The body is optional; an empty / omitted body
+    means "use the sprint row's stored capacity" — same effect as
+    ``{"capacity_points": null}``. ``capacity_points`` may be set to
+    override the stored capacity for what-if planning.
     """
+    capacity_override = body.capacity_points if body is not None else None
     agent = SprintPlannerAgent(store=get_store())
-    return agent.plan(sprint_id=sprint_id, capacity_points=body.capacity_points)
+    return agent.plan(sprint_id=sprint_id, capacity_points=capacity_override)
 
 
 @router.get("/sprints/{sprint_id}", response_model=SprintWithStories)

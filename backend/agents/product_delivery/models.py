@@ -18,7 +18,7 @@ import math
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
 
 
 def _reject_bool(value: Any) -> Any:
@@ -403,6 +403,21 @@ class CreateSprintRequest(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     status: StatusStr = "planned"
+
+    @model_validator(mode="after")
+    def _validate_window(self) -> "CreateSprintRequest":
+        # Reject inverted windows at the boundary so they can never
+        # land in the database or in a synthesized sprint spec's
+        # metadata (Codex review on PR #396). Equal timestamps are
+        # tolerated — a zero-length sprint is degenerate but not
+        # logically invalid.
+        if (
+            self.starts_at is not None
+            and self.ends_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must be on or after starts_at")
+        return self
 
 
 class SprintWithStories(BaseModel):

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _team_dir = Path(__file__).resolve().parent.parent
 if str(_team_dir) not in sys.path:
@@ -184,6 +184,20 @@ class RunTeamRequest(BaseModel):
             "Discovery's LLM spec-parse and the PRA agent are skipped."
         ),
     )
+
+    @field_validator("sprint_id")
+    @classmethod
+    def _normalise_sprint_id(cls, value: Optional[str]) -> Optional[str]:
+        # Reject blank / whitespace-only ids at the API boundary so a
+        # caller can't accidentally enable "sprint mode" with a value
+        # that leads to a runtime "unknown sprint" 500 — the right
+        # response is a clear 422 (Codex review on PR #396).
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("sprint_id must not be blank or whitespace-only")
+        return stripped
 
 
 class RunTeamResponse(BaseModel):
@@ -957,16 +971,11 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    update_job(
-        job_id,
-        status=JOB_STATUS_RUNNING,
-        error=None,
-        agent_crash_details=None,
-    )
-
-    # Same Temporal+sprint_id guard as POST /run-team: surface as 400
-    # before entering the launch try/except so the broad handler can't
-    # downgrade it to 503 (Codex review on PR #396).
+    # Same Temporal+sprint_id guard as POST /run-team: validate BEFORE
+    # flipping the job to running. Codex flagged that running the
+    # update first leaves the job stuck in `running` with no
+    # workflow/thread when the guard fires, recoverable only via the
+    # stale-job monitor.
     sprint_id = data.get("sprint_id")
     from software_engineering_team.temporal.client import is_temporal_enabled
 
@@ -979,6 +988,13 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
                 "this job was created with sprint_id and cannot be resumed under Temporal."
             ),
         )
+
+    update_job(
+        job_id,
+        status=JOB_STATUS_RUNNING,
+        error=None,
+        agent_crash_details=None,
+    )
 
     try:
         from software_engineering_team.temporal.start_workflow import start_run_team_workflow
