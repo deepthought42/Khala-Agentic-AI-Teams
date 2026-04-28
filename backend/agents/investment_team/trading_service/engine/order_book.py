@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from ..strategy.contract import OrderRequest, OrderSide, OrderType, TimeInForce
 
@@ -30,8 +30,13 @@ FILL_QTY_EPSILON = 1e-9
 class PendingOrder:
     order_id: str
     request: OrderRequest
-    submitted_at: str  # timestamp of the bar on which this was accepted
+    submitted_at: str  # bar timestamp anchor for the look-ahead guard; advanced
+    # by ``OrderBook.requeue`` so the simulator doesn't re-fill on the same bar.
     submitted_equity: float  # for audit / risk-recheck if needed
+    original_submitted_at: str = ""  # immutable original submission timestamp
+    # — used by ``expire_day_orders`` so a partially-filled-and-requeued DAY
+    # order still expires at the end of its original session, not the day after
+    # the last partial fill. Set in ``submit`` / ``submit_attached``.
     original_qty: float = 0.0  # immutable, set at submit (overridden by submit())
     rejection_reason: Optional[str] = None  # set if the book rejects at submit-time
     cumulative_filled_qty: float = 0.0
@@ -48,6 +53,11 @@ class OrderBook:
     _pending: Dict[str, PendingOrder] = field(default_factory=dict)
     # Parallel index by symbol/side so fill_simulator doesn't have to scan.
     _by_symbol: Dict[str, List[str]] = field(default_factory=dict)
+    # All-time set of allocated order ids — used by ``submit_attached`` to
+    # reject children whose parent_order_id was never issued, while still
+    # allowing children of a since-removed parent (typical bracket flow:
+    # parent fills, gets removed, children activate).
+    _known_order_ids: Set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------
 
@@ -65,10 +75,12 @@ class OrderBook:
             request=request,
             submitted_at=submitted_at,
             submitted_equity=submitted_equity,
+            original_submitted_at=submitted_at,
             original_qty=request.qty,
             remaining_qty=request.qty,
         )
         self._pending[order_id] = po
+        self._known_order_ids.add(order_id)
         self._by_symbol.setdefault(request.symbol, []).append(order_id)
         return po
 
@@ -101,6 +113,15 @@ class OrderBook:
             raise TypeError(
                 f"submit_attached oco_group_id must be a non-empty str, got {oco_group_id!r}"
             )
+        # Reject orphan children whose parent_order_id was never allocated by
+        # this book. We check the all-time set, not just _pending, so a child
+        # submitted after the parent fills (typical bracket activation flow)
+        # still works.
+        if parent_order_id not in self._known_order_ids:
+            raise ValueError(
+                f"submit_attached parent_order_id {parent_order_id!r} is not a known order id; "
+                f"submit the parent through OrderBook.submit() first"
+            )
         attached_request = request.model_copy(
             update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
         )
@@ -115,10 +136,12 @@ class OrderBook:
             request=attached_request,
             submitted_at=submitted_at,
             submitted_equity=submitted_equity,
+            original_submitted_at=submitted_at,
             original_qty=attached_request.qty,
             remaining_qty=attached_request.qty,
         )
         self._pending[order_id] = po
+        self._known_order_ids.add(order_id)
         self._by_symbol.setdefault(attached_request.symbol, []).append(order_id)
         return po
 
@@ -303,8 +326,14 @@ class OrderBook:
             po = self._pending[oid]
             if po.request.tif != TimeInForce.DAY:
                 continue
+            # Anchor the expiry decision on ``original_submitted_at`` (immutable)
+            # rather than ``submitted_at`` (which ``requeue`` advances on every
+            # partial fill). Otherwise a DAY order partially filled on day D and
+            # requeued to D+1 would only expire on D+2 — surviving an extra
+            # session and breaking TIF semantics.
+            anchor = po.original_submitted_at or po.submitted_at
             # Compare date prefix only so intraday timestamps also work.
-            if _date_only(po.submitted_at) < _date_only(current_date):
+            if _date_only(anchor) < _date_only(current_date):
                 expired.append(po)
                 self.remove(oid)
         return expired

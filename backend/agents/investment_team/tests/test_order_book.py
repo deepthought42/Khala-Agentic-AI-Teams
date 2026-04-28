@@ -456,6 +456,11 @@ def test_oco_cancel_siblings_cancels_only_siblings() -> None:
         submitted_at="2024-01-02",
         submitted_equity=100_000.0,
     )
+    other_parent = book.submit(
+        _base(qty=5.0, symbol="BBB"),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
 
     sibling_a = book.submit_attached(
         _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
@@ -475,7 +480,7 @@ def test_oco_cancel_siblings_cancels_only_siblings() -> None:
         _base(qty=5.0, symbol="BBB", order_type=OrderType.LIMIT, limit_price=55.0),
         submitted_at="2024-01-03",
         submitted_equity=100_000.0,
-        parent_order_id="other",
+        parent_order_id=other_parent.order_id,
         oco_group_id="g2",
     )
 
@@ -487,9 +492,17 @@ def test_oco_cancel_siblings_cancels_only_siblings() -> None:
     assert cancelled == [sibling_b.order_id]
 
     pending_ids = {po.order_id for po in book.all_pending()}
-    assert pending_ids == {parent.order_id, sibling_a.order_id, unrelated.order_id}
+    assert pending_ids == {
+        parent.order_id,
+        other_parent.order_id,
+        sibling_a.order_id,
+        unrelated.order_id,
+    }
     # Symbol index also stays consistent.
-    assert book.pending_for_symbol("BBB") == [unrelated]
+    assert {po.order_id for po in book.pending_for_symbol("BBB")} == {
+        other_parent.order_id,
+        unrelated.order_id,
+    }
 
 
 def test_oco_cancel_siblings_empty_when_no_match() -> None:
@@ -870,3 +883,94 @@ def test_submit_attached_rejects_bad_oco_group_id(bad_group) -> None:
             oco_group_id=bad_group,
         )
     assert len(book.all_pending()) == 1
+
+
+# ---------------------------------------------------------------------------
+# submit_attached parent linkage. A typo / stale id would otherwise create an
+# orphan child that the simulator treats as a standalone order.
+# ---------------------------------------------------------------------------
+
+
+def test_submit_attached_rejects_unknown_parent_order_id() -> None:
+    """An ``parent_order_id`` that was never allocated by this book is a
+    bracket plumbing bug — reject loudly so the orphan child can't slip into
+    the book and execute as a standalone entry/exit.
+    """
+    book = OrderBook()
+    with pytest.raises(ValueError, match="not a known order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id="o-typo",
+            oco_group_id="g1",
+        )
+    assert book.all_pending() == []
+
+
+def test_submit_attached_accepts_parent_after_removal() -> None:
+    """Typical bracket flow: parent fills, gets removed from ``_pending``,
+    children are then submitted to materialize the protective legs. Validation
+    must accept the parent's id even though it's no longer in ``_pending``.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    book.remove(parent.order_id)
+    assert parent not in book.all_pending()
+
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    assert child.request.parent_order_id == parent.order_id
+
+
+# ---------------------------------------------------------------------------
+# DAY-TIF expiry uses the immutable ``original_submitted_at`` anchor so a
+# partially-filled-and-requeued DAY order still expires at the end of its
+# original session, not the day after the last partial fill.
+# ---------------------------------------------------------------------------
+
+
+def test_expire_day_orders_uses_original_submitted_at() -> None:
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0, tif=TimeInForce.DAY),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    # Partial fill bumps ``submitted_at`` to D+1 so the look-ahead guard still
+    # holds, but the original submission date is preserved separately.
+    book.requeue(po.order_id, new_remaining_qty=4.0, new_submitted_at="2024-01-03")
+    assert po.submitted_at == "2024-01-03"
+    assert po.original_submitted_at == "2024-01-02"
+
+    # On D+1 (2024-01-03) the order should expire — it was originally a DAY
+    # order submitted on 2024-01-02, so it must not survive into 2024-01-03's
+    # session.
+    expired = book.expire_day_orders("2024-01-03")
+    assert expired == [po]
+    assert po not in book.all_pending()
+
+
+def test_expire_day_orders_keeps_order_on_original_day() -> None:
+    """Sanity: a DAY order shouldn't expire on the same date it was submitted,
+    even after a same-day requeue.
+    """
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0, tif=TimeInForce.DAY),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    # Same-day requeue (the look-ahead guard allows equal timestamps).
+    book.requeue(po.order_id, new_remaining_qty=5.0, new_submitted_at="2024-01-02")
+    assert book.expire_day_orders("2024-01-02") == []
+    assert po in book.all_pending()
