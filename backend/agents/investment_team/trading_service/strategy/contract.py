@@ -137,6 +137,31 @@ class OrderRequest(BaseModel):
             raise ValueError(
                 "attachments may only be set on entry-creating orders (parent_order_id must be None)"
             )
+        # Runtime-support gates. The schema fields below land in this PR (#383)
+        # so callers and Pydantic models compile, but the execution engine does
+        # not yet honor them — that lands in later steps of #379. Until those
+        # steps ship, fail loudly at submission time rather than silently
+        # producing never-filled orders or IOC/FOK that behave like GTC.
+        if self.order_type == OrderType.TRAILING_STOP:
+            raise NotImplementedError(
+                "trailing_stop is not yet supported by the execution engine; "
+                "see #390 (Trading 5/5 Step 8) for runtime support"
+            )
+        if self.tif in (TimeInForce.IOC, TimeInForce.FOK):
+            raise NotImplementedError(
+                f"{self.tif.value} time-in-force is not yet supported by the execution engine; "
+                "see #388 (Trading 5/5 Step 6) for runtime support"
+            )
+        if self.unfilled_policy is not None:
+            raise NotImplementedError(
+                "unfilled_policy is not yet honored by TradingService; "
+                "see #385 / #386 / #387 (Trading 5/5 Steps 3-5) for runtime support"
+            )
+        if self.attached_stop_loss is not None or self.attached_take_profit is not None:
+            raise NotImplementedError(
+                "attached_stop_loss / attached_take_profit are not yet materialized "
+                "as bracket children; see #389 (Trading 5/5 Step 7) for runtime support"
+            )
 
 
 class Fill(BaseModel):
