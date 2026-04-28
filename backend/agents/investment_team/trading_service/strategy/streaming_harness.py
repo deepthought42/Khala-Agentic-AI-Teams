@@ -363,6 +363,19 @@ _HARNESS_SCRIPT = textwrap.dedent('''\
                 _emit({"kind": "error", "etype": "lookahead_violation",
                        "message": f"{exc!s}\\n{tb}"})
                 sys.exit(1)
+            except contract.UnsupportedOrderFeatureError as exc:
+                # Runtime-support gates from OrderRequest.validate_prices
+                # ("feature ships in a later step of #379") raise this
+                # specific subclass of NotImplementedError; surface them as a
+                # structured ``unsupported_feature`` failure so the parent's
+                # StrategyRuntimeError carries a meaningful etype.
+                # Plain ``raise NotImplementedError(...)`` from strategy code
+                # (e.g. ``on_bar`` placeholders) deliberately falls through
+                # to the generic ``runtime_error`` branch below. See #383.
+                tb = "".join(traceback.format_exception(*sys.exc_info()))
+                _emit({"kind": "error", "etype": "unsupported_feature",
+                       "message": f"{exc!s}\\n{tb}"})
+                sys.exit(1)
             except Exception as exc:
                 tb = "".join(traceback.format_exception(*sys.exc_info()))
                 _emit({"kind": "error", "etype": "runtime_error",

@@ -24,7 +24,7 @@ from .engine.execution_model import build_execution_model
 from .engine.fill_simulator import FillSimulator, FillSimulatorConfig
 from .engine.order_book import OrderBook
 from .engine.portfolio import Portfolio
-from .strategy.contract import OrderRequest, OrderSide
+from .strategy.contract import OrderRequest, OrderSide, UnsupportedOrderFeatureError
 from .strategy.streaming_harness import StrategyRuntimeError, StreamingHarness
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ class TradingService:
                         outcome = fill_sim.process_bar(cur_bar, next_bar=next_bar)
                         for fill in outcome.entry_fills + outcome.exit_fills:
                             harness.send_fill(
-                                fill=fill.model_dump(mode="json"),
+                                fill=fill.model_dump(mode="json", exclude_defaults=True),
                                 state=self._state(portfolio),
                             )
                         result.trades.extend(outcome.closed_trades)
@@ -248,6 +248,20 @@ class TradingService:
                             req = OrderRequest(**o)
                             req.validate_prices()
                             pending_for_prev.append(req)
+                        except UnsupportedOrderFeatureError as exc:
+                            # Runtime-support gates from validate_prices ("feature
+                            # ships in a later step of #379") must terminate the
+                            # run, not be silently dropped. Convert to a
+                            # StrategyRuntimeError so the outer loop returns a
+                            # structured ``TradingServiceResult.error`` instead
+                            # of crashing ``TradingService.run()``. The narrow
+                            # subclass keeps unrelated ``NotImplementedError``s
+                            # from strategy code in the generic catch below.
+                            # See #383.
+                            raise StrategyRuntimeError(
+                                f"strategy emitted an unsupported order: {exc}",
+                                etype="unsupported_feature",
+                            ) from exc
                         except Exception as exc:  # malformed request from strategy
                             logger.warning("dropping malformed order from strategy: %s", exc)
 
