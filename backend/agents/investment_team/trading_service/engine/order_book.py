@@ -53,11 +53,18 @@ class OrderBook:
     _pending: Dict[str, PendingOrder] = field(default_factory=dict)
     # Parallel index by symbol/side so fill_simulator doesn't have to scan.
     _by_symbol: Dict[str, List[str]] = field(default_factory=dict)
-    # All-time set of allocated order ids — used by ``submit_attached`` to
-    # reject children whose parent_order_id was never issued, while still
-    # allowing children of a since-removed parent (typical bracket flow:
-    # parent fills, gets removed, children activate).
-    _known_order_ids: Set[str] = field(default_factory=set)
+    # All-time set of *top-level* order ids (those allocated by ``submit``).
+    # Used by ``submit_attached`` to reject children whose ``parent_order_id``
+    # was never a real top-level order — including the case where a caller
+    # accidentally passes another attached order's id, which would create a
+    # multi-level bracket tree (``parent → child → grandchild``) that this
+    # API does not support. Tracked separately from attached ids so that
+    # ``submit_attached`` cannot promote a child into a parent.
+    #
+    # Memory: this set grows monotonically with the number of top-level
+    # orders submitted (children are *not* added). Long-running services
+    # should call :meth:`prune_known_top_level_order_ids` periodically.
+    _known_top_level_order_ids: Set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------
 
@@ -80,7 +87,7 @@ class OrderBook:
             remaining_qty=request.qty,
         )
         self._pending[order_id] = po
-        self._known_order_ids.add(order_id)
+        self._known_top_level_order_ids.add(order_id)
         self._by_symbol.setdefault(request.symbol, []).append(order_id)
         return po
 
@@ -113,14 +120,18 @@ class OrderBook:
             raise TypeError(
                 f"submit_attached oco_group_id must be a non-empty str, got {oco_group_id!r}"
             )
-        # Reject orphan children whose parent_order_id was never allocated by
-        # this book. We check the all-time set, not just _pending, so a child
-        # submitted after the parent fills (typical bracket activation flow)
-        # still works.
-        if parent_order_id not in self._known_order_ids:
+        # Reject orphan children whose parent_order_id was never allocated as
+        # a *top-level* order by this book. We check the all-time set rather
+        # than ``_pending`` so a child submitted after the parent fills (the
+        # typical bracket activation flow) still works. Children of children
+        # are forbidden so the API stays as flat parent/child legs — multi-
+        # level bracket trees would break ``children_of`` traversal and OCO
+        # cancellation semantics.
+        if parent_order_id not in self._known_top_level_order_ids:
             raise ValueError(
-                f"submit_attached parent_order_id {parent_order_id!r} is not a known order id; "
-                f"submit the parent through OrderBook.submit() first"
+                f"submit_attached parent_order_id {parent_order_id!r} is not a known "
+                f"top-level order id; submit the parent through OrderBook.submit() first "
+                f"(attached children may not themselves be parents of further children)"
             )
         attached_request = request.model_copy(
             update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
@@ -141,7 +152,8 @@ class OrderBook:
             remaining_qty=attached_request.qty,
         )
         self._pending[order_id] = po
-        self._known_order_ids.add(order_id)
+        # Note: do NOT add ``order_id`` to ``_known_top_level_order_ids`` —
+        # attached children must not be eligible as future parents.
         self._by_symbol.setdefault(attached_request.symbol, []).append(order_id)
         return po
 
@@ -277,6 +289,14 @@ class OrderBook:
         with default ``None``, so calling with ``None`` here would
         equality-match every ordinary parent order in the book and nuke
         unrelated orders. Reject defensively.
+
+        Ordering contract: the caller must pass ``except_order_id`` *while
+        the surviving leg is still in the book*, before finalizing it
+        (e.g., before a terminal-fill ``requeue(... new_remaining_qty=0)``
+        auto-removes it). The method validates that ``except_order_id`` is
+        currently pending and matches the ``(oco_group_id, parent_order_id)``
+        tuple — otherwise a stale or mistyped value would slip through and
+        cancel *every* leg in the group, leaving the bracket unprotected.
         """
         for name, value in (
             ("oco_group_id", oco_group_id),
@@ -287,6 +307,22 @@ class OrderBook:
                 raise TypeError(
                     f"oco_cancel_siblings {name} must be a non-empty str, got {value!r}"
                 )
+        survivor = self._pending.get(except_order_id)
+        if survivor is None:
+            raise ValueError(
+                f"oco_cancel_siblings except_order_id {except_order_id!r} is not currently "
+                f"pending; cancel siblings before removing the surviving leg from the book"
+            )
+        if (
+            survivor.request.oco_group_id != oco_group_id
+            or survivor.request.parent_order_id != parent_order_id
+        ):
+            raise ValueError(
+                f"oco_cancel_siblings except_order_id {except_order_id!r} does not belong to "
+                f"the ({oco_group_id!r}, {parent_order_id!r}) bracket "
+                f"(actual: oco_group_id={survivor.request.oco_group_id!r}, "
+                f"parent_order_id={survivor.request.parent_order_id!r})"
+            )
         cancelled: List[str] = []
         for oid in list(self._pending.keys()):
             po = self._pending[oid]
@@ -314,6 +350,32 @@ class OrderBook:
         return [
             po for po in self._pending.values() if po.request.parent_order_id == parent_order_id
         ]
+
+    def prune_known_top_level_order_ids(self) -> int:
+        """Reclaim memory from ``_known_top_level_order_ids``.
+
+        Removes any id whose top-level order is no longer in ``_pending``
+        AND has no children currently in ``_pending``. Subsequent
+        ``submit_attached`` calls referencing those ids will fail —
+        correctly, because the bracket is fully resolved.
+
+        Long-running services (paper-trade, live) should call this
+        periodically to bound memory; it's a no-op for single-shot
+        backtests where the OrderBook is discarded after the run.
+
+        Returns the number of ids pruned.
+        """
+        # Active ids = currently-pending top-level orders + parents
+        # referenced by any pending child.
+        active: set[str] = set()
+        for po in self._pending.values():
+            if po.request.parent_order_id is None:
+                active.add(po.order_id)
+            else:
+                active.add(po.request.parent_order_id)
+        pruned = self._known_top_level_order_ids - active
+        self._known_top_level_order_ids -= pruned
+        return len(pruned)
 
     # ------------------------------------------------------------------
     # TIF expiry — callers pass the current bar timestamp; day orders

@@ -505,21 +505,52 @@ def test_oco_cancel_siblings_cancels_only_siblings() -> None:
     }
 
 
-def test_oco_cancel_siblings_empty_when_no_match() -> None:
+def test_oco_cancel_siblings_rejects_stale_except_order_id() -> None:
+    """A stale ``except_order_id`` (not currently pending) would otherwise
+    fall through and let the cancellation loop nuke every leg in the group,
+    leaving the bracket unprotected. Reject explicitly.
+    """
     book = OrderBook()
     book.submit(
         _base(qty=10.0),
         submitted_at="2024-01-02",
         submitted_equity=100_000.0,
     )
-    assert (
+    with pytest.raises(ValueError, match="is not currently pending"):
         book.oco_cancel_siblings(
-            "nonexistent",
-            except_order_id="o0",
-            parent_order_id="o0",
+            "g1",
+            except_order_id="o-stale",
+            parent_order_id="o-stale",
         )
-        == []
+
+
+def test_oco_cancel_siblings_rejects_mismatched_except_leg() -> None:
+    """``except_order_id`` is currently pending, but its (group, parent) tuple
+    doesn't match the requested cancellation scope — reject so a typo can't
+    silently clear an unrelated bracket.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
     )
+    sibling = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    # except_order_id is real and pending, but with mismatched group / parent.
+    with pytest.raises(ValueError, match="does not belong to"):
+        book.oco_cancel_siblings(
+            "different-group",
+            except_order_id=sibling.order_id,
+            parent_order_id=parent.order_id,
+        )
+    # Nothing got cancelled.
+    assert sibling in book.all_pending()
 
 
 @pytest.mark.parametrize("arg", ["oco_group_id", "except_order_id", "parent_order_id"])
@@ -897,7 +928,7 @@ def test_submit_attached_rejects_unknown_parent_order_id() -> None:
     the book and execute as a standalone entry/exit.
     """
     book = OrderBook()
-    with pytest.raises(ValueError, match="not a known order id"):
+    with pytest.raises(ValueError, match="not a known top-level order id"):
         book.submit_attached(
             _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
             submitted_at="2024-01-03",
@@ -930,6 +961,121 @@ def test_submit_attached_accepts_parent_after_removal() -> None:
         oco_group_id="g1",
     )
     assert child.request.parent_order_id == parent.order_id
+
+
+def test_submit_attached_rejects_attached_child_as_parent() -> None:
+    """Multi-level bracket trees (``parent → child → grandchild``) are not
+    supported by this API. Only ids allocated by ``submit()`` (top-level
+    orders) are eligible parents — attached children must not be promoted
+    into parents themselves, otherwise ``children_of`` traversal and OCO
+    cancellation semantics break.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    # The child has a real, valid order_id, but attempting to use it as a
+    # parent for another submit_attached must fail.
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=5.0, order_type=OrderType.STOP, stop_price=95.0),
+            submitted_at="2024-01-04",
+            submitted_equity=100_000.0,
+            parent_order_id=child.order_id,
+            oco_group_id="g2",
+        )
+    # Grandchild was not queued.
+    assert book.children_of(child.order_id) == []
+
+
+# ---------------------------------------------------------------------------
+# prune_known_top_level_order_ids — operators of long-running services should
+# call this periodically to bound memory growth in ``_known_top_level_order_ids``.
+# ---------------------------------------------------------------------------
+
+
+def test_prune_keeps_active_parents() -> None:
+    """A top-level order that's still pending — or that has at least one
+    pending child — must be preserved by prune so the next bracket
+    materialization still validates correctly.
+    """
+    book = OrderBook()
+    pending_parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    parent_with_child = book.submit(
+        _base(qty=5.0, symbol="BBB"),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    # Remove the parent but keep its child pending — parent_id is still
+    # referenced by an active leg, so prune must keep it.
+    book.submit_attached(
+        _base(qty=5.0, symbol="BBB", order_type=OrderType.LIMIT, limit_price=55.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_with_child.order_id,
+        oco_group_id="g2",
+    )
+    book.remove(parent_with_child.order_id)
+
+    pruned = book.prune_known_top_level_order_ids()
+    assert pruned == 0
+    # Both parent ids still admit new children.
+    book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-04",
+        submitted_equity=100_000.0,
+        parent_order_id=pending_parent.order_id,
+        oco_group_id="g1",
+    )
+    book.submit_attached(
+        _base(qty=5.0, symbol="BBB", order_type=OrderType.STOP, stop_price=45.0),
+        submitted_at="2024-01-04",
+        submitted_equity=100_000.0,
+        parent_order_id=parent_with_child.order_id,
+        oco_group_id="g3",
+    )
+
+
+def test_prune_evicts_fully_resolved_parents() -> None:
+    """A top-level order whose entry has been removed *and* has no remaining
+    pending children is fully resolved — its id is safe to evict, and
+    subsequent ``submit_attached`` calls referencing it correctly fail.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    book.remove(parent.order_id)
+    assert book.children_of(parent.order_id) == []
+
+    pruned = book.prune_known_top_level_order_ids()
+    assert pruned == 1
+
+    # Submitting a child against the pruned parent now fails — the bracket is
+    # fully resolved.
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-04",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g1",
+        )
 
 
 # ---------------------------------------------------------------------------
