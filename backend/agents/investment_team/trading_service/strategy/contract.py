@@ -60,6 +60,19 @@ class FillKind(str, Enum):
     REJECTED = "rejected"
 
 
+class UnsupportedOrderFeatureError(NotImplementedError):
+    """Raised by ``OrderRequest.validate_prices`` when a request asks for an
+    order primitive whose runtime support has not yet shipped (gated by a
+    later step of #379).
+
+    A dedicated subclass keeps ``except NotImplementedError`` from
+    misclassifying unrelated strategy bugs (e.g. ``raise NotImplementedError``
+    placeholders inside ``on_bar``) as ``unsupported_feature`` failures.
+    Catch this class — not bare ``NotImplementedError`` — when re-mapping
+    gate violations to a structured error category.
+    """
+
+
 class StopAttachment(BaseModel):
     """Stop-loss leg attached to an entry order; materialized into an OCO child on entry fill."""
 
@@ -128,32 +141,32 @@ class OrderRequest(BaseModel):
         # steps ship, fail loudly at submission time rather than silently
         # producing never-filled orders or IOC/FOK that behave like GTC.
         if self.order_type == OrderType.TRAILING_STOP:
-            raise NotImplementedError(
+            raise UnsupportedOrderFeatureError(
                 "trailing_stop is not yet supported by the execution engine; "
                 "see #390 (Trading 5/5 Step 8) for runtime support"
             )
         if self.tif in (TimeInForce.IOC, TimeInForce.FOK):
-            raise NotImplementedError(
+            raise UnsupportedOrderFeatureError(
                 f"{self.tif.value} time-in-force is not yet supported by the execution engine; "
                 "see #388 (Trading 5/5 Step 6) for runtime support"
             )
-        if self.unfilled_policy is not None:
-            raise NotImplementedError(
-                "unfilled_policy is not yet honored by TradingService; "
+        if self.unfilled_policy is not None or self.twap_slices is not None:
+            raise UnsupportedOrderFeatureError(
+                "unfilled_policy / twap_slices are not yet honored by TradingService; "
                 "see #385 / #386 / #387 (Trading 5/5 Steps 3-5) for runtime support"
             )
         if self.attached_stop_loss is not None or self.attached_take_profit is not None:
-            raise NotImplementedError(
+            raise UnsupportedOrderFeatureError(
                 "attached_stop_loss / attached_take_profit are not yet materialized "
                 "as bracket children; see #389 (Trading 5/5 Step 7) for runtime support"
             )
         if self.parent_order_id is not None:
-            raise NotImplementedError(
+            raise UnsupportedOrderFeatureError(
                 "parent_order_id is not yet honored; see #389 (Trading 5/5 Step 7) "
                 "for bracket-child materialization"
             )
         if self.oco_group_id is not None:
-            raise NotImplementedError(
+            raise UnsupportedOrderFeatureError(
                 "oco_group_id is not yet honored; see #389 (Trading 5/5 Step 7) "
                 "for OCO sibling cancellation"
             )

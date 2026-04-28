@@ -1,8 +1,9 @@
 """Contract-level gates for trading-execution features that ship as schema in
 issue #383 but whose engine support lands in later steps of #379.
 
-Each gate raises ``NotImplementedError`` at submission time so a strategy that
-tries to use a not-yet-supported feature fails loudly rather than producing a
+Each gate raises ``UnsupportedOrderFeatureError`` (a subclass of
+``NotImplementedError``) at submission time so a strategy that tries to use
+a not-yet-supported feature fails loudly rather than producing a
 silently-unfilled order or an IOC/FOK that behaves like GTC.
 
 When a runtime step lands and removes the corresponding gate from
@@ -21,6 +22,7 @@ from investment_team.trading_service.strategy.contract import (
     StopAttachment,
     TimeInForce,
     UnfilledPolicy,
+    UnsupportedOrderFeatureError,
 )
 
 
@@ -68,6 +70,25 @@ def test_unfilled_policy_requeue_is_gated_until_step_4():
 def test_unfilled_policy_twap_is_gated_until_step_5():
     req = _base(unfilled_policy=UnfilledPolicy.TWAP_N, twap_slices=3)
     with pytest.raises(NotImplementedError, match="#387"):
+        req.validate_prices()
+
+
+def test_twap_slices_alone_is_gated_until_step_5():
+    """``twap_slices`` set without ``unfilled_policy`` must hit the gate
+    rather than fall through to the consistency ``ValueError`` (which
+    ``TradingService``'s broad except would silently drop)."""
+    req = _base(twap_slices=3)
+    with pytest.raises(NotImplementedError, match="#387"):
+        req.validate_prices()
+
+
+def test_gates_raise_unsupported_order_feature_subclass():
+    """The gates must raise the dedicated subclass, not bare
+    ``NotImplementedError``, so streaming_harness only re-classifies real
+    gate violations as ``unsupported_feature`` (and lets unrelated
+    ``NotImplementedError`` from strategy code stay as ``runtime_error``)."""
+    req = _base(tif=TimeInForce.IOC)
+    with pytest.raises(UnsupportedOrderFeatureError):
         req.validate_prices()
 
 
