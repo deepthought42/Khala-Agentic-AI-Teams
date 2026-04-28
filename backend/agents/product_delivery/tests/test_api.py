@@ -485,7 +485,7 @@ class _FakeStore:
                 if self.epics[s.epic_id].initiative_id
                 in {i.id for i in self.initiatives.values() if i.product_id == sprint.product_id}
                 and s.id not in already
-                and s.status not in _TERMINAL_STORY_STATUSES
+                and (s.status or "").strip().lower() not in _TERMINAL_STORY_STATUSES
             ),
             key=lambda s: (
                 s.wsjf_score is None,
@@ -1683,6 +1683,38 @@ def test_sprint_plan_skips_done_stories(
     assert titles == {"active"}
     assert done_id not in plan["selected_story_ids"]
     assert done_id not in plan["skipped_story_ids"]
+
+
+@pytest.mark.parametrize("terminal_status", ["Done", "DONE", " done ", "Cancelled"])
+def test_sprint_plan_terminal_filter_is_case_insensitive(
+    client_and_store: tuple[TestClient, _FakeStore],
+    terminal_status: str,
+) -> None:
+    """Status comparison must be case-insensitive (Codex review on PR #396).
+
+    `_validate_status` only strips whitespace; without `LOWER(s.status)`
+    in the candidate query a row stored as `Done` would otherwise
+    smuggle past the lowercase ``TERMINAL_STORY_STATUSES`` set.
+    """
+    client, fake = client_and_store
+    stories = [
+        {"title": "active", "estimate_points": 1, "wsjf": 5.0},
+        {"title": "x", "estimate_points": 1, "wsjf": 9.0},
+    ]
+    pid = _make_product_with_stories(client, fake, stories=stories)
+    target_id = stories[1]["_id"]
+    fake.stories[target_id] = fake.stories[target_id].model_copy(update={"status": terminal_status})
+
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 100},
+    ).json()["id"]
+    plan = client.post(
+        f"/api/product-delivery/sprints/{sid}/plan", json={"capacity_points": 100}
+    ).json()
+    # The mixed-case terminal status must still be filtered out.
+    assert target_id not in plan["selected_story_ids"]
+    assert target_id not in plan["skipped_story_ids"]
 
 
 def test_plan_endpoint_accepts_empty_body(

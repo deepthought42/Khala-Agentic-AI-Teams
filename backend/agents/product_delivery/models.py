@@ -456,7 +456,12 @@ class Release(_AuditedRow):
     sprint_id: str
     version: str
     notes_path: str | None = None
-    shipped_at: datetime | None = None
+    # `AwareDatetime` so naive timestamps are rejected at parse time
+    # (Codex review on PR #396) — the column is `TIMESTAMPTZ` and
+    # naive values would otherwise be interpreted in server-local
+    # timezone during DB conversion, shifting recorded ship times
+    # across environments.
+    shipped_at: AwareDatetime | None = None
 
 
 class CreateReleaseRequest(BaseModel):
@@ -465,7 +470,7 @@ class CreateReleaseRequest(BaseModel):
     sprint_id: str
     version: Annotated[str, Field(min_length=1), _strip_and_bound(max_len=80)]
     notes_path: str | None = None
-    shipped_at: datetime | None = None
+    shipped_at: AwareDatetime | None = None
 
 
 class SprintPlanRequest(BaseModel):

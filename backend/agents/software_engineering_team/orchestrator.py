@@ -2199,8 +2199,13 @@ def _load_requirements_from_sprint(sprint_id: str) -> Tuple[Any, str]:
     # marked terminal *after* planning — the planner only excludes
     # them at *selection* time, so without this filter execution and
     # planning would diverge. Uses the same `TERMINAL_STORY_STATUSES`
-    # set the planner does.
-    executable_stories = [s for s in sprint_view.stories if s.status not in TERMINAL_STORY_STATUSES]
+    # set the planner does, with case-insensitive compare so a row
+    # stored as ``Done`` doesn't smuggle past the lowercase set.
+    executable_stories = [
+        s
+        for s in sprint_view.stories
+        if (s.status or "").strip().lower() not in TERMINAL_STORY_STATUSES
+    ]
     if not executable_stories:
         raise ValueError(
             f"sprint {sprint_id!r} has no executable stories — every planned "

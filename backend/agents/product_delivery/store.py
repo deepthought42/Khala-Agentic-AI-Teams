@@ -1194,8 +1194,19 @@ class ProductDeliveryStore:
         capacity = _validate_capacity_points(capacity_points)
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
             _begin_repeatable_read(cur)
+            # ``SELECT ... FOR UPDATE`` on the sprint row serialises
+            # concurrent plans on the same sprint (Codex review on PR
+            # #396). REPEATABLE READ alone doesn't help here — the
+            # post-insert ``SUM`` re-query lives in the same snapshot
+            # we opened, so it can't see another transaction's commits
+            # even if they completed first. The row lock forces the
+            # second planner to wait until the first commits, then it
+            # opens a fresh snapshot via ``get_sprint_with_stories`` /
+            # the existing-load query and computes the right budget.
+            # Locks are released on transaction end (commit or rollback),
+            # so this scopes only to the duration of one ``/plan`` call.
             cur.execute(
-                "SELECT product_id FROM product_delivery_sprints WHERE id = %s",
+                "SELECT product_id FROM product_delivery_sprints WHERE id = %s FOR UPDATE",
                 (sprint_id,),
             )
             sprint_row = cur.fetchone()
@@ -1220,14 +1231,18 @@ class ProductDeliveryStore:
             # sprint, excluding terminal-status rows so done/cancelled
             # work doesn't get re-planned. ``NOT EXISTS`` is preferable
             # to ``NOT IN`` so NULL-bearing rows never leak the wrong
-            # answer.
+            # answer. ``LOWER(s.status)`` makes the comparison
+            # case-insensitive (Codex review on PR #396) — status is a
+            # free-form TEXT column and `_validate_status` only strips
+            # whitespace, so a row stored as ``Done`` would otherwise
+            # bypass the lowercase ``TERMINAL_STORY_STATUSES`` set.
             cur.execute(
                 f"""SELECT {_STORY_COLS_ALIASED}
                    FROM product_delivery_stories s
                    JOIN product_delivery_epics e ON e.id = s.epic_id
                    JOIN product_delivery_initiatives i ON i.id = e.initiative_id
                    WHERE i.product_id = %s
-                     AND s.status <> ALL(%s)
+                     AND LOWER(s.status) <> ALL(%s)
                      AND NOT EXISTS (
                        SELECT 1 FROM product_delivery_sprint_stories ss
                        WHERE ss.story_id = s.id
@@ -1299,11 +1314,15 @@ class ProductDeliveryStore:
                         "re-run plan with a refreshed candidate set"
                     ) from exc
             # Recompute the sprint's total load from persisted state so
-            # the response reflects what the database actually holds —
-            # not a derived snapshot that can drift under concurrency
-            # (Codex review on PR #396). Same transaction, so we're
-            # still on the REPEATABLE READ snapshot we opened above
-            # plus our own writes.
+            # the response reflects this transaction's view of what the
+            # database holds — not a derived snapshot that can drift
+            # locally (Codex review on PR #396). Combined with the
+            # ``SELECT ... FOR UPDATE`` on the sprint row above, this is
+            # also a *true* persisted total: any concurrent plan on the
+            # same sprint is blocked behind our row lock, so no
+            # invisible commits land outside our snapshot during this
+            # window. Same transaction → REPEATABLE READ snapshot we
+            # opened plus our own writes.
             cur.execute(
                 """SELECT COALESCE(SUM(s.estimate_points), 0)::float AS used
                    FROM product_delivery_sprint_stories ss
@@ -1353,6 +1372,12 @@ class ProductDeliveryStore:
         author: str,
     ) -> Release:
         version = _validate_text(version, label="version", max_len=80)
+        # Mirror ``Release.shipped_at: AwareDatetime`` at the store
+        # boundary so non-route callers can't slip a naive timestamp
+        # past — TIMESTAMPTZ would otherwise interpret it in server-
+        # local timezone (Codex review on PR #396).
+        if shipped_at is not None and shipped_at.tzinfo is None:
+            raise ValueError("shipped_at must be timezone-aware")
         now = _now()
         rid = _new_id()
         try:

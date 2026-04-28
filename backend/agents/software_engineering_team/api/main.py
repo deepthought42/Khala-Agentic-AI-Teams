@@ -33,7 +33,11 @@ _arch_dir = _team_dir / "architect-agents"
 if _arch_dir.exists() and str(_arch_dir) not in sys.path:
     sys.path.insert(0, str(_arch_dir))
 
-from spec_parser import SPEC_FILENAME, validate_work_path  # noqa: E402
+from spec_parser import (  # noqa: E402
+    SPEC_FILENAME,
+    validate_work_path,
+    validate_workspace_path_no_spec,
+)
 
 from shared_observability import init_otel, instrument_fastapi_app  # noqa: E402
 from software_engineering_team.shared.execution_tracker import execution_tracker  # noqa: E402
@@ -465,18 +469,25 @@ def _is_orchestrator_alive(job_id: str) -> bool:
 
 
 def _preflight_sprint_scope(sprint_id: Optional[str]) -> None:
-    """Validate sprint exists *and has planned stories* before launch.
+    """Validate sprint exists *and has at least one executable story* before launch.
 
     Used by `POST /run-team`, `POST /run-team/{id}/resume`, and
     `POST /run-team/{id}/restart` to keep the failure mode synchronous
     (4xx) instead of async (job spins up, orchestrator hard-fails on
-    empty scope). Codex review on PR #396 flagged that the
-    existence-only check still let empty sprints through.
+    empty scope). Codex review on PR #396 flagged two cases that still
+    slipped through:
+
+      * sprints that exist but were never planned;
+      * sprints whose every planned story is in a terminal status
+        (``done``/``completed``/``cancelled``/``closed``) — the
+        orchestrator's synthesizer drops those before generating the
+        spec, so an all-terminal sprint also hard-fails async.
 
     Raises ``HTTPException`` with the appropriate status code:
 
       * 404 if the sprint id is missing
-      * 400 if the sprint exists but has no planned stories
+      * 400 if the sprint has no planned stories or every planned
+        story is terminal
       * 503 if product_delivery storage is unavailable / the module
         can't be imported (deployment topology issue)
     """
@@ -484,6 +495,7 @@ def _preflight_sprint_scope(sprint_id: Optional[str]) -> None:
         return
     try:
         from product_delivery import (  # noqa: PLC0415 — lazy cross-team import
+            TERMINAL_STORY_STATUSES,
             ProductDeliveryStorageUnavailable,
             get_store,
         )
@@ -510,6 +522,22 @@ def _preflight_sprint_scope(sprint_id: Optional[str]) -> None:
             detail=(
                 f"sprint {sprint_id!r} has no planned stories; "
                 "run POST /api/product-delivery/sprints/{id}/plan first."
+            ),
+        )
+    # Mirror the orchestrator-side terminal-status filter — case-
+    # insensitive so a story marked `Done` instead of `done` doesn't
+    # smuggle past the same way the orchestrator would catch it.
+    executable = [
+        s
+        for s in sprint_view.stories
+        if (s.status or "").strip().lower() not in TERMINAL_STORY_STATUSES
+    ]
+    if not executable:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sprint {sprint_id!r} has no executable stories — every planned "
+                "story is in a terminal status (done/completed/cancelled/closed)."
             ),
         )
 
@@ -563,8 +591,16 @@ def _run_retry_background(job_id: str) -> None:
 )
 def run_team(request: RunTeamRequest) -> RunTeamResponse:
     """Start the software engineering team on a work folder."""
+    # Sprint-mode runs synthesize the spec from product_delivery rather
+    # than reading from disk, so the on-disk spec gate from
+    # `validate_work_path` would be a false 400 on repos that only
+    # carry code (Codex review on PR #396). Workspace containment +
+    # directory existence still apply.
     try:
-        repo_path = validate_work_path(request.repo_path)
+        if request.sprint_id is not None:
+            repo_path = validate_workspace_path_no_spec(request.repo_path)
+        else:
+            repo_path = validate_work_path(request.repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -597,14 +633,16 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
 
     job_id = str(uuid.uuid4())
     create_job(job_id, str(repo_path), job_type="run_team")
-    # Persist sprint_id on the job payload so resume/restart paths can
-    # rehydrate the same scope (Codex review on PR #396). `None` is
-    # written explicitly so non-sprint runs don't carry a stale value
-    # from a previous job that reused the same row (defense in depth —
-    # create_job mints a fresh uuid so it shouldn't collide today).
-    update_job(job_id, sprint_id=request.sprint_id)
 
     try:
+        # Persist sprint_id inside the launch try so a transient
+        # job-service failure on the update doesn't leave a pending
+        # job with no thread/workflow running (Codex review on PR
+        # #396). `None` is written explicitly so non-sprint runs don't
+        # carry a stale value from a previous job that reused the
+        # same row (defense in depth — create_job mints a fresh uuid).
+        update_job(job_id, sprint_id=request.sprint_id)
+
         from software_engineering_team.temporal.start_workflow import start_run_team_workflow
 
         if temporal_enabled:
@@ -1024,8 +1062,15 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     if not repo_path:
         raise HTTPException(status_code=400, detail="Job has no repo_path; cannot resume.")
 
+    # Sprint-mode jobs synthesize the spec from product_delivery, so the
+    # on-disk spec gate from `validate_work_path` would falsely reject
+    # repos that only carry code (Codex review on PR #396).
+    sprint_id = data.get("sprint_id")
     try:
-        validate_work_path(repo_path)
+        if sprint_id is not None:
+            validate_workspace_path_no_spec(repo_path)
+        else:
+            validate_work_path(repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1034,7 +1079,6 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     # update first leaves the job stuck in `running` with no
     # workflow/thread when the guard fires, recoverable only via the
     # stale-job monitor.
-    sprint_id = data.get("sprint_id")
     from software_engineering_team.temporal.client import is_temporal_enabled
 
     temporal_enabled = is_temporal_enabled()
@@ -1127,16 +1171,23 @@ def restart_run_team_job(job_id: str) -> RunTeamResponse:
     if not repo_path:
         raise HTTPException(status_code=400, detail="Job has no repo_path; cannot restart.")
 
+    # Sprint-mode jobs synthesize the spec from product_delivery, so
+    # the on-disk spec gate would falsely reject a code-only repo
+    # (Codex review on PR #396). Capture sprint_id before validation
+    # so we know which check to run.
+    sprint_id = data.get("sprint_id")
     try:
-        validate_work_path(repo_path)
+        if sprint_id is not None:
+            validate_workspace_path_no_spec(repo_path)
+        else:
+            validate_work_path(repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    # Capture sprint_id before reset_job clears the payload, then
-    # re-persist it after the reset so a sprint-scoped restart goes
-    # back through the synthesized-spec path instead of silently
-    # falling back to repo spec parsing (Codex review on PR #396).
-    sprint_id = data.get("sprint_id")
+    # Re-persist sprint_id after reset_job clears the payload so a
+    # sprint-scoped restart goes back through the synthesized-spec
+    # path instead of silently falling back to repo spec parsing
+    # (Codex review on PR #396).
 
     from software_engineering_team.temporal.client import is_temporal_enabled
 
