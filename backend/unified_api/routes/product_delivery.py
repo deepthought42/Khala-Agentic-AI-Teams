@@ -17,13 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from product_delivery import (
     AcceptanceCriterion,
     BacklogTree,
     CrossProductFeedbackLink,
+    CrossProductSprintAssignment,
     Epic,
     FeedbackItem,
     GroomRequest,
@@ -31,7 +32,12 @@ from product_delivery import (
     Initiative,
     Product,
     ProductDeliveryStorageUnavailable,
+    Sprint,
+    SprintPlanRequest,
+    SprintPlanResult,
+    SprintWithStories,
     Story,
+    StoryAlreadyPlanned,
     Task,
     UnknownProductDeliveryEntity,
     get_store,
@@ -39,6 +45,7 @@ from product_delivery import (
 )
 from product_delivery.models import (
     AcceptanceCriterionCreate,
+    CreateSprintRequest,
     EpicCreate,
     FeedbackItemCreate,
     InitiativeCreate,
@@ -50,6 +57,7 @@ from product_delivery.models import (
 )
 from product_delivery.product_owner_agent import ProductOwnerAgent
 from product_delivery.product_owner_agent.agent import LLMScoringUnavailable
+from product_delivery.sprint_planner_agent import SprintPlannerAgent
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +73,15 @@ router = APIRouter(prefix="/api/product-delivery", tags=["product-delivery"])
 
 _EXC_STATUS: dict[type[Exception], int] = {
     CrossProductFeedbackLink: 400,
+    # Adding a story to a sprint under a different product is also a
+    # 400 — the schema FKs can't enforce the transitive
+    # epic→initiative→product invariant, so we validate at the store.
+    CrossProductSprintAssignment: 400,
     UnknownProductDeliveryEntity: 404,
+    # `UNIQUE(story_id)` on `product_delivery_sprint_stories` enforces
+    # one-sprint-per-story; concurrent planners or explicit re-plans
+    # surface here as 409 instead of a raw 500.
+    StoryAlreadyPlanned: 409,
     ProductDeliveryStorageUnavailable: 503,
     # LLM transport/model/parse failures during /groom — clients retry
     # the same way they do for a Postgres outage.
@@ -270,3 +286,48 @@ def list_feedback(
     # (→ 404) when the product is missing — no TOCTTOU window where a
     # concurrent delete could turn a 404 into a `200 []`.
     return get_store().list_feedback(product_id, status=status)
+
+
+# ---------------------------------------------------------------------------
+# Sprints (Phase 2 of #243)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sprints", response_model=Sprint)
+def create_sprint(body: CreateSprintRequest) -> Sprint:
+    return get_store().create_sprint(
+        product_id=body.product_id,
+        name=body.name,
+        capacity_points=body.capacity_points,
+        starts_at=body.starts_at,
+        ends_at=body.ends_at,
+        status=body.status,
+        author=resolve_author(),
+    )
+
+
+@router.post("/sprints/{sprint_id}/plan", response_model=SprintPlanResult)
+def plan_sprint(
+    sprint_id: str,
+    body: SprintPlanRequest | None = Body(default=None),  # noqa: B008 — FastAPI requires Body() at the dependency boundary
+) -> SprintPlanResult:
+    """Run capacity-aware story selection for ``sprint_id``.
+
+    A missing sprint surfaces as 404 via ``UnknownProductDeliveryEntity``
+    raised inside the agent (delegating to ``select_sprint_scope`` /
+    ``get_sprint``). The body is optional; an empty / omitted body
+    means "use the sprint row's stored capacity" — same effect as
+    ``{"capacity_points": null}``. ``capacity_points`` may be set to
+    override the stored capacity for what-if planning.
+    """
+    capacity_override = body.capacity_points if body is not None else None
+    agent = SprintPlannerAgent(store=get_store())
+    return agent.plan(sprint_id=sprint_id, capacity_points=capacity_override)
+
+
+@router.get("/sprints/{sprint_id}", response_model=SprintWithStories)
+def get_sprint(sprint_id: str) -> SprintWithStories:
+    result = get_store().get_sprint_with_stories(sprint_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"unknown sprint: {sprint_id}")
+    return result

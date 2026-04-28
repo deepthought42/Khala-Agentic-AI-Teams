@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _team_dir = Path(__file__).resolve().parent.parent
 if str(_team_dir) not in sys.path:
@@ -33,7 +33,11 @@ _arch_dir = _team_dir / "architect-agents"
 if _arch_dir.exists() and str(_arch_dir) not in sys.path:
     sys.path.insert(0, str(_arch_dir))
 
-from spec_parser import SPEC_FILENAME, validate_work_path  # noqa: E402
+from spec_parser import (  # noqa: E402
+    SPEC_FILENAME,
+    validate_work_path,
+    validate_workspace_path_no_spec,
+)
 
 from shared_observability import init_otel, instrument_fastapi_app  # noqa: E402
 from software_engineering_team.shared.execution_tracker import execution_tracker  # noqa: E402
@@ -175,6 +179,29 @@ class RunTeamRequest(BaseModel):
         max_length=4096,
         description="Local filesystem path to the folder where work will be saved. Must contain a spec: at root (initial_spec.md or spec.md) or under plan/ or plan/product_analysis/ (e.g. validated_spec.md, updated_spec_vN.md). Does not need to be a git repository.",
     )
+    sprint_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "When set (#370), pull planned scope from the product_delivery "
+            "sprint's stories instead of parsing a spec from the repo. "
+            "Discovery's LLM spec-parse and the PRA agent are skipped."
+        ),
+    )
+
+    @field_validator("sprint_id")
+    @classmethod
+    def _normalise_sprint_id(cls, value: Optional[str]) -> Optional[str]:
+        # Reject blank / whitespace-only ids at the API boundary so a
+        # caller can't accidentally enable "sprint mode" with a value
+        # that leads to a runtime "unknown sprint" 500 — the right
+        # response is a clear 422 (Codex review on PR #396).
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("sprint_id must not be blank or whitespace-only")
+        return stripped
 
 
 class RunTeamResponse(BaseModel):
@@ -441,6 +468,80 @@ def _is_orchestrator_alive(job_id: str) -> bool:
     return thread is not None and thread.is_alive()
 
 
+def _preflight_sprint_scope(sprint_id: Optional[str]) -> None:
+    """Validate sprint exists *and has at least one executable story* before launch.
+
+    Used by `POST /run-team`, `POST /run-team/{id}/resume`, and
+    `POST /run-team/{id}/restart` to keep the failure mode synchronous
+    (4xx) instead of async (job spins up, orchestrator hard-fails on
+    empty scope). Codex review on PR #396 flagged two cases that still
+    slipped through:
+
+      * sprints that exist but were never planned;
+      * sprints whose every planned story is in a terminal status
+        (``done``/``completed``/``cancelled``/``closed``) — the
+        orchestrator's synthesizer drops those before generating the
+        spec, so an all-terminal sprint also hard-fails async.
+
+    Raises ``HTTPException`` with the appropriate status code:
+
+      * 404 if the sprint id is missing
+      * 400 if the sprint has no planned stories or every planned
+        story is terminal
+      * 503 if product_delivery storage is unavailable / the module
+        can't be imported (deployment topology issue)
+    """
+    if sprint_id is None:
+        return
+    try:
+        from product_delivery import (  # noqa: PLC0415 — lazy cross-team import
+            TERMINAL_STORY_STATUSES,
+            ProductDeliveryStorageUnavailable,
+            get_store,
+        )
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"product_delivery store unavailable; cannot resolve sprint_id: {e}",
+        ) from e
+    try:
+        sprint_view = get_store().get_sprint_with_stories(sprint_id)
+    except ProductDeliveryStorageUnavailable as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"product_delivery storage unavailable; cannot resolve sprint_id: {e}",
+        ) from e
+    if sprint_view is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"sprint {sprint_id!r} does not exist",
+        )
+    if not sprint_view.stories:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sprint {sprint_id!r} has no planned stories; "
+                "run POST /api/product-delivery/sprints/{id}/plan first."
+            ),
+        )
+    # Mirror the orchestrator-side terminal-status filter — case-
+    # insensitive so a story marked `Done` instead of `done` doesn't
+    # smuggle past the same way the orchestrator would catch it.
+    executable = [
+        s
+        for s in sprint_view.stories
+        if (s.status or "").strip().lower() not in TERMINAL_STORY_STATUSES
+    ]
+    if not executable:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sprint {sprint_id!r} has no executable stories — every planned "
+                "story is in a terminal status (done/completed/cancelled/closed)."
+            ),
+        )
+
+
 def _run_orchestrator_background(
     job_id: str,
     repo_path: str,
@@ -448,6 +549,7 @@ def _run_orchestrator_background(
     spec_content_override: Optional[str] = None,
     resolved_questions_override: Optional[List[Dict[str, Any]]] = None,
     planning_only: bool = False,
+    sprint_id: Optional[str] = None,
 ) -> None:
     """Run orchestrator in background thread."""
     _active_orchestrator_threads[job_id] = threading.current_thread()
@@ -460,6 +562,7 @@ def _run_orchestrator_background(
             spec_content_override=spec_content_override,
             resolved_questions_override=resolved_questions_override,
             planning_only=planning_only,
+            sprint_id=sprint_id,
         )
     except Exception as e:
         logger.exception("Orchestrator failed")
@@ -488,10 +591,43 @@ def _run_retry_background(job_id: str) -> None:
 )
 def run_team(request: RunTeamRequest) -> RunTeamResponse:
     """Start the software engineering team on a work folder."""
+    # Sprint-mode runs synthesize the spec from product_delivery rather
+    # than reading from disk, so the on-disk spec gate from
+    # `validate_work_path` would be a false 400 on repos that only
+    # carry code (Codex review on PR #396). Workspace containment +
+    # directory existence still apply.
     try:
-        repo_path = validate_work_path(request.repo_path)
+        if request.sprint_id is not None:
+            repo_path = validate_workspace_path_no_spec(request.repo_path)
+        else:
+            repo_path = validate_work_path(request.repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Reject sprint_id under Temporal *before* create_job and *outside*
+    # the launch try/except — otherwise the broad `except Exception`
+    # below catches the 400 and re-wraps it as a 503 "Failed to start
+    # workflow" (Codex review on PR #396). Temporal-mode plumbing for
+    # sprint_id is a follow-up; this is a client-input error, not infra.
+    from software_engineering_team.temporal.client import is_temporal_enabled
+
+    temporal_enabled = is_temporal_enabled()
+    if temporal_enabled and request.sprint_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "sprint_id is not yet supported under TEMPORAL_ADDRESS; "
+                "run without Temporal or omit sprint_id."
+            ),
+        )
+
+    # Validate `sprint_id` exists *and has planned scope* before
+    # enqueuing the job — otherwise a typo, a deleted sprint, or a
+    # never-planned sprint would return 200, kick off a background job,
+    # and surface as an async failure on the orchestrator side, wasting
+    # capacity and giving the client a misleading success response
+    # (Codex review on PR #396). Shared with resume/restart.
+    _preflight_sprint_scope(request.sprint_id)
 
     _start_stale_job_monitor_once()
 
@@ -499,15 +635,23 @@ def run_team(request: RunTeamRequest) -> RunTeamResponse:
     create_job(job_id, str(repo_path), job_type="run_team")
 
     try:
-        from software_engineering_team.temporal.client import is_temporal_enabled
+        # Persist sprint_id inside the launch try so a transient
+        # job-service failure on the update doesn't leave a pending
+        # job with no thread/workflow running (Codex review on PR
+        # #396). `None` is written explicitly so non-sprint runs don't
+        # carry a stale value from a previous job that reused the
+        # same row (defense in depth — create_job mints a fresh uuid).
+        update_job(job_id, sprint_id=request.sprint_id)
+
         from software_engineering_team.temporal.start_workflow import start_run_team_workflow
 
-        if is_temporal_enabled():
+        if temporal_enabled:
             start_run_team_workflow(job_id, str(repo_path))
         else:
             thread = threading.Thread(
                 target=_run_orchestrator_background,
                 args=(job_id, str(repo_path)),
+                kwargs={"sprint_id": request.sprint_id},
             )
             thread.daemon = True
             thread.start()
@@ -918,10 +1062,39 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     if not repo_path:
         raise HTTPException(status_code=400, detail="Job has no repo_path; cannot resume.")
 
+    # Sprint-mode jobs synthesize the spec from product_delivery, so the
+    # on-disk spec gate from `validate_work_path` would falsely reject
+    # repos that only carry code (Codex review on PR #396).
+    sprint_id = data.get("sprint_id")
     try:
-        validate_work_path(repo_path)
+        if sprint_id is not None:
+            validate_workspace_path_no_spec(repo_path)
+        else:
+            validate_work_path(repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Same Temporal+sprint_id guard as POST /run-team: validate BEFORE
+    # flipping the job to running. Codex flagged that running the
+    # update first leaves the job stuck in `running` with no
+    # workflow/thread when the guard fires, recoverable only via the
+    # stale-job monitor.
+    from software_engineering_team.temporal.client import is_temporal_enabled
+
+    temporal_enabled = is_temporal_enabled()
+    if temporal_enabled and sprint_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "sprint_id is not yet supported under TEMPORAL_ADDRESS; "
+                "this job was created with sprint_id and cannot be resumed under Temporal."
+            ),
+        )
+
+    # Re-validate the sprint scope on resume — the sprint may have been
+    # deleted or unplanned since the job was created. Surfaces synchronously
+    # before flipping the job to `running` (Codex review on PR #396).
+    _preflight_sprint_scope(sprint_id)
 
     update_job(
         job_id,
@@ -931,19 +1104,21 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     )
 
     try:
-        from software_engineering_team.temporal.client import is_temporal_enabled
         from software_engineering_team.temporal.start_workflow import start_run_team_workflow
 
         # Pass previously submitted answers so the orchestrator doesn't re-ask questions
         submitted_answers = data.get("submitted_answers") or None
 
-        if is_temporal_enabled():
+        if temporal_enabled:
             start_run_team_workflow(job_id, str(repo_path))
         else:
             thread = threading.Thread(
                 target=_run_orchestrator_background,
                 args=(job_id, str(repo_path)),
-                kwargs={"resolved_questions_override": submitted_answers},
+                kwargs={
+                    "resolved_questions_override": submitted_answers,
+                    "sprint_id": sprint_id,
+                },
                 daemon=True,
             )
             thread.start()
@@ -996,24 +1171,54 @@ def restart_run_team_job(job_id: str) -> RunTeamResponse:
     if not repo_path:
         raise HTTPException(status_code=400, detail="Job has no repo_path; cannot restart.")
 
+    # Sprint-mode jobs synthesize the spec from product_delivery, so
+    # the on-disk spec gate would falsely reject a code-only repo
+    # (Codex review on PR #396). Capture sprint_id before validation
+    # so we know which check to run.
+    sprint_id = data.get("sprint_id")
     try:
-        validate_work_path(repo_path)
+        if sprint_id is not None:
+            validate_workspace_path_no_spec(repo_path)
+        else:
+            validate_work_path(repo_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    # Re-persist sprint_id after reset_job clears the payload so a
+    # sprint-scoped restart goes back through the synthesized-spec
+    # path instead of silently falling back to repo spec parsing
+    # (Codex review on PR #396).
+
+    from software_engineering_team.temporal.client import is_temporal_enabled
+
+    temporal_enabled = is_temporal_enabled()
+    if temporal_enabled and sprint_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "sprint_id is not yet supported under TEMPORAL_ADDRESS; "
+                "this job was created with sprint_id and cannot be restarted under Temporal."
+            ),
+        )
+
+    # Re-validate the sprint scope BEFORE `reset_job` — otherwise a
+    # restart with a deleted/unplanned sprint would discard the prior
+    # job state, then fail asynchronously. Codex review on PR #396.
+    _preflight_sprint_scope(sprint_id)
+
     reset_job(job_id, str(repo_path), job_type="run_team")
-    update_job(job_id, status=JOB_STATUS_RUNNING, error=None)
+    update_job(job_id, status=JOB_STATUS_RUNNING, error=None, sprint_id=sprint_id)
 
     try:
-        from software_engineering_team.temporal.client import is_temporal_enabled
         from software_engineering_team.temporal.start_workflow import start_run_team_workflow
 
-        if is_temporal_enabled():
+        if temporal_enabled:
             start_run_team_workflow(job_id, str(repo_path))
         else:
             thread = threading.Thread(
                 target=_run_orchestrator_background,
                 args=(job_id, str(repo_path)),
+                kwargs={"sprint_id": sprint_id},
                 daemon=True,
             )
             thread.start()
@@ -1711,7 +1916,6 @@ def _run_backend_code_v2_background(
         update_job(job_id, error=str(e), status=JOB_STATUS_FAILED)
 
 
-
 @app.post(
     "/backend-code-v2/run",
     response_model=BackendCodeV2RunResponse,
@@ -1796,8 +2000,6 @@ def get_backend_code_v2_status(job_id: str) -> BackendCodeV2StatusResponse:
         summary=data.get("summary"),
         status_text=data.get("status_text"),
     )
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1903,8 +2105,6 @@ def auto_answer_run_team_question(
             status_code=500,
             detail=f"Auto-answer failed: {e}",
         )
-
-
 
 
 def _get_spec_content_for_job(data: Dict[str, Any]) -> str:
@@ -2475,7 +2675,6 @@ def get_logs(
     if not parts:
         return PlainTextResponse(content="(no log files found)\n", status_code=200)
     return PlainTextResponse(content="\n\n".join(parts))
-
 
 
 @app.get("/health")

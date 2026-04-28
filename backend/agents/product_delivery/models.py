@@ -18,7 +18,14 @@ import math
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, Field
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    Field,
+    model_validator,
+)
 
 
 def _reject_bool(value: Any) -> Any:
@@ -353,4 +360,136 @@ class GroomResult(BaseModel):
     product_id: str
     method: GroomMethod
     ranked: list[RankedBacklogItem] = Field(default_factory=list)
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Sprints + releases (Phase 2 of #243)
+# ---------------------------------------------------------------------------
+
+
+def _non_negative_finite(value: float) -> float:
+    """``AfterValidator``: reject NaN / ±Infinity / negatives.
+
+    ``capacity_points`` is a float so half-points are expressible
+    (Fibonacci-3 ≈ 3.0, but a half-point spike can land at 0.5), but
+    NaN / ±Infinity break ``select_sprint_scope`` (every comparison
+    against NaN is False, so the greedy fit accepts everything; +Inf
+    accepts everything; −Inf accepts nothing) and corrupt the on-wire
+    JSON. Negatives don't make physical sense and would make the
+    "remaining_capacity" arithmetic in ``SprintPlanResult`` go below
+    zero on the first allocation. Reject all three at the boundary.
+    """
+    if not math.isfinite(value):
+        raise ValueError("capacity_points must be a finite number (NaN / Infinity not allowed)")
+    if value < 0:
+        raise ValueError("capacity_points must be >= 0")
+    return value
+
+
+CapacityPoints = Annotated[
+    float,
+    BeforeValidator(_reject_bool),
+    AfterValidator(_non_negative_finite),
+]
+
+
+class Sprint(_AuditedRow):
+    product_id: str
+    name: str
+    capacity_points: float = 0.0
+    starts_at: AwareDatetime | None = None
+    ends_at: AwareDatetime | None = None
+    status: StatusStr = "planned"
+
+
+class CreateSprintRequest(BaseModel):
+    product_id: str
+    name: TitleStr
+    capacity_points: CapacityPoints = 0.0
+    # `AwareDatetime` rejects naive timestamps at parse time (422),
+    # which keeps the post-validator's chronological compare from
+    # ever seeing a tz-aware vs. naive mix that would raise a raw
+    # ``TypeError`` and surface as a 500 (Codex review on PR #396).
+    starts_at: AwareDatetime | None = None
+    ends_at: AwareDatetime | None = None
+    status: StatusStr = "planned"
+
+    @model_validator(mode="after")
+    def _validate_window(self) -> "CreateSprintRequest":
+        # Reject inverted windows at the boundary so they can never
+        # land in the database or in a synthesized sprint spec's
+        # metadata (Codex review on PR #396). Equal timestamps are
+        # tolerated — a zero-length sprint is degenerate but not
+        # logically invalid. ``AwareDatetime`` above guarantees both
+        # sides are tz-aware so the compare can't raise ``TypeError``.
+        if (
+            self.starts_at is not None
+            and self.ends_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must be on or after starts_at")
+        return self
+
+
+class SprintWithStories(BaseModel):
+    """Sprint header + the planned stories, ordered by WSJF then created_at.
+
+    ``acceptance_criteria_by_story_id`` is populated by
+    ``ProductDeliveryStore.get_sprint_with_stories`` and is keyed by the
+    story id so callers can reconstruct the per-story AC list without
+    issuing follow-up queries (Codex review on PR #396 — fetching ACs
+    in the same transaction snapshot prevents a stale stories +
+    fresh ACs mix). The dict is empty when the planned-story list is
+    empty, never ``None``.
+    """
+
+    sprint: Sprint
+    stories: list[Story] = Field(default_factory=list)
+    acceptance_criteria_by_story_id: dict[str, list["AcceptanceCriterion"]] = Field(
+        default_factory=dict,
+        description="Maps story_id → ordered acceptance criteria, fetched in the same snapshot as stories.",
+    )
+
+
+class Release(_AuditedRow):
+    sprint_id: str
+    version: str
+    notes_path: str | None = None
+    # `AwareDatetime` so naive timestamps are rejected at parse time
+    # (Codex review on PR #396) — the column is `TIMESTAMPTZ` and
+    # naive values would otherwise be interpreted in server-local
+    # timezone during DB conversion, shifting recorded ship times
+    # across environments.
+    shipped_at: AwareDatetime | None = None
+
+
+class CreateReleaseRequest(BaseModel):
+    """Phase 2 ships only the model + table; routes land with #371."""
+
+    sprint_id: str
+    version: Annotated[str, Field(min_length=1), _strip_and_bound(max_len=80)]
+    notes_path: str | None = None
+    shipped_at: AwareDatetime | None = None
+
+
+class SprintPlanRequest(BaseModel):
+    """Body for ``POST /sprints/{id}/plan``.
+
+    ``capacity_points`` overrides the sprint row's stored capacity for
+    this run when supplied (useful for ad-hoc what-if planning). When
+    ``None`` the agent reads ``capacity_points`` from the sprint row.
+    """
+
+    capacity_points: CapacityPoints | None = None
+
+
+class SprintPlanResult(BaseModel):
+    """Output of ``SprintPlannerAgent.plan`` and ``select_sprint_scope``."""
+
+    sprint_id: str
+    selected_story_ids: list[str] = Field(default_factory=list)
+    skipped_story_ids: list[str] = Field(default_factory=list)
+    used_capacity: float = 0.0
+    remaining_capacity: float = 0.0
     rationale: str = ""

@@ -597,6 +597,26 @@ def validate_work_path(work_path: str | Path) -> Path:
     return path
 
 
+def validate_workspace_path_no_spec(work_path: str | Path) -> Path:
+    """Validate work-path existence and workspace containment **without**
+    requiring an on-disk spec.
+
+    Used by the sprint-mode entry point — when ``sprint_id`` is set the
+    spec is synthesized from the product_delivery sprint's planned
+    stories, so the on-disk spec gate from :func:`validate_work_path`
+    would be a false 400 on repos that only carry code (Codex review
+    on PR #396). Path-traversal containment is still enforced when
+    ``WORKSPACE_ROOT`` is configured.
+    """
+    path = Path(work_path).resolve()
+    _check_workspace_containment(path)
+    if not path.exists():
+        raise ValueError(f"Path does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"Path is not a directory: {path}")
+    return path
+
+
 def validate_repo_path(repo_path: str | Path) -> Path:
     """
     Validate that the path exists, is a directory, is a git repo, and has at least one loadable spec.
