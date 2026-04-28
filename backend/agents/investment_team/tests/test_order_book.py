@@ -181,10 +181,14 @@ def test_requeue_keeps_cumulative_filled_consistent() -> None:
     assert po.cumulative_filled_qty == 9.0
     assert po.original_qty == po.cumulative_filled_qty + po.remaining_qty
 
-    # Fully filled — remainder collapses to zero.
+    # Fully filled — remainder collapses to zero. The PendingOrder reference
+    # still holds the terminal state for the caller to read, but it is removed
+    # from the book so the simulator can't double-fill it.
     book.requeue(po.order_id, new_remaining_qty=0.0, new_submitted_at="2024-01-05")
     assert po.cumulative_filled_qty == 10.0
     assert po.remaining_qty == 0.0
+    assert po not in book.all_pending()
+    assert po not in book.pending_for_symbol("AAA")
 
 
 def test_requeue_rejects_negative_remaining_qty() -> None:
@@ -263,6 +267,37 @@ def test_requeue_unknown_order_id_raises_keyerror() -> None:
     )
     with pytest.raises(KeyError, match="not in the book"):
         book.requeue("o-bogus", new_remaining_qty=5.0, new_submitted_at="2024-01-03")
+
+
+def test_requeue_zero_remainder_removes_order_from_book() -> None:
+    """``requeue(..., new_remaining_qty=0)`` is the terminal step of a partial-fill
+    sequence. The order must be removed from ``_pending`` and from the symbol
+    index so downstream consumers (notably ``FillSimulator``, which sizes from
+    ``req.qty`` rather than ``remaining_qty``) cannot double-fill it. The
+    returned reference still carries the terminal state for the caller.
+    """
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    # First a real partial fill — order remains in the book.
+    book.requeue(po.order_id, new_remaining_qty=4.0, new_submitted_at="2024-01-03")
+    assert po in book.all_pending()
+    assert po in book.pending_for_symbol("AAA")
+
+    returned = book.requeue(po.order_id, new_remaining_qty=0.0, new_submitted_at="2024-01-04")
+    # Caller still gets the PendingOrder reference with terminal state.
+    assert returned is po
+    assert po.remaining_qty == 0.0
+    assert po.cumulative_filled_qty == po.original_qty == 10.0
+    # But it is no longer queued for further fills.
+    assert po not in book.all_pending()
+    assert po not in book.pending_for_symbol("AAA")
+    # And the next requeue raises (book no longer holds the id).
+    with pytest.raises(KeyError, match="not in the book"):
+        book.requeue(po.order_id, new_remaining_qty=0.0, new_submitted_at="2024-01-05")
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +633,42 @@ def test_submit_attached_rejects_ioc_child() -> None:
             oco_group_id="g1",
         )
     assert book.children_of(parent.order_id) == []
+
+
+# ---------------------------------------------------------------------------
+# parent_order_id / oco_group_id type validation. Pydantic's
+# ``model_copy(update=...)`` does not validate update values, so a non-string
+# id would be stored silently and break later string-based lookups
+# (``children_of`` / ``oco_cancel_siblings`` compare with ``==``).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_parent", [123, None, "", 1.5])
+def test_submit_attached_rejects_bad_parent_order_id(bad_parent) -> None:
+    book = OrderBook()
+    _bracket_parent(book)
+    with pytest.raises(TypeError, match="parent_order_id must be a non-empty str"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=bad_parent,
+            oco_group_id="g1",
+        )
+    # Nothing got queued — only the bracket parent remains.
+    assert len(book.all_pending()) == 1
+
+
+@pytest.mark.parametrize("bad_group", [123, None, "", 1.5])
+def test_submit_attached_rejects_bad_oco_group_id(bad_group) -> None:
+    book = OrderBook()
+    parent = _bracket_parent(book)
+    with pytest.raises(TypeError, match="oco_group_id must be a non-empty str"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id=bad_group,
+        )
+    assert len(book.all_pending()) == 1

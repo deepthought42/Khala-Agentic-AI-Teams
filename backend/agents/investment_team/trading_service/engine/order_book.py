@@ -84,6 +84,14 @@ class OrderBook:
         ``validate_prices`` on a clone with parent/OCO cleared so we don't
         re-fire the very gates this method is meant to bypass.
         """
+        if not isinstance(parent_order_id, str) or not parent_order_id:
+            raise TypeError(
+                f"submit_attached parent_order_id must be a non-empty str, got {parent_order_id!r}"
+            )
+        if not isinstance(oco_group_id, str) or not oco_group_id:
+            raise TypeError(
+                f"submit_attached oco_group_id must be a non-empty str, got {oco_group_id!r}"
+            )
         attached_request = request.model_copy(
             update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
         )
@@ -179,6 +187,12 @@ class OrderBook:
         po.remaining_qty = new_remaining_qty
         po.cumulative_filled_qty = po.original_qty - new_remaining_qty
         po.twap_slices_remaining = twap_slices_remaining
+        if new_remaining_qty == 0:
+            # Fully filled — drop from the book so downstream consumers (notably
+            # FillSimulator, which still sizes from req.qty) can't re-fill it.
+            # The returned PendingOrder reference still holds the final terminal
+            # state for the caller to read.
+            self.remove(order_id)
         return po
 
     def oco_cancel_siblings(
