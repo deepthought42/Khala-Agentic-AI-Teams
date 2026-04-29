@@ -137,6 +137,42 @@ def test_requeue_same_timestamp_allowed() -> None:
     assert po.remaining_qty == 3.0
 
 
+def test_requeue_normalizes_z_suffix_timestamp() -> None:
+    """``…Z`` and ``…+00:00`` are equivalent ISO 8601 representations of the
+    same instant; lexicographic comparison would falsely reject ``…Z`` as
+    earlier than ``…+00:00`` (because ``Z`` < ``+`` in ASCII). The regression
+    guard normalises both sides before comparing.
+    """
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02T10:00:00+00:00",
+        submitted_equity=100_000.0,
+    )
+    # Same instant, just expressed with the Z suffix.
+    book.requeue(
+        po.order_id,
+        new_remaining_qty=4.0,
+        new_submitted_at="2024-01-02T10:00:00Z",
+    )
+    assert po.remaining_qty == 4.0
+    assert po.submitted_at == "2024-01-02T10:00:00Z"
+
+    # And the other direction: existing has Z suffix, new has +00:00 — also
+    # not a regression.
+    po2 = book.submit(
+        _base(qty=5.0, symbol="BBB"),
+        submitted_at="2024-01-02T10:00:00Z",
+        submitted_equity=100_000.0,
+    )
+    book.requeue(
+        po2.order_id,
+        new_remaining_qty=2.0,
+        new_submitted_at="2024-01-02T10:00:00+00:00",
+    )
+    assert po2.remaining_qty == 2.0
+
+
 def test_requeue_twap_slices_passthrough() -> None:
     book = OrderBook()
     po = book.submit(
@@ -961,6 +997,52 @@ def test_submit_attached_accepts_parent_after_removal() -> None:
         oco_group_id="g1",
     )
     assert child.request.parent_order_id == parent.order_id
+
+
+def test_submit_attached_rejects_cancelled_parent() -> None:
+    """A cancelled top-level order never opened, so attaching protective
+    children to it would be a bug. ``cancel()`` must remove the parent's id
+    from the eligible-parent set so subsequent ``submit_attached`` fails.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    assert book.cancel(parent.order_id) is True
+
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g1",
+        )
+
+
+def test_submit_attached_rejects_expired_parent() -> None:
+    """Same lifecycle rule as cancel: a DAY order expired without filling
+    is not eligible to be a bracket parent.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0, tif=TimeInForce.DAY),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    expired = book.expire_day_orders("2024-01-03")
+    assert expired == [parent]
+
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g1",
+        )
 
 
 def test_submit_attached_rejects_attached_child_as_parent() -> None:

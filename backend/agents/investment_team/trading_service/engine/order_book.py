@@ -53,17 +53,26 @@ class OrderBook:
     _pending: Dict[str, PendingOrder] = field(default_factory=dict)
     # Parallel index by symbol/side so fill_simulator doesn't have to scan.
     _by_symbol: Dict[str, List[str]] = field(default_factory=dict)
-    # All-time set of *top-level* order ids (those allocated by ``submit``).
-    # Used by ``submit_attached`` to reject children whose ``parent_order_id``
-    # was never a real top-level order — including the case where a caller
-    # accidentally passes another attached order's id, which would create a
-    # multi-level bracket tree (``parent → child → grandchild``) that this
-    # API does not support. Tracked separately from attached ids so that
-    # ``submit_attached`` cannot promote a child into a parent.
+    # Set of *eligible-parent* top-level order ids. Used by
+    # ``submit_attached`` to reject children whose ``parent_order_id`` is not
+    # a real top-level order eligible to carry brackets:
     #
-    # Memory: this set grows monotonically with the number of top-level
-    # orders submitted (children are *not* added). Long-running services
-    # should call :meth:`prune_known_top_level_order_ids` periodically.
+    # - Added on ``submit()`` (top-level entries).
+    # - Discarded on ``cancel()`` and ``expire_day_orders()`` for top-level
+    #   orders (cancelled / expired parents never opened, so attaching
+    #   protective children to them would be a bug).
+    # - Preserved on ``remove()`` (the terminal-fill path used by
+    #   ``requeue(... new_remaining_qty=0)``): a *filled* parent is the
+    #   normal case where bracket children are activated *after* the entry
+    #   fills and is removed.
+    #
+    # ``submit_attached`` is never inserted here, so an attached child can
+    # never be promoted into a parent (multi-level bracket trees rejected).
+    #
+    # Growth is bounded by lifecycle: cancel/expire prune in O(1) per call.
+    # Filled parents only stay in the set until the operator decides to call
+    # :meth:`prune_known_top_level_order_ids`, which evicts ids whose entry
+    # is gone *and* whose children have all resolved.
     _known_top_level_order_ids: Set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------
@@ -164,6 +173,13 @@ class OrderBook:
         ids = self._by_symbol.get(po.request.symbol)
         if ids and order_id in ids:
             ids.remove(order_id)
+        # Cancelled top-level orders are no longer eligible parents — their
+        # entry never produced (or won't produce any further) live exposure,
+        # so attaching protective children would be a bug. Use ``remove()``
+        # for the *fill* removal path so the parent stays in the set and
+        # bracket children can still be activated.
+        if po.request.parent_order_id is None:
+            self._known_top_level_order_ids.discard(order_id)
         return True
 
     def remove(self, order_id: str) -> Optional[PendingOrder]:
@@ -223,7 +239,10 @@ class OrderBook:
             )
         if not math.isfinite(new_remaining_qty):
             raise ValueError(f"requeue new_remaining_qty must be finite, got {new_remaining_qty!r}")
-        if new_submitted_at < po.submitted_at:
+        # Normalise both sides of the regression check before comparing so
+        # equivalent ISO 8601 instants in different formats (e.g. ``…Z`` vs
+        # ``…+00:00``) don't trip a false rejection.
+        if _normalize_ts(new_submitted_at) < _normalize_ts(po.submitted_at):
             raise ValueError(
                 f"requeue submitted_at must not regress: "
                 f"old={po.submitted_at!r} new={new_submitted_at!r}"
@@ -398,11 +417,32 @@ class OrderBook:
             if _date_only(anchor) < _date_only(current_date):
                 expired.append(po)
                 self.remove(oid)
+                # Same lifecycle rule as ``cancel``: an expired top-level
+                # order never opened (or finished its session unfilled), so
+                # it should not accept new bracket children afterwards.
+                if po.request.parent_order_id is None:
+                    self._known_top_level_order_ids.discard(oid)
         return expired
 
 
 def _date_only(ts: str) -> str:
     return (ts or "")[:10]
+
+
+def _normalize_ts(ts: str) -> str:
+    """Best-effort ISO 8601 normalisation for lexicographic comparison.
+
+    Maps a trailing ``Z`` (UTC zulu suffix) to ``+00:00`` so two equivalent
+    representations of the same instant compare equal as strings. Anything
+    else is returned unchanged — this is a defensive nudge, not a full ISO
+    parser; mixed timezone offsets / locale formats are still the caller's
+    responsibility.
+    """
+    if not isinstance(ts, str):
+        return ts
+    if ts.endswith("Z"):
+        return ts[:-1] + "+00:00"
+    return ts
 
 
 # Convenience re-exports to make ``from .order_book import *`` unambiguous.
