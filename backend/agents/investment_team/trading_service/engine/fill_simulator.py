@@ -90,6 +90,20 @@ class FillSimulator:
         pending = list(self.order_book.pending_for_symbol(bar.symbol))
 
         for po in pending:
+            # The snapshot can go stale mid-loop: e.g. a parent rejected via
+            # the risk-gate or insufficient-capital paths cascade-cancels its
+            # bracket children, which may already be in this snapshot. Skip
+            # any order that's no longer in the book so cascade-removed
+            # children can't slip through and fill on the same bar.
+            if po.order_id not in self.order_book:
+                continue
+            # Pre-armed bracket children (submitted while the parent is still
+            # pending) sit in the book with ``armed=False`` until the bracket
+            # materializer (#389) flips them on after the parent fills.
+            # Skipping them here keeps protective legs from firing as
+            # standalone orders before the entry has actually opened.
+            if not po.armed:
+                continue
             req = po.request
             # Determine whether this bar triggered the order and at what
             # terms (price, partial-fill fraction, adverse-selection
@@ -128,7 +142,12 @@ class FillSimulator:
                 self.portfolio.open(pos)
                 fill = self.portfolio.make_entry_fill(pos)
                 entry_fills.append(fill)
-                self.order_book.remove(po.order_id)
+                # Entry filled — keep this id in the eligible-parent set so
+                # bracket / OCO children can later be activated against it via
+                # ``OrderBook.submit_attached`` (see #389). Only entries qualify
+                # as bracket parents; exit fills below intentionally use the
+                # default ``was_filled=False``.
+                self.order_book.remove(po.order_id, was_filled=True)
             elif has_position:
                 # Exit path: order closes out the open position. We only
                 # support full-qty exits in PR 1 (matches legacy behavior at
@@ -161,6 +180,14 @@ class FillSimulator:
                         reason="exit",
                     )
                 )
+                # Exit filled — close out the position. We pass the default
+                # ``was_filled=False`` here even though this *is* a fill,
+                # because ``was_filled=True`` is specifically for entries that
+                # may later carry bracket children. Exits don't open positions
+                # and so are never valid bracket parents — keeping their ids
+                # in ``_known_top_level_order_ids`` would let a later
+                # ``submit_attached`` accept the wrong order as a parent and
+                # mis-scope protective legs.
                 self.order_book.remove(po.order_id)
 
         return FillOutcome(
