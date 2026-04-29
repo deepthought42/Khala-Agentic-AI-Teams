@@ -90,6 +90,13 @@ class FillSimulator:
         pending = list(self.order_book.pending_for_symbol(bar.symbol))
 
         for po in pending:
+            # The snapshot can go stale mid-loop: e.g. a parent rejected via
+            # the risk-gate or insufficient-capital paths cascade-cancels its
+            # bracket children, which may already be in this snapshot. Skip
+            # any order that's no longer in the book so cascade-removed
+            # children can't slip through and fill on the same bar.
+            if po.order_id not in self.order_book:
+                continue
             req = po.request
             # Determine whether this bar triggered the order and at what
             # terms (price, partial-fill fraction, adverse-selection

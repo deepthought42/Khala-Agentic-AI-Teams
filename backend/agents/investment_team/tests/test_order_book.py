@@ -9,6 +9,8 @@ stop) can rely on it.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from investment_team.trading_service.engine.order_book import (
@@ -1554,6 +1556,92 @@ def test_filled_parent_evicted_when_only_child_terminal_fills() -> None:
             parent_order_id=parent.order_id,
             oco_group_id="g2",
         )
+
+
+def test_book_contains_membership_test() -> None:
+    """``order_id in book`` exposes pending membership for iteration patterns
+    (notably ``FillSimulator.process_bar``) that snapshot ``pending_for_symbol``
+    and need to skip orders cascade-cancelled mid-loop.
+    """
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    assert po.order_id in book
+    assert "o-bogus" not in book
+    book.cancel(po.order_id)
+    assert po.order_id not in book
+
+
+def test_submit_attached_rejects_symbol_mismatch() -> None:
+    """A child must trade the same symbol as its parent. A typo would
+    otherwise route the child under the wrong symbol while still tagged
+    with the parent / OCO ids.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0, symbol="AAA"),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    with pytest.raises(ValueError, match="does not match parent"):
+        book.submit_attached(
+            _base(qty=10.0, symbol="BBB", order_type=OrderType.LIMIT, limit_price=110.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g1",
+        )
+    assert book.children_of(parent.order_id) == []
+
+
+def test_submit_attached_accepts_matching_symbol_after_parent_filled() -> None:
+    """Symbol validation must work even after the parent has been removed
+    via ``remove(was_filled=True)`` — the parent's symbol stays cached in
+    ``_known_top_level_order_ids`` so post-fill activation can verify.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0, symbol="AAA"),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    book.remove(parent.order_id, was_filled=True)
+    book.submit_attached(  # matching symbol — accepted
+        _base(qty=10.0, symbol="AAA", order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    with pytest.raises(ValueError, match="does not match parent"):
+        book.submit_attached(
+            _base(qty=10.0, symbol="BBB", order_type=OrderType.STOP, stop_price=95.0),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g2",
+        )
+
+
+def test_requeue_rejects_non_string_submitted_at() -> None:
+    """``new_submitted_at`` must be a string. A non-string would otherwise
+    fall through to a raw ``<`` comparison and raise an unhelpful
+    ``TypeError``; reject up front with a controlled message.
+    """
+    book = OrderBook()
+    po = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    for bad in (None, 123, 1.5, datetime(2024, 1, 5)):
+        with pytest.raises(TypeError, match="must be a str"):
+            book.requeue(po.order_id, new_remaining_qty=5.0, new_submitted_at=bad)
+    # State unchanged.
+    assert po.remaining_qty == 10.0
 
 
 def test_no_auto_evict_while_parent_still_pending() -> None:

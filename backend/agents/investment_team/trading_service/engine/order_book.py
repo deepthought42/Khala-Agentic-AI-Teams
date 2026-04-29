@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from ..strategy.contract import OrderRequest, OrderSide, OrderType, TimeInForce
 
@@ -54,27 +54,25 @@ class OrderBook:
     _pending: Dict[str, PendingOrder] = field(default_factory=dict)
     # Parallel index by symbol/side so fill_simulator doesn't have to scan.
     _by_symbol: Dict[str, List[str]] = field(default_factory=dict)
-    # Set of *eligible-parent* top-level order ids. Used by
+    # Map of *eligible-parent* top-level order id → symbol. Used by
     # ``submit_attached`` to reject children whose ``parent_order_id`` is not
-    # a real top-level order eligible to carry brackets:
+    # a real top-level order eligible to carry brackets, and to verify the
+    # child's symbol matches the parent's. Lifecycle:
     #
-    # - Added on ``submit()`` (top-level entries).
+    # - Inserted on ``submit()`` (top-level entries).
     # - Discarded on ``cancel()`` and ``expire_day_orders()`` for top-level
     #   orders (cancelled / expired parents never opened, so attaching
     #   protective children to them would be a bug).
-    # - Preserved on ``remove()`` (the terminal-fill path used by
-    #   ``requeue(... new_remaining_qty=0)``): a *filled* parent is the
-    #   normal case where bracket children are activated *after* the entry
-    #   fills and is removed.
+    # - Preserved on ``remove(was_filled=True)`` (the terminal-fill path
+    #   used by ``requeue(... new_remaining_qty=0)`` and the simulator's
+    #   entry-fill path): a filled entry is the normal case where bracket
+    #   children are activated *after* the entry fills and is removed.
+    # - Auto-evicted by ``_maybe_evict_resolved_parent`` once a filled
+    #   parent has no remaining pending children.
     #
     # ``submit_attached`` is never inserted here, so an attached child can
     # never be promoted into a parent (multi-level bracket trees rejected).
-    #
-    # Growth is bounded by lifecycle: cancel/expire prune in O(1) per call.
-    # Filled parents only stay in the set until the operator decides to call
-    # :meth:`prune_known_top_level_order_ids`, which evicts ids whose entry
-    # is gone *and* whose children have all resolved.
-    _known_top_level_order_ids: Set[str] = field(default_factory=set)
+    _known_top_level_order_ids: Dict[str, str] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
 
@@ -110,7 +108,7 @@ class OrderBook:
             remaining_qty=request.qty,
         )
         self._pending[order_id] = po
-        self._known_top_level_order_ids.add(order_id)
+        self._known_top_level_order_ids[order_id] = request.symbol
         self._by_symbol.setdefault(request.symbol, []).append(order_id)
         return po
 
@@ -150,11 +148,21 @@ class OrderBook:
         # are forbidden so the API stays as flat parent/child legs — multi-
         # level bracket trees would break ``children_of`` traversal and OCO
         # cancellation semantics.
-        if parent_order_id not in self._known_top_level_order_ids:
+        parent_symbol = self._known_top_level_order_ids.get(parent_order_id)
+        if parent_symbol is None:
             raise ValueError(
                 f"submit_attached parent_order_id {parent_order_id!r} is not a known "
                 f"top-level order id; submit the parent through OrderBook.submit() first "
                 f"(attached children may not themselves be parents of further children)"
+            )
+        # Bracket children must trade the same symbol as the parent. A typo
+        # (parent on AAA, child on BBB) would otherwise be accepted and then
+        # routed under the child's symbol while still tagged with the parent /
+        # OCO ids — corrupting bracket scoping and producing unrelated fills.
+        if request.symbol != parent_symbol:
+            raise ValueError(
+                f"submit_attached child symbol {request.symbol!r} does not match parent "
+                f"{parent_order_id!r} symbol {parent_symbol!r}"
             )
         attached_request = request.model_copy(
             update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
@@ -190,7 +198,7 @@ class OrderBook:
         if po.request.parent_order_id is None:
             # Cancelled top-level: ineligible to parent further children +
             # cascade to any pending TP / SL legs.
-            self._known_top_level_order_ids.discard(order_id)
+            self._known_top_level_order_ids.pop(order_id, None)
             self._cascade_cancel_children(order_id)
         else:
             # Cancelled child: the parent's bracket may now be fully
@@ -231,7 +239,7 @@ class OrderBook:
             ids.remove(order_id)
         if po.request.parent_order_id is None:
             if not was_filled:
-                self._known_top_level_order_ids.discard(order_id)
+                self._known_top_level_order_ids.pop(order_id, None)
                 self._cascade_cancel_children(order_id)
         else:
             # Removed child: a previously-filled parent may now have no
@@ -268,13 +276,22 @@ class OrderBook:
             return
         if any(po.request.parent_order_id == parent_id for po in self._pending.values()):
             return
-        self._known_top_level_order_ids.discard(parent_id)
+        self._known_top_level_order_ids.pop(parent_id, None)
 
     def pending_for_symbol(self, symbol: str) -> List[PendingOrder]:
         return [self._pending[oid] for oid in self._by_symbol.get(symbol, [])]
 
     def all_pending(self) -> List[PendingOrder]:
         return list(self._pending.values())
+
+    def __contains__(self, order_id: object) -> bool:
+        """``order_id in book`` — true iff the id is currently pending.
+
+        Useful in iteration patterns (e.g. ``FillSimulator.process_bar``)
+        that snapshot ``pending_for_symbol`` and need to skip orders that
+        have been cascade-cancelled or otherwise removed mid-loop.
+        """
+        return order_id in self._pending
 
     # ------------------------------------------------------------------
     # Partial-fill requeue + bracket / OCO traversal (Trading 5/5 Step 2).
@@ -319,6 +336,11 @@ class OrderBook:
             )
         if not math.isfinite(new_remaining_qty):
             raise ValueError(f"requeue new_remaining_qty must be finite, got {new_remaining_qty!r}")
+        if not isinstance(new_submitted_at, str):
+            raise TypeError(
+                f"requeue new_submitted_at must be a str, "
+                f"got {type(new_submitted_at).__name__} {new_submitted_at!r}"
+            )
         # Compare both sides as parsed datetimes when possible, falling back
         # to normalised string compare when one side isn't ISO 8601. Otherwise
         # equivalent ISO 8601 instants in different timezone offsets (e.g.
@@ -475,9 +497,10 @@ class OrderBook:
                 active.add(po.order_id)
             else:
                 active.add(po.request.parent_order_id)
-        pruned = self._known_top_level_order_ids - active
-        self._known_top_level_order_ids -= pruned
-        return len(pruned)
+        prunable = [oid for oid in self._known_top_level_order_ids if oid not in active]
+        for oid in prunable:
+            self._known_top_level_order_ids.pop(oid, None)
+        return len(prunable)
 
     # ------------------------------------------------------------------
     # TIF expiry — callers pass the current bar timestamp; day orders
