@@ -97,6 +97,13 @@ class FillSimulator:
             # children can't slip through and fill on the same bar.
             if po.order_id not in self.order_book:
                 continue
+            # Pre-armed bracket children (submitted while the parent is still
+            # pending) sit in the book with ``armed=False`` until the bracket
+            # materializer (#389) flips them on after the parent fills.
+            # Skipping them here keeps protective legs from firing as
+            # standalone orders before the entry has actually opened.
+            if not po.armed:
+                continue
             req = po.request
             # Determine whether this bar triggered the order and at what
             # terms (price, partial-fill fraction, adverse-selection

@@ -1696,3 +1696,70 @@ def test_cancel_only_cancels_direct_children_of_target() -> None:
     assert pending_ids == {parent_b.order_id, child_b.order_id}
     assert child_a1 not in book.all_pending()
     assert child_a2 not in book.all_pending()
+
+
+# ---------------------------------------------------------------------------
+# Pre-armed bracket children: submit_attached sets ``armed=False`` while
+# the parent is still pending so the simulator's fill loop skips the child
+# until the bracket materializer (#389) flips it on after the parent fills.
+# Children submitted *after* the parent fills (post-fill bracket activation)
+# are armed immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_submit_attached_disarmed_when_parent_still_pending() -> None:
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    assert child.armed is False
+    # Parent itself is always armed — it's the entry.
+    assert parent.armed is True
+
+
+def test_submit_attached_armed_when_parent_already_filled() -> None:
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    book.remove(parent.order_id, was_filled=True)  # entry fills
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    assert child.armed is True
+
+
+def test_submit_attached_rejects_market_child() -> None:
+    """Market children would fire on the next bar, defeating the protective-
+    leg semantic. ``submit_attached`` must reject ``OrderType.MARKET``.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    with pytest.raises(ValueError, match="not MARKET"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.MARKET),
+            submitted_at="2024-01-03",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g1",
+        )
+    assert book.children_of(parent.order_id) == []

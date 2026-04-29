@@ -164,12 +164,32 @@ class OrderBook:
                 f"submit_attached child symbol {request.symbol!r} does not match parent "
                 f"{parent_order_id!r} symbol {parent_symbol!r}"
             )
+        # Bracket / OCO children are protective legs. ``MARKET`` order types
+        # would fire on the very next bar and execute as a standalone position
+        # change rather than acting as a take-profit / stop-loss leg, which
+        # breaks bracket semantics. Forbid them here so callers get a clear
+        # error rather than an unintended fill.
+        if request.order_type == OrderType.MARKET:
+            raise ValueError(
+                "submit_attached child must be LIMIT / STOP / STOP_LIMIT / TRAILING_STOP, "
+                "not MARKET — market children would fire immediately on the next bar "
+                "instead of acting as protective legs"
+            )
         attached_request = request.model_copy(
             update={"parent_order_id": parent_order_id, "oco_group_id": oco_group_id}
         )
         attached_request.model_copy(
             update={"parent_order_id": None, "oco_group_id": None}
         ).validate_prices()
+
+        # Pre-armed bracket children: a child submitted while its parent is
+        # still pending must not fire before the entry actually opens.
+        # ``armed=False`` keeps it in the book but invisible to the simulator's
+        # fill loop. Children submitted after the parent has filled (post-fill
+        # bracket activation, the typical flow) are armed immediately. The
+        # transition False → True for pre-armed children when the parent
+        # eventually fills is the bracket materializer's job (#389).
+        armed = parent_order_id not in self._pending
 
         self._next_id += 1
         order_id = f"o{self._next_id}"
@@ -181,6 +201,7 @@ class OrderBook:
             original_submitted_at=submitted_at,
             original_qty=attached_request.qty,
             remaining_qty=attached_request.qty,
+            armed=armed,
         )
         self._pending[order_id] = po
         # Note: do NOT add ``order_id`` to ``_known_top_level_order_ids`` —
