@@ -128,9 +128,11 @@ class FillSimulator:
                 self.portfolio.open(pos)
                 fill = self.portfolio.make_entry_fill(pos)
                 entry_fills.append(fill)
-                # Entry filled — keep the parent's id in the eligible-parent
-                # set so bracket / OCO children can later be activated against
-                # it via ``OrderBook.submit_attached`` (see #389).
+                # Entry filled — keep this id in the eligible-parent set so
+                # bracket / OCO children can later be activated against it via
+                # ``OrderBook.submit_attached`` (see #389). Only entries qualify
+                # as bracket parents; exit fills below intentionally use the
+                # default ``was_filled=False``.
                 self.order_book.remove(po.order_id, was_filled=True)
             elif has_position:
                 # Exit path: order closes out the open position. We only
@@ -164,12 +166,15 @@ class FillSimulator:
                         reason="exit",
                     )
                 )
-                # Exit filled — fill (not a non-fill removal). ``was_filled``
-                # only affects how ``remove`` treats the *eligible-parent set*
-                # used by ``OrderBook.submit_attached``; passing ``True`` here
-                # is the right semantic because this is a fill, even though
-                # exit orders rarely have brackets attached after-the-fact.
-                self.order_book.remove(po.order_id, was_filled=True)
+                # Exit filled — close out the position. We pass the default
+                # ``was_filled=False`` here even though this *is* a fill,
+                # because ``was_filled=True`` is specifically for entries that
+                # may later carry bracket children. Exits don't open positions
+                # and so are never valid bracket parents — keeping their ids
+                # in ``_known_top_level_order_ids`` would let a later
+                # ``submit_attached`` accept the wrong order as a parent and
+                # mis-scope protective legs.
+                self.order_book.remove(po.order_id)
 
         return FillOutcome(
             entry_fills=entry_fills,

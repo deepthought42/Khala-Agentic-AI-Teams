@@ -187,40 +187,56 @@ class OrderBook:
         ids = self._by_symbol.get(po.request.symbol)
         if ids and order_id in ids:
             ids.remove(order_id)
-        # Cancelled top-level orders are no longer eligible parents — their
-        # entry never produced (or won't produce any further) live exposure,
-        # so attaching protective children would be a bug. Cascade-cancel
-        # any pending children so we don't leave orphan protective legs in
-        # the book without a live entry.
         if po.request.parent_order_id is None:
+            # Cancelled top-level: ineligible to parent further children +
+            # cascade to any pending TP / SL legs.
             self._known_top_level_order_ids.discard(order_id)
             self._cascade_cancel_children(order_id)
+        else:
+            # Cancelled child: the parent's bracket may now be fully
+            # resolved (no pending children, parent already filled), in
+            # which case the parent's id can be reclaimed from the
+            # eligible-parent set.
+            self._maybe_evict_resolved_parent(po.request.parent_order_id)
         return True
 
     def remove(self, order_id: str, *, was_filled: bool = False) -> Optional[PendingOrder]:
         """Drop an order from the book.
 
-        Pass ``was_filled=True`` *only* when the removal represents a real
-        terminal fill (used by ``requeue(... new_remaining_qty=0)`` and
-        ``FillSimulator``'s entry / exit fill paths). In that case the
-        order's id is preserved in ``_known_top_level_order_ids`` so
-        bracket children can still be activated against it.
+        Pass ``was_filled=True`` *only* when the removal represents a fill of
+        an order that may carry bracket children — i.e. an *entry* fill
+        (terminal-fill ``requeue(... new_remaining_qty=0)`` or
+        ``FillSimulator``'s entry path). In that case the id is preserved in
+        ``_known_top_level_order_ids`` so children can be activated against
+        the now-filled parent. *Exit* fills don't qualify as bracket parents
+        and should leave ``was_filled`` at its default.
 
         The default ``was_filled=False`` is the safe choice for every other
         removal path (risk-gate rejection, insufficient capital, sibling
-        cancellation, expiry cascade, manual removal). It evicts a top-level
-        parent's id from the eligible-parent set *and* cascade-cancels any
-        pending children so non-fill removals don't leave orphan bracket
-        legs in the book.
+        cancellation, expiry cascade, manual removal, exit fills). It evicts
+        a top-level order's id from the eligible-parent set *and*
+        cascade-cancels any pending children so non-eligible removals don't
+        leave orphan bracket legs in the book.
+
+        For child removals, both branches notify
+        ``_maybe_evict_resolved_parent`` so a filled parent's id is reclaimed
+        from the eligible-parent set automatically once its bracket is
+        fully resolved (no pending entry, no pending children).
         """
         po = self._pending.pop(order_id, None)
-        if po is not None:
-            ids = self._by_symbol.get(po.request.symbol)
-            if ids and order_id in ids:
-                ids.remove(order_id)
-            if not was_filled and po.request.parent_order_id is None:
+        if po is None:
+            return None
+        ids = self._by_symbol.get(po.request.symbol)
+        if ids and order_id in ids:
+            ids.remove(order_id)
+        if po.request.parent_order_id is None:
+            if not was_filled:
                 self._known_top_level_order_ids.discard(order_id)
                 self._cascade_cancel_children(order_id)
+        else:
+            # Removed child: a previously-filled parent may now have no
+            # remaining live legs and can be evicted automatically.
+            self._maybe_evict_resolved_parent(po.request.parent_order_id)
         return po
 
     def _cascade_cancel_children(self, parent_id: str) -> None:
@@ -234,6 +250,25 @@ class OrderBook:
         """
         for child in self.children_of(parent_id):
             self.remove(child.order_id)
+
+    def _maybe_evict_resolved_parent(self, parent_id: str) -> None:
+        """Auto-evict a filled-parent id from ``_known_top_level_order_ids``
+        once its bracket is fully resolved.
+
+        A filled parent stays in the eligible-parent set only because future
+        ``submit_attached`` calls might still add protective children to it.
+        Once the parent itself is no longer pending *and* none of its
+        children remain pending either, the bracket is done — keeping the id
+        around just leaks memory and lets stale ids get reused. This hook
+        runs whenever a child is removed (via ``cancel`` or ``remove``) and
+        is a no-op when the parent is still pending or still has live
+        children.
+        """
+        if parent_id in self._pending:
+            return
+        if any(po.request.parent_order_id == parent_id for po in self._pending.values()):
+            return
+        self._known_top_level_order_ids.discard(parent_id)
 
     def pending_for_symbol(self, symbol: str) -> List[PendingOrder]:
         return [self._pending[oid] for oid in self._by_symbol.get(symbol, [])]

@@ -1455,6 +1455,136 @@ def test_remove_filled_does_not_cascade_to_pending_children() -> None:
     assert pending_ids == {child_a.order_id, child_b.order_id}
 
 
+# ---------------------------------------------------------------------------
+# Auto-eviction of filled-parent ids once the bracket is fully resolved.
+# Without this, ``_known_top_level_order_ids`` would only ever shrink on
+# cancel/expire/non-fill paths, so long-running services would accumulate
+# every filled parent forever even after their brackets fully closed out.
+# ---------------------------------------------------------------------------
+
+
+def test_filled_parent_remains_eligible_while_children_pending() -> None:
+    """The filled parent must stay in the eligible-parent set as long as at
+    least one of its protective legs is still pending — otherwise the
+    bracket flow can't add late children (e.g. a re-armed stop) to it.
+    """
+    book = OrderBook()
+    parent, child_a, child_b = _bracket_with_two_children(book)
+    book.remove(parent.order_id, was_filled=True)  # entry fills
+    # Both children still pending — parent stays eligible.
+    book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.STOP, stop_price=90.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g2",
+    )
+    # Cancel one of the original children — parent still has b + the new
+    # leg pending, so still eligible.
+    book.cancel(child_a.order_id)
+    book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=120.0),
+        submitted_at="2024-01-04",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g3",
+    )
+
+
+def test_filled_parent_auto_evicted_when_last_child_resolves() -> None:
+    """Once the parent's last pending child is removed (filled or cancelled),
+    the parent's id is auto-evicted from ``_known_top_level_order_ids``
+    so subsequent ``submit_attached`` calls referencing the resolved
+    bracket correctly fail.
+    """
+    book = OrderBook()
+    parent, child_a, child_b = _bracket_with_two_children(book)
+    book.remove(parent.order_id, was_filled=True)  # entry fills
+
+    # Resolve child_a via terminal-fill requeue.
+    book.requeue(child_a.order_id, new_remaining_qty=0.0, new_submitted_at="2024-01-03")
+    # Parent still eligible — child_b is pending.
+    book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.STOP, stop_price=90.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g4",
+    )
+    # Now cancel both remaining children.
+    pending_children = book.children_of(parent.order_id)
+    for child in pending_children:
+        book.cancel(child.order_id)
+    # Last child gone → parent auto-evicted. New submit_attached fails.
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.STOP, stop_price=85.0),
+            submitted_at="2024-01-04",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g5",
+        )
+
+
+def test_filled_parent_evicted_when_only_child_terminal_fills() -> None:
+    """The eviction also fires when the *last* child is removed via the
+    terminal-fill ``requeue(0)`` path (not just via cancel) — exercises
+    the ``remove(was_filled=True)`` branch on the child.
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    book.remove(parent.order_id, was_filled=True)
+    book.requeue(child.order_id, new_remaining_qty=0.0, new_submitted_at="2024-01-03")
+    with pytest.raises(ValueError, match="not a known top-level order id"):
+        book.submit_attached(
+            _base(qty=10.0, order_type=OrderType.STOP, stop_price=95.0),
+            submitted_at="2024-01-04",
+            submitted_equity=100_000.0,
+            parent_order_id=parent.order_id,
+            oco_group_id="g2",
+        )
+
+
+def test_no_auto_evict_while_parent_still_pending() -> None:
+    """Auto-evict must only fire after the parent itself is gone from
+    ``_pending``. Removing a child while the parent is still live should
+    leave the parent eligible (so additional children can attach).
+    """
+    book = OrderBook()
+    parent = book.submit(
+        _base(qty=10.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+    )
+    child = book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.LIMIT, limit_price=110.0),
+        submitted_at="2024-01-02",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g1",
+    )
+    book.cancel(child.order_id)
+    # Parent is still pending → still eligible. Submit a new child.
+    book.submit_attached(
+        _base(qty=10.0, order_type=OrderType.STOP, stop_price=95.0),
+        submitted_at="2024-01-03",
+        submitted_equity=100_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id="g2",
+    )
+
+
 def test_cancel_only_cancels_direct_children_of_target() -> None:
     """Cascade is scoped to the cancelled parent's *own* children — an
     unrelated bracket shouldn't be touched.
