@@ -9,14 +9,65 @@ future engine refactor that accidentally fills an order against the same
 bar on which it was submitted surfaces as a hard error instead of silently
 producing inflated backtest results.
 
-``BarSafetyAssertion`` is intentionally tiny: a timestamp comparison gated
-on an ``enabled`` flag.  The ``TradingService`` catches ``LookAheadError``
-and flips ``TradingServiceResult.lookahead_violation`` so the same
-classification that the subprocess harness emits also applies when the
-violation originates in the fill simulator.
+``BarSafetyAssertion`` is intentionally tiny: a chronological timestamp
+comparison gated on an ``enabled`` flag.  The ``TradingService`` catches
+``LookAheadError`` and flips ``TradingServiceResult.lookahead_violation``
+so the same classification that the subprocess harness emits also applies
+when the violation originates in the fill simulator.
 """
 
 from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Optional
+
+_COMPACT_OFFSET_RE = re.compile(r"([+-])(\d{2})(\d{2})$")
+
+
+def _normalize_ts(ts: str) -> str:
+    """Best-effort ISO 8601 input normaliser used as both a pre-parse step
+    (so ``datetime.fromisoformat`` accepts variants Python < 3.11 doesn't)
+    and the fallback string-compare value for unparseable inputs.
+    """
+    if not isinstance(ts, str):
+        return ts
+    if ts.endswith("Z"):
+        return ts[:-1] + "+00:00"
+    m = _COMPACT_OFFSET_RE.search(ts)
+    if m:
+        return ts[: m.start()] + f"{m.group(1)}{m.group(2)}:{m.group(3)}"
+    return ts
+
+
+def _try_parse_ts(ts: str) -> Optional[datetime]:
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(_normalize_ts(ts))
+    except ValueError:
+        return None
+
+
+def _ts_le(a: str, b: str) -> bool:
+    """True iff ``a`` is chronologically ``<=`` ``b``.
+
+    Parses both as ISO 8601 datetimes when possible and compares them
+    chronologically — so equivalent instants in different timezone offsets
+    or formats (e.g. ``2024-01-02T10:00:00Z`` vs
+    ``2024-01-02T10:00:00+00:00``) compare equal instead of being ordered
+    by raw ASCII string ordering.
+
+    Falls back to normalised string comparison when one side fails to
+    parse, or when one side is naive and the other is timezone-aware
+    (Python raises ``TypeError`` on mixed-awareness datetime comparisons).
+    """
+    a_dt = _try_parse_ts(a)
+    b_dt = _try_parse_ts(b)
+    if a_dt is not None and b_dt is not None:
+        if (a_dt.tzinfo is None) == (b_dt.tzinfo is None):
+            return a_dt <= b_dt
+    return _normalize_ts(a) <= _normalize_ts(b)
 
 
 class LookAheadError(RuntimeError):
@@ -40,11 +91,14 @@ class LookAheadError(RuntimeError):
 class BarSafetyAssertion:
     """Stateless guard that enforces strict ``fill_bar > submitted_at``.
 
-    ISO-8601 timestamps compare correctly as plain strings for both daily
-    (``YYYY-MM-DD``) and intraday (``YYYY-MM-DDTHH:MM:SS``) formats, so the
-    check is a single lexicographic comparison.  When ``enabled=False`` the
-    assertion becomes a no-op — used only by tests that deliberately
-    construct pathological traces to verify the assertion fires when enabled.
+    Comparison is *chronological* — equivalent instants in different ISO 8601
+    encodings (``Z`` suffix vs ``+00:00``, compact ``+0000`` vs
+    ``+00:00``, equivalent offsets like ``+05:30`` vs ``+00:00``) are
+    treated as equal and correctly trip the guard. ``YYYY-MM-DD`` and
+    ``YYYY-MM-DDTHH:MM:SS`` (naive) inputs still compare lexicographically
+    via the fallback path. When ``enabled=False`` the assertion becomes a
+    no-op — used only by tests that deliberately construct pathological
+    traces to verify the assertion fires when enabled.
     """
 
     def __init__(self, *, enabled: bool = True) -> None:
@@ -63,7 +117,11 @@ class BarSafetyAssertion:
             # Missing metadata would make the comparison meaningless; skip
             # rather than false-positive on records predating this field.
             return
-        if fill_bar_timestamp <= submitted_at:
+        # ``fill_bar_timestamp <= submitted_at`` chronologically — i.e. the
+        # fill bar isn't *strictly* after the submission bar. Equivalent
+        # instants in different formats trip this branch (the canonical
+        # same-bar fill case) instead of falsely passing on ASCII ordering.
+        if _ts_le(fill_bar_timestamp, submitted_at):
             raise LookAheadError(
                 order_id=order_id,
                 submitted_at=submitted_at,

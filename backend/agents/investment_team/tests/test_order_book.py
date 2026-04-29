@@ -240,9 +240,10 @@ def test_requeue_normalizes_z_suffix_timestamp() -> None:
         new_submitted_at="2024-01-02T10:00:00Z",
     )
     assert po.remaining_qty == 4.0
-    # ``requeue`` canonicalises tz-aware timestamps to UTC ``+00:00`` form
-    # so all downstream consumers see a consistent string.
-    assert po.submitted_at == "2024-01-02T10:00:00+00:00"
+    # ``requeue`` stores the caller-supplied timestamp verbatim — the
+    # downstream look-ahead guard does its own chronological compare so we
+    # don't need to mangle the stored format.
+    assert po.submitted_at == "2024-01-02T10:00:00Z"
 
     # And the other direction: existing has Z suffix, new has +00:00 — also
     # not a regression.
@@ -2078,62 +2079,10 @@ def test_requeue_rejects_non_numeric_remaining_qty(bad_qty) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Timestamp canonicalisation: ``requeue`` normalises tz-aware values to UTC
-# ``+00:00`` form so the look-ahead guard in ``execution/bar_safety.py``
-# (which compares bar timestamps to ``po.submitted_at`` lexicographically)
-# doesn't false-reject mixed-offset traces.
+# Compact UTC offsets (``+0000`` / ``-0500``) are valid ISO 8601 but Python
+# 3.10's ``datetime.fromisoformat`` rejects them; ``_normalize_ts`` rewrites
+# them before parse so the regression check works correctly.
 # ---------------------------------------------------------------------------
-
-
-def test_requeue_canonicalizes_tz_aware_timestamp_to_utc() -> None:
-    """A non-UTC offset gets rewritten to the equivalent UTC instant."""
-    book = OrderBook()
-    po = book.submit(
-        _base(qty=10.0),
-        submitted_at="2024-01-02T05:00:00+00:00",
-        submitted_equity=100_000.0,
-    )
-    # 10:30 IST = 05:00 UTC (same instant); after canonicalisation the
-    # stored string is in UTC form regardless of caller-side offset.
-    book.requeue(
-        po.order_id,
-        new_remaining_qty=4.0,
-        new_submitted_at="2024-01-02T10:30:00+05:30",
-    )
-    assert po.submitted_at == "2024-01-02T05:00:00+00:00"
-
-
-def test_requeue_canonicalizes_compact_offset() -> None:
-    """``+0000`` (no colon) is a valid ISO 8601 offset that Python 3.10's
-    ``datetime.fromisoformat`` rejects; ``_normalize_ts`` rewrites it
-    before parse, and ``_canonicalize_ts`` then re-emits in canonical form.
-    """
-    book = OrderBook()
-    po = book.submit(
-        _base(qty=10.0),
-        submitted_at="2024-01-02T05:00:00+00:00",
-        submitted_equity=100_000.0,
-    )
-    book.requeue(
-        po.order_id,
-        new_remaining_qty=3.0,
-        new_submitted_at="2024-01-02T05:00:00+0000",
-    )
-    assert po.submitted_at == "2024-01-02T05:00:00+00:00"
-
-
-def test_requeue_does_not_canonicalize_naive_date_string() -> None:
-    """Naive (date-only / no-offset) inputs round-trip unchanged so existing
-    callers using simple date strings aren't mangled into datetime form.
-    """
-    book = OrderBook()
-    po = book.submit(
-        _base(qty=10.0),
-        submitted_at="2024-01-02",
-        submitted_equity=100_000.0,
-    )
-    book.requeue(po.order_id, new_remaining_qty=4.0, new_submitted_at="2024-01-03")
-    assert po.submitted_at == "2024-01-03"
 
 
 def test_requeue_handles_compact_offset_in_regression_check() -> None:

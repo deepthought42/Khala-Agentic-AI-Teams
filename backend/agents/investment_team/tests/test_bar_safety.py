@@ -96,6 +96,52 @@ def test_assertion_skips_blank_metadata() -> None:
     )
 
 
+def test_assertion_treats_z_and_offset_as_same_instant() -> None:
+    """``2024-01-02T10:00:00Z`` and ``2024-01-02T10:00:00+00:00`` are the
+    same instant. Lexicographic ASCII compare would see ``Z > +00:00``
+    (because ``Z`` 0x5A > ``+`` 0x2B) and falsely allow a same-bar fill;
+    chronological compare correctly trips the guard.
+    """
+    with pytest.raises(LookAheadError):
+        BarSafetyAssertion().check_fill(
+            order_id="o1",
+            submitted_at="2024-01-02T10:00:00+00:00",
+            fill_bar_timestamp="2024-01-02T10:00:00Z",
+        )
+    # And the other direction.
+    with pytest.raises(LookAheadError):
+        BarSafetyAssertion().check_fill(
+            order_id="o2",
+            submitted_at="2024-01-02T10:00:00Z",
+            fill_bar_timestamp="2024-01-02T10:00:00+00:00",
+        )
+
+
+def test_assertion_handles_compact_utc_offset() -> None:
+    """Same-instant compact-offset (``+0000``) vs colon-form (``+00:00``)
+    must not slip past the guard.
+    """
+    with pytest.raises(LookAheadError):
+        BarSafetyAssertion().check_fill(
+            order_id="o1",
+            submitted_at="2024-01-02T10:00:00+00:00",
+            fill_bar_timestamp="2024-01-02T10:00:00+0000",
+        )
+
+
+def test_assertion_treats_equivalent_offsets_as_same_instant() -> None:
+    """``2024-01-02T15:30:00+05:30`` is the same instant as
+    ``2024-01-02T10:00:00+00:00`` — chronological compare correctly trips
+    the guard regardless of which offset the caller used.
+    """
+    with pytest.raises(LookAheadError):
+        BarSafetyAssertion().check_fill(
+            order_id="o1",
+            submitted_at="2024-01-02T10:00:00+00:00",
+            fill_bar_timestamp="2024-01-02T15:30:00+05:30",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Integration — FillSimulator with a pathological OrderBook
 # ---------------------------------------------------------------------------

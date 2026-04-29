@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, NamedTuple, Optional
 
 from ..strategy.contract import OrderRequest, OrderSide, OrderType, TimeInForce
@@ -461,14 +461,15 @@ class OrderBook:
                 f"requeue twap_slices_remaining must be a non-negative int or None, "
                 f"got {twap_slices_remaining!r}"
             )
-        # Canonicalise before storing so equivalent instants in different
-        # input formats (``Z`` vs ``+00:00`` vs ``+0000`` vs ``+05:30``)
-        # persist as the same string, and so the look-ahead guard in
-        # ``execution/bar_safety.py`` (which compares bar timestamps to
-        # ``po.submitted_at`` lexicographically) doesn't false-reject
-        # mixed-offset traces. Naive date-only inputs are returned
-        # unchanged so existing tests using ``"2024-01-02"`` aren't mangled.
-        po.submitted_at = _canonicalize_ts(new_submitted_at)
+        # Store ``new_submitted_at`` verbatim. The downstream look-ahead
+        # guard in ``execution/bar_safety.py`` does its own chronological
+        # parse-and-compare, so we don't need to canonicalise here —
+        # canonicalising would create a different format from the bar
+        # timestamps the guard compares against (``Z``-suffixed bars vs
+        # canonical ``+00:00`` storage), reintroducing the same lexicographic
+        # mis-comparison this PR's chronological-compare path is designed to
+        # fix.
+        po.submitted_at = new_submitted_at
         po.remaining_qty = new_remaining_qty
         po.cumulative_filled_qty = po.original_qty - new_remaining_qty
         po.twap_slices_remaining = twap_slices_remaining
@@ -667,26 +668,6 @@ def _try_parse_ts(ts: str) -> Optional[datetime]:
         return datetime.fromisoformat(_normalize_ts(ts))
     except ValueError:
         return None
-
-
-def _canonicalize_ts(ts: str) -> str:
-    """Re-emit a timestamp in a canonical ISO 8601 form so equivalent
-    instants in different input formats persist as the same string. UTC
-    is the canonical zone for tz-aware values; tz-naive inputs (e.g.
-    date-only ``"2024-01-02"`` strings used by the existing tests) are
-    returned unchanged so we don't mangle them into ``"2024-01-02T00:00:00"``.
-
-    Used by ``OrderBook.requeue`` to keep ``po.submitted_at`` in a
-    consistent format that the look-ahead guard in
-    ``execution/bar_safety.py`` can compare against bar timestamps with
-    plain string ``<=``.
-    """
-    if not isinstance(ts, str):
-        return ts
-    dt = _try_parse_ts(ts)
-    if dt is None or dt.tzinfo is None:
-        return ts
-    return dt.astimezone(timezone.utc).isoformat()
 
 
 def _ts_lt(new_ts: str, existing_ts: str) -> bool:
