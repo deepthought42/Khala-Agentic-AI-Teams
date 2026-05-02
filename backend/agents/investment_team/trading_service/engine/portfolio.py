@@ -37,6 +37,13 @@ class Position:
     original_qty: float = 0.0
     cumulative_exit_qty: float = 0.0
     weighted_exit_price_sum: float = 0.0
+    # Weighted exit *bid* price (the pre-slippage reference price used on
+    # each exit slice). Mirrors ``weighted_exit_price_sum`` so multi-bar
+    # partial exits can report a coherent weighted ``exit_bid_price`` on
+    # the final TradeRecord — without this, ``exit_price`` (weighted) and
+    # ``exit_bid_price`` (only the closing bar) get mismatched and skew
+    # slippage diagnostics.
+    weighted_exit_bid_sum: float = 0.0
     partial_fill_count: int = 0
     participation_clipped: bool = False
     total_unfilled_qty: float = 0.0
@@ -45,7 +52,7 @@ class Position:
     def position_value(self) -> float:
         return self.entry_price * self.qty
 
-    def reduce(self, qty: float, exit_price: float) -> None:
+    def reduce(self, qty: float, exit_price: float, exit_bid_price: float = 0.0) -> None:
         """Apply a partial exit: shrink ``qty`` and accumulate weighted exit.
 
         ``partial_fill_count`` is intentionally not bumped here — it counts
@@ -53,9 +60,15 @@ class Position:
         ``REQUEUE_NEXT_BAR`` continuation). Exit-side slice count is
         captured implicitly via ``cumulative_exit_qty`` /
         ``weighted_exit_price_sum``.
+
+        ``exit_bid_price`` defaults to ``0.0`` for legacy / direct callers
+        that don't track a reference price; the fill simulator always
+        passes the bar's pre-slippage reference price so multi-bar
+        partial exits accumulate a true weighted bid average.
         """
         self.cumulative_exit_qty += qty
         self.weighted_exit_price_sum += qty * exit_price
+        self.weighted_exit_bid_sum += qty * exit_bid_price
         self.qty -= qty
 
     @property
@@ -73,6 +86,12 @@ class Position:
         if self.cumulative_exit_qty <= 0:
             return 0.0
         return self.weighted_exit_price_sum / self.cumulative_exit_qty
+
+    @property
+    def weighted_avg_exit_bid_price(self) -> float:
+        if self.cumulative_exit_qty <= 0:
+            return 0.0
+        return self.weighted_exit_bid_sum / self.cumulative_exit_qty
 
 
 @dataclass
@@ -109,18 +128,35 @@ class Portfolio:
         self.capital -= position.position_value
         self.positions[position.symbol] = position
 
-    def extend(self, symbol: str, additional_qty: float, fill_price: float) -> Position:
+    def extend(
+        self,
+        symbol: str,
+        additional_qty: float,
+        fill_price: float,
+        fill_bid_price: float | None = None,
+    ) -> Position:
         """Apply a follow-on entry fill to an already-open position.
 
         Used by the partial-fill simulator (#386) when a requeued partial
         entry's remainder fills on a later bar. ``entry_price`` becomes the
         qty-weighted average across all entry partials so downstream P&L
         math (``position_value``, gross/net in TradeRecord) stays correct.
+
+        ``fill_bid_price`` is the pre-slippage reference price for this
+        slice. When provided, ``entry_bid_price`` is also updated to a
+        qty-weighted average so it stays coherent with the weighted
+        ``entry_price`` (otherwise the trade record would mix weighted
+        fill pricing with a stale first-slice reference, skewing entry-
+        side slippage diagnostics). Defaults to ``None`` for legacy
+        callers; the fill simulator always passes the bar's reference.
         """
         pos = self.positions[symbol]
         old_notional = pos.entry_price * pos.qty
         new_qty = pos.qty + additional_qty
         pos.entry_price = (old_notional + additional_qty * fill_price) / new_qty
+        if fill_bid_price is not None:
+            old_bid_notional = pos.entry_bid_price * pos.qty
+            pos.entry_bid_price = (old_bid_notional + additional_qty * fill_bid_price) / new_qty
         pos.qty = new_qty
         # Don't round per-slice — fragmented partial fills would let the
         # rounding error accumulate. ``Portfolio.open`` is also raw; the only
@@ -130,16 +166,27 @@ class Portfolio:
         self.capital -= additional_qty * fill_price
         return pos
 
-    def partial_close(self, symbol: str, exit_qty: float, exit_price: float) -> Optional[Position]:
+    def partial_close(
+        self,
+        symbol: str,
+        exit_qty: float,
+        exit_price: float,
+        exit_bid_price: float = 0.0,
+    ) -> Optional[Position]:
         """Apply a partial exit: shrink position qty, credit cash, keep open.
 
         The position remains in ``self.positions``; ``close()`` is called
         separately by the fill simulator once ``pos.is_closed``.
+
+        ``exit_bid_price`` is the bar's pre-slippage reference; when
+        provided it accumulates into the weighted exit-bid average so the
+        final TradeRecord's ``exit_bid_price`` is coherent with the
+        weighted ``exit_price`` across multi-bar partial exits.
         """
         pos = self.positions.get(symbol)
         if pos is None:
             return None
-        pos.reduce(exit_qty, exit_price)
+        pos.reduce(exit_qty, exit_price, exit_bid_price)
         # See ``extend`` — no per-slice rounding. The terminal ``close()``
         # rounds once on the residual (which is ~0 by then, so a no-op),
         # matching the legacy single-shot behavior without introducing

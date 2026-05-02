@@ -391,7 +391,7 @@ class FillSimulator:
             self.order_book.remove(po.order_id, was_filled=True)
             return None
 
-        pos = self.portfolio.extend(req.symbol, filled_qty, fill_price)
+        pos = self.portfolio.extend(req.symbol, filled_qty, fill_price, ref_price)
         # ``original_qty`` mirrors the cumulative entry-filled qty; bump it
         # so ``is_closed`` (compares ``cumulative_exit_qty`` to it) and
         # ``TradeRecord.shares`` reflect the actually-held position.
@@ -505,10 +505,20 @@ class FillSimulator:
             )
             return rejected, None
 
-        self.portfolio.partial_close(bar.symbol, filled_qty, exit_price)
-        if unfilled > 0:
+        self.portfolio.partial_close(bar.symbol, filled_qty, exit_price, ref_price)
+        # Only the participation-cap-clipped portion (``fillable_qty -
+        # filled_qty``) accumulates into ``pos.total_unfilled_qty`` — the
+        # over-ask portion (``po.remaining_qty - fillable_qty``) is a
+        # property of the strategy's request size relative to the live
+        # position, not a bar-level liquidity event, and the same ghost
+        # over-ask would re-appear on every requeued slice. Adding it
+        # bar-after-bar inflated ``TradeRecord.total_unfilled_qty`` past
+        # the original_qty (e.g. a 2000-share over-ask against a
+        # 1000-share position could report > 2000 unfilled).
+        cap_clipped = fillable_qty - filled_qty
+        if cap_clipped > 0:
             pos.participation_clipped = True
-            pos.total_unfilled_qty += unfilled
+            pos.total_unfilled_qty += cap_clipped
 
         is_closed = pos.is_closed
         # ``fill_kind`` reports completeness of *this exit order*, not
@@ -579,7 +589,11 @@ class FillSimulator:
             cumulative_pnl=self.portfolio.cumulative_pnl,
             entry_bid_price=pos.entry_bid_price,
             entry_fill_price=pos.entry_price,
-            exit_bid_price=round(ref_price, dp),
+            # Use the qty-weighted exit bid across all partial-exit slices
+            # so the reference price stays coherent with the weighted
+            # ``exit_price``. For single-bar full closes this collapses to
+            # the bar's own ref price (matches legacy behavior).
+            exit_bid_price=round(pos.weighted_avg_exit_bid_price, dp),
             exit_fill_price=final_exit_price,
             entry_order_type=pos.entry_order_type,
             exit_order_type=po.request.order_type.value,

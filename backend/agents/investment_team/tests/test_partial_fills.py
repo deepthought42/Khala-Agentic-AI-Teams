@@ -605,3 +605,118 @@ def test_capital_is_conserved_across_fragmented_round_trip() -> None:
 
     # Zero-cost flat round-trip: capital must equal initial.
     assert portfolio.capital == pytest.approx(initial, rel=1e-9)
+
+
+def test_over_ask_exit_total_unfilled_capped_at_cap_clipped_only() -> None:
+    """When an over-ask exit gets requeued, the never-fillable portion
+    must not accumulate into ``total_unfilled_qty`` on every bar — only
+    the participation-cap-clipped slice does.
+
+    Regression for a Codex P2 review note on PR #417: the previous
+    ``pos.total_unfilled_qty += unfilled`` (with ``unfilled`` measured
+    from the request) added the same ghost over-ask amount each bar, so
+    a 2000-share exit against a 1000-share position could report > 2000
+    unfilled in the final ``TradeRecord``.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    order_book.submit(
+        _entry_order(1_000),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000_000))
+
+    order_book.submit(
+        _exit_order(2_000, policy=UnfilledPolicy.REQUEUE_NEXT_BAR),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    # Bar 1: cap-clipped: fillable=min(2000, 1000)=1000, qty_fraction=0.5,
+    # filled=500, cap_clipped=500. pos.qty=500.
+    bar1 = sim.process_bar(_bar("2024-01-03", price=100.0, volume=10_000))
+    assert bar1.closed_trades == []
+    # Bar 2: high volume, fillable=min(remaining, pos.qty)=500, filled=500.
+    # cap_clipped=0. Position closes.
+    bar2 = sim.process_bar(_bar("2024-01-04", price=100.0, volume=10_000_000))
+    assert len(bar2.closed_trades) == 1
+    record = bar2.closed_trades[0]
+    # total_unfilled_qty must reflect cap-clipped slices only (500), not
+    # the carried over-ask amount times each requeue (which would have
+    # given 1500 + 1000 = 2500 under the old behavior).
+    assert record.total_unfilled_qty == pytest.approx(500.0, rel=1e-9)
+    assert record.shares == pytest.approx(1_000.0, rel=1e-9)
+
+
+def test_multi_bar_exit_records_weighted_bid_price() -> None:
+    """A multi-bar partial exit reports a qty-weighted ``exit_bid_price``
+    on the TradeRecord (mirroring the weighted ``exit_price``), not just
+    the closing bar's reference.
+
+    Regression for a Codex P2 review note on PR #417: leaving
+    ``exit_bid_price`` anchored to the final bar mismatched the two
+    fields and skewed slippage diagnostics on multi-slice exits.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    order_book.submit(
+        _entry_order(2_000),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000_000))
+
+    order_book.submit(
+        _exit_order(2_000, policy=UnfilledPolicy.REQUEUE_NEXT_BAR),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    # Bar 1: cap-clipped 50% partial @ ref=110 → 1000 shares.
+    sim.process_bar(_bar("2024-01-03", price=110.0, volume=10_000))
+    # Bar 2: full close @ ref=120 → 1000 shares.
+    bar2 = sim.process_bar(_bar("2024-01-04", price=120.0, volume=10_000_000))
+
+    assert len(bar2.closed_trades) == 1
+    record = bar2.closed_trades[0]
+    # Weighted bid = (1000 * 110 + 1000 * 120) / 2000 = 115 — matching the
+    # weighted exit_price (since slippage is zero in this test).
+    assert record.exit_bid_price == pytest.approx(115.0, rel=1e-9)
+    assert record.exit_price == pytest.approx(115.0, rel=1e-9)
+
+
+def test_multi_bar_entry_records_weighted_entry_bid_price() -> None:
+    """A multi-bar partial entry continuation reports a qty-weighted
+    ``entry_bid_price`` on the TradeRecord (mirroring the weighted
+    ``entry_price``), not the first slice's reference.
+
+    Regression for a Codex P2 review note on PR #417: ``Portfolio.extend``
+    used to update ``entry_price`` to a weighted average but leave
+    ``entry_bid_price`` anchored at the first slice, skewing entry-side
+    slippage metrics on fragmented entries.
+    """
+    sim, order_book, portfolio = _make_simulator()
+
+    # Bar 1: partial fill @ ref=100, cap forces 50% → 1000 shares filled.
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.REQUEUE_NEXT_BAR),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000))
+    # Bar 2: full continuation @ ref=110.
+    sim.process_bar(_bar("2024-01-03", price=110.0, volume=10_000_000))
+
+    pos = portfolio.positions["AAA"]
+    # Weighted entry bid = (1000 * 100 + 1000 * 110) / 2000 = 105 — same as
+    # weighted entry_price since slippage is zero.
+    assert pos.entry_bid_price == pytest.approx(105.0, rel=1e-9)
+    assert pos.entry_price == pytest.approx(105.0, rel=1e-9)
+
+    # Close cleanly at the same weighted price; TradeRecord propagates
+    # the weighted entry bid.
+    order_book.submit(
+        _exit_order(2_000),
+        submitted_at="2024-01-03",
+        submitted_equity=10_000_000.0,
+    )
+    bar3 = sim.process_bar(_bar("2024-01-04", price=120.0, volume=10_000_000))
+    assert len(bar3.closed_trades) == 1
+    assert bar3.closed_trades[0].entry_bid_price == pytest.approx(105.0, rel=1e-9)
