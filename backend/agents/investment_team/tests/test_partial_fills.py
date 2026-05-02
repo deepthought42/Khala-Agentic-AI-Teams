@@ -75,7 +75,12 @@ def _make_simulator(
     return sim, order_book, portfolio
 
 
-def _entry_order(qty: float, *, policy: UnfilledPolicy | None = None) -> OrderRequest:
+def _entry_order(
+    qty: float,
+    *,
+    policy: UnfilledPolicy | None = None,
+    twap_slices: int | None = None,
+) -> OrderRequest:
     return OrderRequest(
         client_order_id="entry-1",
         symbol="AAA",
@@ -84,6 +89,7 @@ def _entry_order(qty: float, *, policy: UnfilledPolicy | None = None) -> OrderRe
         order_type=OrderType.MARKET,
         tif=TimeInForce.DAY,
         unfilled_policy=policy,
+        twap_slices=twap_slices,
     )
 
 
@@ -864,3 +870,150 @@ def test_zero_fraction_continuation_drop_keeps_parent_eligible() -> None:
         parent_order_id=parent.order_id,
         oco_group_id="bracket-group-1",
     )
+
+
+# ---------------------------------------------------------------------------
+# TWAP_N unfilled_policy (#387)
+# ---------------------------------------------------------------------------
+
+
+def test_twap_n_three_bars_slices_sum_to_original() -> None:
+    """``TWAP_N=3`` slices a cap-clipped entry across three bars. The first
+    bar fills naturally under the participation cap (seeding
+    ``slices_remaining = N - 1``); the intermediate bar targets
+    ``remaining / slices_remaining``; the final bar force-flushes the
+    residual regardless of the cap. Cumulative entry must equal the
+    original requested qty.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar 1: low ADV → 50% cap-clipped partial. 1_000 fills, 1_000 unfilled.
+    # ``_handle_entry_remainder`` seeds ``slices_remaining = 3 - 1 = 2``.
+    bar1 = sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000))
+    assert len(bar1.entry_fills) == 1
+    fill1 = bar1.entry_fills[0]
+    assert fill1.fill_kind == FillKind.PARTIAL
+    assert fill1.qty == pytest.approx(1_000.0, rel=1e-9)
+    assert fill1.unfilled_qty == pytest.approx(1_000.0, rel=1e-9)
+    pending_after_bar1 = order_book.all_pending()
+    assert len(pending_after_bar1) == 1
+    assert pending_after_bar1[0].twap_slices_remaining == 2
+
+    # Bar 2: ample ADV → no cap clip; TWAP target = remaining / 2 = 500.
+    # ``slices_remaining`` decrements 2 → 1; 500 stays pending.
+    bar2 = sim.process_bar(_bar("2024-01-03", price=100.0, volume=10_000_000))
+    assert len(bar2.entry_fills) == 1
+    fill2 = bar2.entry_fills[0]
+    assert fill2.fill_kind == FillKind.PARTIAL
+    assert fill2.qty == pytest.approx(500.0, rel=1e-9)
+    assert fill2.cumulative_filled_qty == pytest.approx(1_500.0, rel=1e-9)
+    pending_after_bar2 = order_book.all_pending()
+    assert len(pending_after_bar2) == 1
+    assert pending_after_bar2[0].twap_slices_remaining == 1
+    assert pending_after_bar2[0].remaining_qty == pytest.approx(500.0, rel=1e-9)
+
+    # Bar 3: ``slices_remaining == 1`` → final slice force-flushes the full
+    # remainder (500) bypassing the participation cap. ``unfilled == 0`` →
+    # order is removed cleanly.
+    bar3 = sim.process_bar(_bar("2024-01-04", price=100.0, volume=10_000))
+    assert len(bar3.entry_fills) == 1
+    fill3 = bar3.entry_fills[0]
+    assert fill3.fill_kind == FillKind.FULL
+    assert fill3.qty == pytest.approx(500.0, rel=1e-9)
+    assert fill3.unfilled_qty == pytest.approx(0.0, abs=1e-9)
+    assert fill3.cumulative_filled_qty == pytest.approx(2_000.0, rel=1e-9)
+    assert order_book.all_pending() == []
+
+    # Cumulative entry equals the original request; position holds the full
+    # 2_000 shares across the three sliced fills.
+    pos = portfolio.positions["AAA"]
+    assert pos.qty == pytest.approx(2_000.0, rel=1e-9)
+    assert pos.original_qty == pytest.approx(2_000.0, rel=1e-9)
+    assert pos.partial_fill_count == 3
+
+
+def test_twap_n_full_first_bar_clears_cleanly() -> None:
+    """``TWAP_N=2`` on a high-ADV bar that absorbs the whole entry: bar 1
+    emits a ``FULL`` fill, the order is removed (``unfilled == 0`` skips the
+    TWAP requeue branch), and bar 2 sees an empty book — no spurious
+    second-slice fill.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    order_book.submit(
+        _entry_order(200, policy=UnfilledPolicy.TWAP_N, twap_slices=2),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar 1: ample volume → no cap clip → full fill on the first slice.
+    bar1 = sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000_000))
+    assert len(bar1.entry_fills) == 1
+    fill = bar1.entry_fills[0]
+    assert fill.fill_kind == FillKind.FULL
+    assert fill.qty == pytest.approx(200.0, rel=1e-9)
+    assert fill.unfilled_qty == pytest.approx(0.0, abs=1e-9)
+    # Order removed; ``twap_slices_remaining`` was never seeded (no requeue).
+    assert order_book.all_pending() == []
+
+    pos = portfolio.positions["AAA"]
+    assert pos.qty == pytest.approx(200.0, rel=1e-9)
+    assert pos.partial_fill_count == 1
+
+    # Bar 2: empty book — TWAP_N must not synthesize a second-slice fill
+    # against an order that already terminated.
+    bar2 = sim.process_bar(_bar("2024-01-03", price=100.0, volume=10_000_000))
+    assert bar2.entry_fills == []
+    assert bar2.exit_fills == []
+    assert bar2.closed_trades == []
+    assert order_book.all_pending() == []
+
+
+def test_twap_n_validation_requires_two_or_more_slices() -> None:
+    """``validate_prices`` (Step 1, #383) gates malformed TWAP_N submissions.
+
+    Re-asserted here so the partial-fill test suite's own contract surface
+    is exercised: a strategy can't submit ``TWAP_N`` with ``twap_slices < 2``
+    or ``twap_slices is None``, and ``twap_slices`` is rejected when the
+    policy is anything other than ``TWAP_N``.
+    """
+    # twap_slices < 2.
+    with pytest.raises(ValueError, match="twap_n policy requires twap_slices >= 2"):
+        OrderRequest(
+            client_order_id="entry-1",
+            symbol="AAA",
+            side=OrderSide.LONG,
+            qty=100,
+            order_type=OrderType.MARKET,
+            tif=TimeInForce.DAY,
+            unfilled_policy=UnfilledPolicy.TWAP_N,
+            twap_slices=1,
+        ).validate_prices()
+
+    # twap_slices missing entirely.
+    with pytest.raises(ValueError, match="twap_n policy requires twap_slices >= 2"):
+        OrderRequest(
+            client_order_id="entry-1",
+            symbol="AAA",
+            side=OrderSide.LONG,
+            qty=100,
+            order_type=OrderType.MARKET,
+            tif=TimeInForce.DAY,
+            unfilled_policy=UnfilledPolicy.TWAP_N,
+        ).validate_prices()
+
+    # Sanity: TWAP_N + twap_slices=2 validates without raising.
+    OrderRequest(
+        client_order_id="entry-1",
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=100,
+        order_type=OrderType.MARKET,
+        tif=TimeInForce.DAY,
+        unfilled_policy=UnfilledPolicy.TWAP_N,
+        twap_slices=2,
+    ).validate_prices()

@@ -322,10 +322,23 @@ class FillSimulator:
         """
         req = po.request
         ref_price = terms.reference_price
-        requested_qty = po.remaining_qty
+        # ``target_qty`` is what we *try* to fill on this bar — equal to
+        # ``po.remaining_qty`` for non-TWAP orders, sliced to
+        # ``remaining/slices_remaining`` on intermediate TWAP_N bars, and
+        # the full remainder on the final TWAP_N slice. ``unfilled`` is
+        # always computed against the *order's* remaining qty (not the
+        # slice target) so the unfilled ledger and ``_handle_entry_remainder``
+        # see the true post-bar leftover.
+        target_qty, force_flush = self._twap_slice_target(po)
         qty_fraction = max(0.0, min(1.0, terms.qty_fraction))
-        filled_qty = requested_qty * qty_fraction
-        unfilled = requested_qty - filled_qty
+        if force_flush:
+            # Final TWAP_N slice: bypass the participation cap so a
+            # strategy that explicitly opted into TWAP gets full
+            # participation on its scheduled terminal bar (#387).
+            filled_qty = target_qty
+        else:
+            filled_qty = target_qty * qty_fraction
+        unfilled = po.remaining_qty - filled_qty
         dp = 4 if ref_price < 10 else 2
 
         if filled_qty <= 0:
@@ -337,7 +350,7 @@ class FillSimulator:
             # ``was_filled=True`` because the parent's first slice
             # already opened a position — preserves bracket-attachment
             # eligibility on the eventual ``remove`` path.
-            self._handle_entry_remainder(po, bar, requested_qty, was_filled=True)
+            self._handle_entry_remainder(po, bar, po.remaining_qty, was_filled=True)
             return Fill(
                 order_id=po.order_id,
                 client_order_id=req.client_order_id,
@@ -348,7 +361,7 @@ class FillSimulator:
                 timestamp=bar.timestamp,
                 reason="rejected_no_liquidity",
                 fill_kind=FillKind.REJECTED,
-                unfilled_qty=requested_qty,
+                unfilled_qty=po.remaining_qty,
                 cumulative_filled_qty=po.cumulative_filled_qty,
             )
 
@@ -412,6 +425,12 @@ class FillSimulator:
         pos.total_unfilled_qty += unfilled
         pos.partial_fill_count += 1
 
+        # Capture the cumulative-fill total *before* the remainder handler
+        # runs: a requeue (REQUEUE_NEXT_BAR or TWAP_N) updates
+        # ``po.cumulative_filled_qty`` to ``original_qty - new_remaining_qty``
+        # — i.e. the post-fill cumulative. Reading ``po.cumulative_filled_qty
+        # + filled_qty`` after the requeue would double-count this slice.
+        fill_cumulative_qty = po.cumulative_filled_qty + filled_qty
         self._handle_entry_remainder(po, bar, unfilled)
 
         return Fill(
@@ -426,11 +445,30 @@ class FillSimulator:
             fill_kind=FillKind.PARTIAL if is_partial else FillKind.FULL,
             unfilled_qty=unfilled,
             # Per-order cumulative entry fills (monotonic across all slices
-            # of *this* order). Reading from ``po.cumulative_filled_qty``
-            # plus the current slice keeps the value monotonic even if
-            # interim exits have shrunk ``pos.qty``.
-            cumulative_filled_qty=po.cumulative_filled_qty + filled_qty,
+            # of *this* order).
+            cumulative_filled_qty=fill_cumulative_qty,
         )
+
+    @staticmethod
+    def _twap_slice_target(po: PendingOrder) -> tuple[float, bool]:
+        """Return ``(target_qty_for_this_bar, is_final_slice)`` for an entry.
+
+        Non-TWAP orders return ``(po.remaining_qty, False)`` so the existing
+        per-bar math is unchanged. For ``TWAP_N``: the first slice (counter
+        still ``None``) targets the full request so the realistic execution
+        model's participation cap drives a natural first-bar partial;
+        intermediate bars target ``remaining / slices_remaining``; the final
+        slice (``slices_remaining <= 1``) targets the full remainder *and*
+        signals force-flush so the caller can bypass the participation cap
+        per the #387 design choice.
+        """
+        req = po.request
+        if req.unfilled_policy != UnfilledPolicy.TWAP_N:
+            return po.remaining_qty, False
+        sr = po.twap_slices_remaining
+        if sr is None or sr <= 1:
+            return po.remaining_qty, sr is not None and sr <= 1
+        return po.remaining_qty / sr, False
 
     def _handle_entry_remainder(
         self,
@@ -461,7 +499,28 @@ class FillSimulator:
                 was_filled=was_filled,
             )
             return
-        # TWAP_N is wired in #387; until then it falls through to DROP.
+        if unfilled > 0 and policy == UnfilledPolicy.TWAP_N:
+            # Seed on the first fill, decrement on every continuation. The
+            # final slice (``slices_remaining == 1`` entering the bar) is
+            # force-flushed in ``_continue_entry``, so reaching this branch
+            # with ``new_slices_remaining <= 0`` means even the cap-bypass
+            # couldn't clear the order (e.g. zero-volume bar). Drop cleanly
+            # so the order doesn't linger past its TWAP horizon.
+            if po.twap_slices_remaining is None:
+                new_slices_remaining = (po.request.twap_slices or 0) - 1
+            else:
+                new_slices_remaining = po.twap_slices_remaining - 1
+            if new_slices_remaining <= 0:
+                self.order_book.remove(po.order_id, was_filled=was_filled)
+                return
+            self.order_book.requeue(
+                po.order_id,
+                new_remaining_qty=unfilled,
+                new_submitted_at=bar.timestamp,
+                twap_slices_remaining=new_slices_remaining,
+                was_filled=was_filled,
+            )
+            return
         self.order_book.remove(po.order_id, was_filled=was_filled)
 
     def _fill_exit(

@@ -150,11 +150,6 @@ class OrderRequest(BaseModel):
                 f"{self.tif.value} time-in-force is not yet supported by the execution engine; "
                 "see #388 (Trading 5/5 Step 6) for runtime support"
             )
-        if self.unfilled_policy is not None or self.twap_slices is not None:
-            raise UnsupportedOrderFeatureError(
-                "unfilled_policy / twap_slices are not yet honored by TradingService; "
-                "see #385 / #386 / #387 (Trading 5/5 Steps 3-5) for runtime support"
-            )
         if self.attached_stop_loss is not None or self.attached_take_profit is not None:
             raise UnsupportedOrderFeatureError(
                 "attached_stop_loss / attached_take_profit are not yet materialized "
