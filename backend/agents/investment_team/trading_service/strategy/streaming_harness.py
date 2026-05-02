@@ -345,6 +345,31 @@ _HARNESS_SCRIPT = textwrap.dedent('''\
         sys.stdout.flush()
 
 
+    # Harness-private bar_index state for the chunked protocol (PR #425
+    # review defense). ``_chunk_state["i"]`` is the harness-managed
+    # current bar index during a chunk dispatch and ``None`` outside.
+    # Strategy code cannot reach this dict via ``ctx`` — it is captured
+    # only by the closure below. ``_tagged_emit`` overwrites
+    # ``bar_index`` on every emitted ``order``/``cancel`` so a strategy
+    # that mutates any context attribute can never forge an earlier
+    # bar_index after observing later bars in the chunk.
+    _chunk_state = {"i": None}
+
+
+    def _tagged_emit(record):
+        kind = record.get("kind")
+        if kind in ("order", "cancel"):
+            idx = _chunk_state["i"]
+            if idx is None:
+                # Per-bar protocol or non-chunk emission: strip any
+                # bar_index a malicious strategy may have set on the
+                # record before _emit was called.
+                record.pop("bar_index", None)
+            else:
+                record["bar_index"] = idx
+        _emit(record)
+
+
     def _find_strategy_class():
         candidates = []
         for name in dir(strategy):
@@ -378,7 +403,9 @@ _HARNESS_SCRIPT = textwrap.dedent('''\
             sys.exit(1)
 
         instance = cls()
-        ctx = contract.StrategyContext(emit=_emit)
+        # Use the bar_index-tagging emit so strategies can never forge
+        # bar_index regardless of what they do with ``ctx`` attributes.
+        ctx = contract.StrategyContext(emit=_tagged_emit)
         started = False
 
         for raw in sys.stdin:
@@ -434,16 +461,20 @@ _HARNESS_SCRIPT = textwrap.dedent('''\
                         })
                         sys.exit(1)
                     chunk = msg.get("bars") or []
-                    for i, item in enumerate(chunk):
-                        bar = contract.Bar(**item["bar"])
-                        state = item.get("state") or {}
-                        _apply_state(
-                            ctx, state, is_warmup=bool(item.get("is_warmup", False))
-                        )
-                        ctx._ingest_bar(bar)
-                        ctx._current_bar_index = i
-                        instance.on_bar(ctx, bar)
-                    ctx._current_bar_index = None
+                    try:
+                        for i, item in enumerate(chunk):
+                            bar = contract.Bar(**item["bar"])
+                            state = item.get("state") or {}
+                            _apply_state(
+                                ctx, state, is_warmup=bool(item.get("is_warmup", False))
+                            )
+                            ctx._ingest_bar(bar)
+                            # Harness-managed bar_index for ``_tagged_emit``;
+                            # strategy code cannot reach ``_chunk_state``.
+                            _chunk_state["i"] = i
+                            instance.on_bar(ctx, bar)
+                    finally:
+                        _chunk_state["i"] = None
                 elif kind == "fill":
                     fill = contract.Fill(**msg["fill"])
                     state = msg.get("state") or {}

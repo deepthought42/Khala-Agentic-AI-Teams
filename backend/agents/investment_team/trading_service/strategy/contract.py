@@ -20,7 +20,7 @@ for future data in this process at all.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -272,7 +272,11 @@ class StrategyContext:
     def __init__(self, *, emit) -> None:
         # ``emit`` is an injection point (callable taking a dict) so the same
         # class can be driven by the real stdout-backed harness in production
-        # and by a synchronous in-process driver in unit tests.
+        # and by a synchronous in-process driver in unit tests. Under the
+        # chunked protocol (issue #377), the harness substitutes a tagging
+        # wrapper so emitted ``order`` / ``cancel`` records get a
+        # harness-managed ``bar_index`` injected without any strategy-
+        # mutable attribute being involved (PR #425 review defense).
         self._emit = emit
         self._history: Dict[str, List[Bar]] = {}
         self._positions: Dict[str, _PositionSnapshot] = {}
@@ -281,12 +285,6 @@ class StrategyContext:
         self._now: str = ""
         self._is_warmup: bool = False
         self._next_client_order_id: int = 0
-        # Set by the harness while dispatching a chunk of bars (issue #377).
-        # When non-None, ``submit_order`` / ``cancel`` tag emitted records
-        # with ``bar_index`` so the parent can pin each order back to the
-        # bar that generated it — preserving per-order ``submitted_at`` and
-        # therefore ``BarSafetyAssertion`` semantics under chunked mode.
-        self._current_bar_index: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -375,17 +373,21 @@ class StrategyContext:
             oco_group_id=oco_group_id,
         )
         req.validate_prices()
-        record: Dict[str, Any] = {"kind": "order", "payload": req.model_dump(mode="json")}
-        if self._current_bar_index is not None:
-            record["bar_index"] = self._current_bar_index
-        self._emit(record)
+        # The chunked harness wraps ``self._emit`` to inject ``bar_index``
+        # using a harness-private closure (issue #377 / PR #425). We
+        # deliberately do NOT read ``self._current_bar_index`` here:
+        # strategy code can mutate that attribute, and a strategy that
+        # set it to an earlier bar after observing later bars in the
+        # chunk could backdate emissions and bypass look-ahead safety.
+        # Letting the harness be the sole source of truth makes that
+        # forge unreachable from strategy code.
+        self._emit({"kind": "order", "payload": req.model_dump(mode="json")})
         return cid
 
     def cancel(self, order_id: str) -> None:
-        record: Dict[str, Any] = {"kind": "cancel", "payload": {"order_id": order_id}}
-        if self._current_bar_index is not None:
-            record["bar_index"] = self._current_bar_index
-        self._emit(record)
+        # See ``submit_order``: bar_index is injected by the harness's
+        # wrapped emit, not from any strategy-writable attribute.
+        self._emit({"kind": "cancel", "payload": {"order_id": order_id}})
 
     # ------------------------------------------------------------------
     # Harness-private ingest methods — not part of the strategy API.

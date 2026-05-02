@@ -57,25 +57,28 @@ _VECTORIZED_OVERRIDE_CODE = textwrap.dedent('''\
 ''')
 
 
-_OUT_OF_RANGE_BAR_INDEX_CODE = textwrap.dedent('''\
-    """Strategy that hand-sets ``ctx._current_bar_index`` to an index
-    outside the current chunk before emitting — exercises the parent's
-    bar_index range validation in ``_run_chunked``. A real strategy
-    wouldn't normally touch the private attr, but the validation must
-    catch the case so a buggy or malicious override can't silently
-    drop emissions.
+_FORGED_BAR_INDEX_CODE = textwrap.dedent('''\
+    """Strategy that *attempts* to forge bar_index by mutating
+    context attributes and writing to the emit channel, then emits
+    one order per bar. The chunked harness's tagging emit must
+    overwrite any forged bar_index with the harness-managed one,
+    so the parent always sees correct, monotonic bar_index values
+    matching the bar that was actually being processed.
     """
     from contract import OrderSide, OrderType, Strategy
 
 
-    class OutOfRange(Strategy):
+    class Forger(Strategy):
         def on_bar(self, ctx, bar):
-            ctx._current_bar_index = 99  # out of any plausible chunk size
+            # Try every plausible vector for forging bar_index.
+            ctx._current_bar_index = 99  # attribute the old impl honored
+            ctx.bar_index = -7  # arbitrary attribute
             ctx.submit_order(
                 symbol=bar.symbol,
                 side=OrderSide.LONG,
                 qty=1.0,
                 order_type=OrderType.MARKET,
+                reason=f"bar-{bar.timestamp}",
             )
 ''')
 
@@ -196,61 +199,34 @@ def test_on_bars_override_is_rejected_under_chunked_protocol() -> None:
         assert "BAR_CHUNK_SIZE=1" in str(excinfo.value)
 
 
-def test_chunked_path_rejects_out_of_range_bar_index() -> None:
-    """The parent's ``_run_chunked`` must validate that emitted
-    ``bar_index`` values are inside ``[0, len(chunk))`` and surface a
-    ``protocol_error`` otherwise — without the check, an out-of-range
-    index silently drops the order through ``orders_by_bar.get(i, [])``
-    in the replay loop (PR #425 review).
+def test_chunked_bar_index_cannot_be_forged_by_strategy() -> None:
+    """Defense for PR #425's second-round review: a strategy that
+    mutates ``ctx._current_bar_index`` (or any other context attribute)
+    must NOT be able to forge bar_index. The chunked harness wraps
+    ``_emit`` with a tagging closure that captures harness-private
+    state; emitted ``order``/``cancel`` records always carry the
+    bar_index of the bar the harness was actually dispatching.
+
+    Without this defense, a strategy could see bar 5's data inside
+    ``on_bar`` and then emit an order tagged for bar 0, backdating the
+    decision and bypassing look-ahead safety even with the in-range
+    validation in ``_run_chunked``.
     """
-    import os
-
-    from investment_team.market_data_service import OHLCVBar
-    from investment_team.models import BacktestConfig, StrategySpec
-    from investment_team.trading_service.modes.backtest import run_backtest
-
-    bars = [
-        OHLCVBar(
-            date=f"2024-01-{i + 1:02d}",
-            open=100.0,
-            high=101.0,
-            low=99.0,
-            close=100.5,
-            volume=10_000.0,
-        )
-        for i in range(8)
-    ]
-    spec = StrategySpec(
-        strategy_id="oob-bar-index",
-        authored_by="377-test",
-        asset_class="stocks",
-        hypothesis="invariant",
-        signal_definition="invariant",
-        strategy_code=_OUT_OF_RANGE_BAR_INDEX_CODE,
-    )
-    config = BacktestConfig(
-        start_date="2024-01-01",
-        end_date="2024-12-31",
-        initial_capital=100_000.0,
-        transaction_cost_bps=0.0,
-        slippage_bps=0.0,
-    )
-
-    prev = os.environ.get("BAR_CHUNK_SIZE")
-    os.environ["BAR_CHUNK_SIZE"] = "4"
-    try:
-        result = run_backtest(strategy=spec, config=config, market_data={"AAA": bars})
-    finally:
-        if prev is None:
-            os.environ.pop("BAR_CHUNK_SIZE", None)
-        else:
-            os.environ["BAR_CHUNK_SIZE"] = prev
-
-    # The run terminates with a structured protocol error rather than
-    # silently swallowing the order — regression guard for the silent
-    # drop the reviewer flagged.
-    assert result.service_result.error is not None
-    assert "out-of-range bar_index" in result.service_result.error
+    with StreamingHarness(_FORGED_BAR_INDEX_CODE) as harness:
+        harness.send_start(config={"initial_capital": 100_000.0})
+        bars = [
+            {"bar": _bar(f"2024-01-{i + 1:02d}"), "state": _state(), "is_warmup": False}
+            for i in range(4)
+        ]
+        resp = harness.send_bars(bars=bars)
+        # Despite the strategy hand-setting ``_current_bar_index = 99``
+        # before each emission, every order is tagged with the correct
+        # harness-managed bar_index in monotonically increasing order.
+        assert len(resp.orders) == 4
+        assert resp.order_bar_indices == [0, 1, 2, 3]
+        for i, o in enumerate(resp.orders):
+            assert o["reason"] == f"bar-2024-01-{i + 1:02d}"
+        harness.send_end()
 
 
 # ---------------------------------------------------------------------------
