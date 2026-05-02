@@ -112,6 +112,31 @@ class FillSimulator:
             # owned below.
             terms = self.execution_model.compute_fill_terms(req, bar, next_bar)
             if terms is None:
+                # ``TWAP_N`` orders consume a slice on every elapsed bar,
+                # not only on bars where the execution model triggers a
+                # fill. Without this, a ``LIMIT``/``STOP`` TWAP order
+                # whose trigger geometry kept it untouched between
+                # slices could run past its declared N-bar horizon —
+                # making TWAP duration depend on price action rather
+                # than wall time. Counter only ticks after seeding
+                # (``twap_slices_remaining is not None``); pre-seeded
+                # bars (``LIMIT`` waiting for a first cross) don't tick.
+                if (
+                    req.unfilled_policy == UnfilledPolicy.TWAP_N
+                    and po.twap_slices_remaining is not None
+                ):
+                    new_slices_remaining = po.twap_slices_remaining - 1
+                    was_filled = po.cumulative_filled_qty > 0
+                    if new_slices_remaining <= 0:
+                        self.order_book.remove(po.order_id, was_filled=was_filled)
+                    else:
+                        self.order_book.requeue(
+                            po.order_id,
+                            new_remaining_qty=po.remaining_qty,
+                            new_submitted_at=bar.timestamp,
+                            twap_slices_remaining=new_slices_remaining,
+                            was_filled=was_filled,
+                        )
                 continue
 
             # Parent-side look-ahead guard: any triggered order must belong
@@ -123,6 +148,20 @@ class FillSimulator:
             )
 
             existing_pos = self.portfolio.positions.get(bar.symbol)
+            # Pre-filled order with no live position is a stale
+            # continuation — typically a partially filled exit whose
+            # position was closed by an earlier order on this same bar
+            # (or a partial entry whose position was closed by a stop
+            # before its remainder could fill). Falling through to the
+            # ``is_entry`` branch below would route the requeued
+            # opposite-side remainder into ``_fill_entry``, opening a
+            # brand-new position that contradicts the order's original
+            # intent (e.g. a sell-side TWAP exit remainder reopening as
+            # a fresh short entry). Drop cleanly instead.
+            if existing_pos is None and po.cumulative_filled_qty > 0:
+                self.order_book.remove(po.order_id)
+                continue
+
             # Partial-entry continuation (#386): a requeued partial entry has
             # ``cumulative_filled_qty > 0`` and an existing position whose
             # ``entry_order_id`` matches this pending order. Without this

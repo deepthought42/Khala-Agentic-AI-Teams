@@ -761,6 +761,32 @@ class _ScriptedFractionModel:
         )
 
 
+class _ScriptedTriggerModel:
+    """Test stub: returns ``None`` (no-trigger) on bars not in the script.
+
+    Lets us simulate a ``LIMIT``/``STOP`` order that doesn't cross on
+    every bar — needed to exercise the elapsed-bar TWAP slice
+    consumption path that fires when ``compute_fill_terms`` returns
+    ``None``. Bars present in the dict return ``FillTerms`` with the
+    given ``qty_fraction``.
+    """
+
+    name = "scripted-trigger"
+
+    def __init__(self, triggers: dict[str, float]) -> None:
+        self._triggers = triggers
+
+    def compute_fill_terms(self, req, bar, next_bar):
+        if bar.timestamp not in self._triggers:
+            return None
+        ref = bar.open
+        return FillTerms(
+            reference_price=ref,
+            qty_fraction=self._triggers[bar.timestamp],
+            extra_slip_bps=0.0,
+        )
+
+
 def test_zero_fraction_continuation_honors_requeue_policy() -> None:
     """A continuation slice that returns ``qty_fraction = 0`` (e.g.
     transient no-liquidity bar under a custom execution model) must
@@ -1215,3 +1241,168 @@ def test_twap_n_exit_slices_remainder_across_n_bars() -> None:
     assert len(bar_c.closed_trades) == 1
     record = bar_c.closed_trades[0]
     assert record.shares == pytest.approx(2_000.0, rel=1e-9)
+
+
+def test_partial_exit_remainder_drops_when_position_vanished() -> None:
+    """A partially-filled exit whose position has been closed by another
+    order before the remainder executes must drop cleanly on the next
+    bar — *not* be re-routed through ``_fill_entry`` as a fresh
+    opposite-side entry. Regression for a Codex P1 review note on PR
+    #419: TWAP_N exit support exposed this latent dispatch path
+    (``existing_pos is None`` + ``cumulative_filled_qty > 0`` was
+    falling through to ``is_entry``, opening a new short with the
+    requeued sell-side remainder).
+    """
+    sim, order_book, portfolio = _make_simulator()
+
+    # Setup: enter LONG 2_000 cleanly.
+    order_book.submit(
+        _entry_order(2_000),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000_000))
+    assert portfolio.positions["AAA"].qty == pytest.approx(2_000.0, rel=1e-9)
+
+    # Submit a TWAP_N=3 SHORT exit. Bar 2 cap-clips to 50% → 1_000
+    # closes, position=1_000, TWAP remainder pending with cumulative=
+    # 1_000, remaining=1_000, slices_remaining=2.
+    order_book.submit(
+        _exit_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-03", price=100.0, volume=10_000))
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].cumulative_filled_qty == pytest.approx(1_000.0, rel=1e-9)
+
+    # Simulate "another order closed the position" by directly closing
+    # the remaining 1_000. In production this would be e.g. a separate
+    # MARKET exit or a stop trigger that processed earlier in the same
+    # bar — same end-state from the TWAP remainder's perspective.
+    portfolio.partial_close("AAA", 1_000.0, 100.0, 100.0)
+    portfolio.close("AAA", 100.0)
+    assert "AAA" not in portfolio.positions
+
+    # Bar 4: process_bar snapshots the still-pending TWAP remainder.
+    # ``existing_pos is None`` and ``cumulative_filled_qty > 0`` →
+    # the dispatch must drop the order, NOT route it through
+    # ``_fill_entry`` (which would open a brand-new short).
+    out = sim.process_bar(_bar("2024-01-04", price=100.0, volume=10_000_000))
+
+    # No phantom short entry; the TWAP remainder is removed cleanly.
+    assert out.entry_fills == [], "stale TWAP remainder must NOT reopen as a fresh short"
+    assert out.exit_fills == []
+    assert "AAA" not in portfolio.positions
+    assert order_book.all_pending() == []
+
+
+def test_twap_n_consumes_slice_on_untriggered_bar() -> None:
+    """``TWAP_N`` orders must honor an N-bar horizon measured in
+    *elapsed* bars, not triggered bars. A LIMIT/STOP TWAP order whose
+    trigger geometry skips intermediate bars (``compute_fill_terms``
+    returns ``None``) must still consume a slice on those bars,
+    otherwise the schedule can run for more than ``twap_slices`` bars
+    and TWAP duration becomes a function of price action rather than
+    wall time. Regression for a Codex P2 review note on PR #419.
+
+    Scenario: TWAP_N=3 entry. Bar 1 partial fills (seeds slices_remaining
+    = 2). Bar 2 is *untouched* (no trigger) → must decrement to 1. Bar
+    3 triggers and force-flushes the remainder. Total bars used = 3.
+    """
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    order_book = OrderBook()
+    sim = FillSimulator(
+        portfolio=portfolio,
+        order_book=order_book,
+        risk_filter=RiskFilter(RiskLimits(max_position_pct=100, max_gross_leverage=10.0)),
+        config=FillSimulatorConfig(slippage_bps=0.0, transaction_cost_bps=0.0),
+        bar_safety=BarSafetyAssertion(),
+        execution_model=_ScriptedTriggerModel(
+            {
+                "2024-01-02": 0.5,  # bar 1: partial fill (seeds sr=2)
+                # 2024-01-03 deliberately absent — untriggered, must
+                # still consume a slice (sr 2 → 1).
+                "2024-01-04": 1.0,  # bar 3: terminal slice, force-flush
+            }
+        ),
+    )
+
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar 1: partial fill (1_000) → seeds slices_remaining = 2.
+    bar1 = sim.process_bar(_bar("2024-01-02", price=100.0))
+    assert bar1.entry_fills[0].fill_kind == FillKind.PARTIAL
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+    pending = order_book.all_pending()
+    assert pending[0].twap_slices_remaining == 2
+
+    # Bar 2: untriggered (compute_fill_terms returns None). The TWAP
+    # branch in process_bar must decrement slices_remaining anyway so
+    # the N-bar horizon is honored.
+    bar2 = sim.process_bar(_bar("2024-01-03", price=100.0))
+    assert bar2.entry_fills == [], "untouched bar should not emit a fill"
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].twap_slices_remaining == 1, (
+        "untouched bar must consume a TWAP slice — otherwise the "
+        "schedule runs past its declared horizon"
+    )
+    # ``remaining_qty`` must be unchanged (no fill happened).
+    assert pending[0].remaining_qty == pytest.approx(1_000.0, rel=1e-9)
+
+    # Bar 3: trigger fires, terminal slice force-flushes the remainder.
+    bar3 = sim.process_bar(_bar("2024-01-04", price=100.0))
+    assert bar3.entry_fills[0].fill_kind == FillKind.FULL
+    assert bar3.entry_fills[0].qty == pytest.approx(1_000.0, rel=1e-9)
+    assert portfolio.positions["AAA"].qty == pytest.approx(2_000.0, rel=1e-9)
+    assert order_book.all_pending() == []
+
+
+def test_twap_n_drops_at_horizon_when_no_trigger_recovers() -> None:
+    """A ``TWAP_N`` order whose trigger geometry never recovers after
+    the first fill must drop at the declared N-bar horizon — the
+    elapsed-bar slice consumption fires the ``slices_remaining <= 0``
+    branch in ``process_bar`` even when the order is never triggered
+    again. Companion to the consume-on-elapsed test above.
+    """
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    order_book = OrderBook()
+    sim = FillSimulator(
+        portfolio=portfolio,
+        order_book=order_book,
+        risk_filter=RiskFilter(RiskLimits(max_position_pct=100, max_gross_leverage=10.0)),
+        config=FillSimulatorConfig(slippage_bps=0.0, transaction_cost_bps=0.0),
+        bar_safety=BarSafetyAssertion(),
+        execution_model=_ScriptedTriggerModel(
+            {
+                "2024-01-02": 0.5,  # bar 1: partial fill (seeds sr=2)
+                # bars 2 + 3 absent → both untriggered, sr ticks 2→1→0
+            }
+        ),
+    )
+
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    sim.process_bar(_bar("2024-01-02", price=100.0))
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+
+    # Bar 2: untouched → sr 2 → 1.
+    sim.process_bar(_bar("2024-01-03", price=100.0))
+    assert order_book.all_pending()[0].twap_slices_remaining == 1
+
+    # Bar 3: untouched again → sr 1 → 0 → order dropped at horizon end.
+    sim.process_bar(_bar("2024-01-04", price=100.0))
+    assert order_book.all_pending() == []
+    # Position reflects only what actually filled (the bar-1 1_000).
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
