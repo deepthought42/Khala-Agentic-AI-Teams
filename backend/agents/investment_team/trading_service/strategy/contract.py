@@ -20,7 +20,7 @@ for future data in this process at all.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -281,6 +281,12 @@ class StrategyContext:
         self._now: str = ""
         self._is_warmup: bool = False
         self._next_client_order_id: int = 0
+        # Set by the harness while dispatching a chunk of bars (issue #377).
+        # When non-None, ``submit_order`` / ``cancel`` tag emitted records
+        # with ``bar_index`` so the parent can pin each order back to the
+        # bar that generated it — preserving per-order ``submitted_at`` and
+        # therefore ``BarSafetyAssertion`` semantics under chunked mode.
+        self._current_bar_index: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -369,11 +375,17 @@ class StrategyContext:
             oco_group_id=oco_group_id,
         )
         req.validate_prices()
-        self._emit({"kind": "order", "payload": req.model_dump(mode="json")})
+        record: Dict[str, Any] = {"kind": "order", "payload": req.model_dump(mode="json")}
+        if self._current_bar_index is not None:
+            record["bar_index"] = self._current_bar_index
+        self._emit(record)
         return cid
 
     def cancel(self, order_id: str) -> None:
-        self._emit({"kind": "cancel", "payload": {"order_id": order_id}})
+        record: Dict[str, Any] = {"kind": "cancel", "payload": {"order_id": order_id}}
+        if self._current_bar_index is not None:
+            record["bar_index"] = self._current_bar_index
+        self._emit(record)
 
     # ------------------------------------------------------------------
     # Harness-private ingest methods — not part of the strategy API.
@@ -414,6 +426,22 @@ class Strategy:
 
     def on_bar(self, ctx: StrategyContext, bar: Bar) -> None:
         """Called once per finalized bar. Primary decision point."""
+
+    def on_bars(self, ctx: StrategyContext, bars: List[Bar]) -> None:
+        """Called once per chunk of bars when the parent uses the chunked
+        protocol (issue #377). The default iterates and calls
+        :meth:`on_bar` per bar; the harness sets
+        ``ctx._current_bar_index`` around each invocation so emitted
+        orders are tagged for the originating bar (preserving look-ahead
+        safety).
+
+        Strategies may override for vectorised processing (e.g. computing
+        indicators on the whole chunk). Overrides are responsible for
+        leaving ``ctx._current_bar_index`` in a consistent state if they
+        emit orders directly without going through :meth:`on_bar`.
+        """
+        for bar in bars:
+            self.on_bar(ctx, bar)
 
     def on_fill(self, ctx: StrategyContext, fill: Fill) -> None:
         """Called when a previously-submitted order fills."""
