@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from ..strategy.contract import Fill, OrderSide
+from .order_book import FILL_QTY_REL_TOL
 
 
 @dataclass
@@ -29,9 +30,49 @@ class Position:
     entry_client_order_id: str
     entry_order_type: str = "market"
 
+    # Partial-fill accounting (#386). ``original_qty`` is the qty the strategy
+    # asked for; ``qty`` is the *currently open* qty (decreases on partial
+    # exits). The cumulative-exit fields drive the weighted-average exit price
+    # used when the final ``TradeRecord`` is emitted.
+    original_qty: float = 0.0
+    cumulative_exit_qty: float = 0.0
+    weighted_exit_price_sum: float = 0.0
+    partial_fill_count: int = 0
+    participation_clipped: bool = False
+    total_unfilled_qty: float = 0.0
+
     @property
     def position_value(self) -> float:
         return self.entry_price * self.qty
+
+    def reduce(self, qty: float, exit_price: float) -> None:
+        """Apply a partial exit: shrink ``qty`` and accumulate weighted exit.
+
+        ``partial_fill_count`` is intentionally not bumped here — it counts
+        the number of fills the *entry* side required (initial + each
+        ``REQUEUE_NEXT_BAR`` continuation). Exit-side slice count is
+        captured implicitly via ``cumulative_exit_qty`` /
+        ``weighted_exit_price_sum``.
+        """
+        self.cumulative_exit_qty += qty
+        self.weighted_exit_price_sum += qty * exit_price
+        self.qty -= qty
+
+    @property
+    def is_closed(self) -> bool:
+        # FP-safe terminal check: a sub-ULP residual on ``cumulative_exit_qty``
+        # vs ``original_qty`` shouldn't keep a position open. Reuse the same
+        # relative tolerance ``OrderBook.requeue`` uses for remainder clamping
+        # so the two terminal-fill checks agree.
+        if self.original_qty <= 0:
+            return False
+        return self.cumulative_exit_qty + self.original_qty * FILL_QTY_REL_TOL >= self.original_qty
+
+    @property
+    def weighted_avg_exit_price(self) -> float:
+        if self.cumulative_exit_qty <= 0:
+            return 0.0
+        return self.weighted_exit_price_sum / self.cumulative_exit_qty
 
 
 @dataclass
@@ -58,16 +99,54 @@ class Portfolio:
     def open(self, position: Position) -> None:
         if position.symbol in self.positions:
             raise ValueError(f"position already open for {position.symbol}")
+        # Pin ``original_qty`` to the first-fill qty when the caller didn't set
+        # it. The fill simulator builds Position objects with the strategy's
+        # requested qty in ``original_qty`` and the actually-filled qty in
+        # ``qty``; this fallback keeps direct callers (tests, legacy paths)
+        # working without forcing them to set both fields.
+        if position.original_qty == 0.0:
+            position.original_qty = position.qty
         self.capital -= position.position_value
         self.positions[position.symbol] = position
+
+    def extend(self, symbol: str, additional_qty: float, fill_price: float) -> Position:
+        """Apply a follow-on entry fill to an already-open position.
+
+        Used by the partial-fill simulator (#386) when a requeued partial
+        entry's remainder fills on a later bar. ``entry_price`` becomes the
+        qty-weighted average across all entry partials so downstream P&L
+        math (``position_value``, gross/net in TradeRecord) stays correct.
+        """
+        pos = self.positions[symbol]
+        old_notional = pos.entry_price * pos.qty
+        new_qty = pos.qty + additional_qty
+        pos.entry_price = (old_notional + additional_qty * fill_price) / new_qty
+        pos.qty = new_qty
+        self.capital -= round(additional_qty * fill_price, 2)
+        return pos
+
+    def partial_close(self, symbol: str, exit_qty: float, exit_price: float) -> Optional[Position]:
+        """Apply a partial exit: shrink position qty, credit cash, keep open.
+
+        The position remains in ``self.positions``; ``close()`` is called
+        separately by the fill simulator once ``pos.is_closed``.
+        """
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return None
+        pos.reduce(exit_qty, exit_price)
+        self.capital += round(exit_qty * exit_price, 2)
+        return pos
 
     def close(self, symbol: str, exit_price: float) -> Optional[Position]:
         pos = self.positions.pop(symbol, None)
         if pos is None:
             return None
-        # Cash returned uses the exit fill price × original qty. Realized P&L
-        # is owned by the FillSimulator so it can apply slippage / fees; the
-        # Portfolio just moves cash.
+        # Cash returned uses the exit fill price × current open qty. Realized
+        # P&L is owned by the FillSimulator so it can apply slippage / fees;
+        # the Portfolio just moves cash. When ``partial_close`` already
+        # credited earlier slices, ``pos.qty`` is the residual being closed
+        # here so the cash math stays balanced across the lifecycle.
         self.capital += round(pos.qty * exit_price, 2)
         return pos
 
