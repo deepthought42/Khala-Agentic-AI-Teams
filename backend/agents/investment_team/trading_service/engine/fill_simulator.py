@@ -260,15 +260,19 @@ class FillSimulator:
         # ``_twap_slice_target`` is a no-op for non-TWAP orders and for the
         # genuine first slice (``twap_slices_remaining is None``), so the
         # math is unchanged on those paths.
-        target_qty, force_flush = self._twap_slice_target(po)
+        target_qty = self._twap_slice_target(po)
         qty_fraction = max(0.0, min(1.0, terms.qty_fraction))
-        if force_flush and qty_fraction > 0:
-            # Final TWAP_N slice: bypass the participation cap. See the
-            # matching comment in ``_continue_entry``.
-            filled_qty = target_qty
-        else:
-            filled_qty = target_qty * qty_fraction
+        filled_qty = target_qty * qty_fraction
+        # ``unfilled`` is the order-level outstanding (what subsequent
+        # bars / handler decisions see). For TWAP intermediate slices it
+        # includes intentional deferral (``po.remaining_qty - target_qty``)
+        # plus any cap-clip on this bar's slice. ``cap_clipped_qty`` is
+        # just the bar-level liquidity failure on this slice's target —
+        # used below for the position-level ``participation_clipped`` and
+        # ``total_unfilled_qty`` accounting so a normally-progressing TWAP
+        # schedule isn't reported as a liquidity shortfall.
         unfilled = po.remaining_qty - filled_qty
+        cap_clipped_qty = target_qty - filled_qty
         dp = 4 if ref_price < 10 else 2
 
         if filled_qty <= 0:
@@ -336,8 +340,13 @@ class FillSimulator:
             # naturally settles at the actually-held qty so a subsequent
             # exit for that qty hits ``is_closed``.
             original_qty=filled_qty,
-            participation_clipped=is_partial,
-            total_unfilled_qty=unfilled,
+            # ``participation_clipped`` and ``total_unfilled_qty`` track
+            # bar-level liquidity failures only — the cap-clipped portion
+            # of *this slice's target*. Intentional TWAP deferral
+            # (``unfilled`` minus ``cap_clipped_qty``) is scheduled work,
+            # not a shortfall, and must not pollute these metrics.
+            participation_clipped=cap_clipped_qty > 0,
+            total_unfilled_qty=cap_clipped_qty,
             # Counts the number of fill events on the entry side: initial
             # fill = 1, every ``REQUEUE_NEXT_BAR`` continuation += 1. Exit
             # slices don't bump this counter (see ``Position.reduce``).
@@ -375,29 +384,20 @@ class FillSimulator:
         ref_price = terms.reference_price
         # ``target_qty`` is what we *try* to fill on this bar — equal to
         # ``po.remaining_qty`` for non-TWAP orders, sliced to
-        # ``remaining/slices_remaining`` on intermediate TWAP_N bars, and
-        # the full remainder on the final TWAP_N slice. ``unfilled`` is
-        # always computed against the *order's* remaining qty (not the
-        # slice target) so the unfilled ledger and ``_handle_entry_remainder``
-        # see the true post-bar leftover.
-        target_qty, force_flush = self._twap_slice_target(po)
+        # ``remaining/slices_remaining`` on TWAP_N bars. ``filled_qty``
+        # always honors ``terms.qty_fraction`` so custom execution
+        # models that use it for hard liquidity constraints (rather
+        # than just the participation cap) aren't overruled. ``unfilled``
+        # is the order-level outstanding (drives the handler's requeue
+        # / drop decision); ``cap_clipped_qty`` is just *this slice's*
+        # liquidity failure (drives the position-level
+        # ``participation_clipped`` / ``total_unfilled_qty`` accounting,
+        # so a normal TWAP schedule isn't reported as a shortfall).
+        target_qty = self._twap_slice_target(po)
         qty_fraction = max(0.0, min(1.0, terms.qty_fraction))
-        if force_flush and qty_fraction > 0:
-            # Final TWAP_N slice: bypass the participation cap so a
-            # strategy that explicitly opted into TWAP gets full
-            # participation on its scheduled terminal bar (#387). The
-            # cap-bypass is about ignoring soft participation limits;
-            # it is *not* a license to manufacture fills against a bar
-            # the execution model says cannot fill at all
-            # (``qty_fraction == 0``, e.g. zero-volume / halted bar).
-            # Falling through to the ``filled_qty <= 0`` branch below
-            # routes that case to the rejected-no-liquidity Fill and
-            # the ``slices_remaining <= 0`` drop path in
-            # ``_handle_entry_remainder``.
-            filled_qty = target_qty
-        else:
-            filled_qty = target_qty * qty_fraction
+        filled_qty = target_qty * qty_fraction
         unfilled = po.remaining_qty - filled_qty
+        cap_clipped_qty = target_qty - filled_qty
         dp = 4 if ref_price < 10 else 2
 
         if filled_qty <= 0:
@@ -478,10 +478,14 @@ class FillSimulator:
         # so ``is_closed`` (compares ``cumulative_exit_qty`` to it) and
         # ``TradeRecord.shares`` reflect the actually-held position.
         pos.original_qty += filled_qty
+        # ``is_partial`` (order-level) drives the Fill's ``fill_kind``
+        # below; ``cap_clipped_qty`` (bar-level) drives the position
+        # metadata so an intentional TWAP under-fill doesn't get
+        # reported as a liquidity shortfall.
         is_partial = unfilled > 0
-        if is_partial:
+        if cap_clipped_qty > 0:
             pos.participation_clipped = True
-        pos.total_unfilled_qty += unfilled
+        pos.total_unfilled_qty += cap_clipped_qty
         pos.partial_fill_count += 1
 
         # Capture the cumulative-fill total *before* the remainder handler
@@ -509,25 +513,32 @@ class FillSimulator:
         )
 
     @staticmethod
-    def _twap_slice_target(po: PendingOrder) -> tuple[float, bool]:
-        """Return ``(target_qty_for_this_bar, is_final_slice)`` for an entry.
+    def _twap_slice_target(po: PendingOrder) -> float:
+        """Return this bar's target qty for an entry/exit slice.
 
-        Non-TWAP orders return ``(po.remaining_qty, False)`` so the existing
-        per-bar math is unchanged. For ``TWAP_N``: the first slice (counter
-        still ``None``) targets the full request so the realistic execution
-        model's participation cap drives a natural first-bar partial;
-        intermediate bars target ``remaining / slices_remaining``; the final
-        slice (``slices_remaining <= 1``) targets the full remainder *and*
-        signals force-flush so the caller can bypass the participation cap
-        per the #387 design choice.
+        Non-TWAP orders return ``po.remaining_qty`` so the per-bar math
+        is unchanged. For ``TWAP_N``: the first slice (counter still
+        ``None``) targets the full request so the participation cap
+        drives a natural first-bar partial; intermediate bars target
+        ``remaining / slices_remaining``; the terminal slice
+        (``slices_remaining <= 1``) targets the full remainder.
+        ``terms.qty_fraction`` is always honored on top — the issue
+        offers two terminal-slice options ("force-flush regardless of
+        cap" vs. "clip to cap and re-route") and we pick the latter so
+        custom execution models that use ``qty_fraction`` for hard
+        liquidity constraints (rather than just the participation cap)
+        aren't overruled. Any residual the model couldn't fill on the
+        terminal slice drops cleanly via the ``slices_remaining <= 0``
+        branch in ``_handle_entry_remainder`` /
+        ``_handle_exit_remainder``.
         """
         req = po.request
         if req.unfilled_policy != UnfilledPolicy.TWAP_N:
-            return po.remaining_qty, False
+            return po.remaining_qty
         sr = po.twap_slices_remaining
         if sr is None or sr <= 1:
-            return po.remaining_qty, sr is not None and sr <= 1
-        return po.remaining_qty / sr, False
+            return po.remaining_qty
+        return po.remaining_qty / sr
 
     def _handle_entry_remainder(
         self,
@@ -612,18 +623,13 @@ class FillSimulator:
         # without this min() the exit could close newly-added shares
         # the strategy never intended to unwind. ``_twap_slice_target``
         # is a no-op for non-TWAP exits (returns ``po.remaining_qty``).
-        target_qty, force_flush = self._twap_slice_target(po)
+        # ``terms.qty_fraction`` is always honored (no force-flush)
+        # so custom execution models that use it for hard liquidity
+        # constraints aren't overruled — see ``_twap_slice_target``.
+        target_qty = self._twap_slice_target(po)
         fillable_qty = min(target_qty, pos.qty)
         qty_fraction = max(0.0, min(1.0, terms.qty_fraction))
-        if force_flush and qty_fraction > 0:
-            # Final TWAP_N slice: bypass the participation cap so a
-            # strategy that explicitly opted into TWAP gets full
-            # participation on its scheduled terminal bar (#387). Still
-            # respect a hard zero-liquidity signal — see the matching
-            # comment in ``_continue_entry``.
-            filled_qty = fillable_qty
-        else:
-            filled_qty = fillable_qty * qty_fraction
+        filled_qty = fillable_qty * qty_fraction
         # Compute ``unfilled`` against the *order's* remaining request, not
         # against ``fillable_qty``. If the strategy asked for more shares
         # than are currently open (e.g. after a dropped partial entry), the
