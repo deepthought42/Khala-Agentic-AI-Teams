@@ -367,7 +367,12 @@ class FillSimulator:
         )
         if not gate.allowed:
             logger.info("risk gate rejected entry continuation for %s: %s", req.symbol, gate.reason)
-            self.order_book.remove(po.order_id)
+            # ``was_filled=True`` — the parent already opened a position on
+            # the first slice (we wouldn't be in ``_continue_entry`` otherwise).
+            # Removing with the default ``False`` would evict the parent id
+            # from ``OrderBook``'s eligible-parent set and break any later
+            # ``submit_attached`` call against this parent.
+            self.order_book.remove(po.order_id, was_filled=True)
             return None
 
         # Capital check against the *additional* notional only — the existing
@@ -380,7 +385,10 @@ class FillSimulator:
                 additional_notional,
                 self.portfolio.capital,
             )
-            self.order_book.remove(po.order_id)
+            # Same reasoning as the risk-gate branch above — preserve the
+            # parent's eligible-parent registration since the first slice
+            # already filled.
+            self.order_book.remove(po.order_id, was_filled=True)
             return None
 
         pos = self.portfolio.extend(req.symbol, filled_qty, fill_price)

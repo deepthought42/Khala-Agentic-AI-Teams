@@ -122,7 +122,12 @@ class Portfolio:
         new_qty = pos.qty + additional_qty
         pos.entry_price = (old_notional + additional_qty * fill_price) / new_qty
         pos.qty = new_qty
-        self.capital -= round(additional_qty * fill_price, 2)
+        # Don't round per-slice — fragmented partial fills would let the
+        # rounding error accumulate. ``Portfolio.open`` is also raw; the only
+        # rounding happens at terminal ``close()`` (consistent with legacy
+        # single-shot behavior). This keeps zero-cost flat round-trips
+        # cash-conservative even across hundreds of partials.
+        self.capital -= additional_qty * fill_price
         return pos
 
     def partial_close(self, symbol: str, exit_qty: float, exit_price: float) -> Optional[Position]:
@@ -135,7 +140,11 @@ class Portfolio:
         if pos is None:
             return None
         pos.reduce(exit_qty, exit_price)
-        self.capital += round(exit_qty * exit_price, 2)
+        # See ``extend`` — no per-slice rounding. The terminal ``close()``
+        # rounds once on the residual (which is ~0 by then, so a no-op),
+        # matching the legacy single-shot behavior without introducing
+        # cumulative drift on multi-slice exits.
+        self.capital += exit_qty * exit_price
         return pos
 
     def close(self, symbol: str, exit_price: float) -> Optional[Position]:

@@ -495,3 +495,113 @@ def test_over_ask_exit_reports_truncated_remainder_as_unfilled() -> None:
     assert len(bar2.closed_trades) == 1
     assert bar2.closed_trades[0].shares == pytest.approx(500.0, rel=1e-9)
     assert "AAA" not in portfolio.positions
+
+
+def test_continuation_rejection_preserves_parent_eligible_for_brackets() -> None:
+    """When a continuation slice is rejected (risk gate or capital), the
+    parent's id must stay registered in ``OrderBook``'s eligible-parent
+    set so a later ``submit_attached`` against that parent still works.
+
+    Regression for a Codex P1 review note on PR #417: removing the parent
+    with the default ``was_filled=False`` evicted it from the eligible set
+    even though the first slice had already opened exposure, breaking
+    bracket-attachment flows for requeued entries that terminate on
+    continuation rejection.
+    """
+    portfolio = Portfolio(initial_capital=1_000_000.0)
+    order_book = OrderBook()
+    sim = FillSimulator(
+        portfolio=portfolio,
+        order_book=order_book,
+        risk_filter=RiskFilter(
+            RiskLimits(
+                max_position_pct=100,
+                max_symbol_concentration_pct=15,
+                max_gross_leverage=10.0,
+            )
+        ),
+        config=FillSimulatorConfig(slippage_bps=0.0, transaction_cost_bps=0.0),
+        bar_safety=BarSafetyAssertion(),
+        execution_model=RealisticExecutionModel(participation_cap=0.10),
+    )
+
+    # First slice fits the 15% cap, the post-extend full size (20%) doesn't.
+    parent = order_book.submit(
+        OrderRequest(
+            client_order_id="parent-1",
+            symbol="AAA",
+            side=OrderSide.LONG,
+            qty=2_000,
+            order_type=OrderType.MARKET,
+            tif=TimeInForce.DAY,
+            unfilled_policy=UnfilledPolicy.REQUEUE_NEXT_BAR,
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=1_000_000.0,
+        expect_brackets=True,
+    )
+    parent_id = parent.order_id
+
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000))
+    sim.process_bar(_bar("2024-01-03", price=100.0, volume=10_000_000))
+    # Continuation rejected; first-slice position remains.
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+    assert order_book.all_pending() == []
+
+    # The parent should still be eligible for bracket attachment — this
+    # call must not raise.
+    order_book.submit_attached(
+        OrderRequest(
+            client_order_id="bracket-1",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=1_000,
+            order_type=OrderType.STOP,
+            stop_price=95.0,
+            tif=TimeInForce.GTC,
+        ),
+        submitted_at="2024-01-03",
+        submitted_equity=1_000_000.0,
+        parent_order_id=parent_id,
+        oco_group_id="bracket-group-1",
+    )
+
+
+def test_capital_is_conserved_across_fragmented_round_trip() -> None:
+    """A multi-slice entry + multi-slice exit at the same price must
+    return capital exactly to its starting value (zero costs, zero
+    slippage). Per-slice rounding inside ``extend`` / ``partial_close``
+    used to introduce cumulative cash drift on fragmented fills.
+
+    Regression for two Codex P2 review notes on PR #417.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    initial = portfolio.capital
+
+    # Entry: REQUEUE_NEXT_BAR with cap forcing ≥ 2 partials. Sub-$10 price
+    # so fill_price is rounded to 4 decimals (multiplier with integer qty
+    # produces the same notional whether or not we round per-slice, but
+    # we still want to assert no drift creeps in).
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.REQUEUE_NEXT_BAR),
+        submitted_at="2024-01-01",
+        submitted_equity=initial,
+    )
+    # Bar 1: cap forces ~50% fill, remainder requeued.
+    sim.process_bar(_bar("2024-01-02", price=5.1234, volume=200_000))
+    # Bar 2: high volume, remainder fills.
+    sim.process_bar(_bar("2024-01-03", price=5.1234, volume=200_000_000))
+    assert portfolio.positions["AAA"].qty == pytest.approx(2_000.0, rel=1e-9)
+
+    # Exit at the *same* price via REQUEUE_NEXT_BAR — same fragmentation.
+    order_book.submit(
+        _exit_order(2_000, policy=UnfilledPolicy.REQUEUE_NEXT_BAR),
+        submitted_at="2024-01-03",
+        submitted_equity=initial,
+    )
+    sim.process_bar(_bar("2024-01-04", price=5.1234, volume=200_000))
+    sim.process_bar(_bar("2024-01-05", price=5.1234, volume=200_000_000))
+    assert "AAA" not in portfolio.positions
+
+    # Zero-cost flat round-trip: capital must equal initial.
+    assert portfolio.capital == pytest.approx(initial, rel=1e-9)
