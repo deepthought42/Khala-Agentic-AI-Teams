@@ -93,7 +93,12 @@ def _entry_order(
     )
 
 
-def _exit_order(qty: float, *, policy: UnfilledPolicy | None = None) -> OrderRequest:
+def _exit_order(
+    qty: float,
+    *,
+    policy: UnfilledPolicy | None = None,
+    twap_slices: int | None = None,
+) -> OrderRequest:
     return OrderRequest(
         client_order_id="exit-1",
         symbol="AAA",
@@ -102,6 +107,7 @@ def _exit_order(qty: float, *, policy: UnfilledPolicy | None = None) -> OrderReq
         order_type=OrderType.MARKET,
         tif=TimeInForce.DAY,
         unfilled_policy=policy,
+        twap_slices=twap_slices,
     )
 
 
@@ -1076,3 +1082,136 @@ def test_twap_n_terminal_slice_respects_zero_liquidity() -> None:
     # no phantom shares from a manufactured terminal fill.
     assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
     assert portfolio.positions["AAA"].partial_fill_count == 1
+
+
+def test_twap_n_zero_fill_first_bar_then_slices_on_recovery() -> None:
+    """A ``TWAP_N`` order that *fails to fill* on its first bar
+    (``qty_fraction == 0``) must still honor the N-slice schedule on
+    subsequent bars — not collapse into a single full fill the moment
+    liquidity recovers.
+
+    The post-rejection retry routes back through ``_fill_entry`` (no
+    position has opened yet, so the per-bar dispatch sees no
+    ``existing_pos`` and ``cumulative_filled_qty == 0``). Without TWAP-
+    aware sizing in ``_fill_entry``, the next bar's full-volume fill
+    would absorb the entire remainder and the strategy's TWAP horizon
+    would be ignored. Regression for a Codex P1 review note on PR #419.
+    """
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    order_book = OrderBook()
+    sim = FillSimulator(
+        portfolio=portfolio,
+        order_book=order_book,
+        risk_filter=RiskFilter(RiskLimits(max_position_pct=100, max_gross_leverage=10.0)),
+        config=FillSimulatorConfig(slippage_bps=0.0, transaction_cost_bps=0.0),
+        bar_safety=BarSafetyAssertion(),
+        execution_model=_ScriptedFractionModel(
+            {
+                "2024-01-02": 0.0,  # bar 1: zero-fill rejection — seed sr=2
+                "2024-01-03": 1.0,  # bar 2: full liquidity → first real fill
+                "2024-01-04": 1.0,  # bar 3: terminal slice (force-flush)
+            }
+        ),
+    )
+
+    order_book.submit(
+        _entry_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar 1: zero-fill REJECTED. ``_handle_entry_remainder`` seeds
+    # ``slices_remaining = 3 - 1 = 2``; remainder requeued unchanged.
+    bar1 = sim.process_bar(_bar("2024-01-02", price=100.0))
+    assert bar1.entry_fills[0].fill_kind == FillKind.REJECTED
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].twap_slices_remaining == 2
+    assert pending[0].remaining_qty == pytest.approx(2_000.0, rel=1e-9)
+    assert "AAA" not in portfolio.positions, "no position should have opened"
+
+    # Bar 2: ``_fill_entry`` runs again (no existing position). With
+    # TWAP-aware sizing in ``_fill_entry``, the slice target is
+    # ``remaining / slices_remaining = 2_000 / 2 = 1_000`` — NOT the full
+    # 2_000. ``slices_remaining`` decrements 2 → 1.
+    bar2 = sim.process_bar(_bar("2024-01-03", price=100.0))
+    assert len(bar2.entry_fills) == 1
+    fill2 = bar2.entry_fills[0]
+    assert fill2.fill_kind == FillKind.PARTIAL
+    assert fill2.qty == pytest.approx(1_000.0, rel=1e-9)
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].twap_slices_remaining == 1
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+
+    # Bar 3: terminal slice (sr == 1) → force-flush full remainder.
+    bar3 = sim.process_bar(_bar("2024-01-04", price=100.0))
+    fill3 = bar3.entry_fills[0]
+    assert fill3.fill_kind == FillKind.FULL
+    assert fill3.qty == pytest.approx(1_000.0, rel=1e-9)
+    assert order_book.all_pending() == []
+    assert portfolio.positions["AAA"].qty == pytest.approx(2_000.0, rel=1e-9)
+
+
+def test_twap_n_exit_slices_remainder_across_n_bars() -> None:
+    """Exit orders honor ``TWAP_N`` symmetrically with entry orders.
+
+    The contract validator does not (and cannot) statically distinguish
+    entries from exits — entry-vs-exit is determined at fill-time by
+    whether a position exists. So accepting ``TWAP_N`` for any order
+    means honoring it on both sides; otherwise an accepted exit-side
+    ``TWAP_N`` would silently execute as ``DROP``. Regression for a
+    Codex P1 review note on PR #419.
+    """
+    sim, order_book, portfolio = _make_simulator()
+
+    # Open a 2_000-share LONG position via a normal high-volume entry.
+    order_book.submit(
+        _entry_order(2_000),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0, volume=10_000_000))
+    assert portfolio.positions["AAA"].qty == pytest.approx(2_000.0, rel=1e-9)
+
+    # Submit a TWAP_N=3 exit. First bar is low-ADV (cap-clipped to 50%);
+    # subsequent bars slice the remainder per TWAP.
+    order_book.submit(
+        _exit_order(2_000, policy=UnfilledPolicy.TWAP_N, twap_slices=3),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar A (exit slice 1): low volume → 50% cap-clip → 1_000 exits,
+    # 1_000 stays open. Handler seeds slices_remaining = 3 - 1 = 2.
+    bar_a = sim.process_bar(_bar("2024-01-03", price=105.0, volume=10_000))
+    assert len(bar_a.exit_fills) == 1
+    assert bar_a.exit_fills[0].fill_kind == FillKind.PARTIAL
+    assert bar_a.exit_fills[0].qty == pytest.approx(1_000.0, rel=1e-9)
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].twap_slices_remaining == 2
+
+    # Bar B (exit slice 2): ample volume → no cap-clip; TWAP target =
+    # remaining / 2 = 500. slices_remaining decrements 2 → 1.
+    bar_b = sim.process_bar(_bar("2024-01-04", price=105.0, volume=10_000_000))
+    assert len(bar_b.exit_fills) == 1
+    assert bar_b.exit_fills[0].fill_kind == FillKind.PARTIAL
+    assert bar_b.exit_fills[0].qty == pytest.approx(500.0, rel=1e-9)
+    assert portfolio.positions["AAA"].qty == pytest.approx(500.0, rel=1e-9)
+    pending = order_book.all_pending()
+    assert len(pending) == 1
+    assert pending[0].twap_slices_remaining == 1
+
+    # Bar C (terminal slice): sr == 1 → force-flush full remainder
+    # (500); position fully closes; TradeRecord emitted.
+    bar_c = sim.process_bar(_bar("2024-01-05", price=105.0, volume=10_000))
+    assert len(bar_c.exit_fills) == 1
+    assert bar_c.exit_fills[0].fill_kind == FillKind.FULL
+    assert bar_c.exit_fills[0].qty == pytest.approx(500.0, rel=1e-9)
+    assert "AAA" not in portfolio.positions
+    assert order_book.all_pending() == []
+    assert len(bar_c.closed_trades) == 1
+    record = bar_c.closed_trades[0]
+    assert record.shares == pytest.approx(2_000.0, rel=1e-9)
