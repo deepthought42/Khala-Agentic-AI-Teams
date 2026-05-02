@@ -25,6 +25,7 @@ from product_delivery import (
     BacklogTree,
     CrossProductFeedbackLink,
     CrossProductSprintAssignment,
+    DuplicateReleaseVersion,
     Epic,
     FeedbackItem,
     GroomRequest,
@@ -90,6 +91,11 @@ _EXC_STATUS: dict[type[Exception], int] = {
     # operator hitting POST /releases manually before the sprint is
     # done — surfaces as 409 instead of writing a poisoned release row.
     SprintNotComplete: 409,
+    # Duplicate release versions (concurrent ships, retries, or manual
+    # POST /releases reusing an existing version) surface here so the
+    # route returns 409 instead of silently overwriting historical
+    # release notes (PR #424 Codex review).
+    DuplicateReleaseVersion: 409,
     ProductDeliveryStorageUnavailable: 503,
     # LLM transport/model/parse failures during /groom — clients retry
     # the same way they do for a Postgres outage.
@@ -354,10 +360,24 @@ def create_release(body: CreateReleaseRequest) -> Release:
     The SE-pipeline hook drives the typical "ship a sprint" flow via the
     in-process ReleaseManagerAgent (which writes the markdown notes file
     *and* the row), so this route is mainly used for backfills /
-    administrative recording. A missing sprint surfaces as 404 via
-    ``UnknownProductDeliveryEntity``.
+    administrative recording.
+
+    Gates on sprint completion (PR #424 Codex review): if any planned
+    story is still non-terminal, raise ``SprintNotComplete`` (→ 409)
+    so a manual call can't mint a "shipped" release row for in-progress
+    work, breaking the invariant the ReleaseManagerAgent enforces.
+    A missing sprint surfaces as 404 via ``UnknownProductDeliveryEntity``;
+    a duplicate ``(sprint_id, version)`` pair surfaces as 409 via
+    ``DuplicateReleaseVersion``.
     """
-    return get_store().create_release(
+    store = get_store()
+    open_count = store.count_open_stories_in_sprint(body.sprint_id)
+    if open_count > 0:
+        raise SprintNotComplete(
+            f"sprint {body.sprint_id!r} still has {open_count} open story(ies); "
+            "wait for them to reach a terminal status before recording a release."
+        )
+    return store.create_release(
         sprint_id=body.sprint_id,
         version=body.version,
         notes_path=body.notes_path,

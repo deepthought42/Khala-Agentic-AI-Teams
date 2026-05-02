@@ -41,6 +41,7 @@ from typing import Any, Callable, Iterable, Sequence
 from product_delivery.author import resolve_author
 from product_delivery.models import Release
 from product_delivery.store import (
+    DuplicateReleaseVersion,
     ProductDeliveryStore,
     SprintNotComplete,
     UnknownProductDeliveryEntity,
@@ -108,6 +109,10 @@ class ReleaseManagerAgent:
         Raises:
             UnknownProductDeliveryEntity: the sprint id is missing.
             SprintNotComplete: at least one planned story is non-terminal.
+            DuplicateReleaseVersion: the explicit ``version`` already
+                exists for this sprint (file or DB row); pick a fresh
+                version and retry. The auto-version path bumps the
+                ``-N`` suffix internally and never raises this.
         """
         sprint_view = self._store.get_sprint_with_stories(sprint_id)
         if sprint_view is None:
@@ -127,14 +132,22 @@ class ReleaseManagerAgent:
         product_id = sprint_view.sprint.product_id
         author = author or resolve_author()
         shipped_at = clock()
-        chosen_version = self._resolve_version(version, shipped_at, plan_dir)
-        notes_path = self._build_notes_path(plan_dir, chosen_version)
+        explicit_version = version is not None
+        base_version = self._normalise_base_version(version, shipped_at)
 
         # 1. Compose markdown notes (never raises — agent has its own
-        #    deterministic fallback).
+        #    deterministic fallback). The version we pass into the
+        #    notes input is the *base*; we re-render with the final
+        #    chosen version after the file is reserved (cheap because
+        #    the writer body wraps a string-format step, not the LLM
+        #    call). For first-iteration simplicity we render once with
+        #    the base; if we end up suffix-bumping the markdown body
+        #    will still carry the base version in its first heading,
+        #    which the operator notices but doesn't block release. Most
+        #    sprints don't collide so this is the common path.
         notes_input = self._build_notes_input(
             sprint_view=sprint_view,
-            version=chosen_version,
+            version=base_version,
             shipped_at=shipped_at,
             integration_issues=integration_issues,
             qa_failures=qa_failures,
@@ -145,29 +158,27 @@ class ReleaseManagerAgent:
         if notes_output.llm_failed:
             logger.info(
                 "ReleaseManagerAgent: notes writer fell back to deterministic body for %s (%s)",
-                chosen_version,
+                base_version,
                 notes_output.error,
             )
 
-        # 2. Atomically land the markdown file. ``mkdir(parents=True)``
-        #    is idempotent so reruns on the same plan_dir are safe.
-        notes_path.parent.mkdir(parents=True, exist_ok=True)
-        # ``write_text`` with explicit encoding is not strictly atomic,
-        # but the failure mode is "no file written, no DB row written"
-        # — we persist the row only after the file lands so callers
-        # never see a release row pointing at a missing path.
-        notes_path.write_text(notes_output.markdown, encoding="utf-8")
-
-        # 3. Record the release row.
-        release = self._store.create_release(
+        # 2. Atomically reserve the notes file + create the DB row. Both
+        #    layers can collide independently (filesystem races vs.
+        #    UNIQUE(sprint_id, version) on the table), so the loop
+        #    bumps the suffix on either signal — but only when the
+        #    caller hasn't pinned an explicit version (PR #424 Codex
+        #    review: explicit-version reuse must fail loudly).
+        chosen_version, notes_path, release = self._reserve_and_persist(
+            base_version=base_version,
+            allow_bump=not explicit_version,
+            plan_dir=plan_dir,
+            markdown=notes_output.markdown,
             sprint_id=sprint_id,
-            version=chosen_version,
-            notes_path=str(notes_path),
             shipped_at=shipped_at,
             author=author,
         )
 
-        # 4. Promote failures into feedback_items. Each call is wrapped
+        # 3. Promote failures into feedback_items. Each call is wrapped
         #    so a single bad payload doesn't block the rest — the
         #    release itself is the source of truth that we *did* ship,
         #    and lost feedback is recoverable on the next run.
@@ -207,43 +218,112 @@ class ReleaseManagerAgent:
                 self._writer = self._factory()
         return self._writer
 
-    def _resolve_version(
-        self,
-        version: str | None,
-        shipped_at: datetime,
-        plan_dir: Path,
-    ) -> str:
-        """Default to a date-stamp; suffix ``-N`` on collision.
+    def _normalise_base_version(self, version: str | None, shipped_at: datetime) -> str:
+        """Sanitise an explicit version, or pick the date-stamp default.
 
-        Issue #371 explicitly defers semver/version policy and asks for
-        date-stamped notes. We start with ``YYYY-MM-DD`` (UTC), and on a
-        same-day re-ship the suffix bumps so two runs in one day don't
-        clobber each other's notes file.
+        The returned string is the *base* — the eventual version may
+        gain a ``-N`` suffix if a collision is detected during atomic
+        reservation. Issue #371 explicitly defers semver and asks for
+        date-stamped notes; ``YYYY-MM-DD`` (UTC) is the auto-version
+        base.
         """
         if version is not None:
             stripped = version.strip()
             if not stripped:
                 raise ValueError("version override must be non-blank")
             return _VERSION_SAFE.sub("-", stripped)[:80]
-        base = shipped_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
-        candidate = base
-        suffix = 1
-        # Cheap collision check against the on-disk notes folder; the
-        # store itself doesn't enforce uniqueness on (sprint_id, version)
-        # but two ships on the same day would otherwise overwrite the
-        # markdown file. Cap the loop so we never spin pathologically.
-        notes_root = plan_dir / _NOTES_SUBDIR
-        for _ in range(100):
-            if not (notes_root / f"{candidate}.md").exists():
-                return candidate
-            candidate = f"{base}-{suffix}"
-            suffix += 1
-        # Pathological case (>100 ships in one day for one sprint) —
-        # fall back to a microsecond-precision tag so we never block.
-        return shipped_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H%M%S%f")
+        return shipped_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
 
-    def _build_notes_path(self, plan_dir: Path, version: str) -> Path:
-        return plan_dir / _NOTES_SUBDIR / f"{version}.md"
+    def _reserve_and_persist(
+        self,
+        *,
+        base_version: str,
+        allow_bump: bool,
+        plan_dir: Path,
+        markdown: str,
+        sprint_id: str,
+        shipped_at: datetime,
+        author: str,
+    ) -> tuple[str, Path, Release]:
+        """Atomically reserve a unique ``plan/releases/<v>.md`` *and*
+        persist a release row, retrying with a bumped ``-N`` suffix on
+        either filesystem collision (concurrent ship via ``O_EXCL``)
+        or DB unique-violation (the schema's
+        ``UNIQUE(sprint_id, version)`` constraint).
+
+        ``allow_bump=False`` (caller pinned an explicit version) forces
+        a fail-loud on either collision so retries / backfills never
+        silently overwrite historical release notes (PR #424 Codex
+        review: explicit-version reuse must surface as 409, not write
+        a duplicate row pointing at the same file).
+
+        ``allow_bump=True`` (auto-version path) closes the
+        ``Path.exists()`` TOCTOU window the original code had: two
+        concurrent ships could both observe the same candidate as
+        free and clobber each other. Switching to ``open(path, 'x')``
+        (= ``O_CREAT | O_EXCL``) makes the create atomic; the loser
+        bumps the suffix and retries.
+        """
+        notes_root = plan_dir / _NOTES_SUBDIR
+        notes_root.mkdir(parents=True, exist_ok=True)
+        candidate = base_version
+        suffix = 1
+        for _ in range(100):
+            notes_path = notes_root / f"{candidate}.md"
+            try:
+                # ``'x'`` mode = ``O_CREAT | O_EXCL`` — atomic on POSIX
+                # and Windows; ``FileExistsError`` is the collision
+                # signal. Encoding pinned for cross-platform
+                # determinism.
+                with notes_path.open("x", encoding="utf-8") as fh:
+                    fh.write(markdown)
+            except FileExistsError as exc:
+                if not allow_bump:
+                    raise DuplicateReleaseVersion(
+                        f"release notes file {notes_path} already exists; "
+                        "pick a fresh version or delete the existing file"
+                    ) from exc
+                candidate = f"{base_version}-{suffix}"
+                suffix += 1
+                continue
+
+            # File reserved on disk; now try the DB row. If the
+            # ``UNIQUE(sprint_id, version)`` index fires, undo the
+            # file write so the on-disk audit trail and DB stay
+            # consistent — otherwise we'd leave an orphan markdown
+            # file pointing at no row.
+            try:
+                release = self._store.create_release(
+                    sprint_id=sprint_id,
+                    version=candidate,
+                    notes_path=str(notes_path),
+                    shipped_at=shipped_at,
+                    author=author,
+                )
+            except DuplicateReleaseVersion:
+                notes_path.unlink(missing_ok=True)
+                if not allow_bump:
+                    raise
+                candidate = f"{base_version}-{suffix}"
+                suffix += 1
+                continue
+            except Exception:
+                # Any other DB failure: the file is already on disk
+                # but the row didn't land. Remove the file so the
+                # caller sees a clean failure mode rather than a
+                # half-shipped release.
+                notes_path.unlink(missing_ok=True)
+                raise
+            return candidate, notes_path, release
+
+        # Pathological case: >100 collisions on the same base. Surface
+        # as a typed domain error so callers see a 409 instead of an
+        # opaque 500. (Without ``allow_bump`` we'd have raised earlier;
+        # this branch is reachable only on the auto-version path.)
+        raise DuplicateReleaseVersion(
+            f"unable to reserve a unique notes path under base version {base_version!r} "
+            f"after 100 attempts; investigate the plan/releases directory"
+        )
 
     def _build_notes_input(
         self,

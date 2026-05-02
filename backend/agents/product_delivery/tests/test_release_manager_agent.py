@@ -456,3 +456,124 @@ def test_ship_rejects_writer_and_factory_together() -> None:
             notes_writer=_StubWriter(),
             notes_writer_factory=lambda: _StubWriter(),
         )
+
+
+def test_ship_explicit_version_collision_raises_duplicate(tmp_path: Path) -> None:
+    """Codex P2 review (PR #424): explicit ``version`` reuse must not
+    silently overwrite an existing notes file. The agent reserves the
+    file via ``open(..., 'x')`` (= ``O_CREAT | O_EXCL``); when the
+    file already exists and ``version`` is explicit, surface
+    ``DuplicateReleaseVersion`` so the route returns 409.
+    """
+    plan_dir = tmp_path / "plan"
+    (plan_dir / "releases").mkdir(parents=True)
+    (plan_dir / "releases" / "v1.0.0.md").write_text("prior body\n", encoding="utf-8")
+
+    view = _make_view([_story()])
+    store = _StubStore(sprint_view=view, open_count=0)
+    agent = ReleaseManagerAgent(store, notes_writer=_StubWriter())  # type: ignore[arg-type]
+
+    from product_delivery.store import DuplicateReleaseVersion
+
+    with pytest.raises(DuplicateReleaseVersion):
+        agent.ship(
+            sprint_id="sprint-1",
+            plan_dir=plan_dir,
+            version="v1.0.0",
+            clock=_now,
+            author="orchestrator",
+        )
+    # Pre-existing file is untouched; no release row written.
+    assert (plan_dir / "releases" / "v1.0.0.md").read_text(encoding="utf-8") == "prior body\n"
+    assert store.created_releases == []
+
+
+def test_ship_explicit_version_db_duplicate_cleans_up_file(tmp_path: Path) -> None:
+    """When the file write succeeds but the DB UNIQUE constraint fires
+    on ``create_release`` (someone else won the race at the DB layer
+    after we won the file race), the agent unlinks the file it just
+    wrote so the on-disk audit trail and DB stay in lockstep.
+    """
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    view = _make_view([_story()])
+
+    from product_delivery.store import DuplicateReleaseVersion
+
+    class _DBConflictStore(_StubStore):
+        def create_release(self, **kwargs: Any) -> Release:  # type: ignore[override]
+            raise DuplicateReleaseVersion("simulated DB unique violation")
+
+    store = _DBConflictStore(sprint_view=view, open_count=0)
+    agent = ReleaseManagerAgent(store, notes_writer=_StubWriter())  # type: ignore[arg-type]
+
+    with pytest.raises(DuplicateReleaseVersion):
+        agent.ship(
+            sprint_id="sprint-1",
+            plan_dir=plan_dir,
+            version="v2.0.0",
+            clock=_now,
+            author="orchestrator",
+        )
+    # File cleaned up — we don't leave an orphan markdown pointing at
+    # a row that didn't land.
+    assert not (plan_dir / "releases" / "v2.0.0.md").exists()
+
+
+def test_ship_auto_version_uses_atomic_reservation(tmp_path: Path) -> None:
+    """Codex P2 review (PR #424): the auto-version path must be
+    immune to ``Path.exists()`` TOCTOU. We simulate the race by
+    pre-creating today's file *and* the ``-1`` suffix so the agent
+    must walk to ``-2`` via successful atomic creates.
+    """
+    plan_dir = tmp_path / "plan"
+    (plan_dir / "releases").mkdir(parents=True)
+    (plan_dir / "releases" / "2026-05-02.md").write_text("first\n", encoding="utf-8")
+    (plan_dir / "releases" / "2026-05-02-1.md").write_text("second\n", encoding="utf-8")
+
+    view = _make_view([_story()])
+    store = _StubStore(sprint_view=view, open_count=0)
+    agent = ReleaseManagerAgent(store, notes_writer=_StubWriter())  # type: ignore[arg-type]
+
+    agent.ship(sprint_id="sprint-1", plan_dir=plan_dir, clock=_now, author="orchestrator")
+    rec = store.created_releases[0]
+    assert rec["version"] == "2026-05-02-2"
+    assert (plan_dir / "releases" / "2026-05-02-2.md").exists()
+    # Earlier files untouched.
+    assert (plan_dir / "releases" / "2026-05-02.md").read_text(encoding="utf-8") == "first\n"
+    assert (plan_dir / "releases" / "2026-05-02-1.md").read_text(encoding="utf-8") == "second\n"
+
+
+def test_ship_auto_version_handles_db_collision_with_suffix_bump(tmp_path: Path) -> None:
+    """Auto-version path: when the file write succeeds but the DB
+    UNIQUE constraint fires (a different process committed the same
+    version between our file create and our INSERT), the agent
+    cleans up the file, bumps the suffix, and retries.
+    """
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    view = _make_view([_story()])
+
+    from product_delivery.store import DuplicateReleaseVersion
+
+    class _DBOneShotConflictStore(_StubStore):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            super().__init__(*a, **kw)
+            self.attempts = 0
+
+        def create_release(self, **kwargs: Any) -> Release:  # type: ignore[override]
+            self.attempts += 1
+            if self.attempts == 1:
+                raise DuplicateReleaseVersion("simulated first-attempt DB conflict")
+            return super().create_release(**kwargs)
+
+    store = _DBOneShotConflictStore(sprint_view=view, open_count=0)
+    agent = ReleaseManagerAgent(store, notes_writer=_StubWriter())  # type: ignore[arg-type]
+
+    release = agent.ship(sprint_id="sprint-1", plan_dir=plan_dir, clock=_now, author="orchestrator")
+    # First attempt rolled back (file unlinked, no row); second attempt
+    # bumped the suffix and succeeded.
+    assert release.version == "2026-05-02-1"
+    assert not (plan_dir / "releases" / "2026-05-02.md").exists()
+    assert (plan_dir / "releases" / "2026-05-02-1.md").exists()
+    assert store.attempts == 2

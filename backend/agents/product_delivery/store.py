@@ -114,6 +114,20 @@ class StoryAlreadyPlanned(ValueError):
     """
 
 
+class DuplicateReleaseVersion(ValueError):
+    """A release row already exists for the same ``(sprint_id, version)`` pair.
+
+    Phase 3 of #243 / PR #424 Codex review. Schema-level
+    ``UNIQUE(sprint_id, version)`` on ``product_delivery_releases``
+    enforces the audit invariant that a version string is the
+    on-disk filename for ``plan/releases/<version>.md``. Two ships
+    racing on the same explicit version, or an operator retrying
+    ``POST /releases`` with the same version, surface here so the
+    route returns 409 (re-pick a fresh version) instead of silently
+    creating a second row that points at the same notes file.
+    """
+
+
 class SprintNotComplete(ValueError):
     """A release was requested for a sprint that still has open stories.
 
@@ -1499,6 +1513,15 @@ class ProductDeliveryStore:
                 )
         except psycopg_errors.ForeignKeyViolation as exc:
             raise UnknownProductDeliveryEntity(f"sprint {sprint_id!r} does not exist") from exc
+        except psycopg_errors.UniqueViolation as exc:
+            # Schema enforces UNIQUE(sprint_id, version) — a duplicate
+            # ship (concurrent or retry) lands here. Map to a typed
+            # domain error so the route returns 409 instead of 500
+            # and the ReleaseManagerAgent can clean up the on-disk
+            # notes file it just wrote (PR #424 Codex review).
+            raise DuplicateReleaseVersion(
+                f"release {version!r} for sprint {sprint_id!r} already exists"
+            ) from exc
         return Release(
             id=rid,
             sprint_id=sprint_id,

@@ -2165,3 +2165,84 @@ def test_create_feedback_rejects_cross_product_sprint(
     )
     assert resp.status_code == 400, resp.text
     assert "sprint" in resp.json()["detail"].lower()
+
+
+def test_post_releases_gates_on_sprint_completion(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Codex P1 review (PR #424): manual ``POST /releases`` must not
+    mint a "shipped" release row for a sprint with open stories.
+    Mirrors the in-process ``ReleaseManagerAgent`` invariant.
+    """
+    client, fake = client_and_store
+    pid = _make_product_with_stories(
+        client,
+        fake,
+        stories=[{"title": "s1", "estimate_points": 3, "wsjf": 5.0}],
+    )
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 5},
+    ).json()["id"]
+    # Plan the story into the sprint so the sprint has work to ship.
+    plan = client.post(f"/api/product-delivery/sprints/{sid}/plan").json()
+    assert plan["selected_story_ids"], "sprint should have at least one planned story"
+
+    # The story is still in its default 'proposed' status — sprint is
+    # not complete; release attempt must be rejected.
+    resp = client.post(
+        "/api/product-delivery/releases",
+        json={"sprint_id": sid, "version": "premature"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "open" in resp.json()["detail"].lower()
+
+
+def test_post_releases_rejects_duplicate_sprint_version(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Codex P2 review (PR #424): the schema's ``UNIQUE(sprint_id, version)``
+    surfaces as 409 instead of silently writing a second row pointing
+    at the same notes file.
+    """
+    client, fake = client_and_store
+    pid = client.post("/api/product-delivery/products", json={"name": "P"}).json()["id"]
+    sid = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid, "name": "S1", "capacity_points": 5},
+    ).json()["id"]
+    # First release lands.
+    r1 = client.post(
+        "/api/product-delivery/releases",
+        json={"sprint_id": sid, "version": "v1.0.0"},
+    )
+    assert r1.status_code == 200, r1.text
+
+    # Mirror the schema-level UNIQUE constraint in the fake store: a
+    # second insert with the same (sprint_id, version) pair must
+    # raise ``DuplicateReleaseVersion``. The route's exception handler
+    # then maps it to 409.
+    from product_delivery.store import DuplicateReleaseVersion
+
+    original = fake.create_release
+
+    def _enforce_unique(**kwargs: Any) -> Release:
+        existing = [
+            r
+            for r in fake.releases.values()
+            if r.sprint_id == kwargs["sprint_id"] and r.version == kwargs["version"]
+        ]
+        if existing:
+            raise DuplicateReleaseVersion(
+                f"release {kwargs['version']!r} for sprint {kwargs['sprint_id']!r} already exists"
+            )
+        return original(**kwargs)
+
+    fake.create_release = _enforce_unique  # type: ignore[assignment]
+
+    r2 = client.post(
+        "/api/product-delivery/releases",
+        json={"sprint_id": sid, "version": "v1.0.0"},
+    )
+    assert r2.status_code == 409, r2.text
+    assert "v1.0.0" in r2.json()["detail"]

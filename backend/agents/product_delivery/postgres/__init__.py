@@ -172,6 +172,17 @@ SCHEMA: TeamSchema = TeamSchema(
         )""",
         """CREATE INDEX IF NOT EXISTS idx_pd_releases_sprint
             ON product_delivery_releases(sprint_id)""",
+        # Phase 3 review (#371 / PR #424 Codex P2): a release version is
+        # the on-disk filename for ``plan/releases/<version>.md`` and
+        # the audit key for the row. Without this UNIQUE index a
+        # concurrent ship (or a manual ``POST /releases`` that reuses
+        # an existing version) would create a second row pointing at
+        # the same notes path, silently rewriting historical release
+        # notes. The constraint scopes to ``sprint_id`` because two
+        # different sprints can legitimately ship the same version
+        # string (e.g. "2026-05-02" on different products / sprints).
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_pd_releases_sprint_version
+            ON product_delivery_releases(sprint_id, version)""",
         # -----------------------------------------------------------------
         # Sprint ↔ Story join. A story can be planned into a sprint without
         # losing its place in the backlog hierarchy. Composite PK is the
