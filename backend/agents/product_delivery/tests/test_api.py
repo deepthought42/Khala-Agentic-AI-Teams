@@ -344,9 +344,18 @@ class _FakeStore:
                 )
         # Mirror the real store's #371 sprint-id existence check so a
         # bogus sprint id surfaces as 404 instead of being silently
-        # nulled out by ON DELETE SET NULL semantics.
-        if sprint_id is not None and sprint_id not in self.sprints:
-            raise UnknownProductDeliveryEntity(f"sprint {sprint_id!r} does not exist")
+        # nulled out by ON DELETE SET NULL semantics. Cross-product
+        # tagging is rejected as 400 (Codex review on PR #424) — same
+        # contract as the existing story-link check.
+        if sprint_id is not None:
+            sprint = self.sprints.get(sprint_id)
+            if sprint is None:
+                raise UnknownProductDeliveryEntity(f"sprint {sprint_id!r} does not exist")
+            if sprint.product_id != product_id:
+                raise CrossProductFeedbackLink(
+                    f"sprint {sprint_id!r} belongs to product "
+                    f"{sprint.product_id!r}, not {product_id!r}"
+                )
         return self._insert(
             "feedback",
             product_id=product_id,
@@ -2122,3 +2131,37 @@ def test_create_feedback_with_unknown_sprint_id_returns_404(
         },
     )
     assert resp.status_code == 404
+
+
+def test_create_feedback_rejects_cross_product_sprint(
+    client_and_store: tuple[TestClient, _FakeStore],
+) -> None:
+    """Codex P2 review (PR #424): a feedback row for product A must not be
+    tagged with a sprint under product B.
+
+    The two FKs on ``feedback_items`` (``product_id`` → product,
+    ``sprint_id`` → sprint) can't enforce the transitive
+    sprint→product invariant on their own — we validate at the store
+    layer and surface as 400, the same shape as the existing
+    ``CrossProductFeedbackLink`` story-link check.
+    """
+    client, _ = client_and_store
+    pid_a = client.post("/api/product-delivery/products", json={"name": "A"}).json()["id"]
+    pid_b = client.post("/api/product-delivery/products", json={"name": "B"}).json()["id"]
+    sid_b = client.post(
+        "/api/product-delivery/sprints",
+        json={"product_id": pid_b, "name": "Sprint-B", "capacity_points": 5},
+    ).json()["id"]
+
+    resp = client.post(
+        "/api/product-delivery/feedback",
+        json={
+            "product_id": pid_a,
+            "source": "se-integration",
+            "raw_payload": {},
+            "severity": "high",
+            "sprint_id": sid_b,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "sprint" in resp.json()["detail"].lower()

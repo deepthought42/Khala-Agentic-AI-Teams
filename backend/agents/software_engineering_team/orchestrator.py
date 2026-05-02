@@ -2172,6 +2172,7 @@ def _maybe_ship_sprint_release(
     sprint_id: Optional[str],
     plan_dir: Path,
     int_result: Any,
+    integration_outcome: str,
     job_id: str,
 ) -> None:
     """Hook into the SE pipeline: ship a release if this is a sprint run.
@@ -2179,6 +2180,18 @@ def _maybe_ship_sprint_release(
     Phase 3 of #243 / issue #371. Runs immediately after the Integration
     phase. No-op when ``sprint_id`` is None — preserves the byte-identical
     one-shot path for non-sprint runs.
+
+    ``integration_outcome``:
+      * ``"not_run"`` — Integration not applicable (no backend, no
+        frontend, or no code). Ship the release; there's nothing to
+        gate on.
+      * ``"succeeded"`` — Integration ran and returned. Ship the
+        release; ``int_result.issues`` is the failure list.
+      * ``"failed"`` — Integration was attempted but threw. **Defer the
+        release** and open a high-severity ``release-manager-skipped``
+        feedback item so the next groom catches the gap. Codex review
+        on PR #424: shipping after an Integration outage would mint a
+        false release row + skip failure-feedback intake entirely.
 
     Behavior:
       * Skip silently when not all planned stories have reached a
@@ -2204,6 +2217,28 @@ def _maybe_ship_sprint_release(
         )
 
         pd_store = _pd_get_store()
+        if integration_outcome == "failed":
+            logger.warning(
+                "Release manager: Integration phase failed for sprint %s; deferring "
+                "release. Opening release-manager-skipped feedback so the next groom "
+                "sees the gap.",
+                sprint_id,
+            )
+            pid = pd_store.get_product_id_for_sprint(sprint_id)
+            if pid:
+                pd_store.create_feedback_item(
+                    product_id=pid,
+                    source="release-manager-skipped",
+                    raw_payload={
+                        "reason": "integration_phase_failed",
+                        "job_id": job_id,
+                    },
+                    severity="high",
+                    linked_story_id=None,
+                    author="release-manager",
+                    sprint_id=sprint_id,
+                )
+            return
         open_count = pd_store.count_open_stories_in_sprint(sprint_id)
         if open_count > 0:
             logger.info(
@@ -3150,8 +3185,16 @@ def run_orchestrator(
         # ``int_result`` is hoisted out of the try block so the
         # release-manager hook (#371) can read its issues list whether
         # Integration ran or not. ``None`` here means "Integration was
-        # skipped or threw"; the hook treats that as zero issues.
+        # skipped or threw"; ``integration_outcome`` distinguishes the
+        # two cases so the hook only ships when Integration produced a
+        # real signal — Codex review on PR #424 flagged that an
+        # Integration outage would otherwise silently mint a release
+        # row + skip failure-feedback intake.
         int_result: Any = None
+        # 3-state: "not_run" (Integration not applicable — no backend or
+        # no frontend or no code), "succeeded" (ran and returned),
+        # "failed" (agent itself threw).
+        integration_outcome: str = "not_run"
         if integration_agent and has_backend and has_frontend and completed_code_task_ids:
             try:
                 from integration_team import IntegrationInput
@@ -3162,6 +3205,10 @@ def run_orchestrator(
                     code_backend != "# No code files found"
                     and code_frontend != "# No code files found"
                 ):
+                    # Mark as failed *before* the call so a thrown
+                    # exception leaves the outcome at "failed"; we
+                    # upgrade to "succeeded" only after the call returns.
+                    integration_outcome = "failed"
                     int_result = integration_agent.run(
                         IntegrationInput(
                             backend_code=code_backend,
@@ -3170,6 +3217,7 @@ def run_orchestrator(
                             architecture=architecture,
                         )
                     )
+                    integration_outcome = "succeeded"
                     if not int_result.passed:
                         logger.warning(
                             "Integration agent found %s issues (%s critical/high)",
@@ -3195,13 +3243,18 @@ def run_orchestrator(
                 logger.warning("Integration phase failed (non-blocking): %s", int_err)
 
         # Release manager hook (#371). No-op when not a sprint run; on a
-        # sprint run with all stories terminal, it writes the release
-        # row + plan/releases/<version>.md and promotes Integration
-        # issues into sprint-tagged feedback items. Always non-fatal.
+        # sprint run with all stories terminal AND a successful (or N/A)
+        # Integration outcome, it writes the release row +
+        # plan/releases/<version>.md and promotes Integration issues
+        # into sprint-tagged feedback items. When Integration was
+        # attempted and threw, the hook defers the release and opens a
+        # ``release-manager-skipped`` feedback so the next groom sees
+        # the gap (Codex review on PR #424). Always non-fatal.
         _maybe_ship_sprint_release(
             sprint_id=sprint_id,
             plan_dir=plan_dir,
             int_result=int_result,
+            integration_outcome=integration_outcome,
             job_id=job_id,
         )
 

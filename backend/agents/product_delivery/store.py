@@ -855,14 +855,25 @@ class ProductDeliveryStore:
                 # Validate sprint provenance up front so a bad id doesn't
                 # silently land as a NULL FK after ON DELETE SET NULL —
                 # we want the caller to see the 404, not a row with
-                # missing context.
+                # missing context. Also enforce that the sprint belongs
+                # to the same product (Codex review on PR #424): the
+                # schema FKs only constrain the two ids individually,
+                # so without this check a feedback row for product A
+                # could be tagged with a sprint under product B,
+                # polluting sprint-scoped grooming and reporting.
                 if sprint_id is not None:
                     cur.execute(
-                        "SELECT 1 FROM product_delivery_sprints WHERE id = %s",
+                        "SELECT product_id FROM product_delivery_sprints WHERE id = %s",
                         (sprint_id,),
                     )
-                    if cur.fetchone() is None:
+                    sprint_row = cur.fetchone()
+                    if sprint_row is None:
                         raise UnknownProductDeliveryEntity(f"sprint {sprint_id!r} does not exist")
+                    if sprint_row[0] != product_id:
+                        raise CrossProductFeedbackLink(
+                            f"sprint {sprint_id!r} belongs to product "
+                            f"{sprint_row[0]!r}, not {product_id!r}"
+                        )
                 cur.execute(
                     f"""INSERT INTO product_delivery_feedback_items ({_FEEDBACK_COLS})
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",

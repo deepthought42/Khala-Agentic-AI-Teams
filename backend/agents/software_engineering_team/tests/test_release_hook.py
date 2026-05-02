@@ -249,6 +249,7 @@ def test_hook_no_op_when_sprint_id_is_none(tmp_path: Path) -> None:
         sprint_id=None,
         plan_dir=plan_dir,
         int_result=_IntegrationResult([]),
+        integration_outcome="succeeded",
         job_id="job-1",
     )
     assert not (plan_dir / "releases").exists()
@@ -271,6 +272,7 @@ def test_hook_skips_when_sprint_has_open_stories(
         sprint_id="sprint-1",
         plan_dir=plan_dir,
         int_result=_IntegrationResult([]),
+        integration_outcome="succeeded",
         job_id="job-1",
     )
     assert store.releases == []
@@ -295,6 +297,7 @@ def test_hook_ships_when_sprint_complete_and_no_issues(
         sprint_id="sprint-1",
         plan_dir=plan_dir,
         int_result=_IntegrationResult([]),
+        integration_outcome="succeeded",
         job_id="job-1",
     )
     # Release row written.
@@ -329,6 +332,7 @@ def test_hook_promotes_integration_issues_to_sprint_tagged_feedback(
         sprint_id="sprint-1",
         plan_dir=plan_dir,
         int_result=_IntegrationResult(issues),
+        integration_outcome="succeeded",
         job_id="job-1",
     )
     # Two feedback rows, all tagged with the sprint.
@@ -366,6 +370,7 @@ def test_hook_is_non_fatal_and_records_release_manager_error(
         sprint_id="sprint-1",
         plan_dir=plan_dir,
         int_result=_IntegrationResult([]),
+        integration_outcome="succeeded",
         job_id="job-1",
     )
     # No release row (the agent failed before persisting).
@@ -378,3 +383,71 @@ def test_hook_is_non_fatal_and_records_release_manager_error(
     assert err["sprint_id"] == "sprint-1"
     assert "disk full" in err["raw_payload"]["error"]
     assert err["raw_payload"]["job_id"] == "job-1"
+
+
+def test_hook_defers_release_when_integration_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 review (PR #424): Integration outage must not silently mint a release.
+
+    When ``integration_outcome="failed"`` (the agent threw — ``int_result`` is
+    None and ``issues`` would otherwise default to ``[]``), the hook must
+    defer the release and open a high-severity ``release-manager-skipped``
+    feedback item so the next groom catches the gap.
+    """
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    view = SprintWithStories(
+        sprint=_sprint(),
+        stories=[_story("s1", status="done")],
+        acceptance_criteria_by_story_id={},
+    )
+    store = _StubStore(sprint_view=view, open_count=0)
+    _install_stub_store(monkeypatch, store)
+
+    _orchestrator._maybe_ship_sprint_release(
+        sprint_id="sprint-1",
+        plan_dir=plan_dir,
+        int_result=None,  # Integration phase threw
+        integration_outcome="failed",
+        job_id="job-7",
+    )
+    # No release row, no notes file — sprint shipping is gated.
+    assert store.releases == []
+    assert not (plan_dir / "releases").exists()
+    # One feedback row tagged with the sprint, explaining the gap.
+    assert len(store.feedback) == 1
+    fb = store.feedback[0]
+    assert fb["source"] == "release-manager-skipped"
+    assert fb["severity"] == "high"
+    assert fb["sprint_id"] == "sprint-1"
+    assert fb["raw_payload"]["reason"] == "integration_phase_failed"
+    assert fb["raw_payload"]["job_id"] == "job-7"
+
+
+def test_hook_ships_when_integration_not_applicable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sprint without a backend/frontend split (``integration_outcome="not_run"``)
+    is not gated — Integration was N/A, not failed (Codex P1 review on PR #424).
+    """
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    view = SprintWithStories(
+        sprint=_sprint(),
+        stories=[_story("s1", status="done")],
+        acceptance_criteria_by_story_id={},
+    )
+    store = _StubStore(sprint_view=view, open_count=0)
+    _install_stub_store(monkeypatch, store)
+
+    _orchestrator._maybe_ship_sprint_release(
+        sprint_id="sprint-1",
+        plan_dir=plan_dir,
+        int_result=None,
+        integration_outcome="not_run",
+        job_id="job-1",
+    )
+    # Release goes through; no feedback (nothing failed).
+    assert len(store.releases) == 1
+    assert store.feedback == []
