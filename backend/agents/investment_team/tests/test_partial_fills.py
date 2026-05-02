@@ -787,6 +787,32 @@ class _ScriptedTriggerModel:
         )
 
 
+class _PerOrderTriggerModel:
+    """Test stub: per-(client_order_id, timestamp) trigger script.
+
+    Returns ``None`` on bars not in the order's script — needed to
+    construct races where one order triggers on a bar while another
+    on the same symbol does not (e.g. a stale ``TWAP_N`` exit that's
+    untouched while a fresh entry order opens a new position).
+    """
+
+    name = "per-order-trigger"
+
+    def __init__(self, triggers: dict[str, dict[str, float]]) -> None:
+        # ``client_order_id`` → ``{bar.timestamp: qty_fraction}``.
+        self._triggers = triggers
+
+    def compute_fill_terms(self, req, bar, next_bar):
+        order_triggers = self._triggers.get(req.client_order_id, {})
+        if bar.timestamp not in order_triggers:
+            return None
+        return FillTerms(
+            reference_price=bar.open,
+            qty_fraction=order_triggers[bar.timestamp],
+            extra_slip_bps=0.0,
+        )
+
+
 def test_zero_fraction_continuation_honors_requeue_policy() -> None:
     """A continuation slice that returns ``qty_fraction = 0`` (e.g.
     transient no-liquidity bar under a custom execution model) must
@@ -1589,3 +1615,113 @@ def test_invalid_twap_order_error_is_unsupported_feature_subclass() -> None:
             tif=TimeInForce.DAY,
             twap_slices=3,  # set without TWAP_N → InvalidTWAPOrderError
         ).validate_prices()
+
+
+def test_stale_partial_exit_dropped_on_untriggered_bar() -> None:
+    """A partial-exit remainder whose original position has vanished
+    must drop on the next bar — even if that bar is *untriggered* for
+    the order. Without the early stale-continuation guard, the TWAP
+    elapsed-bar tick keeps the remainder alive across no-trigger bars,
+    which lets a later trigger fire the stale exit against a newly-
+    opened position on the same symbol. Regression for a Codex P1
+    review note on PR #419 (commit f71a882).
+
+    Reproduction: TWAP_N=4 partial exit. Bar B partials, another order
+    closes the rest. Bar C is untouched for the exit. Bar D opens a
+    new entry (different ``client_order_id``). Bar E would be the next
+    triggered bar for the stale exit. With the bug, bar E fires the
+    stale exit against the new entry's position. With the fix, the
+    stale exit is dropped on bar C and bar E sees nothing.
+    """
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    order_book = OrderBook()
+    sim = FillSimulator(
+        portfolio=portfolio,
+        order_book=order_book,
+        risk_filter=RiskFilter(RiskLimits(max_position_pct=100, max_gross_leverage=10.0)),
+        config=FillSimulatorConfig(slippage_bps=0.0, transaction_cost_bps=0.0),
+        bar_safety=BarSafetyAssertion(),
+        execution_model=_PerOrderTriggerModel(
+            {
+                "entry-1": {"2024-01-02": 1.0},
+                "exit-1": {"2024-01-03": 0.5, "2024-01-06": 1.0},
+                "exit-cleanup": {"2024-01-03": 1.0},
+                "entry-2": {"2024-01-05": 1.0},
+            }
+        ),
+    )
+
+    # Bar A: open LONG 4_000.
+    order_book.submit(
+        _entry_order(4_000),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    sim.process_bar(_bar("2024-01-02", price=100.0))
+    assert portfolio.positions["AAA"].qty == pytest.approx(4_000.0, rel=1e-9)
+
+    # Submit TWAP_N=4 SHORT exit AND a separate MARKET cleanup exit.
+    order_book.submit(
+        _exit_order(4_000, policy=UnfilledPolicy.TWAP_N, twap_slices=4),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    order_book.submit(
+        OrderRequest(
+            client_order_id="exit-cleanup",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=2_000,
+            order_type=OrderType.MARKET,
+            tif=TimeInForce.DAY,
+        ),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar B: TWAP exit partials (qty_fraction=0.5 → 2_000 of 4_000),
+    # cleanup closes the remaining 2_000. Position gone. TWAP remainder
+    # pending with cumulative=2_000, slices_remaining=3.
+    sim.process_bar(_bar("2024-01-03", price=100.0))
+    assert "AAA" not in portfolio.positions
+    twap_pending = [p for p in order_book.all_pending() if p.request.client_order_id == "exit-1"]
+    assert len(twap_pending) == 1
+    assert twap_pending[0].cumulative_filled_qty == pytest.approx(2_000.0, rel=1e-9)
+    assert twap_pending[0].twap_slices_remaining == 3
+
+    # Submit entry-2 (will trigger on 2024-01-05).
+    order_book.submit(
+        OrderRequest(
+            client_order_id="entry-2",
+            symbol="AAA",
+            side=OrderSide.LONG,
+            qty=1_000,
+            order_type=OrderType.MARKET,
+            tif=TimeInForce.DAY,
+        ),
+        submitted_at="2024-01-04",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Bar C: untouched for the TWAP exit AND for entry-2. Without the
+    # fix, the TWAP elapsed-bar tick decrements ``slices_remaining``
+    # 3→2 and keeps the order alive. With the fix, the early stale-
+    # continuation guard runs first and drops it.
+    sim.process_bar(_bar("2024-01-04", price=100.0))
+    twap_pending = [p for p in order_book.all_pending() if p.request.client_order_id == "exit-1"]
+    assert twap_pending == [], (
+        "stale TWAP exit must drop on untriggered bar — otherwise it "
+        "would survive to fire against a later-opened position"
+    )
+
+    # Bar D: entry-2 fires, opens a NEW LONG position.
+    sim.process_bar(_bar("2024-01-05", price=100.0))
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)
+
+    # Bar E: TWAP exit was scripted to trigger here. With the bug it
+    # would route through ``_fill_exit`` and close the new 1_000-share
+    # position. With the fix, the order was dropped on bar C, so this
+    # bar produces no exit fill and the new position stays intact.
+    bar_e = sim.process_bar(_bar("2024-01-06", price=100.0))
+    assert bar_e.exit_fills == [], "stale TWAP exit must NOT fire against the newly-opened position"
+    assert portfolio.positions["AAA"].qty == pytest.approx(1_000.0, rel=1e-9)

@@ -105,6 +105,23 @@ class FillSimulator:
             if not po.armed:
                 continue
             req = po.request
+
+            # Stale-continuation guard: a pre-filled order with no live
+            # position is a stale continuation — typically a partially
+            # filled exit whose position was closed by an earlier order
+            # on this same bar (or a partial entry whose position was
+            # closed by a stop before its remainder could fill). Must
+            # drop on EVERY bar (triggered or not), otherwise the TWAP
+            # elapsed-bar tick below would keep the remainder alive
+            # across no-trigger bars long enough to fill against a
+            # newly-opened position on the same symbol on a later
+            # triggered bar. Fresh entries (``cumulative=0``) and live
+            # continuations (``existing_pos`` populated) are unaffected.
+            existing_pos = self.portfolio.positions.get(bar.symbol)
+            if existing_pos is None and po.cumulative_filled_qty > 0:
+                self.order_book.remove(po.order_id)
+                continue
+
             # Determine whether this bar triggered the order and at what
             # terms (price, partial-fill fraction, adverse-selection
             # haircut). The execution model encapsulates the (model-
@@ -147,20 +164,10 @@ class FillSimulator:
                 fill_bar_timestamp=bar.timestamp,
             )
 
-            existing_pos = self.portfolio.positions.get(bar.symbol)
-            # Pre-filled order with no live position is a stale
-            # continuation — typically a partially filled exit whose
-            # position was closed by an earlier order on this same bar
-            # (or a partial entry whose position was closed by a stop
-            # before its remainder could fill). Falling through to the
-            # ``is_entry`` branch below would route the requeued
-            # opposite-side remainder into ``_fill_entry``, opening a
-            # brand-new position that contradicts the order's original
-            # intent (e.g. a sell-side TWAP exit remainder reopening as
-            # a fresh short entry). Drop cleanly instead.
-            if existing_pos is None and po.cumulative_filled_qty > 0:
-                self.order_book.remove(po.order_id)
-                continue
+            # ``existing_pos`` already fetched above for the stale-
+            # continuation guard; reuse it. Within a single iteration
+            # of this loop no other order has run, so portfolio state
+            # hasn't changed since the early lookup.
 
             # Partial-entry continuation (#386): a requeued partial entry has
             # ``cumulative_filled_qty > 0`` and an existing position whose
