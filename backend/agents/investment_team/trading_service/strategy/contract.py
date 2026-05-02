@@ -428,20 +428,23 @@ class Strategy:
         """Called once per finalized bar. Primary decision point."""
 
     def on_bars(self, ctx: StrategyContext, bars: List[Bar]) -> None:
-        """Called once per chunk of bars when the parent uses the chunked
-        protocol (issue #377). The default iterates and calls
-        :meth:`on_bar` per bar; the harness sets
-        ``ctx._current_bar_index`` around each invocation so emitted
-        orders are tagged for the originating bar (preserving look-ahead
-        safety).
+        """Reserved for future vectorised dispatch — **do not override**
+        under the chunked protocol introduced in issue #377.
 
-        Strategies may override for vectorised processing (e.g. computing
-        indicators on the whole chunk). Overrides are responsible for
-        leaving ``ctx._current_bar_index`` in a consistent state if they
-        emit orders directly without going through :meth:`on_bar`.
+        The chunked harness rejects override of this method with a
+        ``contract_error`` because a vectorised override would receive
+        the whole chunk before the parent replays bars one-by-one,
+        letting a strategy peek at later bars and emit orders tagged to
+        earlier bar indices. The parent trusts ``bar_index`` for
+        ``submitted_at``, so the override path would bypass look-ahead
+        safety. Vectorised authors should run with ``BAR_CHUNK_SIZE=1``
+        (per-bar dispatch) and implement :meth:`on_bar` instead.
+
+        The default body is a no-op kept here so :meth:`type(instance).on_bars`
+        compares true to ``contract.Strategy.on_bars`` in the harness's
+        override check; subclasses that don't define ``on_bars`` skip the
+        rejection branch.
         """
-        for bar in bars:
-            self.on_bar(ctx, bar)
 
     def on_fill(self, ctx: StrategyContext, fill: Fill) -> None:
         """Called when a previously-submitted order fills."""

@@ -408,38 +408,41 @@ _HARNESS_SCRIPT = textwrap.dedent('''\
                     # parent-supplied state per bar; ``bar_index`` is set
                     # on the context around each dispatch so emitted
                     # orders/cancels are tagged for the originating bar.
+                    #
+                    # Override safety (PR review #425): a vectorised
+                    # ``on_bars`` override would receive the whole chunk
+                    # before the parent replays bars one-by-one, letting
+                    # the strategy peek at later bars and emit an order
+                    # tagged to an earlier ``bar_index``. ``_run_chunked``
+                    # trusts that index for ``submitted_at``, so the
+                    # override path could bypass look-ahead safety. Reject
+                    # outright; vectorised authors should run with
+                    # ``BAR_CHUNK_SIZE=1`` (per-bar dispatch) where bar
+                    # safety is enforced by the per-bar message protocol.
+                    if type(instance).on_bars is not contract.Strategy.on_bars:
+                        _emit({
+                            "kind": "error",
+                            "etype": "contract_error",
+                            "message": (
+                                "Overriding Strategy.on_bars is not supported under "
+                                "the chunked protocol: a vectorised override could "
+                                "see future bars in the chunk and emit orders tagged "
+                                "to earlier bars, bypassing look-ahead safety. "
+                                "Implement on_bar instead, or run with "
+                                "BAR_CHUNK_SIZE=1."
+                            ),
+                        })
+                        sys.exit(1)
                     chunk = msg.get("bars") or []
-                    overrides_on_bars = (
-                        type(instance).on_bars is not contract.Strategy.on_bars
-                    )
-                    if overrides_on_bars:
-                        # Vectorised path: ingest the whole chunk, then
-                        # hand it to the override in one call. The
-                        # override is responsible for setting
-                        # ``ctx._current_bar_index`` around emissions.
-                        bars = []
-                        for item in chunk:
-                            bar = contract.Bar(**item["bar"])
-                            state = item.get("state") or {}
-                            _apply_state(
-                                ctx, state, is_warmup=bool(item.get("is_warmup", False))
-                            )
-                            ctx._ingest_bar(bar)
-                            bars.append(bar)
-                        instance.on_bars(ctx, bars)
-                    else:
-                        # Per-bar path: ingest + dispatch one bar at a time
-                        # with bar_index tagging. Strategies authored
-                        # against on_bar work unchanged.
-                        for i, item in enumerate(chunk):
-                            bar = contract.Bar(**item["bar"])
-                            state = item.get("state") or {}
-                            _apply_state(
-                                ctx, state, is_warmup=bool(item.get("is_warmup", False))
-                            )
-                            ctx._ingest_bar(bar)
-                            ctx._current_bar_index = i
-                            instance.on_bar(ctx, bar)
+                    for i, item in enumerate(chunk):
+                        bar = contract.Bar(**item["bar"])
+                        state = item.get("state") or {}
+                        _apply_state(
+                            ctx, state, is_warmup=bool(item.get("is_warmup", False))
+                        )
+                        ctx._ingest_bar(bar)
+                        ctx._current_bar_index = i
+                        instance.on_bar(ctx, bar)
                     ctx._current_bar_index = None
                 elif kind == "fill":
                     fill = contract.Fill(**msg["fill"])

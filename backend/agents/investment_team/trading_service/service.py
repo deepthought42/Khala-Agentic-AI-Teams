@@ -639,15 +639,33 @@ class TradingService:
             ]
             chunk_resp = harness.send_bars(bars=payload)
 
-            # Group orders/cancels by bar_index. Untagged records (legacy
-            # child) fall back to bar 0 — defensive; the new child always
-            # tags chunked records.
-            orders_by_bar: Dict[int, List[Dict]] = {}
-            for o, idx in zip(chunk_resp.orders, chunk_resp.order_bar_indices):
-                orders_by_bar.setdefault(idx if idx is not None else 0, []).append(o)
-            cancels_by_bar: Dict[int, List[Dict]] = {}
-            for c, idx in zip(chunk_resp.cancels, chunk_resp.cancel_bar_indices):
-                cancels_by_bar.setdefault(idx if idx is not None else 0, []).append(c)
+            # Group orders/cancels by bar_index. Validate the index is
+            # in [0, len(chunk)) before bucketing — without this, a
+            # strategy bug (or a hand-set ``ctx._current_bar_index``
+            # outside the harness-managed range) would silently route
+            # the order to a phantom bar that the replay loop never
+            # consumes, dropping the emission with no diagnostic.
+            # Untagged records (None) likewise fail the range check;
+            # the chunked child always tags, so a missing tag is a
+            # protocol violation.
+            chunk_len = len(chunk_buffer)
+
+            def _validated(
+                records: List[Dict], indices: List[Optional[int]], kind: str
+            ) -> Dict[int, List[Dict]]:
+                grouped: Dict[int, List[Dict]] = {}
+                for rec, idx in zip(records, indices):
+                    if not isinstance(idx, int) or not (0 <= idx < chunk_len):
+                        raise StrategyRuntimeError(
+                            f"strategy emitted {kind} with out-of-range bar_index="
+                            f"{idx!r} for chunk of size {chunk_len} (payload={rec!r})",
+                            etype="protocol_error",
+                        )
+                    grouped.setdefault(idx, []).append(rec)
+                return grouped
+
+            orders_by_bar = _validated(chunk_resp.orders, chunk_resp.order_bar_indices, "order")
+            cancels_by_bar = _validated(chunk_resp.cancels, chunk_resp.cancel_bar_indices, "cancel")
 
             for i, (cur_bar, is_warmup, next_bar) in enumerate(chunk_buffer):
                 bar_orders = orders_by_bar.get(i, [])
