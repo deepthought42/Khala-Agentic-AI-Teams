@@ -276,6 +276,13 @@ def compute_performance_metrics(
         mean_log = float(np.mean(returns))
         annualized_log_return = mean_log * TRADING_DAYS_PER_YEAR
         annualized_return_frac = math.expm1(annualized_log_return)
+    elif total_return_frac > -1.0 and total_return_frac != 0.0:
+        # Single-point equity curve (e.g. same-day trade or one-weekday span):
+        # ``daily_returns`` is empty but realized PnL exists. Treat the
+        # observed total return as a one-period log return and annualize, so
+        # the metric isn't silently zeroed.
+        annualized_log_return = math.log1p(total_return_frac) * TRADING_DAYS_PER_YEAR
+        annualized_return_frac = math.expm1(annualized_log_return)
     else:
         annualized_log_return = 0.0
         annualized_return_frac = 0.0
@@ -286,9 +293,14 @@ def compute_performance_metrics(
     annualized_vol_frac = daily_vol * math.sqrt(TRADING_DAYS_PER_YEAR)
     annualized_vol_pct = round(annualized_vol_frac * 100, 3)
 
+    # Risk-free rate on log basis: the numerator is annualized log return,
+    # so the rfr term must also be log-basis to keep the Sharpe / Sortino
+    # subtraction in the same convention.
+    rfr_log = math.log1p(rfr)
+
     # Sharpe (excess log return / vol, annualized).
     if annualized_vol_frac > 0:
-        sharpe = (annualized_log_return - rfr) / annualized_vol_frac
+        sharpe = (annualized_log_return - rfr_log) / annualized_vol_frac
     else:
         sharpe = 0.0
 
@@ -302,7 +314,7 @@ def compute_performance_metrics(
         )
     else:
         dd_vol = 0.0
-    sortino = (annualized_log_return - rfr) / dd_vol if dd_vol > 0 else 0.0
+    sortino = (annualized_log_return - rfr_log) / dd_vol if dd_vol > 0 else 0.0
 
     # Max drawdown & duration.
     max_dd_frac, max_dd_days = _max_drawdown(curve.equity)
@@ -329,7 +341,7 @@ def compute_performance_metrics(
         )
         if bench_returns is not None:
             alpha_pct, beta, info_ratio = _alpha_beta(
-                returns, bench_returns, risk_free_daily=rfr / TRADING_DAYS_PER_YEAR
+                returns, bench_returns, risk_free_daily=rfr_log / TRADING_DAYS_PER_YEAR
             )
 
     return PerformanceMetrics(

@@ -362,3 +362,54 @@ def test_metrics_sharpe_uses_log_return_numerator():
     mean_log = float(curve.daily_returns().mean())
     expected_annualized = math.expm1(mean_log * 252) * 100
     assert m.annualized_return_pct == pytest.approx(expected_annualized, abs=0.01)
+
+
+def test_metrics_sharpe_uses_log_basis_risk_free_rate():
+    # With a non-zero rfr the Sharpe / Sortino numerator must subtract a
+    # log-basis rfr (``log1p(rfr)``), not the simple annual rate, otherwise
+    # the convention mixing skews Sharpe systematically. Verify by computing
+    # both candidates and asserting the metric matches the log-basis one.
+    rfr_simple = 0.05
+    trades = [
+        _mk_trade("2023-01-02", "2023-01-03", net=200.0),
+        _mk_trade("2023-01-03", "2023-01-04", net=-150.0),
+        _mk_trade("2023-01-04", "2023-01-05", net=180.0),
+        _mk_trade("2023-01-05", "2023-01-06", net=-160.0),
+        _mk_trade("2023-01-06", "2023-01-09", net=220.0),
+    ]
+    m = compute_performance_metrics(
+        trades,
+        initial_capital=10_000.0,
+        risk_free_rate=rfr_simple,
+    )
+    curve = build_equity_curve_from_trades(trades, 10_000.0)
+    returns = curve.daily_returns()
+    mean_log = float(returns.mean())
+    annualized_log = mean_log * 252
+    annualized_vol = float(returns.std(ddof=1)) * math.sqrt(252)
+    expected_sharpe_log = (annualized_log - math.log1p(rfr_simple)) / annualized_vol
+    expected_sharpe_simple = (annualized_log - rfr_simple) / annualized_vol
+    assert m.sharpe_ratio == pytest.approx(round(expected_sharpe_log, 4), abs=1e-4)
+    # Sanity: at rfr=5% the two values differ enough to fail the wrong one.
+    assert abs(expected_sharpe_log - expected_sharpe_simple) > 1e-4
+
+
+def test_metrics_single_point_equity_curve_preserves_annualized_return():
+    # Same-day trade: span_start == span_end yields a one-weekday equity
+    # curve and an empty ``daily_returns`` array. Annualized return must
+    # still be derived from the realized total return rather than zeroed.
+    trades = [_mk_trade("2023-01-03", "2023-01-03", net=500.0)]
+    m = compute_performance_metrics(
+        trades,
+        initial_capital=10_000.0,
+        risk_free_rate=0.0,
+        start_date="2023-01-03",
+        end_date="2023-01-03",
+    )
+    assert m.total_return_pct == pytest.approx(5.0, abs=1e-3)
+    expected_annualized_pct = math.expm1(math.log1p(0.05) * 252) * 100
+    assert m.annualized_return_pct == pytest.approx(expected_annualized_pct, abs=0.01)
+    # Calmar should also be non-zero now (annual return > 0 / max_dd > 0
+    # would require a drawdown; with a single up-step there's none, so we
+    # only assert annualized_return_pct here).
+    assert m.annualized_return_pct > 0.0
