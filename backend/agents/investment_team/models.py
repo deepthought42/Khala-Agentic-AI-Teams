@@ -523,6 +523,16 @@ class BacktestResult(BaseModel):
     # cache).
     dataset_fingerprint: Optional[str] = None
 
+    @field_validator("sortino_ratio", "calmar_ratio", "risk_free_rate", "deflated_sharpe", mode="before")
+    @classmethod
+    def _coerce_float_none_to_zero(cls, v: object) -> object:
+        return 0.0 if v is None else v
+
+    @field_validator("max_drawdown_duration_days", mode="before")
+    @classmethod
+    def _coerce_int_none_to_zero(cls, v: object) -> object:
+        return 0 if v is None else v
+
 
 class TradeRecord(BaseModel):
     """A single simulated trade from a backtest or paper trading session.
