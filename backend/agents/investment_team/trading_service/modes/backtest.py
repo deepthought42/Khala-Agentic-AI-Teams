@@ -247,18 +247,28 @@ def run_backtest(
         # and a parallel fan-out would have every worker miss cache and
         # duplicate the same upstream provider fetch (rate limits,
         # competing snapshot writes). Detect that case via the baseline's
-        # fingerprint and run the first multiplier sequentially so its
-        # persist step warms the cache before the rest go in parallel.
-        # The legacy ``market_data`` path skips this entirely — it has no
-        # provider cache to warm.
+        # fingerprint and run multipliers sequentially until one warms
+        # the cache (its stream gets a non-``None`` ``dataset_fingerprint``
+        # via either a cache hit or a successful drain), then fan out
+        # the remainder. If no multiplier warms the cache, the whole
+        # sweep stays sequential — no parallel stampede possible.
+        # The legacy ``market_data`` path skips this entirely — it has
+        # no provider cache to warm.
         baseline_stream = streaming_holder["current"]
         cache_warm = has_legacy or (
             baseline_stream is not None and baseline_stream.dataset_fingerprint is not None
         )
         parallel_start = 0
         if not cache_warm:
-            rows_by_index[0] = _stress_row(0)
-            parallel_start = 1
+            for idx in range(len(multipliers)):
+                rows_by_index[idx] = _stress_row(idx)
+                # ``_build_stream`` appends every non-baseline stream to
+                # ``stress_streams``; the just-completed run is at the tail.
+                if stress_streams and stress_streams[-1].dataset_fingerprint is not None:
+                    parallel_start = idx + 1
+                    break
+            else:
+                parallel_start = len(multipliers)
 
         parallel_indices = list(range(parallel_start, len(multipliers)))
         if parallel_indices:
