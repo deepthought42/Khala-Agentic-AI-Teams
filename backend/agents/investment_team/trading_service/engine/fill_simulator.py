@@ -18,8 +18,8 @@ Transaction costs and realized P&L on close match the legacy
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 from ...execution.bar_safety import BarSafetyAssertion
 from ...execution.risk_filter import RiskFilter
@@ -39,12 +39,36 @@ class FillSimulatorConfig:
 
 
 @dataclass
+class FillDiagnosticEvent:
+    """Lifecycle/rejection event surfaced by the fill simulator (#410).
+
+    ``TradingService`` translates these into ``OrderLifecycleEvent`` rows on
+    ``BacktestExecutionDiagnostics`` (#411/#412) so a zero-trade refinement
+    prompt can see *why* an accepted order didn't produce a closed trade.
+    The simulator never decides counter accounting itself — it just reports
+    what happened on this bar; the consumer picks the diagnostic shape.
+    """
+
+    kind: str  # "entry_filled" | "exit_filled" | "rejected"
+    order_id: str
+    timestamp: str
+    symbol: str
+    side: str  # ``OrderSide`` value
+    order_type: str  # ``OrderType`` value
+    reason: str = ""
+    detail: str = ""
+
+
+@dataclass
 class FillOutcome:
     """Everything that happened on one fill tick for one symbol."""
 
     entry_fills: List[Fill]
     exit_fills: List[Fill]
     closed_trades: List[TradeRecord]
+    #: Lifecycle / rejection events for the bar (#410). Empty by default so
+    #: callers that don't consume diagnostics keep working unchanged.
+    diagnostic_events: List[FillDiagnosticEvent] = field(default_factory=list)
 
 
 class FillSimulator:
@@ -84,6 +108,7 @@ class FillSimulator:
         entry_fills: List[Fill] = []
         exit_fills: List[Fill] = []
         closed: List[TradeRecord] = []
+        events: List[FillDiagnosticEvent] = []
 
         # Work on a snapshot of pending orders for this symbol so cancels /
         # removes inside the loop don't mutate iteration.
@@ -182,6 +207,17 @@ class FillSimulator:
                 if req.tif in (TimeInForce.IOC, TimeInForce.FOK):
                     if is_same_side_addon:
                         self.order_book.remove(po.order_id)
+                        events.append(
+                            FillDiagnosticEvent(
+                                kind="rejected",
+                                order_id=po.order_id,
+                                timestamp=bar.timestamp,
+                                symbol=req.symbol,
+                                side=req.side.value,
+                                order_type=req.order_type.value,
+                                reason="same_side_order_ignored",
+                            )
+                        )
                         continue
                     dp = 4 if bar.close < 10 else 2
                     rejected = Fill(
@@ -279,13 +315,15 @@ class FillSimulator:
                     continue
 
             if is_partial_entry_continuation:
-                fill = self._continue_entry(po, bar, terms)
+                fill, rejection = self._continue_entry(po, bar, terms)
                 if fill is not None:
                     entry_fills.append(fill)
+                self._record_entry_event(events, po, bar, fill, rejection)
             elif is_entry:
-                fill = self._fill_entry(po, bar, terms)
+                fill, rejection = self._fill_entry(po, bar, terms)
                 if fill is not None:
                     entry_fills.append(fill)
+                self._record_entry_event(events, po, bar, fill, rejection)
             else:
                 # Has open position. Either an exit (opposite side) or a
                 # same-side add-on we currently don't support.
@@ -297,10 +335,22 @@ class FillSimulator:
                         pos.side.value,
                     )
                     self.order_book.remove(po.order_id)
+                    events.append(
+                        FillDiagnosticEvent(
+                            kind="rejected",
+                            order_id=po.order_id,
+                            timestamp=bar.timestamp,
+                            symbol=req.symbol,
+                            side=req.side.value,
+                            order_type=req.order_type.value,
+                            reason="same_side_order_ignored",
+                        )
+                    )
                     continue
                 exit_fill, trade = self._fill_exit(po, bar, terms)
                 if exit_fill is not None:
                     exit_fills.append(exit_fill)
+                    self._record_exit_event(events, po, bar, exit_fill)
                 if trade is not None:
                     closed.append(trade)
 
@@ -308,6 +358,7 @@ class FillSimulator:
             entry_fills=entry_fills,
             exit_fills=exit_fills,
             closed_trades=closed,
+            diagnostic_events=events,
         )
 
     # ------------------------------------------------------------------
@@ -340,13 +391,21 @@ class FillSimulator:
         po: PendingOrder,
         bar: Bar,
         terms: FillTerms,
-    ) -> Optional[Fill]:
+    ) -> Tuple[Optional[Fill], Optional[str]]:
         """First fill against an entry order. Opens the Position.
 
-        Returns the entry ``Fill`` (full or partial), or ``None`` when the
-        order was rejected (risk gate, insufficient capital, zero qty).
+        Returns ``(fill, rejection_reason)``:
+
+        * ``(Fill, None)`` — successful entry (FULL or PARTIAL).
+        * ``(REJECTED Fill, "zero_fill_qty")`` — bar gave zero liquidity; the
+          REJECTED Fill is still emitted so the strategy sees the outcome.
+        * ``(None, "risk_gate:<reason>")`` — risk filter blocked the entry.
+        * ``(None, "insufficient_capital")`` — not enough capital.
+
         Side effect: drives ``portfolio.open`` and either ``order_book.remove``
         or ``order_book.requeue`` based on the order's ``unfilled_policy``.
+        The rejection reason is consumed by ``process_bar`` to emit a
+        ``FillDiagnosticEvent`` (#410) for downstream zero-trade analysis.
         """
         req = po.request
         ref_price = terms.reference_price
@@ -384,7 +443,7 @@ class FillSimulator:
             # because no position has opened yet (initial slice rejected),
             # so the parent shouldn't remain registered as bracket-eligible.
             self._handle_entry_remainder(po, bar, po.remaining_qty, was_filled=False)
-            return Fill(
+            rejected_fill = Fill(
                 order_id=po.order_id,
                 client_order_id=req.client_order_id,
                 symbol=req.symbol,
@@ -397,6 +456,7 @@ class FillSimulator:
                 unfilled_qty=po.remaining_qty,
                 cumulative_filled_qty=po.cumulative_filled_qty,
             )
+            return rejected_fill, "zero_fill_qty"
 
         notional = filled_qty * ref_price
         equity = self.portfolio.mark_to_market()
@@ -404,7 +464,7 @@ class FillSimulator:
         if not gate.allowed:
             logger.info("risk gate rejected entry for %s: %s", req.symbol, gate.reason)
             self.order_book.remove(po.order_id)
-            return None
+            return None, f"risk_gate:{gate.reason}"
         if self.portfolio.capital < notional:
             logger.info(
                 "insufficient capital for %s entry: need %.2f, have %.2f",
@@ -413,7 +473,7 @@ class FillSimulator:
                 self.portfolio.capital,
             )
             self.order_book.remove(po.order_id)
-            return None
+            return None, "insufficient_capital"
 
         slip_long_entry, _, slip_short_entry, _ = self._slippage_multipliers(terms.extra_slip_bps)
         if req.side == OrderSide.LONG:
@@ -460,18 +520,21 @@ class FillSimulator:
         po.working_against_entry_order_id = po.order_id
         self._handle_entry_remainder(po, bar, unfilled)
 
-        return Fill(
-            order_id=po.order_id,
-            client_order_id=req.client_order_id,
-            symbol=pos.symbol,
-            side=pos.side,
-            qty=filled_qty,
-            price=fill_price,
-            timestamp=bar.timestamp,
-            reason="entry",
-            fill_kind=FillKind.PARTIAL if is_partial else FillKind.FULL,
-            unfilled_qty=unfilled,
-            cumulative_filled_qty=filled_qty,
+        return (
+            Fill(
+                order_id=po.order_id,
+                client_order_id=req.client_order_id,
+                symbol=pos.symbol,
+                side=pos.side,
+                qty=filled_qty,
+                price=fill_price,
+                timestamp=bar.timestamp,
+                reason="entry",
+                fill_kind=FillKind.PARTIAL if is_partial else FillKind.FULL,
+                unfilled_qty=unfilled,
+                cumulative_filled_qty=filled_qty,
+            ),
+            None,
         )
 
     def _continue_entry(
@@ -479,11 +542,13 @@ class FillSimulator:
         po: PendingOrder,
         bar: Bar,
         terms: FillTerms,
-    ) -> Optional[Fill]:
+    ) -> Tuple[Optional[Fill], Optional[str]]:
         """Apply a follow-on entry fill against an already-open position.
 
         Used when ``REQUEUE_NEXT_BAR`` requeued an entry's partial-fill
         remainder and the next bar's terms now allow more of it through.
+        Returns ``(fill, rejection_reason)`` with the same convention as
+        ``_fill_entry``.
         """
         req = po.request
         ref_price = terms.reference_price
@@ -515,7 +580,7 @@ class FillSimulator:
             # already opened a position — preserves bracket-attachment
             # eligibility on the eventual ``remove`` path.
             self._handle_entry_remainder(po, bar, po.remaining_qty, was_filled=True)
-            return Fill(
+            rejected_fill = Fill(
                 order_id=po.order_id,
                 client_order_id=req.client_order_id,
                 symbol=req.symbol,
@@ -528,6 +593,7 @@ class FillSimulator:
                 unfilled_qty=po.remaining_qty,
                 cumulative_filled_qty=po.cumulative_filled_qty,
             )
+            return rejected_fill, "zero_fill_qty"
 
         slip_long_entry, _, slip_short_entry, _ = self._slippage_multipliers(terms.extra_slip_bps)
         if req.side == OrderSide.LONG:
@@ -560,7 +626,7 @@ class FillSimulator:
             # from ``OrderBook``'s eligible-parent set and break any later
             # ``submit_attached`` call against this parent.
             self.order_book.remove(po.order_id, was_filled=True)
-            return None
+            return None, f"risk_gate:{gate.reason}"
 
         # Capital check against the *additional* notional only — the existing
         # position's capital is already deducted.
@@ -576,7 +642,7 @@ class FillSimulator:
             # parent's eligible-parent registration since the first slice
             # already filled.
             self.order_book.remove(po.order_id, was_filled=True)
-            return None
+            return None, "insufficient_capital"
 
         pos = self.portfolio.extend(req.symbol, filled_qty, fill_price, ref_price)
         # ``original_qty`` mirrors the cumulative entry-filled qty; bump it
@@ -601,20 +667,23 @@ class FillSimulator:
         fill_cumulative_qty = po.cumulative_filled_qty + filled_qty
         self._handle_entry_remainder(po, bar, unfilled)
 
-        return Fill(
-            order_id=po.order_id,
-            client_order_id=req.client_order_id,
-            symbol=pos.symbol,
-            side=pos.side,
-            qty=filled_qty,
-            price=fill_price,
-            timestamp=bar.timestamp,
-            reason="entry",
-            fill_kind=FillKind.PARTIAL if is_partial else FillKind.FULL,
-            unfilled_qty=unfilled,
-            # Per-order cumulative entry fills (monotonic across all slices
-            # of *this* order).
-            cumulative_filled_qty=fill_cumulative_qty,
+        return (
+            Fill(
+                order_id=po.order_id,
+                client_order_id=req.client_order_id,
+                symbol=pos.symbol,
+                side=pos.side,
+                qty=filled_qty,
+                price=fill_price,
+                timestamp=bar.timestamp,
+                reason="entry",
+                fill_kind=FillKind.PARTIAL if is_partial else FillKind.FULL,
+                unfilled_qty=unfilled,
+                # Per-order cumulative entry fills (monotonic across all slices
+                # of *this* order).
+                cumulative_filled_qty=fill_cumulative_qty,
+            ),
+            None,
         )
 
     @staticmethod
@@ -878,6 +947,95 @@ class FillSimulator:
             total_unfilled_qty=pos.total_unfilled_qty,
         )
         return exit_fill, record
+
+    # ------------------------------------------------------------------
+    # Diagnostic-event helpers (#410)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _record_entry_event(
+        events: List[FillDiagnosticEvent],
+        po: PendingOrder,
+        bar: Bar,
+        fill: Optional[Fill],
+        rejection: Optional[str],
+    ) -> None:
+        """Translate an ``_fill_entry`` / ``_continue_entry`` outcome into
+        a diagnostic event.
+
+        - ``rejection is None and fill`` with non-rejected ``fill_kind`` →
+          ``entry_filled`` lifecycle event (covers FULL and PARTIAL).
+        - ``rejection`` set → ``rejected`` event with that reason.
+        """
+        req = po.request
+        if rejection is None:
+            if fill is None or fill.fill_kind == FillKind.REJECTED:
+                return
+            events.append(
+                FillDiagnosticEvent(
+                    kind="entry_filled",
+                    order_id=po.order_id,
+                    timestamp=bar.timestamp,
+                    symbol=req.symbol,
+                    side=req.side.value,
+                    order_type=req.order_type.value,
+                    reason=fill.fill_kind.value,
+                )
+            )
+            return
+        events.append(
+            FillDiagnosticEvent(
+                kind="rejected",
+                order_id=po.order_id,
+                timestamp=bar.timestamp,
+                symbol=req.symbol,
+                side=req.side.value,
+                order_type=req.order_type.value,
+                reason=rejection,
+            )
+        )
+
+    @staticmethod
+    def _record_exit_event(
+        events: List[FillDiagnosticEvent],
+        po: PendingOrder,
+        bar: Bar,
+        fill: Fill,
+    ) -> None:
+        """Translate a ``_fill_exit`` outcome into a diagnostic event.
+
+        Maps a REJECTED exit Fill (zero liquidity on the bar) to a
+        ``rejected`` event with reason ``zero_fill_qty``; any non-rejected
+        Fill (FULL or PARTIAL) maps to an ``exit_filled`` event so the
+        downstream counter reflects what actually closed shares on this
+        bar — distinct from ``exits_emitted`` which tracks parent-side
+        intent at order submission time.
+        """
+        req = po.request
+        if fill.fill_kind == FillKind.REJECTED:
+            events.append(
+                FillDiagnosticEvent(
+                    kind="rejected",
+                    order_id=po.order_id,
+                    timestamp=bar.timestamp,
+                    symbol=req.symbol,
+                    side=req.side.value,
+                    order_type=req.order_type.value,
+                    reason="zero_fill_qty",
+                )
+            )
+            return
+        events.append(
+            FillDiagnosticEvent(
+                kind="exit_filled",
+                order_id=po.order_id,
+                timestamp=bar.timestamp,
+                symbol=req.symbol,
+                side=req.side.value,
+                order_type=req.order_type.value,
+                reason=fill.fill_kind.value,
+            )
+        )
 
     def _handle_exit_remainder(
         self,
