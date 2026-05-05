@@ -441,6 +441,30 @@ def test_metrics_single_point_equity_curve_preserves_annualized_return():
     assert m.annualized_return_pct > 0.0
 
 
+def test_metrics_empty_equity_curve_does_not_annualize_total_return():
+    # Weekend-only span: ``_weekday_range`` drops every day so ``curve.equity``
+    # is empty even though the trade carries non-zero ``net_pnl``. The
+    # single-point fallback must NOT fire here — there are zero observations
+    # to anchor an annualization, so annualized return must stay 0.0.
+    trades = [
+        # Sat → Sun trade with realized PnL; both endpoints are weekend.
+        _mk_trade("2023-01-07", "2023-01-08", net=500.0)
+    ]
+    m = compute_performance_metrics(
+        trades,
+        initial_capital=10_000.0,
+        risk_free_rate=0.0,
+        start_date="2023-01-07",
+        end_date="2023-01-08",
+    )
+    # ``total_return_pct`` reflects the realized PnL …
+    assert m.total_return_pct == pytest.approx(5.0, abs=1e-3)
+    # … but annualization on zero observations is meaningless and stays 0.0.
+    assert m.annualized_return_pct == 0.0
+    assert m.sharpe_ratio == 0.0
+    assert m.calmar_ratio == 0.0
+
+
 def test_metrics_alpha_annualized_on_log_basis():
     # ``_alpha_beta`` is fed log returns; alpha must therefore be annualized
     # via ``expm1(alpha_daily * 252)``, not the legacy

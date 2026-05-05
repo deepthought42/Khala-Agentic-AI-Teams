@@ -279,11 +279,16 @@ def compute_performance_metrics(
         mean_log = float(np.mean(returns))
         annualized_log_return = mean_log * TRADING_DAYS_PER_YEAR
         annualized_return_frac = math.expm1(annualized_log_return)
-    elif total_return_frac > -1.0 and total_return_frac != 0.0:
+    elif len(curve.equity) == 1 and total_return_frac > -1.0 and total_return_frac != 0.0:
         # Single-point equity curve (e.g. same-day trade or one-weekday span):
         # ``daily_returns`` is empty but realized PnL exists. Treat the
         # observed total return as a one-period log return and annualize, so
         # the metric isn't silently zeroed.
+        #
+        # Restricted to ``len == 1`` rather than ``returns.size == 0`` to
+        # avoid annualizing from a fully empty curve (e.g. a weekend-only
+        # ``start_date``/``end_date`` window where ``_weekday_range`` drops
+        # every day) — that has zero observations to anchor an annualization.
         annualized_log_return = math.log1p(total_return_frac) * TRADING_DAYS_PER_YEAR
         annualized_return_frac = math.expm1(annualized_log_return)
     else:
