@@ -156,6 +156,7 @@ def run_backtest(
             run_config.initial_capital,
             run_config.start_date,
             run_config.end_date,
+            equity_curve=outcome.streaming_equity_curve,
         )
         return outcome, run_metrics
 

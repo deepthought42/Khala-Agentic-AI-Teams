@@ -15,9 +15,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date as date_cls
 from typing import Callable, Dict, Iterable, List, Optional
 
 from ..execution.bar_safety import LookAheadError
+from ..execution.metrics import EquityCurve
 from ..execution.risk_filter import RiskFilter, RiskLimits
 from ..models import (
     BacktestConfig,
@@ -106,6 +108,12 @@ class TradingServiceResult:
     execution_diagnostics: BacktestExecutionDiagnostics = field(
         default_factory=BacktestExecutionDiagnostics
     )
+    #: Per-trading-day end-of-day mark-to-market equity, populated as the
+    #: run progresses (#430). When non-empty at end-of-stream, supplied to
+    #: ``compute_performance_metrics`` so it can skip rebuilding the curve
+    #: from the closed-trade ledger. ``None`` when no bars were processed
+    #: (e.g. ``harness.send_start`` failure or empty stream).
+    streaming_equity_curve: Optional[EquityCurve] = None
 
 
 def _record_event(
@@ -139,6 +147,40 @@ def _increment_rejection(diagnostics: BacktestExecutionDiagnostics, reason: str)
     diagnostics.orders_rejected += 1
     diagnostics.orders_rejection_reasons[reason_key] = (
         diagnostics.orders_rejection_reasons.get(reason_key, 0) + 1
+    )
+
+
+def _record_eod_equity(
+    eod_equity: Dict[date_cls, float],
+    bar_timestamp: str,
+    equity: float,
+) -> None:
+    """Stamp ``equity`` against the calendar day of ``bar_timestamp``.
+
+    Sub-daily timeframes call this once per bar; the dict overwrites the same
+    key on each subsequent bar of the day, so the *last* MTM value of each
+    trading day wins — which is what the daily-equity metrics engine wants.
+    """
+    eod_equity[date_cls.fromisoformat(bar_timestamp[:10])] = equity
+
+
+def _apply_streaming_curve(
+    result: TradingServiceResult,
+    eod_equity: Dict[date_cls, float],
+    initial_capital: float,
+) -> None:
+    """Materialize the streaming EOD-equity dict onto ``result``.
+
+    No-op when ``eod_equity`` is empty (e.g. the run aborted before any
+    non-warmup bars produced an MTM sample).
+    """
+    if not eod_equity:
+        return
+    sorted_days = sorted(eod_equity)
+    result.streaming_equity_curve = EquityCurve(
+        dates=sorted_days,
+        equity=[eod_equity[d] for d in sorted_days],
+        initial_capital=initial_capital,
     )
 
 
@@ -289,6 +331,12 @@ class TradingService:
         )
 
         result = TradingServiceResult()
+        # #430: per-trading-day EOD MTM equity, stamped from the run loop's
+        # existing ``portfolio.mark_to_market()`` calls. Declared before the
+        # harness so every return path through ``_apply_streaming_curve``
+        # sees the same ordered dict — even early aborts that produce zero
+        # samples (curve stays ``None``).
+        eod_equity: Dict[date_cls, float] = {}
 
         chunk_size = self._chunk_size_override
         if chunk_size is None:
@@ -306,6 +354,7 @@ class TradingService:
             except StrategyRuntimeError as exc:
                 result.error = str(exc)
                 result.lookahead_violation = exc.etype == "lookahead_violation"
+                _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
                 return _finalize_diagnostics(result)
 
             # Issue #377: chunked-bar protocol. Only opt in when the env var
@@ -331,6 +380,7 @@ class TradingService:
                     result=result,
                     chunk_size=chunk_size,
                     on_trade=on_trade,
+                    eod_equity=eod_equity,
                 )
 
             # We need one-bar lookahead in the fill simulator, so we buffer
@@ -446,6 +496,10 @@ class TradingService:
                         # 3) Drawdown circuit-breaker.
                         portfolio.update_last_price(cur_bar.symbol, cur_bar.close)
                         equity = portfolio.mark_to_market()
+                        # #430: stamp EOD equity for the streaming curve.
+                        # Sub-daily bars overwrite the same calendar-day key,
+                        # so the last MTM of each trading day wins.
+                        _record_eod_equity(eod_equity, cur_bar.timestamp, equity)
                         dd = self._risk.check_drawdown(equity, portfolio.peak_equity)
                         if dd.breached:
                             result.terminated_reason = (
@@ -592,12 +646,15 @@ class TradingService:
                 # violation so operators see a single error category.
                 result.error = str(exc)
                 result.lookahead_violation = True
+                _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
                 return _finalize_diagnostics(result)
             except StrategyRuntimeError as exc:
                 result.error = str(exc)
                 result.lookahead_violation = exc.etype == "lookahead_violation"
+                _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
                 return _finalize_diagnostics(result)
 
+        _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
         return _finalize_diagnostics(result)
 
     # ------------------------------------------------------------------
@@ -622,6 +679,7 @@ class TradingService:
         result: TradingServiceResult,
         chunk_size: int,
         on_trade: Optional[Callable[[TradeRecord], None]],
+        eod_equity: Dict[date_cls, float],
     ) -> TradingServiceResult:
         prev_bar = None
         pending_for_prev: List[OrderRequest] = []
@@ -747,6 +805,8 @@ class TradingService:
                     # 3) Drawdown circuit-breaker.
                     portfolio.update_last_price(cur_bar.symbol, cur_bar.close)
                     equity = portfolio.mark_to_market()
+                    # #430: stamp EOD equity for the streaming curve.
+                    _record_eod_equity(eod_equity, cur_bar.timestamp, equity)
                     dd = self._risk.check_drawdown(equity, portfolio.peak_equity)
                     if dd.breached:
                         result.terminated_reason = (
@@ -891,12 +951,15 @@ class TradingService:
         except LookAheadError as exc:
             result.error = str(exc)
             result.lookahead_violation = True
+            _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
             return _finalize_diagnostics(result)
         except StrategyRuntimeError as exc:
             result.error = str(exc)
             result.lookahead_violation = exc.etype == "lookahead_violation"
+            _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
             return _finalize_diagnostics(result)
 
+        _apply_streaming_curve(result, eod_equity, self.config.initial_capital)
         return _finalize_diagnostics(result)
 
     # ------------------------------------------------------------------
