@@ -217,37 +217,60 @@ def run_backtest(
     if config.cost_stress and config.cost_stress_multipliers:
         report = CostStressReport()
         multipliers = list(config.cost_stress_multipliers)
-        workers = min(len(multipliers), os.cpu_count() or 4)
         # Index by input position, not multiplier value: callers may pass
         # duplicate multipliers (e.g. for repeatability checks of a
         # non-deterministic strategy), and each duplicate must produce its
         # own row, matching the prior sequential behavior.
         rows_by_index: List[Optional[CostStressRow]] = [None] * len(multipliers)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cost-stress") as pool:
-            futures = {
-                pool.submit(
-                    _run_once,
-                    _scaled_cost_config(config, multiplier),
-                    capture_fingerprint=False,
-                ): idx
-                for idx, multiplier in enumerate(multipliers)
-            }
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                multiplier = multipliers[idx]
-                stress_result, stress_metrics = fut.result()
-                rows_by_index[idx] = CostStressRow(
-                    multiplier=multiplier,
-                    sharpe_ratio=stress_metrics.sharpe_ratio,
-                    annualized_return_pct=stress_metrics.annualized_return_pct,
-                    max_drawdown_pct=stress_metrics.max_drawdown_pct,
-                    # Each stressed run generates its own trade ledger —
-                    # turnover shifts with costs, so use the stressed
-                    # run's count, not the baseline's.
-                    trade_count=len(stress_result.trades),
-                )
+
+        def _stress_row(idx: int) -> CostStressRow:
+            multiplier = multipliers[idx]
+            stress_result, stress_metrics = _run_once(
+                _scaled_cost_config(config, multiplier),
+                capture_fingerprint=False,
+            )
+            return CostStressRow(
+                multiplier=multiplier,
+                sharpe_ratio=stress_metrics.sharpe_ratio,
+                annualized_return_pct=stress_metrics.annualized_return_pct,
+                max_drawdown_pct=stress_metrics.max_drawdown_pct,
+                # Each stressed run generates its own trade ledger —
+                # turnover shifts with costs, so use the stressed
+                # run's count, not the baseline's.
+                trade_count=len(stress_result.trades),
+            )
+
+        # Cache-stampede guard: the snapshot cache is only populated when
+        # a CachingProviderHistoricalStream drains EndOfStreamEvent (or
+        # cache-hits up-front). When the baseline trips early — e.g. via
+        # the TradingService drawdown breaker — the cache is still cold,
+        # and a parallel fan-out would have every worker miss cache and
+        # duplicate the same upstream provider fetch (rate limits,
+        # competing snapshot writes). Detect that case via the baseline's
+        # fingerprint and run the first multiplier sequentially so its
+        # persist step warms the cache before the rest go in parallel.
+        # The legacy ``market_data`` path skips this entirely — it has no
+        # provider cache to warm.
+        baseline_stream = streaming_holder["current"]
+        cache_warm = has_legacy or (
+            baseline_stream is not None and baseline_stream.dataset_fingerprint is not None
+        )
+        parallel_start = 0
+        if not cache_warm:
+            rows_by_index[0] = _stress_row(0)
+            parallel_start = 1
+
+        parallel_indices = list(range(parallel_start, len(multipliers)))
+        if parallel_indices:
+            workers = min(len(parallel_indices), os.cpu_count() or 4)
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cost-stress") as pool:
+                futures = {pool.submit(_stress_row, idx): idx for idx in parallel_indices}
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    rows_by_index[idx] = fut.result()
+
         for row in rows_by_index:
-            assert row is not None  # every future ran or raised
+            assert row is not None  # every position filled
             report.rows.append(row)
         update["cost_stress_results"] = report.to_payload()
 
