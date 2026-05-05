@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date as date_cls
 from typing import Any, Dict, List, Optional
 
+from .execution.metrics import EquityCurve
 from .models import BacktestResult, TradeRecord
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ def compute_metrics(
     risk_free_rate: Optional[float] = None,
     benchmark_equity: Optional[List[float]] = None,
     benchmark_dates: Optional[List[Any]] = None,
+    equity_curve: Optional[EquityCurve] = None,
 ) -> BacktestResult:
     """Compute aggregate performance metrics from trade records.
 
@@ -114,6 +116,10 @@ def compute_metrics(
     ``metrics_engine="legacy"`` preserves the pre-refactor inter-trade-return
     estimator for one release so persisted results stay byte-identical when
     explicitly requested.
+
+    ``equity_curve`` (#430) lets callers pass the streaming MTM curve from
+    ``TradingService.run`` so the metrics engine can skip rebuilding one from
+    the closed-trade ledger. Ignored by the legacy engine.
     """
     if metrics_engine == "daily":
         return _compute_metrics_daily(
@@ -124,6 +130,7 @@ def compute_metrics(
             risk_free_rate=risk_free_rate,
             benchmark_equity=benchmark_equity,
             benchmark_dates=benchmark_dates,
+            equity_curve=equity_curve,
         )
     return _compute_metrics_legacy(trades, initial_capital, start_date, end_date)
 
@@ -137,6 +144,7 @@ def _compute_metrics_daily(
     risk_free_rate: Optional[float] = None,
     benchmark_equity: Optional[List[float]] = None,
     benchmark_dates: Optional[List[Any]] = None,
+    equity_curve: Optional[EquityCurve] = None,
 ) -> BacktestResult:
     from .execution.metrics import compute_performance_metrics
 
@@ -148,6 +156,7 @@ def _compute_metrics_daily(
         risk_free_rate=risk_free_rate,
         benchmark_equity=benchmark_equity,
         benchmark_dates=benchmark_dates,
+        equity_curve=equity_curve,
     )
     return BacktestResult(
         total_return_pct=round(m.total_return_pct, 2),

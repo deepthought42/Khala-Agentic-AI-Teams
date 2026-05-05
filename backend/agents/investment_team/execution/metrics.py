@@ -239,11 +239,19 @@ def compute_performance_metrics(
     risk_free_rate: Optional[float] = None,
     benchmark_equity: Optional[Sequence[float]] = None,
     benchmark_dates: Optional[Iterable[date]] = None,
+    equity_curve: Optional[EquityCurve] = None,
 ) -> PerformanceMetrics:
     """Compute daily-equity-curve performance metrics.
 
     ``benchmark_equity`` (aligned to ``benchmark_dates``) is optional; when
     present, alpha/beta/information-ratio are filled in.
+
+    When ``equity_curve`` is supplied (e.g. the streaming MTM curve produced
+    by ``TradingService.run``), it is used directly instead of reconstructing
+    one from the closed-trade ledger via ``build_equity_curve_from_trades``.
+    The streaming curve carries open-position MTM per trading day, which the
+    reconstructed-from-trades curve cannot, so the supplied curve is preferred
+    whenever the caller has it.
     """
     rfr = get_risk_free_rate(override=risk_free_rate)
 
@@ -263,9 +271,14 @@ def compute_performance_metrics(
             trade_count=0,
         )
 
-    curve = build_equity_curve_from_trades(
-        trades, initial_capital, start_date=start_date, end_date=end_date
-    )
+    if equity_curve is not None:
+        if len(equity_curve.dates) != len(equity_curve.equity):
+            raise ValueError("equity_curve.dates and equity_curve.equity have mismatched lengths")
+        curve = equity_curve
+    else:
+        curve = build_equity_curve_from_trades(
+            trades, initial_capital, start_date=start_date, end_date=end_date
+        )
     try:
         returns = curve.daily_returns()
     except ValueError:
