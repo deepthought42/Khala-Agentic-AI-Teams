@@ -1,0 +1,599 @@
+"""Tests for the Strategy Lab specialized zero-trade repair loop (#405).
+
+The orchestrator's main code-refinement loop now branches on a critical
+``backtest_anomaly`` whose diagnostics envelope (issue #404) carries a
+deterministic ``zero_trade_category``. Instead of routing straight to
+the generic ``RefinementAgent``, the orchestrator first asks
+:class:`ZeroTradeRepairAgent` for a targeted fix and, if the proposal
+clears code-safety + a fresh backtest + the anomaly gates, commits it
+in place. Failed proposals fall through to generic refinement. These
+tests exercise :meth:`StrategyLabOrchestrator._run_zero_trade_repair`
+directly with stubs for the agent and ``run_strategy_code``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+import pytest
+
+from investment_team.market_data_service import OHLCVBar
+from investment_team.models import (
+    BacktestConfig,
+    BacktestExecutionDiagnostics,
+    StrategySpec,
+)
+from investment_team.strategy_lab import orchestrator as orchestrator_module
+from investment_team.strategy_lab.agents.zero_trade_repair import ZeroTradeRepairReport
+from investment_team.strategy_lab.orchestrator import (
+    StrategyLabOrchestrator,
+    _ZeroTradeRepairOutcome,
+)
+from investment_team.strategy_lab.quality_gates.models import QualityGateResult
+from investment_team.tests.test_strategy_lab_alignment import (
+    _benign_sandbox_trades,
+    _code_exec,
+)
+from investment_team.trading_service.modes.sandbox_compat import StrategyRunResult
+
+# ---------------------------------------------------------------------------
+# Fixtures / helpers
+# ---------------------------------------------------------------------------
+
+
+def _config() -> BacktestConfig:
+    return BacktestConfig(
+        start_date="2023-01-01",
+        end_date="2023-12-31",
+        initial_capital=100_000.0,
+        benchmark_symbol="SPY",
+        transaction_cost_bps=5.0,
+        slippage_bps=2.0,
+    )
+
+
+def _spec() -> StrategySpec:
+    return StrategySpec(
+        strategy_id="strat-zt-repair-test",
+        authored_by="test",
+        asset_class="stocks",
+        hypothesis="hyp",
+        signal_definition="sig",
+        entry_rules=["enter when RSI < 30"],
+        exit_rules=["exit when RSI > 70"],
+        sizing_rules=["risk 2% per trade"],
+        risk_limits={"max_position_pct": 5},
+        speculative=False,
+        strategy_code=(
+            "from contract import Strategy\n\n"
+            "class S(Strategy):\n"
+            "    def on_bar(self, ctx, bar):\n"
+            "        pass  # never submits an order — original buggy code\n"
+        ),
+    )
+
+
+def _market_data() -> Dict[str, List[OHLCVBar]]:
+    bars = [
+        OHLCVBar(
+            date=f"2023-01-{i + 1:02d}",
+            open=100.0 + i,
+            high=101.0 + i,
+            low=99.0 + i,
+            close=100.5 + i,
+            volume=1_000_000,
+        )
+        for i in range(20)
+    ]
+    return {"AAPL": bars}
+
+
+def _zero_trade_diagnostics(
+    category: str = "NO_ORDERS_EMITTED",
+) -> BacktestExecutionDiagnostics:
+    return BacktestExecutionDiagnostics(
+        zero_trade_category=category,  # type: ignore[arg-type]
+        summary="strategy never submitted an order across 20 bars",
+        bars_processed=20,
+        orders_emitted=0,
+        orders_accepted=0,
+        orders_rejected=0,
+        orders_unfilled=0,
+        warmup_orders_dropped=0,
+        entries_filled=0,
+        exits_emitted=0,
+        closed_trades=0,
+    )
+
+
+def _zero_trade_exec_result() -> StrategyRunResult:
+    """Initial backtest result: zero trades + diagnostics with category."""
+    return StrategyRunResult(
+        success=True,
+        trades=[],
+        execution_diagnostics=_zero_trade_diagnostics(),
+    )
+
+
+# Valid Strategy-subclass code that the safety gate accepts. Body intentionally
+# trivial — we never actually execute it because ``run_strategy_code`` is
+# stubbed via monkeypatch.
+_REPAIRED_CODE = (
+    "from contract import Strategy\n\n"
+    "class S(Strategy):\n"
+    "    def on_bar(self, ctx, bar):\n"
+    "        pass  # repaired (test stub)\n"
+)
+
+
+# Code that fails the safety gate (banned import).
+_UNSAFE_CODE = (
+    "import os\n\n"
+    "from contract import Strategy\n\n"
+    "class S(Strategy):\n"
+    "    def on_bar(self, ctx, bar):\n"
+    "        os.system('rm -rf /')  # banned\n"
+)
+
+
+class _StubZeroTradeRepairAgent:
+    """Records calls and returns scripted ``ZeroTradeRepairReport`` objects.
+
+    Mirrors ``_StubAlignmentAgent`` from ``test_strategy_lab_alignment.py``
+    but for the repair agent's signature.
+    """
+
+    def __init__(
+        self,
+        *,
+        reports: Optional[List[ZeroTradeRepairReport]] = None,
+        raise_on_call: Optional[Exception] = None,
+    ) -> None:
+        self._reports = list(reports or [])
+        self._raise = raise_on_call
+        self.calls: List[Dict[str, Any]] = []
+
+    def run(
+        self,
+        spec: StrategySpec,
+        code: str,
+        diagnostics: BacktestExecutionDiagnostics,
+        prior_attempts: Optional[List[str]] = None,
+    ) -> ZeroTradeRepairReport:
+        self.calls.append(
+            {
+                "code": code,
+                "category": diagnostics.zero_trade_category,
+                "prior_attempts": list(prior_attempts or []),
+            }
+        )
+        if self._raise is not None:
+            raise self._raise
+        if not self._reports:
+            raise AssertionError("repair stub called more times than scripted")
+        return self._reports.pop(0)
+
+
+class _StubSandbox:
+    """Stub for ``run_strategy_code``. ``results`` is consumed in order.
+
+    Patched into ``investment_team.strategy_lab.orchestrator.run_strategy_code``
+    via monkeypatch so the helper picks up the stub when re-running the
+    proposed code.
+    """
+
+    def __init__(self, results: List[StrategyRunResult]) -> None:
+        self._results = list(results)
+        self.calls: List[str] = []
+
+    def __call__(
+        self,
+        strategy_code: str,
+        market_data: Any,
+        config: Any,
+        *,
+        strategy: Any = None,
+    ) -> StrategyRunResult:
+        self.calls.append(strategy_code)
+        if not self._results:
+            raise AssertionError("sandbox stub called more times than scripted")
+        return self._results.pop(0)
+
+
+def _make_orchestrator_with_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    repair_reports: Optional[List[ZeroTradeRepairReport]] = None,
+    repair_raises: Optional[Exception] = None,
+    sandbox_results: Optional[List[StrategyRunResult]] = None,
+) -> tuple[StrategyLabOrchestrator, _StubZeroTradeRepairAgent, _StubSandbox]:
+    orch = StrategyLabOrchestrator()
+    repair_stub = _StubZeroTradeRepairAgent(reports=repair_reports, raise_on_call=repair_raises)
+    sandbox_stub = _StubSandbox(sandbox_results or [])
+    orch.zero_trade_repair_agent = repair_stub  # type: ignore[assignment]
+    monkeypatch.setattr(orchestrator_module, "run_strategy_code", sandbox_stub)
+    return orch, repair_stub, sandbox_stub
+
+
+def _drive_repair(
+    orch: StrategyLabOrchestrator,
+    *,
+    spec: Optional[StrategySpec] = None,
+    code: Optional[str] = None,
+    exec_result: Optional[StrategyRunResult] = None,
+    market_data: Optional[Dict[str, List[OHLCVBar]]] = None,
+    config: Optional[BacktestConfig] = None,
+    zero_trade_attempts: Optional[List[str]] = None,
+) -> tuple[_ZeroTradeRepairOutcome, List[tuple[str, Dict[str, Any]]], List[str]]:
+    """Convenience wrapper around ``orch._run_zero_trade_repair``.
+
+    Captures emitted phase callbacks and the orchestrator's
+    ``zero_trade_attempts`` log so tests can assert on them.
+    """
+    spec = spec or _spec()
+    code = code if code is not None else (spec.strategy_code or "")
+    exec_result = exec_result or _zero_trade_exec_result()
+    market_data = market_data or _market_data()
+    config = config or _config()
+    attempts = zero_trade_attempts if zero_trade_attempts is not None else []
+    events: List[tuple[str, Dict[str, Any]]] = []
+
+    def emit(phase: str, data: Dict[str, Any]) -> None:
+        events.append((phase, data))
+
+    outcome = orch._run_zero_trade_repair(
+        spec=spec,
+        code=code,
+        exec_result=exec_result,
+        market_data=market_data,
+        config=config,
+        zero_trade_attempts=attempts,
+        round_num=0,
+        emit=emit,
+    )
+    return outcome, events, attempts
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_zero_trade_repair_succeeds_on_first_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair agent proposes new code; re-backtest produces trades that
+    clear the anomaly gates. Outcome is committed with the new state."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="NO_ORDERS_EMITTED",
+                evidence="orders_emitted=0 with bars_processed=20",
+                code_issue="entry guard never true",
+                proposed_code=_REPAIRED_CODE,
+                expected_order_count_change=12,
+                expected_trade_count_change=6,
+                changes_made="loosened RSI guard so signals fire",
+            ),
+        ],
+        sandbox_results=[
+            _code_exec(success=True, raw_trades=_benign_sandbox_trades()),
+        ],
+    )
+
+    outcome, events, attempts = _drive_repair(orch)
+
+    assert outcome.committed is True
+    assert outcome.new_code == _REPAIRED_CODE
+    assert outcome.new_spec is not None
+    assert outcome.new_spec.strategy_code == _REPAIRED_CODE
+    assert outcome.new_metrics is not None
+    assert outcome.new_trades, "committed outcome must carry the post-repair ledger"
+    assert outcome.new_exec_result is not None
+    assert outcome.new_exec_result.success is True
+    assert outcome.changes_made.startswith("loosened RSI guard")
+
+    # The agent and the sandbox were each called exactly once.
+    assert len(repair_stub.calls) == 1
+    assert sandbox_stub.calls == [_REPAIRED_CODE]
+
+    # The attempts log records the commit so prior_attempts on a future
+    # round can read it as evidence.
+    assert len(attempts) == 1
+    assert attempts[0].startswith("committed (NO_ORDERS_EMITTED)")
+
+    # Phase emits: started → committed.
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_committed",
+    ]
+
+    # Gate results include both safety + post-repair anomaly gates.
+    assert outcome.new_gates, "committed outcome must surface its quality gates"
+    gate_names = {g.gate_name for g in outcome.new_gates}
+    assert any(name.startswith("zero_trade_repair_") for name in gate_names)
+
+
+def test_zero_trade_repair_failed_proposal_preserves_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-backtest of the proposal still produces zero trades → critical
+    anomaly → outcome is not committed and the attempts log records the
+    rejection. The caller therefore retains its prior known-good state.
+    """
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="NO_ORDERS_EMITTED",
+                evidence="orders_emitted=0",
+                proposed_code=_REPAIRED_CODE,
+                changes_made="attempted RSI loosen",
+            ),
+        ],
+        sandbox_results=[
+            # Re-execution yields zero trades again → BacktestAnomalyDetector
+            # flags critical, repair must NOT commit.
+            _code_exec(success=True, raw_trades=[]),
+        ],
+    )
+
+    outcome, events, attempts = _drive_repair(orch)
+
+    assert outcome.committed is False
+    assert outcome.failure_reason == "anomaly_after_repair"
+    assert outcome.new_code == ""
+    assert outcome.new_spec is None
+    assert outcome.new_metrics is None
+    assert outcome.new_exec_result is None
+
+    assert len(repair_stub.calls) == 1
+    assert sandbox_stub.calls == [_REPAIRED_CODE]
+
+    assert len(attempts) == 1
+    assert attempts[0].startswith("anomaly_after_repair (NO_ORDERS_EMITTED)")
+
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_rejected",
+    ]
+    rejected_event = next(
+        d for _, d in events if d.get("sub_phase") == "zero_trade_repair_rejected"
+    )
+    assert rejected_event["reason"] == "anomaly_after_repair"
+
+    # Surfaced gates include the critical anomaly so downstream telemetry
+    # can audit the failed attempt.
+    critical_gates = [g for g in outcome.new_gates if not g.passed and g.severity == "critical"]
+    assert critical_gates, "expected at least one critical anomaly gate"
+    assert all(g.gate_name.startswith("zero_trade_repair_") for g in critical_gates)
+
+
+def test_zero_trade_repair_unsafe_code_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proposed code with a banned import fails code-safety; the helper
+    short-circuits without invoking ``run_strategy_code``."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="ORDERS_REJECTED",
+                evidence="orders_rejected=5 with reason insufficient_capital",
+                proposed_code=_UNSAFE_CODE,
+                changes_made="unsafe rewrite",
+            ),
+        ],
+        sandbox_results=[],  # sandbox MUST NOT be called
+    )
+
+    diagnostics = _zero_trade_diagnostics(category="ORDERS_REJECTED")
+    outcome, events, attempts = _drive_repair(
+        orch,
+        exec_result=StrategyRunResult(success=True, trades=[], execution_diagnostics=diagnostics),
+    )
+
+    assert outcome.committed is False
+    assert outcome.failure_reason == "unsafe_code"
+    assert sandbox_stub.calls == []  # short-circuited before re-execution
+    assert len(repair_stub.calls) == 1
+
+    assert len(attempts) == 1
+    assert attempts[0].startswith("unsafe_code (ORDERS_REJECTED)")
+
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_rejected",
+    ]
+    rejected_event = next(
+        d for _, d in events if d.get("sub_phase") == "zero_trade_repair_rejected"
+    )
+    assert rejected_event["reason"] == "unsafe_code"
+
+    # Safety gates include the critical failure.
+    critical_safety = [
+        g
+        for g in outcome.new_gates
+        if not g.passed
+        and g.severity == "critical"
+        and g.gate_name == "zero_trade_repair_code_safety"
+    ]
+    assert critical_safety, "expected the code_safety gate to fire on banned import"
+
+
+def test_zero_trade_repair_no_proposed_code_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent declined to propose code (e.g. evidence too thin). The helper
+    reports not-committed and the sandbox is never invoked. The caller is
+    expected to fall through to the generic refinement agent."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="UNKNOWN_ZERO_TRADE_PATH",
+                evidence="diagnostics envelope was unclassified; not enough signal",
+                proposed_code=None,
+            ),
+        ],
+        sandbox_results=[],
+    )
+
+    outcome, events, attempts = _drive_repair(
+        orch,
+        exec_result=StrategyRunResult(
+            success=True,
+            trades=[],
+            execution_diagnostics=_zero_trade_diagnostics(category="UNKNOWN_ZERO_TRADE_PATH"),
+        ),
+    )
+
+    assert outcome.committed is False
+    assert outcome.failure_reason == "no_proposed_code"
+    assert sandbox_stub.calls == []
+    assert len(repair_stub.calls) == 1
+
+    assert len(attempts) == 1
+    assert attempts[0].startswith("no_proposal (UNKNOWN_ZERO_TRADE_PATH)")
+
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_skipped",
+    ]
+
+
+def test_zero_trade_repair_agent_exception_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raised exception inside the agent collapses to a not-committed
+    outcome and is logged in attempts so the caller can fall through."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_raises=RuntimeError("LLM provider timeout"),
+        sandbox_results=[],
+    )
+
+    outcome, events, attempts = _drive_repair(orch)
+
+    assert outcome.committed is False
+    assert outcome.failure_reason.startswith("agent_error")
+    assert sandbox_stub.calls == []
+    assert len(repair_stub.calls) == 1
+
+    assert len(attempts) == 1
+    assert attempts[0].startswith("agent_error: RuntimeError")
+
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_skipped",
+    ]
+
+
+def test_zero_trade_repair_applies_proposed_spec_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whitelisted ``proposed_spec_updates`` flow into the committed spec;
+    off-list keys are silently dropped so an LLM hallucination cannot
+    rewrite arbitrary fields."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="ENTRY_WITH_NO_EXIT",
+                evidence="entries_filled=4 closed_trades=0",
+                proposed_code=_REPAIRED_CODE,
+                proposed_spec_updates={
+                    "exit_rules": ["exit after 10 bars (added time stop)"],
+                    # Off-list keys MUST NOT mutate the spec.
+                    "strategy_id": "hijacked",
+                    "asset_class": "crypto",
+                },
+                changes_made="added time-stop exit",
+            ),
+        ],
+        sandbox_results=[
+            _code_exec(success=True, raw_trades=_benign_sandbox_trades()),
+        ],
+    )
+
+    diagnostics = _zero_trade_diagnostics(category="ENTRY_WITH_NO_EXIT")
+    outcome, _events, _attempts = _drive_repair(
+        orch,
+        exec_result=StrategyRunResult(success=True, trades=[], execution_diagnostics=diagnostics),
+    )
+
+    assert outcome.committed is True
+    assert outcome.new_spec is not None
+    # Whitelisted update applied …
+    assert outcome.new_spec.exit_rules == ["exit after 10 bars (added time stop)"]
+    # … and off-list mutations were silently dropped.
+    assert outcome.new_spec.strategy_id == "strat-zt-repair-test"
+    assert outcome.new_spec.asset_class == "stocks"
+
+
+def test_zero_trade_repair_no_category_is_defensive_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive path: if the orchestrator's routing guard ever lets a
+    diagnostics-without-category through to the helper, we report
+    not-committed without calling the agent."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[],
+        sandbox_results=[],
+    )
+
+    no_category_diag = BacktestExecutionDiagnostics(zero_trade_category=None)
+    outcome, events, attempts = _drive_repair(
+        orch,
+        exec_result=StrategyRunResult(
+            success=True, trades=[], execution_diagnostics=no_category_diag
+        ),
+    )
+
+    assert outcome.committed is False
+    assert "zero_trade_category" in outcome.failure_reason
+    assert repair_stub.calls == []
+    assert sandbox_stub.calls == []
+    assert attempts == []
+    assert events == []
+
+
+def test_orchestrator_constructs_zero_trade_repair_agent_by_default() -> None:
+    """The orchestrator wires up a real :class:`ZeroTradeRepairAgent` so
+    callers that don't inject one still pick up the specialized branch."""
+    from investment_team.strategy_lab.agents.zero_trade_repair import (
+        ZeroTradeRepairAgent,
+    )
+
+    orch = StrategyLabOrchestrator()
+    assert isinstance(orch.zero_trade_repair_agent, ZeroTradeRepairAgent)
+
+
+def test_quality_gate_results_are_typed() -> None:
+    """Sanity check: the helper's surfaced gates must be ``QualityGateResult``s
+    so existing telemetry consumers (Strategy Lab dashboards, persisted
+    records) don't choke on a foreign payload."""
+    # No monkeypatch needed — exercise the defensive no-op path.
+    orch = StrategyLabOrchestrator()
+
+    no_category_diag = BacktestExecutionDiagnostics(zero_trade_category=None)
+    outcome = orch._run_zero_trade_repair(
+        spec=_spec(),
+        code=_spec().strategy_code or "",
+        exec_result=StrategyRunResult(
+            success=True, trades=[], execution_diagnostics=no_category_diag
+        ),
+        market_data=_market_data(),
+        config=_config(),
+        zero_trade_attempts=[],
+        round_num=0,
+        emit=lambda _phase, _data: None,
+    )
+    assert all(isinstance(g, QualityGateResult) for g in outcome.new_gates)

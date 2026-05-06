@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -46,11 +47,12 @@ from ..models import (
 )
 from ..signal_intelligence_models import SignalIntelligenceBriefV1
 from ..trade_simulator import compute_metrics
-from ..trading_service.modes.sandbox_compat import run_strategy_code
+from ..trading_service.modes.sandbox_compat import StrategyRunResult, run_strategy_code
 from .agents.alignment import TradeAlignmentAgent, TradeAlignmentReport
 from .agents.analysis import AnalysisAgent
 from .agents.ideation import IdeationAgent
 from .agents.refinement import RefinementAgent
+from .agents.zero_trade_repair import ZeroTradeRepairAgent, ZeroTradeRepairReport
 from .quality_gates.acceptance_gate import AcceptanceGate, summarize_acceptance_reason
 from .quality_gates.backtest_anomaly import BacktestAnomalyDetector
 from .quality_gates.code_safety import CodeSafetyChecker
@@ -106,6 +108,43 @@ def _format_execution_diagnostics(
     return f"Execution Diagnostics: {encoded}"
 
 
+# Spec keys honoured when applying ``ZeroTradeRepairReport.proposed_spec_updates``.
+# Mirrors the agent-side whitelist so the orchestrator silently drops any
+# off-list keys an LLM might invent.
+_ZERO_TRADE_SPEC_UPDATE_KEYS = frozenset(
+    {
+        "entry_rules",
+        "exit_rules",
+        "sizing_rules",
+        "risk_limits",
+        "hypothesis",
+        "signal_definition",
+    }
+)
+
+
+@dataclass
+class _ZeroTradeRepairOutcome:
+    """Result of one specialized zero-trade repair attempt.
+
+    ``committed=True`` means the proposed code passed code-safety, ran
+    cleanly, and produced trades that no longer trip a critical anomaly
+    gate; the orchestrator should swap in the new state. ``False`` means
+    the caller should fall through to the generic refinement agent so
+    the existing loop semantics are preserved.
+    """
+
+    committed: bool
+    new_code: str = ""
+    new_spec: Optional[StrategySpec] = None
+    new_trades: List[TradeRecord] = field(default_factory=list)
+    new_metrics: Optional[BacktestResult] = None
+    new_exec_result: Optional[StrategyRunResult] = None
+    new_gates: List[QualityGateResult] = field(default_factory=list)
+    failure_reason: str = ""
+    changes_made: str = ""
+
+
 class StrategyLabOrchestrator:
     """Deterministic pipeline controller for the Strategy Lab.
 
@@ -118,6 +157,7 @@ class StrategyLabOrchestrator:
         self.ideation_agent = IdeationAgent()
         self.refinement_agent = RefinementAgent()
         self.alignment_agent = TradeAlignmentAgent()
+        self.zero_trade_repair_agent = ZeroTradeRepairAgent()
         self.analysis_agent = AnalysisAgent()
         self.strategy_validator = StrategySpecValidator()
         self.code_safety_checker = CodeSafetyChecker()
@@ -193,6 +233,7 @@ class StrategyLabOrchestrator:
 
         all_gate_results: List[QualityGateResult] = []
         refinement_attempts: List[str] = []
+        zero_trade_attempts: List[str] = []
         trades: List[TradeRecord] = []
         metrics = compute_metrics([], config.initial_capital, config.start_date, config.end_date)
         execution_succeeded = False
@@ -403,6 +444,60 @@ class StrategyLabOrchestrator:
                     )
                     if diagnostics_block:
                         failure_details = f"{failure_details}\n{diagnostics_block}"
+
+                    # Issue #405 — specialized zero-trade repair branch.
+                    # If the critical anomaly carries a deterministic
+                    # ``zero_trade_category``, ask the targeted repair
+                    # agent first. On a successful repair the proposal
+                    # has already passed code-safety, a fresh backtest,
+                    # and the anomaly gates, so we commit it and re-
+                    # enter the loop. On a failed proposal we fall
+                    # through to the generic refinement agent so the
+                    # existing loop semantics are preserved.
+                    diag = exec_result.execution_diagnostics
+                    if (
+                        diag is not None
+                        and diag.zero_trade_category is not None
+                        and market_data is not None
+                    ):
+                        zt_outcome = self._run_zero_trade_repair(
+                            spec=spec,
+                            code=code,
+                            exec_result=exec_result,
+                            market_data=market_data,
+                            config=config,
+                            zero_trade_attempts=zero_trade_attempts,
+                            round_num=round_num,
+                            emit=emit,
+                        )
+                        all_gate_results.extend(zt_outcome.new_gates)
+                        if zt_outcome.committed:
+                            assert zt_outcome.new_spec is not None
+                            assert zt_outcome.new_metrics is not None
+                            assert zt_outcome.new_exec_result is not None
+                            code = zt_outcome.new_code
+                            spec = zt_outcome.new_spec
+                            trades = zt_outcome.new_trades
+                            metrics = zt_outcome.new_metrics
+                            exec_result = zt_outcome.new_exec_result
+                            refinement_attempts.append(
+                                f"zero-trade repair: {zt_outcome.changes_made}"
+                                if zt_outcome.changes_made
+                                else "zero-trade repair"
+                            )
+                            emit(
+                                "coding",
+                                {
+                                    "sub_phase": "refined",
+                                    "refinement_round": round_num,
+                                    "changes_made": (
+                                        zt_outcome.changes_made or "zero-trade repair"
+                                    ),
+                                    "via": "zero_trade_repair",
+                                },
+                            )
+                            continue
+
                     updates, code = self._refine(
                         spec,
                         code,
@@ -909,6 +1004,228 @@ class StrategyLabOrchestrator:
                     f"{type(exc).__name__}. Treating trades as aligned to avoid stalling."
                 ),
             )
+
+    def _run_zero_trade_repair(
+        self,
+        *,
+        spec: StrategySpec,
+        code: str,
+        exec_result: StrategyRunResult,
+        market_data: Dict[str, List[OHLCVBar]],
+        config: BacktestConfig,
+        zero_trade_attempts: List[str],
+        round_num: int,
+        emit: PhaseCallback,
+    ) -> _ZeroTradeRepairOutcome:
+        """Issue #405 — specialized zero-trade repair attempt.
+
+        Asks :class:`ZeroTradeRepairAgent` for a targeted code fix based
+        on the deterministic execution diagnostics (issue #404), then
+        gates the proposal through code-safety + a fresh backtest +
+        :class:`BacktestAnomalyDetector` before signalling commit.
+        Mirrors the alignment loop's break-without-commit posture: any
+        failed gate appends a record to ``zero_trade_attempts`` and
+        returns ``committed=False`` so the caller falls through to the
+        generic :class:`RefinementAgent`.
+        """
+        diagnostics = exec_result.execution_diagnostics
+        # Caller is responsible for the routing guard, but be defensive.
+        if diagnostics is None or diagnostics.zero_trade_category is None:
+            return _ZeroTradeRepairOutcome(
+                committed=False,
+                failure_reason="no zero_trade_category on diagnostics envelope",
+            )
+
+        emit(
+            "coding",
+            {
+                "sub_phase": "zero_trade_repair_started",
+                "refinement_round": round_num,
+                "zero_trade_category": diagnostics.zero_trade_category,
+                "prior_attempts": len(zero_trade_attempts),
+            },
+        )
+
+        try:
+            report: ZeroTradeRepairReport = self.zero_trade_repair_agent.run(
+                spec=spec,
+                code=code,
+                diagnostics=diagnostics,
+                prior_attempts=zero_trade_attempts,
+            )
+        except Exception as exc:
+            logger.exception("Zero-trade repair agent raised; falling through to refinement")
+            zero_trade_attempts.append(f"agent_error: {type(exc).__name__}: {str(exc)[:160]}")
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_skipped",
+                    "refinement_round": round_num,
+                    "reason": "agent_error",
+                },
+            )
+            return _ZeroTradeRepairOutcome(committed=False, failure_reason=f"agent_error: {exc}")
+
+        if not report.proposed_code:
+            zero_trade_attempts.append(
+                f"no_proposal ({report.root_cause_category}): "
+                f"{report.evidence[:160] or 'agent declined to propose'}"
+            )
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_skipped",
+                    "refinement_round": round_num,
+                    "reason": "no_proposed_code",
+                    "root_cause_category": report.root_cause_category,
+                },
+            )
+            return _ZeroTradeRepairOutcome(committed=False, failure_reason="no_proposed_code")
+
+        # ── Code-safety gate on the proposed code ────────────────────
+        safety_gates = self.code_safety_checker.check(report.proposed_code)
+        for g in safety_gates:
+            g.refinement_round = round_num
+            g.gate_name = f"zero_trade_repair_{g.gate_name}"
+        critical_safety = [g for g in safety_gates if not g.passed and g.severity == "critical"]
+        if critical_safety:
+            zero_trade_attempts.append(
+                f"unsafe_code ({report.root_cause_category}): "
+                f"{'; '.join(g.details for g in critical_safety)[:160]}"
+            )
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_rejected",
+                    "refinement_round": round_num,
+                    "reason": "unsafe_code",
+                    "details": "; ".join(g.details for g in critical_safety)[:400],
+                },
+            )
+            return _ZeroTradeRepairOutcome(
+                committed=False,
+                new_gates=safety_gates,
+                failure_reason="unsafe_code",
+            )
+
+        # ── Fresh backtest of the proposed code ──────────────────────
+        proposed_spec = self._apply_zero_trade_spec_updates(
+            spec, report.proposed_spec_updates, report.proposed_code
+        )
+        repair_exec = run_strategy_code(
+            report.proposed_code, market_data, config, strategy=proposed_spec
+        )
+        if not repair_exec.success:
+            failure_gate = QualityGateResult(
+                gate_name="zero_trade_repair_code_execution",
+                passed=False,
+                severity="critical",
+                details=(
+                    f"Re-execution after zero-trade repair failed "
+                    f"({repair_exec.error_type}): {repair_exec.stderr[:400]}"
+                ),
+                refinement_round=round_num,
+            )
+            zero_trade_attempts.append(
+                f"reexec_failed ({report.root_cause_category}): {repair_exec.error_type}"
+            )
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_rejected",
+                    "refinement_round": round_num,
+                    "reason": "re_execution_failed",
+                    "error_type": repair_exec.error_type,
+                },
+            )
+            return _ZeroTradeRepairOutcome(
+                committed=False,
+                new_gates=safety_gates + [failure_gate],
+                failure_reason=f"re_execution_failed: {repair_exec.error_type}",
+            )
+
+        new_trades = repair_exec.trades
+        new_metrics = compute_metrics(
+            new_trades, config.initial_capital, config.start_date, config.end_date
+        )
+
+        # ── Anomaly recheck ──────────────────────────────────────────
+        new_anomaly_gates = self.anomaly_detector.check(
+            new_metrics,
+            new_trades,
+            dsr_aware=config.walk_forward_enabled,
+            diagnostics=repair_exec.execution_diagnostics,
+        )
+        for g in new_anomaly_gates:
+            g.refinement_round = round_num
+            g.gate_name = f"zero_trade_repair_{g.gate_name}"
+
+        new_critical = [g for g in new_anomaly_gates if not g.passed and g.severity == "critical"]
+        if new_critical:
+            zero_trade_attempts.append(
+                f"anomaly_after_repair ({report.root_cause_category}): "
+                f"{'; '.join(g.details for g in new_critical)[:160]}"
+            )
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_rejected",
+                    "refinement_round": round_num,
+                    "reason": "anomaly_after_repair",
+                    "details": "; ".join(g.details for g in new_critical)[:400],
+                },
+            )
+            return _ZeroTradeRepairOutcome(
+                committed=False,
+                new_gates=safety_gates + new_anomaly_gates,
+                failure_reason="anomaly_after_repair",
+            )
+
+        # All gates passed — commit the proposal.
+        change_summary = report.changes_made or f"repair {report.root_cause_category}"
+        zero_trade_attempts.append(
+            f"committed ({report.root_cause_category}): {change_summary[:160]}"
+        )
+        emit(
+            "coding",
+            {
+                "sub_phase": "zero_trade_repair_committed",
+                "refinement_round": round_num,
+                "root_cause_category": report.root_cause_category,
+                "changes_made": change_summary,
+                "trades_count": len(new_trades),
+            },
+        )
+        return _ZeroTradeRepairOutcome(
+            committed=True,
+            new_code=report.proposed_code,
+            new_spec=proposed_spec,
+            new_trades=new_trades,
+            new_metrics=new_metrics,
+            new_exec_result=repair_exec,
+            new_gates=safety_gates + new_anomaly_gates,
+            changes_made=change_summary,
+        )
+
+    @staticmethod
+    def _apply_zero_trade_spec_updates(
+        spec: StrategySpec, updates: Optional[Dict[str, Any]], code: str
+    ) -> StrategySpec:
+        """Apply whitelisted spec updates from a zero-trade repair report.
+
+        Restricts merges to :data:`_ZERO_TRADE_SPEC_UPDATE_KEYS` so an
+        off-list LLM hallucination cannot rewrite arbitrary spec fields.
+        Unlike :meth:`_apply_updates` (which is shared with the generic
+        refinement agent and only knows the legacy refinement keys),
+        this helper also honours ``signal_definition`` because the
+        repair agent's prompt includes it in the whitelist.
+        """
+        data = spec.model_dump()
+        for key in _ZERO_TRADE_SPEC_UPDATE_KEYS:
+            if updates and key in updates:
+                data[key] = updates[key]
+        data["strategy_code"] = code
+        return StrategySpec.model_validate(data)
 
     @staticmethod
     def _apply_updates(spec: StrategySpec, updates: Dict[str, Any], code: str) -> StrategySpec:

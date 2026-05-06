@@ -1,0 +1,305 @@
+"""Strands Agent that diagnoses zero-trade backtest failures and proposes
+Python code fixes targeted at the deterministic `zero_trade_category`
+classified by the trading service (see issue #404).
+
+Used by :class:`StrategyLabOrchestrator` ahead of the generic
+:class:`RefinementAgent` whenever a refinement-loop backtest produces a
+critical zero-trade anomaly. The orchestrator drives a one-shot repair
+attempt per refinement round: the proposed code is sent through code
+safety + a fresh backtest + the anomaly gates before being committed
+over the previous known-good state. Failed proposals fall through to
+the generic refinement agent so existing behavior is preserved.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+from strands import Agent
+
+from ...models import BacktestExecutionDiagnostics, StrategySpec, ZeroTradeCategory
+from .model_factory import get_strands_model
+
+logger = logging.getLogger(__name__)
+
+_PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+# Spec keys the orchestrator will honour from a ZeroTradeRepairReport's
+# ``proposed_spec_updates``. Anything else is silently dropped — the
+# specialized repair agent must not invent fields.
+_ALLOWED_SPEC_UPDATE_KEYS = frozenset(
+    {
+        "entry_rules",
+        "exit_rules",
+        "sizing_rules",
+        "risk_limits",
+        "hypothesis",
+        "signal_definition",
+    }
+)
+
+# Cap on `last_order_events` included in the repair prompt. The model
+# already trims to 20; 10 is enough signal for the LLM to spot the
+# failure pattern while keeping the JSON line under ~1 KB.
+_DIAGNOSTICS_LAST_EVENTS_CAP = 10
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+
+class ZeroTradeRepairReport(BaseModel):
+    """Verdict from one zero-trade repair attempt."""
+
+    root_cause_category: ZeroTradeCategory
+    evidence: str = ""
+    code_issue: Optional[str] = None
+    strategy_rule_issue: Optional[str] = None
+    proposed_code: Optional[str] = None
+    expected_order_count_change: int = 0
+    expected_trade_count_change: int = 0
+    changes_made: str = ""
+    proposed_spec_updates: Optional[Dict[str, Any]] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+
+_ZERO_TRADE_USER_TEMPLATE = """\
+The most recent backtest produced zero trades. Diagnose the failure
+using the deterministic execution diagnostics below and propose a
+minimal Python code fix so the next run emits and closes trades that
+remain consistent with the strategy specification.
+
+## Strategy Specification (source of truth)
+Asset class: {asset_class}
+Hypothesis: {hypothesis}
+Signal definition: {signal_definition}
+Entry rules: {entry_rules}
+Exit rules: {exit_rules}
+Sizing rules: {sizing_rules}
+Risk limits: {risk_limits}
+
+## Current Strategy Code
+```python
+{strategy_code}
+```
+
+## Execution Diagnostics
+Zero-trade category: {zero_trade_category}
+Summary: {summary}
+{diagnostics_block}
+
+## Prior Zero-Trade Repair Attempts ({n_prior_attempts} so far)
+{prior_attempts_text}
+
+## Instructions
+1. Restate the `zero_trade_category` and quote the counters / rejection
+   reasons / lifecycle events that prove the diagnosis.
+2. Identify the specific code branch that produced the failure.
+3. Rewrite the FULL Python module so the identified failure no longer
+   occurs while preserving the spec's intent. Keep the
+   `class _(Strategy)` + `on_bar(self, ctx, bar)` contract and use only
+   allowed imports.
+4. Predict the change in order and trade count your fix should produce.
+
+Return ONLY a JSON object with no markdown.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+
+class ZeroTradeRepairAgent:
+    """Diagnose a zero-trade backtest and propose a targeted code fix."""
+
+    def run(
+        self,
+        spec: StrategySpec,
+        code: str,
+        diagnostics: BacktestExecutionDiagnostics,
+        prior_attempts: Optional[List[str]] = None,
+    ) -> ZeroTradeRepairReport:
+        """Run one specialized zero-trade repair attempt.
+
+        Returns a :class:`ZeroTradeRepairReport`. On parser failure the
+        report falls back to ``proposed_code=None`` with the parse error
+        in ``evidence`` so the orchestrator falls through to the generic
+        refinement agent (matching the alignment agent's
+        no-infinite-loop posture).
+        """
+        if diagnostics.zero_trade_category is None:
+            # The orchestrator should not have routed a non-zero-trade
+            # diagnostics envelope here. Be defensive — return a no-op
+            # report so the caller falls through to generic refinement.
+            return ZeroTradeRepairReport(
+                root_cause_category="UNKNOWN_ZERO_TRADE_PATH",
+                evidence=(
+                    "Diagnostics envelope had no zero_trade_category; skipping specialized repair."
+                ),
+            )
+
+        system_prompt = (_PROMPT_DIR / "zero_trade_repair_system.md").read_text(encoding="utf-8")
+
+        prior_text = (
+            "None yet."
+            if not prior_attempts
+            else "\n".join(f"  Round {i + 1}: {a}" for i, a in enumerate(prior_attempts))
+        )
+
+        user_prompt = _ZERO_TRADE_USER_TEMPLATE.format(
+            asset_class=spec.asset_class,
+            hypothesis=spec.hypothesis,
+            signal_definition=spec.signal_definition,
+            entry_rules=", ".join(spec.entry_rules),
+            exit_rules=", ".join(spec.exit_rules),
+            sizing_rules=", ".join(spec.sizing_rules),
+            risk_limits=spec.risk_limits.model_dump_json(),
+            strategy_code=code,
+            zero_trade_category=diagnostics.zero_trade_category,
+            summary=diagnostics.summary or "(no executor summary)",
+            diagnostics_block=_format_diagnostics_block(diagnostics),
+            n_prior_attempts=len(prior_attempts) if prior_attempts else 0,
+            prior_attempts_text=prior_text,
+        )
+
+        agent = Agent(
+            model=get_strands_model("strategy_ideation"),
+            system_prompt=system_prompt,
+            tools=[],
+        )
+
+        try:
+            result = agent(user_prompt)
+            parsed = _extract_json(str(result))
+        except Exception as exc:
+            logger.exception("Zero-trade repair agent failed to produce parseable JSON")
+            return ZeroTradeRepairReport(
+                root_cause_category=diagnostics.zero_trade_category,
+                evidence=(
+                    f"Zero-trade repair skipped: LLM response could not be parsed ({exc}). "
+                    "Falling through to generic refinement."
+                ),
+            )
+
+        return _coerce_report(parsed, fallback_category=diagnostics.zero_trade_category)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_diagnostics_block(diagnostics: BacktestExecutionDiagnostics) -> str:
+    """Render a compact JSON block of the diagnostics envelope.
+
+    Mirrors :func:`strategy_lab.orchestrator._format_execution_diagnostics`
+    so the repair-prompt payload matches what the generic refinement
+    prompt sees, but always emits the full envelope (the orchestrator
+    only routes here when ``zero_trade_category`` is set).
+    """
+    payload = diagnostics.model_dump(mode="json", exclude_none=True)
+    events = payload.get("last_order_events") or []
+    if len(events) > _DIAGNOSTICS_LAST_EVENTS_CAP:
+        payload["last_order_events"] = events[-_DIAGNOSTICS_LAST_EVENTS_CAP:]
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return f"Envelope: {encoded}"
+
+
+def _coerce_report(
+    parsed: Dict[str, Any], fallback_category: ZeroTradeCategory
+) -> ZeroTradeRepairReport:
+    """Convert raw LLM JSON into a :class:`ZeroTradeRepairReport`.
+
+    Tolerates loose schemas (missing fields, snake_case vs camelCase
+    issues, integer-as-string deltas) so a small format drift in the LLM
+    does not abort the specialized repair branch — the caller will fall
+    through to generic refinement on a no-op report.
+    """
+    raw_category = parsed.get("root_cause_category")
+    valid_categories = {
+        "NO_ORDERS_EMITTED",
+        "ONLY_WARMUP_ORDERS",
+        "ORDERS_REJECTED",
+        "ORDERS_UNFILLED",
+        "ENTRY_WITH_NO_EXIT",
+        "UNKNOWN_ZERO_TRADE_PATH",
+    }
+    category = raw_category if raw_category in valid_categories else fallback_category
+
+    proposed_code_raw = parsed.get("proposed_code")
+    proposed_code = (
+        str(proposed_code_raw).strip()
+        if isinstance(proposed_code_raw, str) and proposed_code_raw.strip()
+        else None
+    )
+
+    raw_spec_updates = parsed.get("proposed_spec_updates")
+    proposed_spec_updates: Optional[Dict[str, Any]]
+    if isinstance(raw_spec_updates, dict):
+        whitelisted = {k: v for k, v in raw_spec_updates.items() if k in _ALLOWED_SPEC_UPDATE_KEYS}
+        proposed_spec_updates = whitelisted or None
+    else:
+        proposed_spec_updates = None
+
+    def _coerce_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    return ZeroTradeRepairReport(
+        root_cause_category=category,  # type: ignore[arg-type]
+        evidence=str(parsed.get("evidence", "")).strip(),
+        code_issue=_optional_str(parsed.get("code_issue")),
+        strategy_rule_issue=_optional_str(parsed.get("strategy_rule_issue")),
+        proposed_code=proposed_code,
+        expected_order_count_change=_coerce_int(parsed.get("expected_order_count_change", 0)),
+        expected_trade_count_change=_coerce_int(parsed.get("expected_trade_count_change", 0)),
+        changes_made=str(parsed.get("changes_made", "")).strip(),
+        proposed_spec_updates=proposed_spec_updates,
+    )
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _extract_json(text: str) -> Dict[str, Any]:
+    """Extract a JSON object from LLM output, handling markdown fences."""
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1)
+
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in LLM response")
+
+    depth = 0
+    end = start
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    try:
+        return json.loads(text[start:end])
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON from LLM response: {e}") from e
