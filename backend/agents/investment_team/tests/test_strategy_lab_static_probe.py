@@ -114,6 +114,65 @@ def test_position_pct_over_limit_does_not_change_category() -> None:
     assert any(b.reason == "position_pct_exceeds_risk_limit" for b in report.likely_blockers)
 
 
+def test_fractional_position_pct_is_normalized_against_percent_limit() -> None:
+    # The ideation prompt documents ``qty = ctx.equity * pct / bar.close``,
+    # so ``POSITION_PCT = 0.10`` is a 10% fraction. RiskLimits.max_position_pct
+    # is 6.0 (i.e. 6%), so this must flag an oversize position.
+    code = "POSITION_PCT = 0.10\n"
+    report = run_static_probe(
+        _spec(code, max_position_pct=6.0),
+        fetched_universe=["AAPL"],
+        available_bars=250,
+    )
+
+    over_limit = [
+        b for b in report.likely_blockers if b.reason == "position_pct_exceeds_risk_limit"
+    ]
+    assert len(over_limit) == 1
+    # Evidence should make the conversion auditable.
+    assert "10" in over_limit[0].evidence and "0.1" in over_limit[0].evidence
+
+
+def test_fractional_position_pct_within_limit_not_flagged() -> None:
+    code = "POSITION_PCT = 0.05\n"  # 5%, under the 6% limit
+    report = run_static_probe(
+        _spec(code, max_position_pct=6.0),
+        fetched_universe=["AAPL"],
+        available_bars=250,
+    )
+
+    assert all(b.reason != "position_pct_exceeds_risk_limit" for b in report.likely_blockers)
+
+
+def test_full_equity_fraction_is_flagged() -> None:
+    # ``pct = 1.0`` means 100% of equity in the documented fraction
+    # convention — far over any reasonable max_position_pct.
+    code = "POSITION_PCT = 1.0\n"
+    report = run_static_probe(
+        _spec(code, max_position_pct=6.0),
+        fetched_universe=["AAPL"],
+        available_bars=250,
+    )
+
+    assert any(b.reason == "position_pct_exceeds_risk_limit" for b in report.likely_blockers)
+
+
+def test_pct_kwarg_fractional_value_is_normalized() -> None:
+    code = textwrap.dedent(
+        """
+        def on_bar(self, ctx, bar):
+            ctx.submit_order(symbol=bar.symbol, side="LONG", qty=10, pct=0.20)
+        """
+    )
+    report = run_static_probe(
+        _spec(code, max_position_pct=6.0),
+        fetched_universe=["AAPL"],
+        available_bars=250,
+    )
+
+    assert any(b.reason == "position_pct_exceeds_risk_limit" for b in report.likely_blockers)
+
+
 def test_malformed_code_returns_unknown_low_coverage() -> None:
     report = run_static_probe(
         _spec("def on_bar(:::"),

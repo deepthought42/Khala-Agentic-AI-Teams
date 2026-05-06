@@ -104,7 +104,16 @@ def run_static_probe(
     warmup_bars_required = max(periods) if periods else 0
     missing_symbols = [s for s in _dedupe(hardcoded_symbols) if s not in universe_set]
     max_pct_limit = float(spec.risk_limits.max_position_pct)
-    over_limit_pcts = [p for p in position_pcts if p > max_pct_limit]
+    # Strategies often express sizing as a fraction (the ideation prompt
+    # documents ``qty = ctx.equity * pct / bar.close``), while
+    # ``RiskLimits.max_position_pct`` is in percent units (0..100).
+    # Normalize literals in (0, 1] to percent before comparing so a
+    # ``POSITION_PCT = 0.10`` (10%) gets caught against a 6% limit.
+    over_limit_pcts: List[tuple[float, float]] = []
+    for raw in position_pcts:
+        normalized = raw * 100.0 if 0.0 < raw <= 1.0 else raw
+        if normalized > max_pct_limit:
+            over_limit_pcts.append((float(raw), normalized))
 
     blockers: List[LikelyBlocker] = []
     category = CoverageCategory.COVERAGE_OK
@@ -132,11 +141,18 @@ def run_static_probe(
                 )
             )
 
-    for pct in over_limit_pcts:
+    for raw, normalized in over_limit_pcts:
+        if normalized != raw:
+            evidence = (
+                f"position_pct literal {raw} (={normalized}% of equity) "
+                f"> risk_limits.max_position_pct {max_pct_limit}"
+            )
+        else:
+            evidence = f"position_pct literal {raw} > risk_limits.max_position_pct {max_pct_limit}"
         blockers.append(
             LikelyBlocker(
                 reason="position_pct_exceeds_risk_limit",
-                evidence=f"position_pct literal {pct} > risk_limits.max_position_pct {max_pct_limit}",
+                evidence=evidence,
             )
         )
 
