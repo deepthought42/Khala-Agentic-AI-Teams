@@ -490,7 +490,7 @@ class LikelyBlocker(BaseModel):
 
     reason: str
     evidence: str = ""
-    hit_rate: Optional[float] = None
+    hit_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class SubconditionCoverage(BaseModel):

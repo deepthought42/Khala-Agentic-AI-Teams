@@ -113,6 +113,12 @@ def test_hit_rate_outside_unit_interval_fails_validation() -> None:
     with pytest.raises(ValidationError):
         SubconditionCoverage(label="rsi < 25", hit_count=0, hit_rate=-0.1)
 
+    with pytest.raises(ValidationError):
+        LikelyBlocker(reason="bad rate", hit_rate=1.5)
+
+    with pytest.raises(ValidationError):
+        LikelyBlocker(reason="bad rate", hit_rate=-0.1)
+
 
 def test_extra_fields_are_ignored_inside_coverage_models() -> None:
     report = CoverageReport.model_validate(
