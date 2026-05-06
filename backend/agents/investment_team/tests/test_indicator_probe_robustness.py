@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import textwrap
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -80,7 +79,26 @@ def test_module_level_period_constant_resolved() -> None:
 
 
 def test_no_llm_calls_made() -> None:
-    """Patch the LLM client module so any accidental call raises immediately."""
+    """The indicator probe must not import or reference the LLM client.
+
+    A static check on the module's source code is stronger than a runtime
+    monkey-patch — the latter can leak into parallel pytest workers under
+    ``-n auto`` and flake unrelated tests.
+    """
+    import inspect
+
+    import investment_team.strategy_lab.coverage_probe.indicator_probe as mod
+
+    src = inspect.getsource(mod)
+    assert "llm_service" not in src
+    assert "LLMClient" not in src
+    assert "OllamaClient" not in src
+
+    # Module exports also must not surface any llm-named symbols.
+    for name in dir(mod):
+        assert "llm" not in name.lower(), f"unexpected llm symbol: {name}"
+
+    # Smoke-call the probe to confirm it still runs cleanly.
     code = textwrap.dedent(
         """
         class S:
@@ -89,42 +107,10 @@ def test_no_llm_calls_made() -> None:
                     pass
         """
     )
-
-    def _explode(*_args, **_kwargs):
-        raise AssertionError("LLM must not be called from indicator probe")
-
-    with patch("investment_team.strategy_lab.coverage_probe.indicator_probe.logger"):
-        # No LLM imports in the probe module — this monkey-patch sweep
-        # asserts the module path stays free of llm_service usage.
-        import investment_team.strategy_lab.coverage_probe.indicator_probe as mod
-
-        for name in dir(mod):
-            if "llm" in name.lower():
-                raise AssertionError(f"unexpected llm symbol in probe module: {name}")
-
-    # Patch llm_service entrypoints; if any code path accidentally imports
-    # them, calling the probe explodes.
-    targets = [
-        "agents.llm_service.client.LLMClient",
-        "agents.llm_service.ollama_client.OllamaClient",
-    ]
-    started = []
-    for target in targets:
-        try:
-            p = patch(target, side_effect=_explode)
-            p.start()
-            started.append(p)
-        except (ModuleNotFoundError, AttributeError):
-            continue
-    try:
-        report = run_indicator_probe(
-            strategy_code=code,
-            market_data={"AAPL": _flat_ohlcv()},
-        )
-    finally:
-        for p in started:
-            p.stop()
-
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
     assert report.coverage_category is CoverageCategory.COVERAGE_OK
 
 
