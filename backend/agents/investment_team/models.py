@@ -472,6 +472,51 @@ class BacktestExecutionDiagnostics(BaseModel):
     last_order_events: List[OrderLifecycleEvent] = Field(default_factory=list)
 
 
+class CoverageCategory(str, Enum):
+    """Why a backtest produced zero or sparse entries (#406)."""
+
+    COVERAGE_OK = "COVERAGE_OK"
+    ENTRY_CONDITION_NEVER_TRUE = "ENTRY_CONDITION_NEVER_TRUE"
+    WARMUP_EXCEEDS_HISTORY = "WARMUP_EXCEEDS_HISTORY"
+    TARGET_SYMBOL_MISSING = "TARGET_SYMBOL_MISSING"
+    INDICATOR_FILTER_TOO_RESTRICTIVE = "INDICATOR_FILTER_TOO_RESTRICTIVE"
+    CONJUNCTION_NEVER_TRUE = "CONJUNCTION_NEVER_TRUE"
+    INSUFFICIENT_BARS = "INSUFFICIENT_BARS"
+    UNKNOWN_LOW_COVERAGE = "UNKNOWN_LOW_COVERAGE"
+
+
+class LikelyBlocker(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str
+    evidence: str = ""
+    hit_rate: Optional[float] = None
+
+
+class SubconditionCoverage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    label: str
+    hit_count: int = Field(default=0, ge=0)
+    hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    last_true_bar: Optional[str] = None
+
+
+class CoverageReport(BaseModel):
+    """Deterministic rule-coverage probe output for zero/low-trade backtests."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    coverage_category: CoverageCategory = CoverageCategory.UNKNOWN_LOW_COVERAGE
+    summary: str = ""
+    symbols_checked: int = Field(default=0, ge=0)
+    bars_checked: int = Field(default=0, ge=0)
+    warmup_bars_required: int = Field(default=0, ge=0)
+    entry_orders_emitted: int = Field(default=0, ge=0)
+    subconditions: List[SubconditionCoverage] = Field(default_factory=list)
+    likely_blockers: List[LikelyBlocker] = Field(default_factory=list)
+
+
 class BacktestResult(BaseModel):
     total_return_pct: float
     annualized_return_pct: float
@@ -496,6 +541,7 @@ class BacktestResult(BaseModel):
     cost_stress_results: Optional[List[Dict[str, Any]]] = None
     reject_reason: Optional[str] = None
     execution_diagnostics: Optional[BacktestExecutionDiagnostics] = None
+    coverage_report: Optional[CoverageReport] = None
     # Issue #247 — walk-forward + DSR diagnostics.
     deflated_sharpe: float = 0.0
     sharpe_ci_low: Optional[float] = None
@@ -523,7 +569,9 @@ class BacktestResult(BaseModel):
     # cache).
     dataset_fingerprint: Optional[str] = None
 
-    @field_validator("sortino_ratio", "calmar_ratio", "risk_free_rate", "deflated_sharpe", mode="before")
+    @field_validator(
+        "sortino_ratio", "calmar_ratio", "risk_free_rate", "deflated_sharpe", mode="before"
+    )
     @classmethod
     def _coerce_float_none_to_zero(cls, v: object) -> object:
         return 0.0 if v is None else v
