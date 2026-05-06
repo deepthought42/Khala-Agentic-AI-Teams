@@ -526,11 +526,11 @@ def _indicator_call(
     if func_name is None:
         return None
 
-    period = _resolve_period_arg(node, name_periods)
-
     if func_name in _SERIES_INDICATORS:
         helper = _SERIES_INDICATORS[func_name]
         column = _series_arg_column(node)
+        # Series helpers: rsi(series, period), sma(series, period), ...
+        period = _resolve_period_arg(node, name_periods, positional_index=1)
 
         def _eval_series(df: pd.DataFrame) -> pd.Series:
             if column not in df.columns:
@@ -543,6 +543,9 @@ def _indicator_call(
 
     if func_name in _HLC_INDICATORS:
         helper = _HLC_INDICATORS[func_name]
+        # HLC helpers: atr(high, low, close, period), adx(high, low, close, period).
+        # The period is the 4th positional arg (index 3), not the 2nd.
+        period = _resolve_period_arg(node, name_periods, positional_index=3)
 
         def _eval_hlc(df: pd.DataFrame) -> pd.Series:
             for col in ("high", "low", "close"):
@@ -581,15 +584,26 @@ def _series_arg_column(call: ast.Call) -> str:
     return "close"
 
 
-def _resolve_period_arg(call: ast.Call, name_periods: Dict[str, int]) -> Optional[int]:
-    """Pull the period (integer) from positional or kwarg form."""
+def _resolve_period_arg(
+    call: ast.Call,
+    name_periods: Dict[str, int],
+    *,
+    positional_index: int = 1,
+) -> Optional[int]:
+    """Pull the period (integer) from positional or kwarg form.
+
+    ``positional_index`` is the index of the period argument in the
+    helper's positional signature: 1 for series helpers like
+    ``rsi(series, period)``, 3 for HLC helpers like
+    ``atr(high, low, close, period)``.
+    """
     for kw in call.keywords:
         if kw.arg in {"period", "length", "window", "n"}:
             value = _numeric_literal(kw.value, name_periods)
             if value is not None and value > 0:
                 return int(value)
-    if len(call.args) >= 2:
-        value = _numeric_literal(call.args[1], name_periods)
+    if len(call.args) > positional_index:
+        value = _numeric_literal(call.args[positional_index], name_periods)
         if value is not None and value > 0:
             return int(value)
     return None

@@ -106,6 +106,65 @@ def test_module_level_period_constant_resolved() -> None:
     assert len(report.subconditions) == 1
 
 
+def test_atr_positional_period_is_resolved() -> None:
+    """``atr(high, low, close, N)`` puts the period at args[3], not args[1].
+
+    Regression for a bug where the generic period extractor read args[1]
+    (which is ``low`` for HLC helpers) and silently fell back to the
+    helper's default of 14.
+
+    ATR scales with the magnitude of true-range moves. A short window
+    (period=2) over the ``_swing_close`` fixture below produces a
+    substantially larger steady-state ATR than the default period=14.
+    The test asserts the probe actually USES the requested period by
+    comparing hit rates of ``atr(high, low, close, 2) > T`` against
+    a plain ``atr(high, low, close) > T`` over the same data — they
+    must differ.
+    """
+
+    def _swing_close(n: int = 100) -> pd.DataFrame:
+        idx = pd.date_range("2024-01-01", periods=n, freq="D")
+        # Sharp alternating moves so short-window ATR diverges from default.
+        moves = np.array([+0.02, -0.02] * (n // 2))
+        close = 100.0 * np.cumprod(1.0 + moves)
+        return pd.DataFrame(
+            {
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            },
+            index=idx,
+        )
+
+    code_short = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if atr(high, low, close, 2) > 3:
+                    pass
+        """
+    )
+    code_default = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if atr(high, low, close) > 3:
+                    pass
+        """
+    )
+
+    df = _swing_close()
+    short = run_indicator_probe(strategy_code=code_short, market_data={"SYM": df})
+    default = run_indicator_probe(strategy_code=code_default, market_data={"SYM": df})
+
+    # If the period weren't honoured, both would compute the same ATR
+    # (the default period=14) and report identical hit_count. The bug
+    # we're guarding against is exactly that silent fallback.
+    assert short.subconditions[0].hit_count != default.subconditions[0].hit_count
+
+
 def test_no_llm_calls_made() -> None:
     """The indicator probe must not import or reference the LLM client.
 
