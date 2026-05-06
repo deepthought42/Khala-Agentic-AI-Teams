@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from pydantic import ValidationError
+
 from ..execution.benchmarks import benchmark_for_strategy, build_60_40_equity
 from ..execution.metrics import (
     bootstrap_sharpe_ci,
@@ -1109,9 +1111,36 @@ class StrategyLabOrchestrator:
             )
 
         # ── Fresh backtest of the proposed code ──────────────────────
-        proposed_spec = self._apply_zero_trade_spec_updates(
-            spec, report.proposed_spec_updates, report.proposed_code
-        )
+        try:
+            proposed_spec = self._apply_zero_trade_spec_updates(
+                spec, report.proposed_spec_updates, report.proposed_code
+            )
+        except ValidationError as exc:
+            # Whitelisted keys can still arrive with the wrong shape (e.g.
+            # ``entry_rules`` as a string, ``risk_limits`` as a list).
+            # Reject the proposal as we would for unsafe code and let
+            # the caller fall through to generic refinement instead of
+            # aborting the Strategy Lab cycle.
+            logger.warning("Zero-trade repair proposal had invalid spec updates: %s", exc)
+            zero_trade_attempts.append(
+                f"invalid_spec_updates ({report.root_cause_category}): "
+                f"{str(exc).splitlines()[0][:160]}"
+            )
+            emit(
+                "coding",
+                {
+                    "sub_phase": "zero_trade_repair_rejected",
+                    "refinement_round": round_num,
+                    "reason": "invalid_spec_updates",
+                    "details": str(exc).splitlines()[0][:400],
+                },
+            )
+            return _ZeroTradeRepairOutcome(
+                committed=False,
+                new_gates=safety_gates,
+                failure_reason="invalid_spec_updates",
+            )
+
         repair_exec = run_strategy_code(
             report.proposed_code, market_data, config, strategy=proposed_spec
         )

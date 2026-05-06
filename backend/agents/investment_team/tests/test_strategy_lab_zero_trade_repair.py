@@ -467,6 +467,58 @@ def test_zero_trade_repair_no_proposed_code_falls_through(
     ]
 
 
+def test_zero_trade_repair_invalid_spec_updates_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whitelisted ``proposed_spec_updates`` key with the wrong shape
+    (e.g. ``entry_rules`` as a string) must be rejected as a
+    not-committed outcome — the helper must NOT let the resulting
+    Pydantic ``ValidationError`` abort the entire Strategy Lab cycle."""
+    orch, repair_stub, sandbox_stub = _make_orchestrator_with_stubs(
+        monkeypatch,
+        repair_reports=[
+            ZeroTradeRepairReport(
+                root_cause_category="ENTRY_WITH_NO_EXIT",
+                evidence="entries_filled=4 closed_trades=0",
+                proposed_code=_REPAIRED_CODE,
+                # ``entry_rules`` must be a list[str]; a bare string is
+                # the realistic LLM error mode that previously crashed
+                # the cycle.
+                proposed_spec_updates={"entry_rules": "exit after 5 bars"},
+                changes_made="malformed entry_rules",
+            ),
+        ],
+        sandbox_results=[],  # sandbox MUST NOT be called
+    )
+
+    outcome, events, attempts = _drive_repair(
+        orch,
+        exec_result=StrategyRunResult(
+            success=True,
+            trades=[],
+            execution_diagnostics=_zero_trade_diagnostics(category="ENTRY_WITH_NO_EXIT"),
+        ),
+    )
+
+    assert outcome.committed is False
+    assert outcome.failure_reason == "invalid_spec_updates"
+    assert sandbox_stub.calls == []  # short-circuited before re-execution
+    assert len(repair_stub.calls) == 1
+
+    assert len(attempts) == 1
+    assert attempts[0].startswith("invalid_spec_updates (ENTRY_WITH_NO_EXIT)")
+
+    sub_phases = [d.get("sub_phase") for _, d in events]
+    assert sub_phases == [
+        "zero_trade_repair_started",
+        "zero_trade_repair_rejected",
+    ]
+    rejected_event = next(
+        d for _, d in events if d.get("sub_phase") == "zero_trade_repair_rejected"
+    )
+    assert rejected_event["reason"] == "invalid_spec_updates"
+
+
 def test_zero_trade_repair_agent_exception_falls_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
