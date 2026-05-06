@@ -77,6 +77,47 @@ def test_conjunction_partially_true_returns_coverage_ok() -> None:
     assert report.likely_blockers == []
 
 
+def test_nested_if_inherits_ancestor_predicate() -> None:
+    """A nested ``if`` is reachable only when its ancestor's predicate
+    is true, so the effective entry conjunction must include the
+    ancestor. ``if close > 100: if close < 50: pass`` is unreachable
+    even though each leg fires on different bars of the data.
+
+    Without ancestor inheritance the probe would see two independent
+    groups (one per ``if``), each individually firing, and report
+    ``COVERAGE_OK``. With inheritance it sees a single group of
+    ``[close > 100, close < 50]`` whose bar-wise AND is empty —
+    ``CONJUNCTION_NEVER_TRUE``.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > 100:
+                    if close < 50:
+                        pass
+        """
+    )
+    df = pd.DataFrame(
+        {
+            "open": [120.0] * 10 + [40.0] * 10,
+            "high": [121.0] * 10 + [41.0] * 10,
+            "low": [119.0] * 10 + [39.0] * 10,
+            "close": [120.0] * 10 + [40.0] * 10,
+            "volume": [1_000_000.0] * 20,
+        }
+    )
+    report = run_indicator_probe(strategy_code=code, market_data={"SYM": df})
+
+    assert report.coverage_category is CoverageCategory.CONJUNCTION_NEVER_TRUE
+    # Both subconds have non-zero individual hit rates over the data.
+    labels = {sc.label for sc in report.subconditions}
+    assert "close > 100" in labels
+    assert "close < 50" in labels
+    for sc in report.subconditions:
+        assert sc.hit_count > 0
+
+
 def test_unrelated_if_branches_are_not_conjoined() -> None:
     """Two separate ``if`` predicates must not be ANDed together.
 

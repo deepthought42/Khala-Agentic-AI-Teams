@@ -298,13 +298,27 @@ def _aggregate(
 # ---------------------------------------------------------------------------
 
 
+_BLOCK_FIELDS = ("body", "orelse", "finalbody")
+
+
 def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
     """Return one group of subconditions per ``if`` predicate.
 
     Subconditions are grouped by their parent ``if`` so the conjunction
-    hit-rate check stays scoped to a single predicate. Two unrelated
+    hit-rate check stays scoped to a single predicate. Two **sibling**
     branches like ``if close > 100: enter`` and ``if close < 50: exit``
     are returned as separate groups and are never ANDed together.
+
+    A **nested** ``if`` inherits the subconditions of every enclosing
+    ``if`` on its positive control-flow path: ``if close > 100: if close
+    < 50: pass`` produces a single group containing both legs, so the
+    coverage check sees the bar-wise AND ``close > 100 AND close < 50``
+    (which is impossible) rather than two unrelated branches that would
+    each fire on different bars.
+
+    The positive branch (``body``) propagates the ancestor predicate;
+    ``orelse`` does not, since negating an arbitrary indicator subcond
+    is generally ambiguous and we'd rather under-flag than over-flag.
     """
     if not strategy_code:
         return []
@@ -315,23 +329,73 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
         return []
 
     groups: List[List[_Subcond]] = []
-    total = 0
-    for node in ast.walk(on_bar):
-        if not isinstance(node, ast.If):
-            continue
-        group: List[_Subcond] = []
-        for cmp_node in _flatten_test(node.test):
-            sub = _build_subcond(cmp_node, name_periods)
-            if sub is None:
-                continue
+    state = {"total": 0}
+
+    def _budgeted_extend(group: List[_Subcond], extras: List[_Subcond]) -> bool:
+        """Append extras into group within the global subcond budget.
+
+        Returns False when the global cap is hit (caller should stop).
+        """
+        for sub in extras:
+            if state["total"] >= _MAX_SUBCONDITIONS:
+                return False
             group.append(sub)
-            total += 1
-            if total >= _MAX_SUBCONDITIONS:
+            state["total"] += 1
+        return True
+
+    def _visit(stmts: List[ast.stmt], ancestors: List[_Subcond]) -> bool:
+        for stmt in stmts:
+            if isinstance(stmt, ast.If):
+                own_subs: List[_Subcond] = []
+                for cmp_node in _flatten_test(stmt.test):
+                    sub = _build_subcond(cmp_node, name_periods)
+                    if sub is not None:
+                        own_subs.append(sub)
+                # Build this if's group: ancestors + this predicate.
+                # Ancestors are already counted in earlier groups, but
+                # for THIS group they need fresh budget too (so the cap
+                # bounds total work, not unique subconds).
+                group: List[_Subcond] = []
+                if not _budgeted_extend(group, ancestors):
+                    if group:
+                        groups.append(group)
+                    return False
+                if not _budgeted_extend(group, own_subs):
+                    if group:
+                        groups.append(group)
+                    return False
                 if group:
                     groups.append(group)
-                return groups
-        if group:
-            groups.append(group)
+                # Positive branch inherits ancestors + own_subs.
+                if not _visit(stmt.body, ancestors + own_subs):
+                    return False
+                # Else branch only inherits ancestors (we don't model
+                # the negation of own_subs).
+                if not _visit(stmt.orelse, ancestors):
+                    return False
+            else:
+                # Descend into compound statements (For, While, With,
+                # Try, FunctionDef body) but pass through ancestors so
+                # ``for x in ...: if close > 100: ...`` still inherits
+                # nothing, which is correct.
+                for field in _BLOCK_FIELDS:
+                    inner = getattr(stmt, field, None)
+                    if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+                        if not _visit(inner, ancestors):
+                            return False
+                # ast.Try has handlers; each handler.body is a stmt list.
+                handlers = getattr(stmt, "handlers", None)
+                if isinstance(handlers, list):
+                    for h in handlers:
+                        h_body = getattr(h, "body", None)
+                        if isinstance(h_body, list) and h_body:
+                            if not _visit(h_body, ancestors):
+                                return False
+        return True
+
+    body = getattr(on_bar, "body", None)
+    if isinstance(body, list):
+        _visit(body, [])
     return groups
 
 
