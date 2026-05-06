@@ -609,6 +609,7 @@ def test_walk_forward_fallback_rejects_overfit_via_anomaly_recheck(monkeypatch):
             self.execution_time_seconds = 0.01
             self.error_type = None
             self.stderr = ""
+            self.execution_diagnostics = None
 
     monkeypatch.setattr(
         "investment_team.strategy_lab.orchestrator.run_strategy_code",
