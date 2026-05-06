@@ -2,12 +2,56 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
-from ...models import BacktestResult, TradeRecord
+from ...models import BacktestExecutionDiagnostics, BacktestResult, TradeRecord
 from .models import QualityGateResult
 
 GATE = "backtest_anomaly"
+
+_GENERIC_ZERO_TRADE_DETAILS = (
+    "Backtest produced zero trades — strategy code never entered a position."
+)
+
+
+def _format_zero_trade_details(diagnostics: Optional[BacktestExecutionDiagnostics]) -> str:
+    """Build the ``QualityGateResult.details`` string for a zero-trade backtest.
+
+    When ``diagnostics`` carries a deterministic ``zero_trade_category`` (see
+    issue #404), surface the category, the executor's summary, the order
+    counters, and any rejection-reason histogram so the refinement agent has
+    enough evidence to repair the entry/exit path. Falls back to the
+    historical generic message when diagnostics are missing or the executor
+    couldn't classify the failure.
+    """
+    if diagnostics is None or diagnostics.zero_trade_category is None:
+        return _GENERIC_ZERO_TRADE_DETAILS
+
+    parts: List[str] = [
+        f"Backtest produced zero trades — Category: {diagnostics.zero_trade_category}."
+    ]
+    if diagnostics.summary:
+        parts.append(diagnostics.summary)
+
+    counters = (
+        f"orders_emitted={diagnostics.orders_emitted} "
+        f"orders_accepted={diagnostics.orders_accepted} "
+        f"orders_rejected={diagnostics.orders_rejected} "
+        f"orders_unfilled={diagnostics.orders_unfilled} "
+        f"warmup_orders_dropped={diagnostics.warmup_orders_dropped} "
+        f"entries_filled={diagnostics.entries_filled} "
+        f"exits_emitted={diagnostics.exits_emitted}"
+    )
+    parts.append(counters)
+
+    if diagnostics.orders_rejection_reasons:
+        reasons = ", ".join(
+            f"{reason}={count}"
+            for reason, count in sorted(diagnostics.orders_rejection_reasons.items())
+        )
+        parts.append(f"rejection_reasons: {reasons}")
+
+    return " ".join(parts)
 
 
 class BacktestAnomalyDetector:
@@ -20,6 +64,7 @@ class BacktestAnomalyDetector:
         *,
         mode: str = "backtest",
         dsr_aware: bool = False,
+        diagnostics: Optional[BacktestExecutionDiagnostics] = None,
     ) -> List[QualityGateResult]:
         """Run anomaly checks.
 
@@ -33,6 +78,13 @@ class BacktestAnomalyDetector:
         ``Sharpe > 5.0`` single-window flag is downgraded from critical to
         warning — it still surfaces in the gate result list but no longer
         forces a refinement-loop rewrite when the OOS DSR clears the gate.
+
+        ``diagnostics`` (default None) is the optional execution-path
+        envelope produced by the trading service (see issue #404). When
+        provided on a zero-trade backtest it enriches the gate result with
+        a deterministic failure category and order counters so the
+        refinement agent can target the actual failure mode. Other gates
+        ignore it.
         """
         results: List[QualityGateResult] = []
 
@@ -44,7 +96,7 @@ class BacktestAnomalyDetector:
                     gate_name=GATE,
                     passed=False,
                     severity="critical",
-                    details="Backtest produced zero trades — strategy code never entered a position.",
+                    details=_format_zero_trade_details(diagnostics),
                 )
             )
             return results

@@ -343,7 +343,10 @@ class StrategyLabOrchestrator:
             )
 
             anomaly_gates = self.anomaly_detector.check(
-                metrics, trades, dsr_aware=config.walk_forward_enabled
+                metrics,
+                trades,
+                dsr_aware=config.walk_forward_enabled,
+                diagnostics=exec_result.execution_diagnostics,
             )
             for g in anomaly_gates:
                 g.refinement_round = round_num
@@ -591,7 +594,10 @@ class StrategyLabOrchestrator:
                 # output that bypasses quality gates and still flows into
                 # analysis and the win/loss classification.
                 anomaly_gates = self.anomaly_detector.check(
-                    new_metrics, new_trades, dsr_aware=config.walk_forward_enabled
+                    new_metrics,
+                    new_trades,
+                    dsr_aware=config.walk_forward_enabled,
+                    diagnostics=align_exec.execution_diagnostics,
                 )
                 for g in anomaly_gates:
                     g.refinement_round = align_round
