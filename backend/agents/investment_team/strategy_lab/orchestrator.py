@@ -11,6 +11,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -35,6 +36,7 @@ from ..execution.walk_forward import (
 from ..market_data_service import MarketDataService, OHLCVBar
 from ..models import (
     BacktestConfig,
+    BacktestExecutionDiagnostics,
     BacktestRecord,
     BacktestResult,
     StrategyLabRecord,
@@ -72,6 +74,36 @@ MAX_ALIGNMENT_ROUNDS = 10
 # count + regime beats); ``WINNING_THRESHOLD`` is now only consulted as a
 # fallback when ``BacktestConfig.walk_forward_enabled`` is False.
 WINNING_THRESHOLD = 8.0
+
+# Cap on `last_order_events` included in the refinement-prompt diagnostics
+# block. The model already trims to 20; 10 is enough signal for the LLM to
+# spot the failure pattern while keeping the JSON line under ~1 KB.
+_DIAGNOSTICS_LAST_EVENTS_CAP = 10
+
+
+def _format_execution_diagnostics(
+    diagnostics: Optional[BacktestExecutionDiagnostics],
+) -> str:
+    """Render a compact JSON block of execution diagnostics for the
+    refinement prompt (issue #414, part of #404).
+
+    Returns an empty string when diagnostics is missing or the executor
+    couldn't classify a zero-trade failure — healthy backtests must not
+    bloat the prompt. When a ``zero_trade_category`` is present, returns a
+    single line ``"Execution Diagnostics: {<json>}"`` whose JSON payload is
+    stable-key-sorted and compact. ``last_order_events`` is capped to the
+    most recent ``_DIAGNOSTICS_LAST_EVENTS_CAP`` entries.
+    """
+    if diagnostics is None or diagnostics.zero_trade_category is None:
+        return ""
+
+    payload = diagnostics.model_dump(mode="json", exclude_none=True)
+    events = payload.get("last_order_events") or []
+    if len(events) > _DIAGNOSTICS_LAST_EVENTS_CAP:
+        payload["last_order_events"] = events[-_DIAGNOSTICS_LAST_EVENTS_CAP:]
+
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return f"Execution Diagnostics: {encoded}"
 
 
 class StrategyLabOrchestrator:
@@ -366,6 +398,11 @@ class StrategyLabOrchestrator:
                         },
                     )
                     failure_details = "\n".join(f"- {g.details}" for g in critical_anomalies)
+                    diagnostics_block = _format_execution_diagnostics(
+                        exec_result.execution_diagnostics
+                    )
+                    if diagnostics_block:
+                        failure_details = f"{failure_details}\n{diagnostics_block}"
                     updates, code = self._refine(
                         spec,
                         code,
@@ -607,17 +644,28 @@ class StrategyLabOrchestrator:
                     g for g in anomaly_gates if not g.passed and g.severity == "critical"
                 ]
                 if critical_anomalies:
-                    emit(
-                        "aligning",
-                        {
-                            "sub_phase": "anomaly_detected",
-                            "alignment_round": align_round,
-                            "details": "; ".join(g.details for g in critical_anomalies)[:400],
-                        },
+                    diagnostics_block = _format_execution_diagnostics(
+                        align_exec.execution_diagnostics
                     )
-                    logger.warning(
-                        "Alignment fix introduced backtest anomaly for %s", spec.strategy_id
-                    )
+                    emit_payload: Dict[str, Any] = {
+                        "sub_phase": "anomaly_detected",
+                        "alignment_round": align_round,
+                        "details": "; ".join(g.details for g in critical_anomalies)[:400],
+                    }
+                    if diagnostics_block:
+                        emit_payload["execution_diagnostics"] = diagnostics_block
+                    emit("aligning", emit_payload)
+                    if diagnostics_block:
+                        logger.warning(
+                            "Alignment fix introduced backtest anomaly for %s — %s",
+                            spec.strategy_id,
+                            diagnostics_block,
+                        )
+                    else:
+                        logger.warning(
+                            "Alignment fix introduced backtest anomaly for %s",
+                            spec.strategy_id,
+                        )
                     break
 
                 # All gates passed — commit the proposal as the new
