@@ -29,7 +29,7 @@ from ..models import (
 )
 from .data_stream.protocol import BarEvent, EndOfStreamEvent, StreamEvent
 from .engine.execution_model import build_execution_model
-from .engine.fill_simulator import FillSimulator, FillSimulatorConfig
+from .engine.fill_simulator import FillOutcome, FillSimulator, FillSimulatorConfig
 from .engine.order_book import OrderBook
 from .engine.portfolio import Portfolio
 from .strategy.contract import (
@@ -148,6 +148,65 @@ def _increment_rejection(diagnostics: BacktestExecutionDiagnostics, reason: str)
     diagnostics.orders_rejection_reasons[reason_key] = (
         diagnostics.orders_rejection_reasons.get(reason_key, 0) + 1
     )
+
+
+def _apply_fill_outcome_events(
+    diagnostics: BacktestExecutionDiagnostics, outcome: FillOutcome
+) -> None:
+    """Drain ``FillSimulator``-side lifecycle/rejection events into diagnostics.
+
+    Called once per ``process_bar`` in both per-bar and chunked run loops.
+    Translates fill-simulator events (#410) into:
+
+    - ``entry_filled`` lifecycle events + ``entries_filled`` counter bumps;
+    - ``exit_filled`` lifecycle events;
+    - ``rejected`` events + ``orders_rejected`` / ``orders_rejection_reasons``
+      bumps for fill-side rejections (``zero_fill_qty``,
+      ``risk_gate:<reason>``, ``insufficient_capital``,
+      ``same_side_order_ignored``).
+
+    Fill-side rejections happen *after* the order was accepted, so they
+    don't decrement ``orders_accepted``. ``_finalize_diagnostics`` already
+    gates the ``ORDERS_REJECTED`` zero-trade category on
+    ``orders_accepted == 0``, so this won't mis-classify an SMA round-trip
+    that hit a single same-side rejection along the way.
+    """
+    for ev in outcome.diagnostic_events:
+        if ev.kind == "entry_filled":
+            diagnostics.entries_filled += 1
+            _record_event(
+                diagnostics,
+                "entry_filled",
+                timestamp=ev.timestamp,
+                symbol=ev.symbol,
+                side=ev.side,
+                order_type=ev.order_type,
+                reason=ev.reason,
+                detail=ev.detail,
+            )
+        elif ev.kind == "exit_filled":
+            _record_event(
+                diagnostics,
+                "exit_filled",
+                timestamp=ev.timestamp,
+                symbol=ev.symbol,
+                side=ev.side,
+                order_type=ev.order_type,
+                reason=ev.reason,
+                detail=ev.detail,
+            )
+        elif ev.kind == "rejected":
+            _increment_rejection(diagnostics, ev.reason)
+            _record_event(
+                diagnostics,
+                "rejected",
+                timestamp=ev.timestamp,
+                symbol=ev.symbol,
+                side=ev.side,
+                order_type=ev.order_type,
+                reason=ev.reason,
+                detail=ev.detail,
+            )
 
 
 def _record_eod_equity(
@@ -483,6 +542,7 @@ class TradingService:
                             pending_for_prev = []
 
                         outcome = fill_sim.process_bar(cur_bar, next_bar=next_bar)
+                        _apply_fill_outcome_events(result.execution_diagnostics, outcome)
                         for fill in outcome.entry_fills + outcome.exit_fills:
                             harness.send_fill(
                                 fill=fill.model_dump(mode="json", exclude_defaults=True),
@@ -789,6 +849,7 @@ class TradingService:
                         pending_for_prev = []
 
                     outcome = fill_sim.process_bar(cur_bar, next_bar=next_bar)
+                    _apply_fill_outcome_events(result.execution_diagnostics, outcome)
                     for fill in outcome.entry_fills + outcome.exit_fills:
                         # send_fill is per-fill; happens between chunks too.
                         # The strategy sees fills from the *previous* chunk

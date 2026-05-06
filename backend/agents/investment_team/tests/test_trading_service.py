@@ -586,14 +586,16 @@ def test_diagnostics_emitted_and_accepted_counts_round_trip() -> None:
     assert diagnostics.orders_rejected == 0
     assert diagnostics.orders_unfilled == 0
     assert diagnostics.exits_emitted == 1
-    # ``entries_filled`` is owned by #410 (FillSimulator) and must stay 0
-    # at this layer until that issue lands.
-    assert diagnostics.entries_filled == 0
+    # #410: FillSimulator now reports entry/exit fill lifecycle events.
+    # The SMA round-trip lands one FULL entry and one FULL exit.
+    assert diagnostics.entries_filled == 1
     # Capped well under the limit for this fixture.
     assert len(diagnostics.last_order_events) <= _MAX_ORDER_EVENTS
     event_types = [e.event_type for e in diagnostics.last_order_events]
     assert "emitted" in event_types
     assert "accepted" in event_types
+    assert "entry_filled" in event_types
+    assert "exit_filled" in event_types
 
 
 def test_diagnostics_unsupported_feature_records_rejection() -> None:
