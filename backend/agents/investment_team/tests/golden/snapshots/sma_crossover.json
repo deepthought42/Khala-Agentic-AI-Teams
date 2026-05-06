@@ -16,6 +16,7 @@
     "beta": null,
     "calmar_ratio": -0.84,
     "cost_stress_results": null,
+    "coverage_report": null,
     "data_quality_report": {
       "asset_class": "stocks",
       "cross_symbol_alignment_misses": 0,
