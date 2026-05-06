@@ -56,6 +56,34 @@ def test_no_recognized_subconditions_returns_unknown() -> None:
     assert report.subconditions == []
 
 
+def test_prefers_on_bar_over_top_level_helper() -> None:
+    """A top-level helper named ``signal`` / ``generate_signal`` must
+    not shadow the strategy's real ``on_bar`` entry path. ``on_bar`` is
+    the actual contract — the fallback names exist only for legacy /
+    free-function strategies that lack one.
+    """
+    code = textwrap.dedent(
+        """
+        def generate_signal():
+            # No ``if`` predicates here — if the probe stops here it'll
+            # report UNKNOWN_LOW_COVERAGE despite the real on_bar below.
+            return None
+
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > 0:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].label == "close > 0"
+
+
 def test_module_level_period_constant_resolved() -> None:
     code = textwrap.dedent(
         """

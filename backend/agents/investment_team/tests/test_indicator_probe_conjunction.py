@@ -77,6 +77,46 @@ def test_conjunction_partially_true_returns_coverage_ok() -> None:
     assert report.likely_blockers == []
 
 
+def test_unrelated_if_branches_are_not_conjoined() -> None:
+    """Two separate ``if`` predicates must not be ANDed together.
+
+    ``if close > 100: enter`` and ``if close < 50: exit`` are independent
+    branches. Their bar-wise AND is empty by design, but that is not a
+    coverage problem — each branch fires in its own region. The probe
+    must classify this as ``COVERAGE_OK`` (or ``INDICATOR_FILTER_TOO_RESTRICTIVE``
+    if a leg never fires), never ``CONJUNCTION_NEVER_TRUE``.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > 100:
+                    pass
+                if close < 200:
+                    pass
+        """
+    )
+    df = pd.DataFrame(
+        {
+            "open": [120.0] * 10 + [180.0] * 10,
+            "high": [121.0] * 10 + [181.0] * 10,
+            "low": [119.0] * 10 + [179.0] * 10,
+            "close": [120.0] * 10 + [180.0] * 10,
+            "volume": [1_000_000.0] * 20,
+        }
+    )
+    report = run_indicator_probe(strategy_code=code, market_data={"SYM": df})
+
+    # close > 100 fires on every bar; close < 200 fires on every bar.
+    # Each individual subcondition has hit_rate == 1.0 — but their
+    # bar-wise AND would only be relevant if they shared a predicate,
+    # which they don't.
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    assert len(report.subconditions) == 2
+    for sc in report.subconditions:
+        assert sc.hit_rate == 1.0
+
+
 def test_conjunction_uses_intersection_not_product() -> None:
     """Ensures the conjunction hit-count equals bar-wise AND, not (rate_a * rate_b)."""
     code = textwrap.dedent(

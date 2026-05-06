@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -154,64 +154,55 @@ def run_indicator_probe(
 
 
 def _aggregate(
-    subconds: List[_Subcond],
+    groups: List[List[_Subcond]],
     market_data: Dict[str, pd.DataFrame],
     base_kwargs: Dict[str, object],
 ) -> CoverageReport:
-    subconds = subconds[:_MAX_SUBCONDITIONS]
+    flat_subconds: List[_Subcond] = [s for g in groups for s in g]
+    if not flat_subconds:
+        return CoverageReport(
+            coverage_category=CoverageCategory.UNKNOWN_LOW_COVERAGE,
+            summary="no recognized indicator subconditions found",
+            **base_kwargs,
+        )
 
-    per_subcond_masks: List[pd.Series] = []
-    last_true_bars: List[Optional[str]] = []
-    hit_counts: List[int] = []
+    sub_hit_counts: List[int] = [0] * len(flat_subconds)
+    sub_last_true: List[Optional[str]] = [None] * len(flat_subconds)
+    group_conjunction_hits: List[int] = [0] * len(groups)
+    group_evaluated: List[bool] = [False] * len(groups)
     total_eval_bars = 0
-    conjunction_hits = 0
 
-    # Walk symbol by symbol so a per-symbol failure never aborts the run.
-    per_symbol_masks: List[List[pd.Series]] = [[] for _ in subconds]
     for symbol, df in market_data.items():
         if not isinstance(df, pd.DataFrame) or df.empty:
             continue
-        symbol_masks: List[pd.Series] = []
-        for sub in subconds:
-            try:
-                series = sub.evaluate(df)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("subcondition %r failed on %s: %s", sub.label, symbol, exc)
-                series = pd.Series(False, index=df.index, dtype=bool)
-            mask = pd.Series(series, index=df.index).fillna(False).astype(bool)
-            symbol_masks.append(mask)
-        for idx, mask in enumerate(symbol_masks):
-            per_symbol_masks[idx].append(mask)
-        if symbol_masks:
-            conjunction_mask = symbol_masks[0]
-            for mask in symbol_masks[1:]:
-                conjunction_mask = conjunction_mask & mask
-            conjunction_hits += int(conjunction_mask.sum())
+        global_idx = 0
+        symbol_contributed = False
+        for group_idx, group in enumerate(groups):
+            group_masks: List[pd.Series] = []
+            for sub in group:
+                try:
+                    series = sub.evaluate(df)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("subcondition %r failed on %s: %s", sub.label, symbol, exc)
+                    series = pd.Series(False, index=df.index, dtype=bool)
+                mask = pd.Series(series, index=df.index).fillna(False).astype(bool)
+                hits = int(mask.sum())
+                sub_hit_counts[global_idx] += hits
+                if hits:
+                    last_bar = str(mask[mask].index[-1])
+                    if sub_last_true[global_idx] is None or last_bar > sub_last_true[global_idx]:
+                        sub_last_true[global_idx] = last_bar
+                group_masks.append(mask)
+                global_idx += 1
+            if group_masks:
+                conjunction_mask = group_masks[0]
+                for m in group_masks[1:]:
+                    conjunction_mask = conjunction_mask & m
+                group_conjunction_hits[group_idx] += int(conjunction_mask.sum())
+                group_evaluated[group_idx] = True
+                symbol_contributed = True
+        if symbol_contributed:
             total_eval_bars += len(df)
-
-    for idx, masks in enumerate(per_symbol_masks):
-        if not masks:
-            per_subcond_masks.append(pd.Series([], dtype=bool))
-            hit_counts.append(0)
-            last_true_bars.append(None)
-            continue
-        combined = pd.concat(masks)
-        per_subcond_masks.append(combined)
-        hit_counts.append(int(combined.sum()))
-        true_idx = combined[combined].index
-        last_true_bars.append(str(true_idx[-1]) if len(true_idx) else None)
-
-    subcoverages: List[SubconditionCoverage] = []
-    for sub, hits, last_bar in zip(subconds, hit_counts, last_true_bars):
-        rate = hits / total_eval_bars if total_eval_bars > 0 else 0.0
-        subcoverages.append(
-            SubconditionCoverage(
-                label=sub.label,
-                hit_count=hits,
-                hit_rate=min(max(rate, 0.0), 1.0),
-                last_true_bar=last_bar,
-            )
-        )
 
     if total_eval_bars == 0:
         return CoverageReport(
@@ -219,6 +210,24 @@ def _aggregate(
             summary="no bars evaluated",
             subconditions=[],
             **base_kwargs,
+        )
+
+    # Deduplicate the SubconditionCoverage list by label so a subcond
+    # repeated across multiple ``if`` predicates is reported once.
+    subcoverages: List[SubconditionCoverage] = []
+    seen_labels: set[str] = set()
+    for sub, hits, last in zip(flat_subconds, sub_hit_counts, sub_last_true):
+        if sub.label in seen_labels:
+            continue
+        seen_labels.add(sub.label)
+        rate = hits / total_eval_bars
+        subcoverages.append(
+            SubconditionCoverage(
+                label=sub.label,
+                hit_count=hits,
+                hit_rate=min(max(rate, 0.0), 1.0),
+                last_true_bar=last,
+            )
         )
 
     zero_hits = [sc for sc in subcoverages if sc.hit_count == 0]
@@ -234,25 +243,52 @@ def _aggregate(
                     hit_rate=0.0,
                 )
             )
-    elif total_eval_bars > 0 and conjunction_hits == 0 and len(subcoverages) >= 2:
-        category = CoverageCategory.CONJUNCTION_NEVER_TRUE
-        summary = "individual subconditions fire but their conjunction is never true"
-        blockers.append(
-            LikelyBlocker(
-                reason="conjunction_never_true",
-                evidence=" AND ".join(sc.label for sc in subcoverages),
-                hit_rate=0.0,
-            )
+        return CoverageReport(
+            coverage_category=category,
+            summary=summary,
+            subconditions=subcoverages,
+            likely_blockers=blockers[:_MAX_LIKELY_BLOCKERS],
+            **base_kwargs,
         )
-    else:
-        category = CoverageCategory.COVERAGE_OK
-        summary = "indicator subconditions fired at least once"
+
+    # Find any single ``if`` predicate whose legs all fire individually
+    # but whose bar-wise AND is empty. We only flag CONJUNCTION_NEVER_TRUE
+    # for a real per-predicate contradiction — never across unrelated
+    # ``if`` branches.
+    empty_conj_group: Optional[List[_Subcond]] = None
+    base = 0
+    for group_idx, group in enumerate(groups):
+        legs = len(group)
+        if (
+            legs >= 2
+            and group_evaluated[group_idx]
+            and group_conjunction_hits[group_idx] == 0
+            and all(sub_hit_counts[base + k] > 0 for k in range(legs))
+        ):
+            empty_conj_group = group
+            break
+        base += legs
+
+    if empty_conj_group is not None:
+        return CoverageReport(
+            coverage_category=CoverageCategory.CONJUNCTION_NEVER_TRUE,
+            summary="individual subconditions fire but their conjunction is never true",
+            subconditions=subcoverages,
+            likely_blockers=[
+                LikelyBlocker(
+                    reason="conjunction_never_true",
+                    evidence=" AND ".join(s.label for s in empty_conj_group),
+                    hit_rate=0.0,
+                )
+            ][:_MAX_LIKELY_BLOCKERS],
+            **base_kwargs,
+        )
 
     return CoverageReport(
-        coverage_category=category,
-        summary=summary,
+        coverage_category=CoverageCategory.COVERAGE_OK,
+        summary="indicator subconditions fired at least once",
         subconditions=subcoverages,
-        likely_blockers=blockers[:_MAX_LIKELY_BLOCKERS],
+        likely_blockers=[],
         **base_kwargs,
     )
 
@@ -262,7 +298,14 @@ def _aggregate(
 # ---------------------------------------------------------------------------
 
 
-def _extract_subconditions(strategy_code: str) -> List[_Subcond]:
+def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
+    """Return one group of subconditions per ``if`` predicate.
+
+    Subconditions are grouped by their parent ``if`` so the conjunction
+    hit-rate check stays scoped to a single predicate. Two unrelated
+    branches like ``if close > 100: enter`` and ``if close < 50: exit``
+    are returned as separate groups and are never ANDed together.
+    """
     if not strategy_code:
         return []
     tree = ast.parse(strategy_code)
@@ -271,31 +314,45 @@ def _extract_subconditions(strategy_code: str) -> List[_Subcond]:
     if on_bar is None:
         return []
 
-    found: List[_Subcond] = []
-    seen_labels: set[str] = set()
+    groups: List[List[_Subcond]] = []
+    total = 0
     for node in ast.walk(on_bar):
         if not isinstance(node, ast.If):
             continue
+        group: List[_Subcond] = []
         for cmp_node in _flatten_test(node.test):
             sub = _build_subcond(cmp_node, name_periods)
             if sub is None:
                 continue
-            if sub.label in seen_labels:
-                continue
-            seen_labels.add(sub.label)
-            found.append(sub)
-            if len(found) >= _MAX_SUBCONDITIONS:
-                return found
-    return found
+            group.append(sub)
+            total += 1
+            if total >= _MAX_SUBCONDITIONS:
+                if group:
+                    groups.append(group)
+                return groups
+        if group:
+            groups.append(group)
+    return groups
 
 
 def _find_on_bar(tree: ast.AST) -> Optional[ast.AST]:
-    candidates: Tuple[str, ...] = ("on_bar", "entry", "signal", "generate_signal")
+    """Prefer ``on_bar`` — the real Strategy contract — when present.
+
+    Only fall back to ``entry`` / ``signal`` / ``generate_signal`` if no
+    ``on_bar`` is found. Otherwise a module-level helper named ``signal``
+    placed before the strategy class would shadow the real entry path.
+    """
+    fallback: Optional[ast.AST] = None
+    fallback_names = ("entry", "signal", "generate_signal")
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name.lower() in candidates:
-                return node
-    return None
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        name = node.name.lower()
+        if name == "on_bar":
+            return node
+        if fallback is None and name in fallback_names:
+            fallback = node
+    return fallback
 
 
 def _flatten_test(test: ast.expr) -> List[ast.Compare]:
