@@ -454,9 +454,16 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
         for cmp_node in _flatten_test(test):
             sym = _symbol_gate(cmp_node)
             if sym is not None:
+                # Multiple ``bar.symbol == X`` gates within a single
+                # ``and`` are conjoined, so a second different literal
+                # *contradicts* the first — they must be intersected,
+                # not unioned. ``bar.symbol == "AAPL" and
+                # bar.symbol == "MSFT"`` collapses to an empty filter,
+                # which downstream drops as unreachable.
                 if own_symbols is None:
-                    own_symbols = set()
-                own_symbols.add(sym)
+                    own_symbols = {sym}
+                else:
+                    own_symbols &= {sym}
                 continue
             sub = _build_subcond(cmp_node, name_periods, name_evaluators)
             if sub is not None:

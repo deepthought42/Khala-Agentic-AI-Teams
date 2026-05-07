@@ -452,6 +452,45 @@ def test_symbol_gated_hit_rate_uses_matching_symbol_bars() -> None:
         assert sc.hit_rate == 1.0
 
 
+def test_contradictory_same_predicate_symbol_gates_drop_group() -> None:
+    """``bar.symbol == "AAPL" and bar.symbol == "MSFT" and close > 0``
+    is structurally unreachable — both literal symbols can't be true on
+    the same bar. The intra-predicate symbol-gate combiner must
+    intersect (not union) the two literals, leaving an empty filter,
+    and the resulting empty-set group must be dropped before evaluation.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if bar.symbol == "AAPL" and bar.symbol == "MSFT" and close > 0:
+                    pass
+        """
+    )
+    aapl = _flat_ohlcv(n=20)  # close > 0 always
+    msft = pd.DataFrame(
+        {
+            "open": np.full(20, 50.0),
+            "high": np.full(20, 51.0),
+            "low": np.full(20, 49.0),
+            "close": np.full(20, 50.0),
+            "volume": np.full(20, 1_000_000.0),
+        },
+        index=pd.date_range("2024-01-01", periods=20, freq="D"),
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": aapl, "MSFT": msft},
+    )
+    # Without the intersection fix, the symbol filter would be
+    # {AAPL, MSFT} (union) and ``close > 0`` would evaluate against
+    # both DataFrames, reporting COVERAGE_OK. With intersection the
+    # filter is empty, the group is dropped, and the probe sees no
+    # recognised subconditions at all.
+    assert report.coverage_category is CoverageCategory.UNKNOWN_LOW_COVERAGE
+    assert report.subconditions == []
+
+
 def test_atr_positional_period_is_resolved() -> None:
     """``atr(high, low, close, N)`` puts the period at args[3], not args[1].
 
