@@ -235,6 +235,74 @@ def test_index_is_rebuilt_when_already_instrumented() -> None:
     assert index_again.rules == index_once.rules
 
 
+def test_future_import_stays_first_after_instrumentation() -> None:
+    code = textwrap.dedent(
+        '''
+        """Top-level module docstring."""
+
+        from __future__ import annotations
+
+        from contract import Strategy
+
+
+        class S(Strategy):
+            def on_bar(self, ctx, bar):
+                a = 1
+                if a > 0:
+                    return
+        '''
+    ).lstrip()
+    rewritten, index = instrument_strategy_code(code)
+    assert len(index.rules) == 1
+
+    # Must compile (the actual constraint __future__ enforces).
+    compile(rewritten, "<probe-test>", "exec")
+
+    # And the __future__ import must still appear before any non-docstring
+    # non-future statement in the rewritten module.
+    tree = ast.parse(rewritten)
+    seen_future = False
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+            seen_future = True
+            continue
+        # Once we hit any other statement, the future import must already
+        # have been seen.
+        assert seen_future, (
+            f"non-future stmt {type(stmt).__name__} appeared before __future__ import"
+        )
+        break
+
+
+def test_strategy_local_bar_index_does_not_capture_probe_reference() -> None:
+    """A strategy that binds ``bar_index`` locally must not break the probe.
+
+    Regression for the codex-connector P2 finding: if the probe used a
+    plain ``bar_index`` name, Python's symbol-table analysis would treat
+    every reference inside ``on_bar`` as a local (LOAD_FAST), shadowing
+    the harness global. Using the dunder name ``__probe_bar_index__``
+    avoids the collision entirely.
+    """
+    code = _wrap_in_strategy(
+        """
+        for bar_index in range(3):
+            pass
+        a = 1
+        if a > 0:
+            self.fired = True
+        """
+    )
+    rewritten, _ = instrument_strategy_code(code)
+    standalone = rewritten.replace("from contract import Strategy", "Strategy = object")
+    namespace: dict = {}
+    exec(compile(standalone, "<probe-test>", "exec"), namespace)
+    instance = namespace["S"]()
+    instance.on_bar(None, None)
+    assert getattr(instance, "fired", False) is True
+
+
 def test_rule_ids_are_stable_and_sequential() -> None:
     code = _wrap_in_strategy(
         """

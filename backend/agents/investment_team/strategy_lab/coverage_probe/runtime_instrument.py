@@ -2,18 +2,24 @@
 
 Rewrites a generated strategy module so that every ``if`` / ``elif``
 predicate inside ``on_bar`` records the truth of each subcondition via
-``__probe_record__(rule_id, bar_index, value)``. The default
+``__probe_record__(rule_id, __probe_bar_index__, value)``. The default
 ``__probe_record__`` defined by the bootstrap prelude is the identity
 function, so the rewritten module behaves identically to the original
 when no harness has injected a real recorder. The runtime probe harness
-(#450) will rebind ``__probe_record__`` and ``bar_index`` in the exec
-globals before each bar.
+(#450) will rebind ``__probe_record__`` and ``__probe_bar_index__`` in
+the exec globals before each bar.
 
-The dunder-style name is deliberate: a plain ``__probe_record`` would be
-subject to Python's class-private name mangling and become
-``_StrategyClass__probe_record`` when referenced inside the strategy
-class body, breaking the harness contract. Trailing underscores opt out
-of mangling.
+The dunder-style names are deliberate. A plain ``__probe_record`` /
+``__bar_index`` inside the strategy class body would be subject to
+Python's class-private name mangling and become
+``_StrategyClass__probe_record`` etc., breaking the harness contract.
+Equally, a non-prefixed name like ``bar_index`` would be captured by any
+``on_bar`` local of the same name (Python resolves identifiers via
+function-scope symbol tables, not by lexical order), turning a probe
+read into an ``UnboundLocalError`` or — worse — silently recording the
+strategy's loop counter. Trailing underscores opt out of mangling, and
+the dunder prefix makes collision with hand-written strategy locals
+practically impossible.
 
 Pure source-to-source: no execution, no I/O, no LLM.
 
@@ -32,7 +38,7 @@ from typing import List, Tuple
 from investment_team.models import RuleIndex
 
 _PROBE_NAME = "__probe_record__"
-_BAR_INDEX_NAME = "bar_index"
+_BAR_INDEX_NAME = "__probe_bar_index__"
 _LABEL_MAX_LEN = 120
 
 
@@ -71,7 +77,8 @@ def instrument_strategy_code(code: str) -> Tuple[str, RuleIndex]:
         return code, RuleIndex()
 
     prelude = _bootstrap_prelude()
-    tree.body = prelude + tree.body
+    insert_at = _prelude_insertion_index(tree)
+    tree.body = tree.body[:insert_at] + prelude + tree.body[insert_at:]
     ast.fix_missing_locations(tree)
 
     try:
@@ -232,8 +239,33 @@ def _bootstrap_prelude() -> List[ast.stmt]:
         "    def __probe_record__(_rid, _bidx, _value):\n"
         "        return _value\n"
         "try:\n"
-        "    bar_index  # noqa: F821\n"
+        "    __probe_bar_index__  # noqa: F821\n"
         "except NameError:\n"
-        "    bar_index = 0\n"
+        "    __probe_bar_index__ = 0\n"
     )
     return ast.parse(src).body
+
+
+def _prelude_insertion_index(tree: ast.Module) -> int:
+    """Return the index in ``tree.body`` after which the prelude is safe to
+    insert. Skips a leading module docstring and any ``from __future__``
+    imports — those statements have placement constraints (``__future__``
+    must be the first non-docstring statement) and prepending the prelude
+    ahead of them would emit a module that no longer compiles.
+    """
+    idx = 0
+    body = tree.body
+    if (
+        idx < len(body)
+        and isinstance(body[idx], ast.Expr)
+        and isinstance(body[idx].value, ast.Constant)
+        and isinstance(body[idx].value.value, str)
+    ):
+        idx += 1
+    while (
+        idx < len(body)
+        and isinstance(body[idx], ast.ImportFrom)
+        and body[idx].module == "__future__"
+    ):
+        idx += 1
+    return idx
