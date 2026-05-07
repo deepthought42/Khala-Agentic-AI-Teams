@@ -188,6 +188,100 @@ def test_init_self_assignment_window_is_resolved() -> None:
     assert 0 <= sc.hit_count <= report.bars_checked
 
 
+def test_position_check_else_branch_is_skipped() -> None:
+    """``if pos is None: <entry> else: <exit>`` is the documented gate.
+
+    An exit-only filter in the else branch must not be reported as an
+    entry-coverage blocker — entries aren't restricted by exit rules.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                pos = ctx.position(bar.symbol)
+                if pos is None:
+                    if close > 0:
+                        pass
+                else:
+                    if close < -50:
+                        pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    # Entry condition ``close > 0`` always fires on the flat fixture.
+    # If the exit branch's never-true ``close < -50`` were also recorded,
+    # the report would flip to INDICATOR_FILTER_TOO_RESTRICTIVE.
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    labels = {sc.label for sc in report.subconditions}
+    assert "close > 0" in labels
+    assert "close < -50" not in labels
+
+
+def test_position_check_via_ctx_call_is_recognized() -> None:
+    """``if ctx.position(bar.symbol) is None:`` — same shape, different
+    test expression. Must also skip the else branch.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if ctx.position(bar.symbol) is None:
+                    if close > 0:
+                        pass
+                else:
+                    if close < -50:
+                        pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    labels = {sc.label for sc in report.subconditions}
+    assert "close < -50" not in labels
+
+
+def test_symbol_gate_restricts_evaluation_to_matching_dataframe() -> None:
+    """``if bar.symbol == "AAPL" and close > 1000`` must evaluate the
+    indicator condition only against AAPL — an unrelated symbol whose
+    close already exceeds 1000 must NOT make this report COVERAGE_OK.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if bar.symbol == "AAPL" and close > 1000:
+                    pass
+        """
+    )
+    aapl = _flat_ohlcv(n=50)  # close = 100 — never > 1000
+    msft = pd.DataFrame(
+        {
+            "open": np.full(50, 1500.0),
+            "high": np.full(50, 1505.0),
+            "low": np.full(50, 1495.0),
+            "close": np.full(50, 1500.0),  # close > 1000 always
+            "volume": np.full(50, 1_000_000.0),
+        },
+        index=pd.date_range("2024-01-01", periods=50, freq="D"),
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": aapl, "MSFT": msft},
+    )
+
+    # AAPL never satisfies close > 1000 — that's the real coverage gap
+    # we want to surface. If the symbol gate weren't honoured, MSFT's
+    # 1500 close would mask the AAPL miss.
+    assert report.coverage_category is CoverageCategory.INDICATOR_FILTER_TOO_RESTRICTIVE
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].hit_count == 0
+
+
 def test_atr_positional_period_is_resolved() -> None:
     """``atr(high, low, close, N)`` puts the period at args[3], not args[1].
 

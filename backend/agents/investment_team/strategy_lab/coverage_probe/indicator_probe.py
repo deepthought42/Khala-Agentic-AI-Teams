@@ -100,6 +100,23 @@ class _Subcond:
     evaluate: Callable[[pd.DataFrame], pd.Series]
 
 
+@dataclass
+class _Group:
+    """One ``if``-predicate's worth of coverage-relevant content.
+
+    ``target_symbols`` is ``None`` when the predicate doesn't gate by
+    symbol; otherwise it's the set of symbols (from ``bar.symbol == "X"``
+    style gates) that may satisfy the entry — DataFrames for any other
+    symbol are skipped during aggregation. An empty set means the
+    predicate intersects with itself contradictorily (e.g. two
+    ``bar.symbol == "X"`` and ``bar.symbol == "Y"`` in one ``and``); the
+    group is dropped before emission.
+    """
+
+    subconds: List[_Subcond]
+    target_symbols: Optional[set]
+
+
 def run_indicator_probe(
     *,
     strategy_code: str,
@@ -175,11 +192,11 @@ def run_indicator_probe(
 
 
 def _aggregate(
-    groups: List[List[_Subcond]],
+    groups: List[_Group],
     market_data: Dict[str, pd.DataFrame],
     base_kwargs: Dict[str, object],
 ) -> CoverageReport:
-    flat_subconds: List[_Subcond] = [s for g in groups for s in g]
+    flat_subconds: List[_Subcond] = [s for g in groups for s in g.subconds]
     if not flat_subconds:
         return CoverageReport(
             coverage_category=CoverageCategory.UNKNOWN_LOW_COVERAGE,
@@ -199,8 +216,13 @@ def _aggregate(
         global_idx = 0
         symbol_contributed = False
         for group_idx, group in enumerate(groups):
+            # Symbol-gated groups (``if bar.symbol == "AAPL" and ...``)
+            # only consider DataFrames matching one of the gate's symbols.
+            if group.target_symbols is not None and symbol not in group.target_symbols:
+                global_idx += len(group.subconds)
+                continue
             group_masks: List[pd.Series] = []
-            for sub in group:
+            for sub in group.subconds:
                 try:
                     series = sub.evaluate(df)
                 except Exception as exc:  # noqa: BLE001
@@ -276,10 +298,10 @@ def _aggregate(
     # but whose bar-wise AND is empty. We only flag CONJUNCTION_NEVER_TRUE
     # for a real per-predicate contradiction — never across unrelated
     # ``if`` branches.
-    empty_conj_group: Optional[List[_Subcond]] = None
+    empty_conj_group: Optional[_Group] = None
     base = 0
     for group_idx, group in enumerate(groups):
-        legs = len(group)
+        legs = len(group.subconds)
         if (
             legs >= 2
             and group_evaluated[group_idx]
@@ -298,7 +320,7 @@ def _aggregate(
             likely_blockers=[
                 LikelyBlocker(
                     reason="conjunction_never_true",
-                    evidence=" AND ".join(s.label for s in empty_conj_group),
+                    evidence=" AND ".join(s.label for s in empty_conj_group.subconds),
                     hit_rate=0.0,
                 )
             ][:_MAX_LIKELY_BLOCKERS],
@@ -322,7 +344,7 @@ def _aggregate(
 _BLOCK_FIELDS = ("body", "orelse", "finalbody")
 
 
-def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
+def _extract_subconditions(strategy_code: str) -> List[_Group]:
     """Return one group of subconditions per ``if`` predicate.
 
     Subconditions are grouped by their parent ``if`` so the conjunction
@@ -332,10 +354,19 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
 
     A **nested** ``if`` inherits the subconditions of every enclosing
     ``if`` on its positive control-flow path: ``if close > 100: if close
-    < 50: pass`` produces a single group containing both legs, so the
-    coverage check sees the bar-wise AND ``close > 100 AND close < 50``
-    (which is impossible) rather than two unrelated branches that would
-    each fire on different bars.
+    < 50: pass`` produces a single group containing both legs.
+
+    Position checks (``if pos is None: ... else: ...``) are special-cased:
+    the documented strategy template uses this to gate the entry logic
+    in ``body`` and the exit logic in ``orelse``. We only recurse into
+    ``body`` so exit predicates aren't mis-reported as entry-coverage
+    blockers.
+
+    Symbol gates (``bar.symbol == "AAPL"``) attach a per-group symbol
+    filter so the indicator condition is only evaluated against that
+    DataFrame — otherwise an unrelated symbol's data could satisfy a
+    ``close > 1000`` filter and mask the actual zero-coverage on the
+    target symbol.
 
     The positive branch (``body``) propagates the ancestor predicate;
     ``orelse`` does not, since negating an arbitrary indicator subcond
@@ -356,10 +387,10 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
     # the subcondition is dropped.
     name_evaluators = _collect_name_evaluators(on_bar, name_periods)
 
-    groups: List[List[_Subcond]] = []
+    groups: List[_Group] = []
     state = {"total": 0}
 
-    def _budgeted_extend(group: List[_Subcond], extras: List[_Subcond]) -> bool:
+    def _budgeted_extend(group_subs: List[_Subcond], extras: List[_Subcond]) -> bool:
         """Append extras into group within the global subcond budget.
 
         Returns False when the global cap is hit (caller should stop).
@@ -367,39 +398,67 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
         for sub in extras:
             if state["total"] >= _MAX_SUBCONDITIONS:
                 return False
-            group.append(sub)
+            group_subs.append(sub)
             state["total"] += 1
         return True
 
-    def _visit(stmts: List[ast.stmt], ancestors: List[_Subcond]) -> bool:
+    def _visit(
+        stmts: List[ast.stmt],
+        ancestors: List[_Subcond],
+        ancestor_symbols: Optional[set],
+    ) -> bool:
         for stmt in stmts:
             if isinstance(stmt, ast.If):
+                # ``if pos is None: ... else: ...`` is the documented
+                # entry/exit gate. Treat the test as a structural
+                # control-flow check (not an indicator subcond) and
+                # only recurse into the body — the else branch is the
+                # exit path and shouldn't influence entry coverage.
+                if _is_position_check(stmt.test):
+                    if not _visit(stmt.body, ancestors, ancestor_symbols):
+                        return False
+                    continue
+
                 own_subs: List[_Subcond] = []
+                own_symbols: Optional[set] = None
                 for cmp_node in _flatten_test(stmt.test):
+                    sym = _symbol_gate(cmp_node)
+                    if sym is not None:
+                        if own_symbols is None:
+                            own_symbols = set()
+                        own_symbols.add(sym)
+                        continue
                     sub = _build_subcond(cmp_node, name_periods, name_evaluators)
                     if sub is not None:
                         own_subs.append(sub)
+
+                # Effective symbol filter for this group = ancestor ∩ own.
+                effective_symbols = _intersect_symbols(ancestor_symbols, own_symbols)
+
                 # Build this if's group: ancestors + this predicate.
-                # Ancestors are already counted in earlier groups, but
-                # for THIS group they need fresh budget too (so the cap
-                # bounds total work, not unique subconds).
-                group: List[_Subcond] = []
-                if not _budgeted_extend(group, ancestors):
-                    if group:
-                        groups.append(group)
+                group_subs: List[_Subcond] = []
+                if not _budgeted_extend(group_subs, ancestors):
+                    if group_subs:
+                        groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
                     return False
-                if not _budgeted_extend(group, own_subs):
-                    if group:
-                        groups.append(group)
+                if not _budgeted_extend(group_subs, own_subs):
+                    if group_subs:
+                        groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
                     return False
-                if group:
-                    groups.append(group)
-                # Positive branch inherits ancestors + own_subs.
-                if not _visit(stmt.body, ancestors + own_subs):
+                # Skip emitting groups that have a symbol filter but no
+                # data-dependent subconds — pure symbol gates carry no
+                # coverage signal on their own.
+                # Also skip when the symbol filter is contradictory
+                # (empty set), since the predicate is unreachable.
+                if group_subs and not (effective_symbols is not None and not effective_symbols):
+                    groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
+                # Positive branch inherits ancestors + own_subs and the
+                # intersected symbol filter.
+                if not _visit(stmt.body, ancestors + own_subs, effective_symbols):
                     return False
-                # Else branch only inherits ancestors (we don't model
-                # the negation of own_subs).
-                if not _visit(stmt.orelse, ancestors):
+                # Else branch only inherits ancestor state (we don't
+                # model the negation of own_subs / own_symbols).
+                if not _visit(stmt.orelse, ancestors, ancestor_symbols):
                     return False
             else:
                 # Descend into compound statements (For, While, With,
@@ -409,7 +468,7 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
                 for field in _BLOCK_FIELDS:
                     inner = getattr(stmt, field, None)
                     if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
-                        if not _visit(inner, ancestors):
+                        if not _visit(inner, ancestors, ancestor_symbols):
                             return False
                 # ast.Try has handlers; each handler.body is a stmt list.
                 handlers = getattr(stmt, "handlers", None)
@@ -417,14 +476,90 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
                     for h in handlers:
                         h_body = getattr(h, "body", None)
                         if isinstance(h_body, list) and h_body:
-                            if not _visit(h_body, ancestors):
+                            if not _visit(h_body, ancestors, ancestor_symbols):
                                 return False
         return True
 
     body = getattr(on_bar, "body", None)
     if isinstance(body, list):
-        _visit(body, [])
+        _visit(body, [], None)
     return groups
+
+
+def _is_position_check(test: ast.expr) -> bool:
+    """Detect ``pos is None`` / ``position is None`` / ``ctx.position(...) is None``.
+
+    The strategy template's documented entry path uses
+    ``if ctx.position(bar.symbol) is None:`` (or a local ``pos = ...``
+    binding) to gate entry logic. We treat that ``if`` as a structural
+    control-flow check rather than a coverage subcond — the else branch
+    is the exit path and doesn't restrict entries.
+    """
+    if not isinstance(test, ast.Compare):
+        return False
+    if len(test.ops) != 1:
+        return False
+    op = test.ops[0]
+    if not isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)):
+        return False
+    rhs = test.comparators[0]
+    if not (isinstance(rhs, ast.Constant) and rhs.value is None):
+        return False
+    left = test.left
+    if isinstance(left, ast.Name) and left.id in {"pos", "position"}:
+        return True
+    if (
+        isinstance(left, ast.Call)
+        and isinstance(left.func, ast.Attribute)
+        and left.func.attr == "position"
+    ):
+        return True
+    return False
+
+
+def _symbol_gate(node: ast.Compare) -> Optional[str]:
+    """Detect ``bar.symbol == "X"`` (or ``"X" == bar.symbol``).
+
+    Returns the literal symbol when matched; ``None`` otherwise. Used to
+    constrain a group's evaluation to the matching symbol's DataFrame
+    rather than evaluating against every symbol in the universe.
+    """
+    if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.Is)):
+        return None
+    left, right = node.left, node.comparators[0]
+
+    def _is_bar_symbol(n: ast.expr) -> bool:
+        return (
+            isinstance(n, ast.Attribute)
+            and isinstance(n.value, ast.Name)
+            and n.value.id == "bar"
+            and n.attr == "symbol"
+        )
+
+    def _string_const(n: ast.expr) -> Optional[str]:
+        return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
+
+    if _is_bar_symbol(left):
+        sym = _string_const(right)
+        return sym
+    if _is_bar_symbol(right):
+        sym = _string_const(left)
+        return sym
+    return None
+
+
+def _intersect_symbols(a: Optional[set], b: Optional[set]) -> Optional[set]:
+    """Combine ancestor and own symbol filters under conjunction.
+
+    None means "no constraint introduced at this level". A real set of
+    symbols overrides None. When both sides constrain, the effective
+    filter is the intersection.
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a & b
 
 
 def _find_on_bar(tree: ast.AST) -> Optional[ast.AST]:
