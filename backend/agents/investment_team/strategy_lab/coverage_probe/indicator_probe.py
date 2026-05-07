@@ -451,23 +451,35 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
         """
         own_subs: List[_Subcond] = []
         own_symbols: Optional[set] = None
-        for cmp_node in _flatten_test(test):
-            sym = _symbol_gate(cmp_node)
-            if sym is not None:
-                # Multiple ``bar.symbol == X`` gates within a single
-                # ``and`` are conjoined, so a second different literal
-                # *contradicts* the first — they must be intersected,
-                # not unioned. ``bar.symbol == "AAPL" and
-                # bar.symbol == "MSFT"`` collapses to an empty filter,
-                # which downstream drops as unreachable.
-                if own_symbols is None:
-                    own_symbols = {sym}
-                else:
-                    own_symbols &= {sym}
+        for term in _flatten_top_terms(test):
+            if isinstance(term, ast.Compare):
+                sym = _symbol_gate(term)
+                if sym is not None:
+                    # Multiple ``bar.symbol == X`` gates within a single
+                    # ``and`` are conjoined, so a second different literal
+                    # *contradicts* the first — they must be intersected,
+                    # not unioned. ``bar.symbol == "AAPL" and
+                    # bar.symbol == "MSFT"`` collapses to an empty filter,
+                    # which downstream drops as unreachable.
+                    if own_symbols is None:
+                        own_symbols = {sym}
+                    else:
+                        own_symbols &= {sym}
+                    continue
+                sub = _build_subcond(term, name_periods, name_evaluators)
+                if sub is not None:
+                    own_subs.append(sub)
                 continue
-            sub = _build_subcond(cmp_node, name_periods, name_evaluators)
-            if sub is not None:
-                own_subs.append(sub)
+            # Truthiness term — ``bool(x)`` or a bare ``Name`` referencing
+            # a precomputed indicator. Required for the ideation/codegen
+            # shape ``_entry = sma(close, 200) > bar.close`` followed by
+            # ``if pos is None and bool(_entry):``. When ``Name`` doesn't
+            # resolve to a recognised indicator helper (e.g. compiler-
+            # emitted ``self._n_X`` factor methods), we leave the term
+            # unhandled rather than silently treating it as always-true.
+            truthy = _build_truthy_subcond(term, name_periods, name_evaluators)
+            if truthy is not None:
+                own_subs.append(truthy)
 
         effective_symbols = _intersect_symbols(ancestor_symbols, own_symbols)
 
@@ -715,6 +727,22 @@ def _flatten_test(test: ast.expr) -> List[ast.Compare]:
     return []
 
 
+def _flatten_top_terms(test: ast.expr) -> List[ast.expr]:
+    """Split a top-level ``and`` chain into individual term expressions.
+
+    Unlike :func:`_flatten_test`, this returns the raw expression nodes
+    (not just ``Compare``), so callers can recognise truthiness terms
+    such as ``bool(_entry)`` or a bare ``Name`` reference to a
+    precomputed indicator series alongside ordinary comparisons.
+    """
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        out: List[ast.expr] = []
+        for value in test.values:
+            out.extend(_flatten_top_terms(value))
+        return out
+    return [test]
+
+
 def _collect_name_periods(tree: ast.AST) -> Dict[str, int]:
     """Bind ``NAME = <int>`` for later ``Name`` / ``self.NAME`` resolution.
 
@@ -782,6 +810,63 @@ def _build_subcond(
 
     def _eval(df: pd.DataFrame) -> pd.Series:
         return op_fn(l_fn(df), r_fn(df))
+
+    return _Subcond(label=label, evaluate=_eval)
+
+
+def _build_truthy_subcond(
+    node: ast.expr,
+    name_periods: Dict[str, int],
+    name_evaluators: Optional[Dict[str, Callable[[pd.DataFrame], pd.Series]]] = None,
+) -> Optional[_Subcond]:
+    """Build a coverage subcond for a truthiness term like ``bool(x)`` or ``x``.
+
+    Recognised shapes:
+
+    - ``bool(<Compare>)`` — delegates to :func:`_build_subcond` so e.g.
+      ``bool(close > 100)`` produces the same row as ``close > 100``.
+    - ``bool(<Name>)`` and bare ``<Name>`` — resolves the name to a
+      previously-bound indicator evaluator (see
+      :func:`_collect_name_evaluators`) and treats the resulting series
+      as truthy where it is non-NaN and non-zero.
+
+    Returns ``None`` when the inner expression is neither a recognised
+    comparison nor a Name with an indicator binding — in particular the
+    factor-tree codegen pattern ``_entry = self._n_X(bars)`` falls in
+    this bucket because ``self._n_X(...)`` is not a recognised helper,
+    so those strategies still surface as ``UNKNOWN_LOW_COVERAGE`` rather
+    than being silently treated as always-true.
+    """
+    inner = node
+    if (
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == "bool"
+        and len(inner.args) == 1
+        and not inner.keywords
+    ):
+        inner = inner.args[0]
+
+    if isinstance(inner, ast.Compare):
+        return _build_subcond(inner, name_periods, name_evaluators)
+
+    if not isinstance(inner, ast.Name) or name_evaluators is None:
+        return None
+
+    evaluator = name_evaluators.get(inner.id)
+    if evaluator is None:
+        return None
+
+    try:
+        label = ast.unparse(node).strip()
+    except Exception:  # noqa: BLE001
+        label = inner.id
+    if len(label) > _MAX_LABEL_LEN:
+        label = label[: _MAX_LABEL_LEN - 1] + "…"
+
+    def _eval(df: pd.DataFrame) -> pd.Series:
+        s = evaluator(df)
+        return s.fillna(0).astype(bool)
 
     return _Subcond(label=label, evaluate=_eval)
 

@@ -635,3 +635,104 @@ def test_empty_market_data_does_not_raise() -> None:
         CoverageCategory.UNKNOWN_LOW_COVERAGE,
     }
     assert report.bars_checked == 0
+
+
+def test_bool_call_on_indicator_name_is_recognized() -> None:
+    """`bool(<Name>)` where the name resolves to an indicator binding
+    must produce a real subcondition rather than being silently dropped.
+
+    Regression for the codex finding on PR #456: stripping the position
+    gate from `if pos is None and bool(_entry):` left `bool(_entry)` as
+    the residual test, but `_flatten_test` only returned `Compare`
+    nodes, so the term was discarded and the probe reported
+    `UNKNOWN_LOW_COVERAGE`.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                _entry = sma(close, 5)
+                pos = ctx.position(bar.symbol)
+                if pos is None and bool(_entry):
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].label == "bool(_entry)"
+    assert report.subconditions[0].hit_count > 0
+
+
+def test_bare_name_truthiness_residual_is_recognized() -> None:
+    """A bare `Name` left as the residual after stripping the position
+    gate (`if pos is None and _entry:`) must reach the coverage check
+    when the name is bound to an indicator.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                _entry = sma(close, 5)
+                pos = ctx.position(bar.symbol)
+                if pos is None and _entry:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].label == "_entry"
+    assert report.subconditions[0].hit_count > 0
+
+
+def test_bool_call_on_compare_delegates_to_compare_subcond() -> None:
+    """`bool(<Compare>)` should produce the same subcondition as the
+    bare comparison — useful when codegen wraps a comparison in
+    `bool(...)` for symmetry with the truthiness path.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if bool(close > 50):
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].label == "close > 50"
+    assert report.subconditions[0].hit_count > 0
+
+
+def test_bool_call_on_unbound_name_remains_unknown() -> None:
+    """The compiler-emitted factor-tree shape `_entry = self._n_X(bars)`
+    binds `_entry` to a method call we cannot statically introspect, so
+    `_collect_name_evaluators` doesn't pick it up. The probe must surface
+    that as `UNKNOWN_LOW_COVERAGE` rather than silently treating
+    `bool(_entry)` as always-true.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                _entry = self._n_root(bars)
+                pos = ctx.position(bar.symbol)
+                if pos is None and bool(_entry):
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert report.coverage_category is CoverageCategory.UNKNOWN_LOW_COVERAGE
+    assert report.subconditions == []
