@@ -218,6 +218,13 @@ def _aggregate(
     group_conjunction_hits: List[int] = [0] * len(groups)
     group_evaluated: List[bool] = [False] * len(groups)
     total_eval_bars = 0
+    # Per-symbol bar count of the symbols that actually contributed to
+    # at least one group. Used so a symbol-gated row's hit_rate divides
+    # by the matching-symbol bars rather than the full universe — two
+    # always-true gated branches would otherwise both report 0.5 instead
+    # of 1.0 because each branch's hits come from one symbol's bars but
+    # the global denominator includes both.
+    per_symbol_bars: Dict[str, int] = {}
 
     for symbol, df in market_data.items():
         if not isinstance(df, pd.DataFrame) or df.empty:
@@ -255,6 +262,7 @@ def _aggregate(
                 symbol_contributed = True
         if symbol_contributed:
             total_eval_bars += len(df)
+            per_symbol_bars[symbol] = per_symbol_bars.get(symbol, 0) + len(df)
 
     if total_eval_bars == 0:
         return CoverageReport(
@@ -277,7 +285,15 @@ def _aggregate(
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        rate = hits / total_eval_bars
+        # Per-row denominator: a symbol-gated row's hits only come from
+        # bars in its target_symbols, so dividing by the global total
+        # would understate the per-symbol coverage rate. Restrict the
+        # denominator to the bars that could have contributed.
+        if syms is not None:
+            denom = sum(per_symbol_bars.get(s, 0) for s in syms)
+        else:
+            denom = total_eval_bars
+        rate = (hits / denom) if denom > 0 else 0.0
         # Augment the rendered label with the symbol filter so the
         # report distinguishes symbol-gated duplicates without growing
         # the model schema.
@@ -422,6 +438,49 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
             state["total"] += 1
         return True
 
+    def _process_if(
+        test: ast.expr,
+        body: List[ast.stmt],
+        orelse: List[ast.stmt],
+        ancestors: List[_Subcond],
+        ancestor_symbols: Optional[set],
+    ) -> bool:
+        """Process a single if-shape (test + body + orelse) given an
+        ancestor stack. Used both for real ``ast.If`` statements and for
+        synthesised ifs after stripping a position-gate conjunct.
+        """
+        own_subs: List[_Subcond] = []
+        own_symbols: Optional[set] = None
+        for cmp_node in _flatten_test(test):
+            sym = _symbol_gate(cmp_node)
+            if sym is not None:
+                if own_symbols is None:
+                    own_symbols = set()
+                own_symbols.add(sym)
+                continue
+            sub = _build_subcond(cmp_node, name_periods, name_evaluators)
+            if sub is not None:
+                own_subs.append(sub)
+
+        effective_symbols = _intersect_symbols(ancestor_symbols, own_symbols)
+
+        group_subs: List[_Subcond] = []
+        if not _budgeted_extend(group_subs, ancestors):
+            if group_subs:
+                groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
+            return False
+        if not _budgeted_extend(group_subs, own_subs):
+            if group_subs:
+                groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
+            return False
+        if group_subs and not (effective_symbols is not None and not effective_symbols):
+            groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
+        if not _visit(body, ancestors + own_subs, effective_symbols):
+            return False
+        if not _visit(orelse, ancestors, ancestor_symbols):
+            return False
+        return True
+
     def _visit(
         stmts: List[ast.stmt],
         ancestors: List[_Subcond],
@@ -431,60 +490,33 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
             if isinstance(stmt, ast.If):
                 # ``if pos is None: ... else: ...`` (and the inverted
                 # ``if pos is not None: <exit> else: <entry>``) is the
-                # documented entry/exit gate. Treat the test as a
-                # structural control-flow check (not an indicator
-                # subcond) and recurse only into the entry branch —
-                # the exit branch shouldn't influence entry coverage.
-                position_check = _classify_position_check(stmt.test)
+                # documented entry/exit gate. The codegen also produces
+                # combined forms like ``if pos is None and <entry>:`` /
+                # ``elif pos is not None and <exit>:`` — the ``elif`` is
+                # represented as a nested ``if`` inside the parent's
+                # orelse, so we must strip the position-gate conjunct
+                # from the test and route the rest accordingly.
+                position_check, gate_residual = _strip_position_gate(stmt.test)
                 if position_check == "vacant":  # pos is None — body is entry
-                    if not _visit(stmt.body, ancestors, ancestor_symbols):
-                        return False
+                    if gate_residual is None:
+                        if not _visit(stmt.body, ancestors, ancestor_symbols):
+                            return False
+                    else:
+                        if not _process_if(
+                            gate_residual,
+                            stmt.body,
+                            [],
+                            ancestors,
+                            ancestor_symbols,
+                        ):
+                            return False
                     continue
                 if position_check == "occupied":  # pos is not None — orelse is entry
                     if not _visit(stmt.orelse, ancestors, ancestor_symbols):
                         return False
                     continue
 
-                own_subs: List[_Subcond] = []
-                own_symbols: Optional[set] = None
-                for cmp_node in _flatten_test(stmt.test):
-                    sym = _symbol_gate(cmp_node)
-                    if sym is not None:
-                        if own_symbols is None:
-                            own_symbols = set()
-                        own_symbols.add(sym)
-                        continue
-                    sub = _build_subcond(cmp_node, name_periods, name_evaluators)
-                    if sub is not None:
-                        own_subs.append(sub)
-
-                # Effective symbol filter for this group = ancestor ∩ own.
-                effective_symbols = _intersect_symbols(ancestor_symbols, own_symbols)
-
-                # Build this if's group: ancestors + this predicate.
-                group_subs: List[_Subcond] = []
-                if not _budgeted_extend(group_subs, ancestors):
-                    if group_subs:
-                        groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
-                    return False
-                if not _budgeted_extend(group_subs, own_subs):
-                    if group_subs:
-                        groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
-                    return False
-                # Skip emitting groups that have a symbol filter but no
-                # data-dependent subconds — pure symbol gates carry no
-                # coverage signal on their own.
-                # Also skip when the symbol filter is contradictory
-                # (empty set), since the predicate is unreachable.
-                if group_subs and not (effective_symbols is not None and not effective_symbols):
-                    groups.append(_Group(subconds=group_subs, target_symbols=effective_symbols))
-                # Positive branch inherits ancestors + own_subs and the
-                # intersected symbol filter.
-                if not _visit(stmt.body, ancestors + own_subs, effective_symbols):
-                    return False
-                # Else branch only inherits ancestor state (we don't
-                # model the negation of own_subs / own_symbols).
-                if not _visit(stmt.orelse, ancestors, ancestor_symbols):
+                if not _process_if(stmt.test, stmt.body, stmt.orelse, ancestors, ancestor_symbols):
                     return False
             else:
                 # Descend into compound statements (For, While, With,
@@ -510,6 +542,51 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
     if isinstance(body, list):
         _visit(body, [], None)
     return groups
+
+
+def _strip_position_gate(test: ast.expr) -> tuple:
+    """Detect a position-gate inside (or as) a boolean entry test.
+
+    Generated strategies often combine the position check with the entry
+    rule in one predicate: ``if pos is None and <entry>:`` and the
+    matching ``elif pos is not None and <exit>:``. The ``elif`` is
+    parsed as a nested ``if`` inside the outer ``orelse``, so without
+    this helper the exit predicate would be treated as another entry
+    coverage subcond.
+
+    Returns ``(direction, residual)`` where:
+
+    - ``direction`` is ``"vacant"`` / ``"occupied"`` / ``None``.
+    - ``residual`` is the remaining test expression after the
+      position-gate conjunct is removed, or ``None`` if no further
+      conjuncts remain (bare position check).
+
+    For combined gates with three or more conjuncts the residual is the
+    AND of the surviving values, preserving any indicator subconditions
+    that legitimately gate the entry alongside the position check.
+    """
+    direction = _classify_position_check(test)
+    if direction is not None:
+        return direction, None
+
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        position_dir: Optional[str] = None
+        survivors: List[ast.expr] = []
+        for value in test.values:
+            d = _classify_position_check(value)
+            if d is not None and position_dir is None:
+                # First gate wins; stop matching against further conjuncts
+                # so a same-test repeated by accident isn't reclassified.
+                position_dir = d
+                continue
+            survivors.append(value)
+        if position_dir is not None:
+            if not survivors:
+                return position_dir, None
+            if len(survivors) == 1:
+                return position_dir, survivors[0]
+            return position_dir, ast.BoolOp(op=ast.And(), values=survivors)
+    return None, None
 
 
 def _classify_position_check(test: ast.expr) -> Optional[str]:

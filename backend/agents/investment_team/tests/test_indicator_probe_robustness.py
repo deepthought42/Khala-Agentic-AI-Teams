@@ -361,6 +361,97 @@ def test_inverted_position_check_routes_to_orelse() -> None:
     assert "close < -50" not in labels
 
 
+def test_combined_position_gate_in_entry_test_routes_to_body() -> None:
+    """``if pos is None and <entry>:`` / ``elif pos is not None and <exit>:``
+    is the codegen-emitted shape (factors/compiler.py). The probe must
+    strip the position-gate conjunct, treat the body of the vacant gate
+    as the entry path (with the surviving conjunct(s) as coverage), and
+    skip the elif's exit predicate entirely.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                pos = ctx.position(bar.symbol)
+                if pos is None and close > 0:
+                    pass
+                elif pos is not None and close < -50:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    # Entry-coverage subcond ``close > 0`` must be present; the elif's
+    # exit-coverage ``close < -50`` must not be.
+    labels = {sc.label for sc in report.subconditions}
+    assert "close > 0" in labels
+    assert "close < -50" not in labels
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+
+
+def test_combined_position_gate_with_zero_hit_entry_flagged() -> None:
+    """The surviving entry conjunct of a combined gate is real coverage
+    — so when it never fires, the probe must still flag
+    INDICATOR_FILTER_TOO_RESTRICTIVE rather than silently passing.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if pos is None and close < -50:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    assert report.coverage_category is CoverageCategory.INDICATOR_FILTER_TOO_RESTRICTIVE
+    assert any(sc.label == "close < -50" for sc in report.subconditions)
+
+
+def test_symbol_gated_hit_rate_uses_matching_symbol_bars() -> None:
+    """Symbol-gated rows must divide by the matching symbol's bars,
+    not by the global universe. Without this, two always-true gated
+    branches each report hit_rate=0.5 instead of 1.0 when the universe
+    has two equally-sized symbols.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if bar.symbol == "AAPL" and close > 50:
+                    pass
+                if bar.symbol == "MSFT" and close > 50:
+                    pass
+        """
+    )
+    aapl = _flat_ohlcv(n=30)  # close = 100 — always > 50
+    msft = pd.DataFrame(
+        {
+            "open": np.full(30, 75.0),
+            "high": np.full(30, 75.5),
+            "low": np.full(30, 74.5),
+            "close": np.full(30, 75.0),  # always > 50
+            "volume": np.full(30, 1_000_000.0),
+        },
+        index=pd.date_range("2024-01-01", periods=30, freq="D"),
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": aapl, "MSFT": msft},
+    )
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    # Both branches always fire on their respective symbols. With the
+    # matching-bars denominator each row reports hit_rate == 1.0.
+    assert len(report.subconditions) == 2
+    for sc in report.subconditions:
+        assert sc.hit_count == 30
+        assert sc.hit_rate == 1.0
+
+
 def test_atr_positional_period_is_resolved() -> None:
     """``atr(high, low, close, N)`` puts the period at args[3], not args[1].
 
