@@ -143,6 +143,105 @@ def test_insufficient_bars_short_circuits() -> None:
     assert report.likely_blockers[0].reason == "insufficient_bars"
 
 
+def test_computed_indicator_variable_is_bound() -> None:
+    """Strategy follows the standard ideation_system.md template:
+    compute the indicator into a local then compare in the entry test.
+
+    Without Name → indicator binding the RHS is a Name with no numeric
+    constant binding, so the comparison gets dropped and the probe
+    returns UNKNOWN_LOW_COVERAGE — silently masking real coverage.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                sma_var = sma(close, 5)
+                if close > sma_var:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _swing_ohlcv()},
+    )
+
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    assert len(report.subconditions) == 1
+    sc = report.subconditions[0]
+    assert sc.hit_count > 0
+
+
+def test_bollinger_bands_subscript_recognized() -> None:
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > bollinger_bands(close, 20)[0]:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _swing_ohlcv()},
+    )
+    # Some bars in the swing fixture exceed the upper band; the
+    # subcondition is recognised and partially fires.
+    assert len(report.subconditions) == 1
+    assert report.coverage_category in {
+        CoverageCategory.COVERAGE_OK,
+        CoverageCategory.INDICATOR_FILTER_TOO_RESTRICTIVE,
+    }
+
+
+def test_macd_subscript_recognized() -> None:
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if macd(close)[0] > 0:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _swing_ohlcv()},
+    )
+    assert len(report.subconditions) == 1
+    assert report.subconditions[0].label.startswith("macd(close)[0] >")
+
+
+def test_stochastic_subscript_recognized() -> None:
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if stochastic(high, low, close)[0] < 20:
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _swing_ohlcv()},
+    )
+    assert len(report.subconditions) == 1
+
+
+def test_vwap_recognized() -> None:
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > vwap(high, low, close, volume):
+                    pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _swing_ohlcv()},
+    )
+    assert len(report.subconditions) == 1
+
+
 def test_volume_scaled_subcondition_recognized() -> None:
     df = _flat_ohlcv()
     df.loc[df.index[40:], "volume"] = 2_000_000.0  # half the bars at 2x baseline

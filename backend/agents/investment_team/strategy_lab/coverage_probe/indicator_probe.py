@@ -59,6 +59,23 @@ _HLC_INDICATORS: Dict[str, Callable[..., pd.Series]] = {
     "adx": _ind.adx,
 }
 
+# Indicators that take (high, low, close, volume) and return a Series.
+_OHLCV_INDICATORS: Dict[str, Callable[..., pd.Series]] = {
+    "vwap": _ind.vwap,
+}
+
+# Tuple-returning helpers (one Series per element). We only recognise
+# them inside a Subscript with a constant integer slice — bare calls are
+# ambiguous because the user hasn't picked which leg to compare.
+# Each entry: (signature_kind, helper, max_idx).
+#   signature_kind: "series" → helper(series, *period_args)
+#                   "hlc"    → helper(high, low, close, *period_args)
+_TUPLE_INDICATORS: Dict[str, tuple] = {
+    "macd": ("series", _ind.macd, 3),  # (macd_line, signal_line, histogram)
+    "bollinger_bands": ("series", _ind.bollinger_bands, 3),  # (upper, middle, lower)
+    "stochastic": ("hlc", _ind.stochastic, 2),  # (%K, %D)
+}
+
 
 @dataclass(frozen=True)
 class _Operand:
@@ -328,6 +345,13 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
     if on_bar is None:
         return []
 
+    # Pre-pass: bind any local Name to its computed indicator. Strategies
+    # following the standard template (see prompts/ideation_system.md)
+    # write ``sma_var = sma(close, 200)`` then ``if bar.close > sma_var``
+    # — the comparison's RHS is a Name, not a Call, so without this pass
+    # the subcondition is dropped.
+    name_evaluators = _collect_name_evaluators(on_bar, name_periods)
+
     groups: List[List[_Subcond]] = []
     state = {"total": 0}
 
@@ -348,7 +372,7 @@ def _extract_subconditions(strategy_code: str) -> List[List[_Subcond]]:
             if isinstance(stmt, ast.If):
                 own_subs: List[_Subcond] = []
                 for cmp_node in _flatten_test(stmt.test):
-                    sub = _build_subcond(cmp_node, name_periods)
+                    sub = _build_subcond(cmp_node, name_periods, name_evaluators)
                     if sub is not None:
                         own_subs.append(sub)
                 # Build this if's group: ancestors + this predicate.
@@ -457,7 +481,11 @@ def _collect_name_periods(tree: ast.AST) -> Dict[str, int]:
     return bindings
 
 
-def _build_subcond(node: ast.Compare, name_periods: Dict[str, int]) -> Optional[_Subcond]:
+def _build_subcond(
+    node: ast.Compare,
+    name_periods: Dict[str, int],
+    name_evaluators: Optional[Dict[str, Callable[[pd.DataFrame], pd.Series]]] = None,
+) -> Optional[_Subcond]:
     # Only support simple a <op> b shape — chained comparisons are rare in
     # generated strategies and ambiguous for hit-rate semantics.
     if len(node.ops) != 1 or len(node.comparators) != 1:
@@ -467,8 +495,8 @@ def _build_subcond(node: ast.Compare, name_periods: Dict[str, int]) -> Optional[
     if op_fn is None:
         return None
 
-    left = _build_operand(node.left, name_periods)
-    right = _build_operand(node.comparators[0], name_periods)
+    left = _build_operand(node.left, name_periods, name_evaluators)
+    right = _build_operand(node.comparators[0], name_periods, name_evaluators)
     if left is None or right is None:
         return None
     if not (left.data_dependent or right.data_dependent):
@@ -495,7 +523,11 @@ def _format_label(node: ast.Compare) -> str:
     return text
 
 
-def _build_operand(node: ast.expr, name_periods: Dict[str, int]) -> Optional[_Operand]:
+def _build_operand(
+    node: ast.expr,
+    name_periods: Dict[str, int],
+    name_evaluators: Optional[Dict[str, Callable[[pd.DataFrame], pd.Series]]] = None,
+) -> Optional[_Operand]:
     """Compile an AST sub-expression into a ``df -> Series`` callable.
 
     Returns ``None`` for expressions whose evaluation we can't faithfully
@@ -512,6 +544,15 @@ def _build_operand(node: ast.expr, name_periods: Dict[str, int]) -> Optional[_Op
 
         return _Operand(fn=_col, data_dependent=True)
 
+    # Resolve a Name to a previously-bound indicator-call evaluator
+    # (e.g. ``sma_var = sma(close, 200)`` then ``if x > sma_var``).
+    # This must be checked BEFORE _numeric_literal so a Name that refers
+    # to a computed indicator isn't misinterpreted as a numeric literal.
+    if isinstance(node, ast.Name) and name_evaluators is not None:
+        evaluator = name_evaluators.get(node.id)
+        if evaluator is not None:
+            return _Operand(fn=evaluator, data_dependent=True)
+
     literal = _numeric_literal(node, name_periods)
     if literal is not None:
         return _Operand(
@@ -524,8 +565,8 @@ def _build_operand(node: ast.expr, name_periods: Dict[str, int]) -> Optional[_Op
         return _Operand(fn=indicator_fn, data_dependent=True)
 
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add, ast.Sub)):
-        left = _build_operand(node.left, name_periods)
-        right = _build_operand(node.right, name_periods)
+        left = _build_operand(node.left, name_periods, name_evaluators)
+        right = _build_operand(node.right, name_periods, name_evaluators)
         if left is not None and right is not None:
             l_fn, r_fn = left.fn, right.fn
             if isinstance(node.op, ast.Mult):
@@ -584,6 +625,12 @@ def _numeric_literal(node: ast.expr, name_periods: Dict[str, int]) -> Optional[f
 def _indicator_call(
     node: ast.expr, name_periods: Dict[str, int]
 ) -> Optional[Callable[[pd.DataFrame], pd.Series]]:
+    # Tuple-returning helpers are only recognised inside a Subscript with
+    # a constant integer index — without one we can't tell which leg the
+    # user meant to compare against.
+    if isinstance(node, ast.Subscript):
+        return _tuple_indicator_subscript(node, name_periods)
+
     if not isinstance(node, ast.Call):
         return None
     func_name = _func_name(node.func)
@@ -623,6 +670,123 @@ def _indicator_call(
             return helper(high, low, close)
 
         return _eval_hlc
+
+    if func_name in _OHLCV_INDICATORS:
+        helper = _OHLCV_INDICATORS[func_name]
+
+        # vwap(high, low, close, volume) — no scalar period, just OHLCV inputs.
+        def _eval_ohlcv(df: pd.DataFrame) -> pd.Series:
+            for col in ("high", "low", "close", "volume"):
+                if col not in df.columns:
+                    return pd.Series(float("nan"), index=df.index)
+            return helper(
+                df["high"].astype(float),
+                df["low"].astype(float),
+                df["close"].astype(float),
+                df["volume"].astype(float),
+            )
+
+        return _eval_ohlcv
+
+    return None
+
+
+def _tuple_indicator_subscript(
+    node: ast.Subscript, name_periods: Dict[str, int]
+) -> Optional[Callable[[pd.DataFrame], pd.Series]]:
+    """Resolve ``bollinger_bands(close, 20)[0]`` and similar.
+
+    Recognised only when the inner ``Call`` targets a tuple-returning
+    helper and the slice is a constant non-negative integer within the
+    helper's tuple arity.
+    """
+    if not isinstance(node.value, ast.Call):
+        return None
+    func_name = _func_name(node.value.func)
+    if func_name is None or func_name not in _TUPLE_INDICATORS:
+        return None
+    slc = node.slice
+    if not (
+        isinstance(slc, ast.Constant)
+        and isinstance(slc.value, int)
+        and not isinstance(slc.value, bool)
+    ):
+        return None
+
+    sig_kind, helper, max_idx = _TUPLE_INDICATORS[func_name]
+    idx = slc.value
+    if idx < 0 or idx >= max_idx:
+        return None
+
+    call = node.value
+    if sig_kind == "series":
+        column = _series_arg_column(call)
+        period = _resolve_period_arg(call, name_periods, positional_index=1)
+
+        def _eval_tuple_series(df: pd.DataFrame) -> pd.Series:
+            if column not in df.columns:
+                return pd.Series(float("nan"), index=df.index)
+            args = [df[column].astype(float)]
+            if period is not None:
+                args.append(int(period))
+            return helper(*args)[idx]
+
+        return _eval_tuple_series
+
+    # sig_kind == "hlc"
+    period = _resolve_period_arg(call, name_periods, positional_index=3)
+
+    def _eval_tuple_hlc(df: pd.DataFrame) -> pd.Series:
+        for col in ("high", "low", "close"):
+            if col not in df.columns:
+                return pd.Series(float("nan"), index=df.index)
+        args = [
+            df["high"].astype(float),
+            df["low"].astype(float),
+            df["close"].astype(float),
+        ]
+        if period is not None:
+            args.append(int(period))
+        return helper(*args)[idx]
+
+    return _eval_tuple_hlc
+
+
+def _collect_name_evaluators(
+    on_bar: ast.AST, name_periods: Dict[str, int]
+) -> Dict[str, Callable[[pd.DataFrame], pd.Series]]:
+    """Bind local ``Name = <indicator_call>`` assignments inside ``on_bar``.
+
+    Walks ``on_bar``'s body for simple ``name = <expr>`` and
+    ``name: T = <expr>`` assignments where the RHS resolves to an
+    indicator evaluator we can call. Used so that
+
+        sma_var = sma(close, 200)
+        if bar.close > sma_var:
+            ...
+
+    (the canonical generated-strategy shape) actually reaches the
+    coverage check rather than getting dropped.
+    """
+    bindings: Dict[str, Callable[[pd.DataFrame], pd.Series]] = {}
+    for node in ast.walk(on_bar):
+        targets: List[ast.expr] = []
+        value: Optional[ast.expr] = None
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        evaluator = _indicator_call(value, name_periods) if value is not None else None
+        if evaluator is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings.setdefault(target.id, evaluator)
+    return bindings
 
     return None
 
