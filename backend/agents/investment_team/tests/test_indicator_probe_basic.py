@@ -242,6 +242,94 @@ def test_vwap_recognized() -> None:
     assert len(report.subconditions) == 1
 
 
+def test_bollinger_bands_extra_positional_args_are_forwarded() -> None:
+    """``bollinger_bands(close, 20, 0.1)[0]`` must use num_std=0.1, not 2.0.
+
+    Regression for a bug where the tuple-indicator path forwarded only
+    the period and silently dropped trailing args, so the probe computed
+    against helper defaults rather than the strategy's actual thresholds.
+
+    A tight ``num_std=0.1`` upper band is much closer to the SMA than the
+    default 2.0 band, so ``close > upper`` fires substantially more often.
+    Identical hit counts between the two forms would prove the extra arg
+    is being dropped.
+    """
+    code_tight = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > bollinger_bands(close, 20, 0.1)[0]:
+                    pass
+        """
+    )
+    code_default = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > bollinger_bands(close, 20)[0]:
+                    pass
+        """
+    )
+    df = _swing_ohlcv()
+    tight = run_indicator_probe(strategy_code=code_tight, market_data={"AAPL": df})
+    default = run_indicator_probe(strategy_code=code_default, market_data={"AAPL": df})
+
+    assert tight.subconditions[0].hit_count != default.subconditions[0].hit_count
+
+
+def test_bollinger_bands_kwarg_num_std_is_forwarded() -> None:
+    """The helper-specific kwarg form is recognised too."""
+    code_kw = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > bollinger_bands(close, 20, num_std=0.1)[0]:
+                    pass
+        """
+    )
+    code_default = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if close > bollinger_bands(close, 20)[0]:
+                    pass
+        """
+    )
+    df = _swing_ohlcv()
+    kw = run_indicator_probe(strategy_code=code_kw, market_data={"AAPL": df})
+    default = run_indicator_probe(strategy_code=code_default, market_data={"AAPL": df})
+
+    assert kw.subconditions[0].hit_count != default.subconditions[0].hit_count
+
+
+def test_macd_extra_positional_args_are_forwarded() -> None:
+    """``macd(close, 5, 10, 4)[0]`` must use those spans, not the defaults
+    (12, 26, 9). Hit counts of close vs. the macd line differ by enough
+    to prove the values flowed through to the helper.
+    """
+    code_short = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if macd(close, 5, 10, 4)[0] > 0:
+                    pass
+        """
+    )
+    code_default = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if macd(close)[0] > 0:
+                    pass
+        """
+    )
+    df = _swing_ohlcv()
+    short = run_indicator_probe(strategy_code=code_short, market_data={"AAPL": df})
+    default = run_indicator_probe(strategy_code=code_default, market_data={"AAPL": df})
+
+    assert short.subconditions[0].hit_count != default.subconditions[0].hit_count
+
+
 def test_volume_scaled_subcondition_recognized() -> None:
     df = _flat_ohlcv()
     df.loc[df.index[40:], "volume"] = 2_000_000.0  # half the bars at 2x baseline

@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 import pandas as pd
 
@@ -67,13 +67,17 @@ _OHLCV_INDICATORS: Dict[str, Callable[..., pd.Series]] = {
 # Tuple-returning helpers (one Series per element). We only recognise
 # them inside a Subscript with a constant integer slice — bare calls are
 # ambiguous because the user hasn't picked which leg to compare.
-# Each entry: (signature_kind, helper, max_idx).
+# Each entry: (signature_kind, helper, max_idx, kwarg_names).
 #   signature_kind: "series" → helper(series, *period_args)
 #                   "hlc"    → helper(high, low, close, *period_args)
+#   kwarg_names: the kwarg labels the helper accepts after its data
+#                inputs, in declared order. Used to forward strategy-
+#                provided kwargs (e.g. ``bollinger_bands(close, num_std=0.1)``)
+#                so probe results match the strategy's actual thresholds.
 _TUPLE_INDICATORS: Dict[str, tuple] = {
-    "macd": ("series", _ind.macd, 3),  # (macd_line, signal_line, histogram)
-    "bollinger_bands": ("series", _ind.bollinger_bands, 3),  # (upper, middle, lower)
-    "stochastic": ("hlc", _ind.stochastic, 2),  # (%K, %D)
+    "macd": ("series", _ind.macd, 3, ("fast", "slow", "signal")),
+    "bollinger_bands": ("series", _ind.bollinger_bands, 3, ("period", "num_std")),
+    "stochastic": ("hlc", _ind.stochastic, 2, ("k_period", "d_period")),
 }
 
 
@@ -713,43 +717,87 @@ def _tuple_indicator_subscript(
     ):
         return None
 
-    sig_kind, helper, max_idx = _TUPLE_INDICATORS[func_name]
+    sig_kind, helper, max_idx, kwarg_names = _TUPLE_INDICATORS[func_name]
     idx = slc.value
     if idx < 0 or idx >= max_idx:
         return None
 
     call = node.value
+    # ``positional_start`` is the AST arg index of the first scalar config
+    # (period / num_std / fast / etc.) — i.e. one past the data inputs.
+    positional_start = 1 if sig_kind == "series" else 3
+    extra_pos = _trailing_numeric_args(call, name_periods, start_index=positional_start)
+    extra_kwargs = _resolve_known_kwargs(call, name_periods, kwarg_names)
+
     if sig_kind == "series":
         column = _series_arg_column(call)
-        period = _resolve_period_arg(call, name_periods, positional_index=1)
 
         def _eval_tuple_series(df: pd.DataFrame) -> pd.Series:
             if column not in df.columns:
                 return pd.Series(float("nan"), index=df.index)
-            args = [df[column].astype(float)]
-            if period is not None:
-                args.append(int(period))
-            return helper(*args)[idx]
+            return helper(df[column].astype(float), *extra_pos, **extra_kwargs)[idx]
 
         return _eval_tuple_series
-
-    # sig_kind == "hlc"
-    period = _resolve_period_arg(call, name_periods, positional_index=3)
 
     def _eval_tuple_hlc(df: pd.DataFrame) -> pd.Series:
         for col in ("high", "low", "close"):
             if col not in df.columns:
                 return pd.Series(float("nan"), index=df.index)
-        args = [
+        return helper(
             df["high"].astype(float),
             df["low"].astype(float),
             df["close"].astype(float),
-        ]
-        if period is not None:
-            args.append(int(period))
-        return helper(*args)[idx]
+            *extra_pos,
+            **extra_kwargs,
+        )[idx]
 
     return _eval_tuple_hlc
+
+
+def _trailing_numeric_args(
+    call: ast.Call,
+    name_periods: Dict[str, int],
+    *,
+    start_index: int,
+) -> List[Union[int, float]]:
+    """Collect positional numeric args from ``start_index`` onwards.
+
+    Stops at the first non-numeric positional — the user passed a
+    Name/expression we can't safely interpret, and silently substituting
+    a guess would mis-classify the strategy. Trailing numeric args after
+    the data inputs (``num_std`` / ``slow`` / ``signal`` / etc.) are
+    preserved in source order and int-ness is preserved so helpers like
+    ``rolling(window=N)`` get an int rather than a float.
+    """
+    out: List[Union[int, float]] = []
+    for i in range(start_index, len(call.args)):
+        v = _numeric_literal(call.args[i], name_periods)
+        if v is None:
+            break
+        out.append(int(v) if float(v).is_integer() else v)
+    return out
+
+
+def _resolve_known_kwargs(
+    call: ast.Call,
+    name_periods: Dict[str, int],
+    known: tuple,
+) -> Dict[str, Union[int, float]]:
+    """Pick out keyword arguments the helper actually accepts.
+
+    Unknown kwargs are dropped — passing them through would TypeError
+    inside the helper. Numeric values preserve int-ness for the same
+    reason as :func:`_trailing_numeric_args`.
+    """
+    out: Dict[str, Union[int, float]] = {}
+    for kw in call.keywords:
+        if kw.arg not in known:
+            continue
+        v = _numeric_literal(kw.value, name_periods)
+        if v is None:
+            continue
+        out[kw.arg] = int(v) if float(v).is_integer() else v
+    return out
 
 
 def _collect_name_evaluators(
