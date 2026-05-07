@@ -197,6 +197,15 @@ def _aggregate(
     base_kwargs: Dict[str, object],
 ) -> CoverageReport:
     flat_subconds: List[_Subcond] = [s for g in groups for s in g.subconds]
+    # Track each flat subcond's owning-group symbol filter so the
+    # SubconditionCoverage dedupe can keep symbol-gated duplicates
+    # distinct — otherwise a "close > 50 [AAPL]" branch and a
+    # "close > 50 [MSFT]" branch collapse into one entry and a
+    # symbol-specific zero-hit blocker is hidden.
+    flat_subcond_symbols: List[Optional[frozenset]] = []
+    for g in groups:
+        syms = frozenset(g.target_symbols) if g.target_symbols is not None else None
+        flat_subcond_symbols.extend([syms] * len(g.subconds))
     if not flat_subconds:
         return CoverageReport(
             coverage_category=CoverageCategory.UNKNOWN_LOW_COVERAGE,
@@ -255,18 +264,29 @@ def _aggregate(
             **base_kwargs,
         )
 
-    # Deduplicate the SubconditionCoverage list by label so a subcond
-    # repeated across multiple ``if`` predicates is reported once.
+    # Deduplicate the SubconditionCoverage list by (label, target_symbols)
+    # so symbol-gated duplicates stay distinct — same predicate text
+    # under two different ``bar.symbol == "X"`` branches must surface as
+    # two coverage rows so a per-symbol zero-hit blocker is visible.
     subcoverages: List[SubconditionCoverage] = []
-    seen_labels: set[str] = set()
-    for sub, hits, last in zip(flat_subconds, sub_hit_counts, sub_last_true):
-        if sub.label in seen_labels:
+    seen_keys: set = set()
+    for sub, syms, hits, last in zip(
+        flat_subconds, flat_subcond_symbols, sub_hit_counts, sub_last_true
+    ):
+        key = (sub.label, syms)
+        if key in seen_keys:
             continue
-        seen_labels.add(sub.label)
+        seen_keys.add(key)
         rate = hits / total_eval_bars
+        # Augment the rendered label with the symbol filter so the
+        # report distinguishes symbol-gated duplicates without growing
+        # the model schema.
+        label = sub.label
+        if syms is not None and syms:
+            label = f"{label} [{','.join(sorted(syms))}]"
         subcoverages.append(
             SubconditionCoverage(
-                label=sub.label,
+                label=label,
                 hit_count=hits,
                 hit_rate=min(max(rate, 0.0), 1.0),
                 last_true_bar=last,
@@ -409,13 +429,19 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
     ) -> bool:
         for stmt in stmts:
             if isinstance(stmt, ast.If):
-                # ``if pos is None: ... else: ...`` is the documented
-                # entry/exit gate. Treat the test as a structural
-                # control-flow check (not an indicator subcond) and
-                # only recurse into the body — the else branch is the
-                # exit path and shouldn't influence entry coverage.
-                if _is_position_check(stmt.test):
+                # ``if pos is None: ... else: ...`` (and the inverted
+                # ``if pos is not None: <exit> else: <entry>``) is the
+                # documented entry/exit gate. Treat the test as a
+                # structural control-flow check (not an indicator
+                # subcond) and recurse only into the entry branch —
+                # the exit branch shouldn't influence entry coverage.
+                position_check = _classify_position_check(stmt.test)
+                if position_check == "vacant":  # pos is None — body is entry
                     if not _visit(stmt.body, ancestors, ancestor_symbols):
+                        return False
+                    continue
+                if position_check == "occupied":  # pos is not None — orelse is entry
+                    if not _visit(stmt.orelse, ancestors, ancestor_symbols):
                         return False
                     continue
 
@@ -486,35 +512,46 @@ def _extract_subconditions(strategy_code: str) -> List[_Group]:
     return groups
 
 
-def _is_position_check(test: ast.expr) -> bool:
-    """Detect ``pos is None`` / ``position is None`` / ``ctx.position(...) is None``.
+def _classify_position_check(test: ast.expr) -> Optional[str]:
+    """Classify a position-check ``if`` test direction.
 
-    The strategy template's documented entry path uses
-    ``if ctx.position(bar.symbol) is None:`` (or a local ``pos = ...``
-    binding) to gate entry logic. We treat that ``if`` as a structural
-    control-flow check rather than a coverage subcond — the else branch
-    is the exit path and doesn't restrict entries.
+    Returns:
+      - ``"vacant"`` — the test means "no open position" (``pos is None``,
+        ``position == None``, ``ctx.position(...) is None``). The ``body``
+        branch is the entry path; ``orelse`` is the exit path.
+      - ``"occupied"`` — the test means "position exists" (``pos is not
+        None``, ``position != None``). The ``orelse`` branch is the entry
+        path; ``body`` is the exit path.
+      - ``None`` — not a position check at all.
+
+    The caller routes the recursion accordingly so exit predicates never
+    surface as entry-coverage blockers regardless of which polarity the
+    strategy uses.
     """
     if not isinstance(test, ast.Compare):
-        return False
+        return None
     if len(test.ops) != 1:
-        return False
+        return None
     op = test.ops[0]
-    if not isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)):
-        return False
     rhs = test.comparators[0]
     if not (isinstance(rhs, ast.Constant) and rhs.value is None):
-        return False
+        return None
     left = test.left
     if isinstance(left, ast.Name) and left.id in {"pos", "position"}:
-        return True
-    if (
+        pass
+    elif (
         isinstance(left, ast.Call)
         and isinstance(left.func, ast.Attribute)
         and left.func.attr == "position"
     ):
-        return True
-    return False
+        pass
+    else:
+        return None
+    if isinstance(op, (ast.Is, ast.Eq)):
+        return "vacant"
+    if isinstance(op, (ast.IsNot, ast.NotEq)):
+        return "occupied"
+    return None
 
 
 def _symbol_gate(node: ast.Compare) -> Optional[str]:

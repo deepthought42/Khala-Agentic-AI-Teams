@@ -280,6 +280,85 @@ def test_symbol_gate_restricts_evaluation_to_matching_dataframe() -> None:
     assert report.coverage_category is CoverageCategory.INDICATOR_FILTER_TOO_RESTRICTIVE
     assert len(report.subconditions) == 1
     assert report.subconditions[0].hit_count == 0
+    # The label is augmented with the symbol filter so the report
+    # surfaces which branch it came from.
+    assert "[AAPL]" in report.subconditions[0].label
+
+
+def test_symbol_gated_duplicates_remain_distinct() -> None:
+    """Two ``bar.symbol == "X"`` branches with the same predicate text
+    must surface as TWO coverage rows. Otherwise dedupe-by-label drops
+    the symbol-specific blocker the new ``target_symbols`` filter is
+    supposed to catch.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                if bar.symbol == "AAPL" and close > 50:
+                    pass
+                if bar.symbol == "MSFT" and close > 50:
+                    pass
+        """
+    )
+    aapl = _flat_ohlcv(n=30)  # close = 100 — satisfies > 50 always
+    msft = pd.DataFrame(
+        {
+            "open": np.full(30, 25.0),
+            "high": np.full(30, 25.5),
+            "low": np.full(30, 24.5),
+            "close": np.full(30, 25.0),  # never > 50
+            "volume": np.full(30, 1_000_000.0),
+        },
+        index=pd.date_range("2024-01-01", periods=30, freq="D"),
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": aapl, "MSFT": msft},
+    )
+
+    # The MSFT branch is a real zero-hit blocker; if we'd deduped only
+    # by predicate text it would have been hidden.
+    assert report.coverage_category is CoverageCategory.INDICATOR_FILTER_TOO_RESTRICTIVE
+    assert len(report.subconditions) == 2
+    by_label = {sc.label: sc for sc in report.subconditions}
+    assert any("[AAPL]" in lbl for lbl in by_label)
+    assert any("[MSFT]" in lbl for lbl in by_label)
+    aapl_row = next(sc for sc in report.subconditions if "[AAPL]" in sc.label)
+    msft_row = next(sc for sc in report.subconditions if "[MSFT]" in sc.label)
+    assert aapl_row.hit_count > 0
+    assert msft_row.hit_count == 0
+
+
+def test_inverted_position_check_routes_to_orelse() -> None:
+    """``if pos is not None: <exit> else: <entry>`` — the body is the
+    EXIT path and the entry path is in ``orelse``. The probe must
+    recurse into orelse for the entry-coverage analysis.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def on_bar(self, ctx, bar):
+                pos = ctx.position(bar.symbol)
+                if pos is not None:
+                    if close < -50:
+                        pass
+                else:
+                    if close > 0:
+                        pass
+        """
+    )
+    report = run_indicator_probe(
+        strategy_code=code,
+        market_data={"AAPL": _flat_ohlcv()},
+    )
+    # Entry condition ``close > 0`` always fires; if the probe had
+    # routed into body (the exit path) it would have flagged
+    # ``close < -50`` as an INDICATOR_FILTER_TOO_RESTRICTIVE blocker.
+    assert report.coverage_category is CoverageCategory.COVERAGE_OK
+    labels = {sc.label for sc in report.subconditions}
+    assert "close > 0" in labels
+    assert "close < -50" not in labels
 
 
 def test_atr_positional_period_is_resolved() -> None:
