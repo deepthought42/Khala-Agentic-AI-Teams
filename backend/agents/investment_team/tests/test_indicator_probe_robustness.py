@@ -106,6 +106,88 @@ def test_module_level_period_constant_resolved() -> None:
     assert len(report.subconditions) == 1
 
 
+def test_class_attribute_window_resolves_in_indicator_arg() -> None:
+    """Strategies routinely pass class tuning knobs to indicator helpers,
+    e.g. ``sma(close, self.WINDOW)``. The probe must resolve the
+    ``self.WINDOW`` Attribute through the class-attribute binding;
+    without this the helper either crashed (no default period) or
+    silently used the wrong default, producing misleading coverage.
+    """
+    # Sawtooth so close oscillates around the moving average; different
+    # window lengths produce visibly different hit counts.
+    n = 200
+    moves = np.array([+0.005, -0.005] * (n // 2))
+    close = 100.0 * np.cumprod(1.0 + moves)
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close * 1.005,
+            "low": close * 0.995,
+            "close": close,
+            "volume": np.full(n, 1_000_000.0),
+        },
+        index=pd.date_range("2024-01-01", periods=n, freq="D"),
+    )
+
+    code_short = textwrap.dedent(
+        """
+        class S:
+            WINDOW = 3
+            def on_bar(self, ctx, bar):
+                if close < sma(close, self.WINDOW):
+                    pass
+        """
+    )
+    code_long = textwrap.dedent(
+        """
+        class S:
+            WINDOW = 50
+            def on_bar(self, ctx, bar):
+                if close < sma(close, self.WINDOW):
+                    pass
+        """
+    )
+    short = run_indicator_probe(strategy_code=code_short, market_data={"AAPL": df})
+    long = run_indicator_probe(strategy_code=code_long, market_data={"AAPL": df})
+
+    # If the Attribute weren't resolved, sma's required ``period`` would
+    # be missing and the helper would raise — caught by the probe and
+    # emitted as zero hits. Resolution makes both runs evaluate cleanly
+    # with non-zero hits, and the different windows yield different counts.
+    assert len(short.subconditions) == 1
+    assert len(long.subconditions) == 1
+    assert short.subconditions[0].hit_count > 0
+    assert long.subconditions[0].hit_count > 0
+    assert short.subconditions[0].hit_count != long.subconditions[0].hit_count
+
+
+def test_init_self_assignment_window_is_resolved() -> None:
+    """``self.WINDOW = 80`` inside ``__init__`` is a different AST shape
+    (Attribute target, not Name). It must still bind so a downstream
+    ``sma(close, self.WINDOW)`` resolves the period.
+    """
+    code = textwrap.dedent(
+        """
+        class S:
+            def __init__(self):
+                self.WINDOW = 5
+            def on_bar(self, ctx, bar):
+                if close > sma(close, self.WINDOW):
+                    pass
+        """
+    )
+    df = _flat_ohlcv(n=100)
+    df.loc[df.index[60:], "close"] = 95.0  # below the SMA half the time
+    report = run_indicator_probe(strategy_code=code, market_data={"AAPL": df})
+
+    assert len(report.subconditions) == 1
+    # The subcondition must evaluate (not silently zero out due to a
+    # missing period).
+    sc = report.subconditions[0]
+    assert sc.label == "close > sma(close, self.WINDOW)"
+    assert 0 <= sc.hit_count <= report.bars_checked
+
+
 def test_atr_positional_period_is_resolved() -> None:
     """``atr(high, low, close, N)`` puts the period at args[3], not args[1].
 

@@ -460,28 +460,42 @@ def _flatten_test(test: ast.expr) -> List[ast.Compare]:
 
 
 def _collect_name_periods(tree: ast.AST) -> Dict[str, int]:
-    """Bind module-level ``NAME = <int>`` for later ``Name`` resolution."""
+    """Bind ``NAME = <int>`` for later ``Name`` / ``self.NAME`` resolution.
+
+    Walks every ``Assign`` / ``AnnAssign`` whose target is either:
+
+    - a bare ``Name`` (module-level ``WINDOW = 80`` or class attribute
+      ``WINDOW = 80``), or
+    - an ``Attribute`` of the form ``self.WINDOW = 80`` (typically inside
+      ``__init__``) — only the attr name is recorded.
+
+    Strategies generated from the standard ideation prompt encourage
+    class tuning knobs and ``self.WINDOW`` access; without this both the
+    AST walk and downstream lookup would miss the binding entirely.
+    """
     bindings: Dict[str, int] = {}
+
+    def _record(target: ast.expr, value: ast.expr) -> None:
+        # Reuse the same numeric-literal extractor used downstream so
+        # negative ints and unary-minus constants resolve consistently.
+        v = _numeric_literal(value, bindings)
+        if v is None or float(v) <= 0 or not float(v).is_integer():
+            return
+        ivalue = int(v)
+        if isinstance(target, ast.Name):
+            bindings.setdefault(target.id, ivalue)
+        elif isinstance(target, ast.Attribute):
+            # ``self.WINDOW`` (or any other instance attribute) — record
+            # by attribute name so a later ``self.WINDOW`` reference
+            # resolves through _numeric_literal's Attribute branch.
+            bindings.setdefault(target.attr, ivalue)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, int)
-                    and not isinstance(node.value.value, bool)
-                    and node.value.value > 0
-                ):
-                    bindings[target.id] = node.value.value
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, int)
-            and not isinstance(node.value.value, bool)
-            and node.value.value > 0
-        ):
-            bindings[node.target.id] = node.value.value
+                _record(target, node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            _record(node.target, node.value)
     return bindings
 
 
@@ -621,6 +635,17 @@ def _numeric_literal(node: ast.expr, name_periods: Dict[str, int]) -> Optional[f
             return -inner
     if isinstance(node, ast.Name):
         period = name_periods.get(node.id)
+        if period is not None:
+            return float(period)
+    # ``self.WINDOW`` / ``cls.WINDOW`` — strategies routinely pass class
+    # tuning knobs to indicator helpers. Record the attr name in
+    # _collect_name_periods so this lookup matches.
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"self", "cls"}
+    ):
+        period = name_periods.get(node.attr)
         if period is not None:
             return float(period)
     return None
