@@ -59,10 +59,16 @@ against precision. A fixture carrying the whole reversed commit would therefore
 penalise a gate for correctly reporting a real defect the case never labeled.
 Each patch is rebuilt mechanically as a diff from the fixed file to the fixed
 file with only the labeled blocks reverted, and every label re-anchored in the
-result, so no fixture contains an unlabeled defect. Line numbers in the labels are the defect's
-position in the post-diff file, which for these cases is the state of the file
-at the fix commit's parent. Real cases are pinned to their origin commit and
-are not synchronized with a moving `main`.
+result, so no fixture contains an unlabeled defect.
+
+That changes what a patch applies to. The base is the **origin commit itself**
+— the fixed file — and the post-diff file is what applying the patch to it
+produces: the fixed file with only the labeled blocks reverted. It is no longer
+the commit's parent, because the parent still carries the defects this case
+does not label. Every label's line number is a position in that produced file,
+read back by applying the patch rather than recomputed from the commit. Real
+cases stay pinned to their origin commit and are not synchronized with a moving
+`main`.
 
 ## Achieved distribution
 
