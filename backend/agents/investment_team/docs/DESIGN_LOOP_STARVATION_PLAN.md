@@ -105,8 +105,18 @@ This is the same accepted-`None`-for-test-invocation pattern
 `_validate_and_memoize_readiness` uses for `pinned_asset_class`.
 
 **D7 — No behavioural change to the reviewer's verdict in this step.**
-The merged finding lands in `readiness_results` → `_format_readiness` → the
-prompt's readiness block, and is snapshotted onto `SpecCritique.readiness_findings`.
+The merged finding travels `reviewer_findings` → `DesignReviewAgent.run` →
+`_format_readiness` → the prompt's readiness block, and is snapshotted onto
+`SpecCritique.readiness_findings`.
+
+Mind the name collision when reading that flow: `readiness_results` is *both*
+the orchestrator's local list — which D3 pins as untouched — and the name of
+`DesignReviewAgent.run`'s second parameter, which receives the fresh
+`reviewer_findings` list. The starvation finding only ever enters through the
+parameter. Nothing writes it into the orchestrator's `readiness_results`, and
+nothing should: that list feeds the readiness memoization and the gate-recording
+paths, and D3 keeps it clean.
+
 `_coerce_critique` derives `ready` from the reviewer's own `issues`, never from
 the deterministic findings, so a `critical` starvation finding cannot hard-block
 by construction today. Step 2 pins that property with a test; this step must not
@@ -183,10 +193,22 @@ disturb it.
       the other flag helpers.
 - [ ] **Step 2.2** — `_starvation_probe_signature(spec) -> tuple`:
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
-      spec.asset_class, tuple(spec.target_symbols))`.
-      It extends synthesis's `(entry_rules, requires_custom_code)` key with
-      `asset_class` / `target_symbols` because, unlike synthesis, the design loop
-      can change which bars the verdict is computed against between rounds.
+      spec.asset_class, tuple(spec.target_symbols),
+      (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`.
+
+      It extends synthesis's `(entry_rules, requires_custom_code)` key with every
+      remaining component of Step 1.1's bars key, because — unlike synthesis —
+      the design loop can change which bars the verdict is computed against
+      between rounds. That is why `as_of` is in the signature even though
+      `build_spec_from_dict` never sets `audit` and the snapshot id is expected
+      to be constant for the attempt: relying on that expectation would leave the
+      memo correct only by an invariant this plan cannot prove, and the cost of
+      not relying on it is one tuple element. `config.start_date` /
+      `config.end_date` are the bars key's only other members and are fixed for
+      the attempt, so they are deliberately omitted.
+
+      The rule to carry forward: the probe signature must cover every input the
+      verdict depends on — the rules *and* the bars they are judged against.
 - [ ] **Step 2.3** — `@dataclass class _StarvationProbeCache: signature: Optional[tuple] = None;
       findings: List[QualityGateResult] = field(default_factory=list)`.
       Mutable holder so the memo survives rounds without widening
