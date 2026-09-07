@@ -267,6 +267,23 @@ def test_short_take_profit_with_a_nonpositive_target_does_not_crash_simulate():
     assert simulate(spec, {"AAA": bars}) == []
 
 
+def test_signal_only_spec_does_not_crash_on_an_entry_price_that_would_zero_the_anchor():
+    """A signal-only spec (no stop/take-profit rules) never needs the
+    post-slippage anchor -- signal exits use the raw entry price and the next
+    bar's open, never entry_price_basis. Computing that anchor unconditionally
+    would abort the whole run whenever the entry fill is small enough that the
+    anchor rounds to zero, even though neither book that would consume it is
+    ever built for this spec."""
+    d = _dates(3)
+    bars = [
+        _bar(0.00001, 0.00001, 0.00001, 0.00001, d[0]),
+        _bar(0.00001, 0.00001, 0.00001, 101, d[1]),  # trigger: close > 100
+        _bar(0.00001, 0.00001, 0.00001, 0.00001, d[2]),  # entry fill @0.00001 -- rounds to 0
+    ]
+    spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=0.0))])
+    assert simulate(spec, {"AAA": bars}) == []
+
+
 # ---------------------------------------------------------------------------
 # Multi-rule-kind competition
 # ---------------------------------------------------------------------------
@@ -321,6 +338,26 @@ def test_an_invalid_lower_index_take_profit_candidate_does_not_mask_a_valid_stop
     assert (trade.exit_rule_kind, trade.exit_rule_index) == ("stop_loss", 1)
 
 
+def test_an_invalid_lower_index_stop_candidate_does_not_mask_a_valid_take_profit():
+    """The mirror case: a stop candidate's RAW price can pass
+    RestingStopLoss.peek's own guard (positive, finite) yet still round away
+    to zero once _finalize_exit_price applies production's rounding bucket --
+    e.g. an entry price small enough that a deep (pct close to 1) stop's level
+    survives the raw check but rounds to zero. That must not let an unusable,
+    lower-index stop win the cross-book priority comparison and block a
+    legitimate, higher-index take-profit reachable on the very same bar."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(0.0001, 0.0001, 0.0001, 0.0001, d[2]),  # entry fill @0.0001 (anchor=0.0001)
+        _bar(0.0001, 0.001, 0.0, 0.0001, d[3]),  # stop(0.00001) AND target(0.00011) both reached
+    ]
+    spec = _spec([StopLossRule(pct=0.90, basis="entry_price"), TakeProfitRule(pct=0.10)])
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 1)
+
+
 def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
     """FIFO by materialization time: the stop was resting since entry, strictly
     earlier than a signal triggered afterward, so it wins the shared fill bar."""
@@ -369,6 +406,35 @@ def test_limit_style_stop_is_retired_the_moment_a_signal_exit_is_queued():
     [trade] = simulate(spec, {"AAA": bars})
     assert trade.exit_rule_kind == "signal_exit"
     assert trade.exit_price == 90.0
+
+
+def test_a_failed_signal_fill_restores_a_retired_limit_stop():
+    """When the queued signal's fill bar has a nonpositive open, the fill
+    never happens -- the design doc's uniform rule treats that firing as if
+    it had never been met at all. The limit-style stop retired the moment the
+    signal was queued must come back for a later bar, not stay permanently
+    excluded for a close that turned out to have never happened."""
+    d = _dates(6)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 (stop=95, limit=93.1)
+        _bar(93, 93, 90, 91, d[3]),  # arms the stop, gaps past limit; signal fires (close<95)
+        _bar(
+            0.0, 100.0, 0.0, 100.0, d[4]
+        ),  # fill bar's open is nonpositive -- fill fails; close=100
+        # does not re-trigger the signal on this same bar
+        _bar(90, 95, 89, 94, d[5]),  # limit (93.1) reachable again -- must fire now restored
+    ]
+    spec = _spec(
+        [
+            StopLossRule(pct=0.05, style="limit", limit_offset_pct=0.02),
+            SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=95.0)),
+        ]
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert trade.exit_rule_kind == "stop_loss"
+    assert trade.exit_bar == 5
 
 
 def test_a_partial_rung_does_not_retire_a_resting_limit_stop():

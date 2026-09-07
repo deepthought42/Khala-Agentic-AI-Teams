@@ -726,6 +726,42 @@ def test_retire_limit_style_rules_is_idempotent_and_harmless_with_none_present()
     assert book.peek(bar) == (0, 95.0)
 
 
+def test_restore_limit_style_rules_undoes_retirement():
+    """Same rule/bar as the retirement test above -- restoring must bring the
+    limit-style rule back exactly as if it had never been retired."""
+    limit_rule = StopLossRule(pct=0.03, style="limit", limit_offset_pct=0.02)
+    book = RestingStopLoss(side="long", symbol="AAA", anchor=100.0, rules=[(0, limit_rule)])
+    book.retire_limit_style_rules()
+    bar = _bar(96.0, 96.5, 95.5, 96.0)
+    assert book.peek(bar) is None  # retired: no candidate
+    book.restore_limit_style_rules()
+    assert book.peek(bar) == (0, 95.06)  # restored: fires at its limit price
+
+
+def test_restore_limit_style_rules_is_idempotent_and_harmless_when_nothing_retired():
+    book = _stop_book(style="limit", limit_offset_pct=0.02)
+    book.restore_limit_style_rules()
+    book.restore_limit_style_rules()  # second call: no-op, must not raise
+    bar = _bar(99.0, 99.0, 94.0, 96.0)
+    assert book.peek(bar) is not None  # untouched: the rule still fires normally
+
+
+def test_retirement_does_not_advance_arm_state_while_retired():
+    """A limit-style rule's stop level breaching WHILE retired must not arm it
+    -- retirement is a full pause, not merely a filter on the final result."""
+    limit_rule = StopLossRule(pct=0.03, style="limit", limit_offset_pct=0.02)
+    book = RestingStopLoss(side="long", symbol="AAA", anchor=100.0, rules=[(0, limit_rule)])
+    book.retire_limit_style_rules()
+    # Stop level (97) breached, limit (95.06) reached, all in one retired bar.
+    book.peek(_bar(96.0, 96.5, 95.5, 96.0))
+    book.restore_limit_style_rules()
+    # A later bar whose range no longer reaches the stop level at all: if the
+    # retired bar had silently armed it, this would still fire (armed rules
+    # skip the stop-level retest entirely and only need the limit reached).
+    # It must not, proving arming never advanced while retired.
+    assert book.peek(_bar(99.0, 99.0, 98.0, 99.0)) is None
+
+
 # ---------------------------------------------------------------------------
 # replay_stop_loss_exits — the (spec, bars) entry point
 # ---------------------------------------------------------------------------

@@ -337,17 +337,25 @@ def _open_position(
     else ``None``; ``tp_book`` set when ``working_rules`` contains at least
     one ``TakeProfitRule``/``ScaledTakeProfitRule``, else ``None``;
     ``pending_signal`` starts ``None``. Both books, when present, are anchored
-    at the same post-slippage :func:`~.reference_exits.entry_price_basis`.
+    at the same post-slippage :func:`~.reference_exits.entry_price_basis`,
+    computed only when at least one book actually needs it — a signal-only
+    spec (no stop/take-profit rules at all) never calls it, so a fill price
+    small enough that the anchor would round to zero cannot abort the run
+    over an anchor neither book would have used anyway.
     """
-    anchor = entry_price_basis(fill.entry_price, fill.side, entry_slippage_bps)
     stop_candidates = stop_loss_rules_for_side(working_rules, fill.side)
+    has_tp_family = bool(take_profit_rules(working_rules)) or bool(
+        scaled_take_profit_rules(working_rules)
+    )
+    anchor = (
+        entry_price_basis(fill.entry_price, fill.side, entry_slippage_bps)
+        if stop_candidates or has_tp_family
+        else None
+    )
     stop_book = (
         RestingStopLoss(side=fill.side, symbol=fill.symbol, anchor=anchor, rules=stop_candidates)
         if stop_candidates
         else None
-    )
-    has_tp_family = bool(take_profit_rules(working_rules)) or bool(
-        scaled_take_profit_rules(working_rules)
     )
     tp_book = (
         RestingTakeProfitFamily(
@@ -539,6 +547,24 @@ def _process_exit_bar(
             # ReferenceTrade construction instead would abort the whole
             # simulate() run over one bad bar, which that rule forbids.
             tp_candidate = None
+        # Symmetric with the tp_candidate filter above: a stop candidate's RAW
+        # price can be positive and finite (passing RestingStopLoss.peek's own
+        # guard) yet still round or blend away to <= 0 once _finalize_exit_price
+        # applies production's own rounding bucket and any prior take-profit
+        # rungs' blend — e.g. an entry price small enough that a deep stop's
+        # level survives peek's raw check but rounds to zero. Finalizing it
+        # HERE, before stop_wins, means an unusable stop is discarded before it
+        # can win that priority comparison by rule-index alone, exactly the
+        # same masking risk the tp_candidate filter above addresses for the
+        # reverse pairing — a lower-index stop that turns out unusable must not
+        # block a legitimate higher-index take-profit reachable on the same
+        # bar. The finalized price is reused directly below rather than
+        # recomputed, since _finalize_exit_price has no side effects to redo.
+        stop_price: Optional[float] = None
+        if stop_candidate is not None:
+            stop_price = _finalize_exit_price(pos, stop_candidate[1])
+            if stop_price is None:
+                stop_candidate = None
         if pos.stop_book is not None:
             # Ratcheted exactly once per bar regardless of which book (if
             # either) wins — mirrors RestingStopLoss.step's own "extended
@@ -549,14 +575,8 @@ def _process_exit_bar(
             tp_candidate is None or stop_candidate[0] < tp_candidate.exit_rule_index
         )
         if stop_wins:
-            idx, raw_price = stop_candidate
-            price = _finalize_exit_price(pos, raw_price)
-            if price is not None:
-                return _finish_trade(pos, i, bar, price, "stop_loss", idx, None)
-            # Degenerate rounded/blended price: treat this bar as if the
-            # resting phase produced no winner at all (see
-            # _finalize_exit_price's own docstring on why this narrow case is
-            # not retried against the other book).
+            idx, _ = stop_candidate
+            return _finish_trade(pos, i, bar, stop_price, "stop_loss", idx, None)
         elif tp_candidate is not None:
             fired = pos.tp_book.commit(tp_candidate)
             if fired is not None:
@@ -584,6 +604,21 @@ def _process_exit_bar(
         price = _finalize_exit_price(pos, bar.open)
         if price is not None:
             return _finish_trade(pos, i, bar, price, "signal_exit", rule_idx, None)
+        elif pos.stop_book is not None:
+            # The queued close this firing represents never actually
+            # happened — a nonpositive/non-finite/zero-rounding fill-bar
+            # open, per the uniform nonpositive-exit-reference rule, is
+            # treated exactly as if the trigger had not been met. Retiring
+            # any limit-style stop when the signal was QUEUED (phase 3 below)
+            # was solely a consequence of that firing having been chosen;
+            # since it turned out not to have happened after all, the
+            # retirement must not outlive it either, or a stop that would
+            # otherwise still be live loses a legitimate close on every later
+            # bar for no reason tied to any real event. See
+            # RestingStopLoss.restore_limit_style_rules's own docstring for
+            # why this bar's own resting phase (already evaluated above,
+            # before this outcome was known) is not itself replayed.
+            pos.stop_book.restore_limit_style_rules()
 
     if i >= pos.entry.entry_bar:
         new_idx = _peek_signal_exit(working_rules, pos.entry, view, i, bar)

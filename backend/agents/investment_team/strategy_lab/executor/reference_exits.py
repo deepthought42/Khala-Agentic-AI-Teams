@@ -646,6 +646,7 @@ class RestingStopLoss:
         self._high_water = anchor
         self._low_water = anchor
         self._armed: Set[int] = set()
+        self._retired: Set[int] = set()
 
     def _position(self) -> PositionState:
         """Snapshot the position as the shared evaluator expects to see it.
@@ -763,6 +764,13 @@ class RestingStopLoss:
         """
         winner: Optional[Tuple[int, float]] = None
         for idx, rule in self._rules:
+            if idx in self._retired:
+                # Skipped before _candidate_price is even called: a retired
+                # rule takes no part in this bar's evaluation at all — no
+                # arm-state side effect — so a later restore_limit_style_rules
+                # resumes it exactly where it left off, per that method's own
+                # docstring.
+                continue
             price = self._candidate_price(idx, rule, bar)
             if price is None:
                 continue
@@ -794,7 +802,7 @@ class RestingStopLoss:
         self._extend_watermarks(bar)
 
     def retire_limit_style_rules(self) -> None:
-        """Permanently exclude every ``style="limit"`` rule from future candidates.
+        """Exclude every ``style="limit"`` rule from candidates until restored.
 
         Mirrors production's ``_retire_orders_against_closed_position``: once a
         DIFFERENT rule's whole-position close is CHOSEN for this position —
@@ -810,14 +818,53 @@ class RestingStopLoss:
         combined simulator module for the one call site and the full argument
         (design doc's "Per-bar evaluation order" section).
 
+        NOT permanent, despite mirroring a production method whose own close
+        is never undone: production's competing close, once decided, always
+        reaches a genuine fill (real bars are never degenerate), so it never
+        needs reversing. This reference module's own uniform
+        nonpositive-exit-reference rule can still make the queued close that
+        triggered this retirement turn out unusable when it reaches its own
+        fill bar — and that rule requires treating such a firing as if it had
+        never happened at all, retirement included. See
+        :meth:`restore_limit_style_rules`, the one call site's own reversal.
+
         Preconditions: none — idempotent, and harmless when no limit-style rule
         is present.
-        Postconditions: every ``(idx, rule)`` pair in ``self._rules`` with
-        ``rule.style == "limit"`` is removed; a later :meth:`peek` never
-        considers it again. Watermark state and any other rule's arm state are
-        unaffected.
+        Postconditions: every rule in ``self._rules`` with ``rule.style ==
+        "limit"`` is added to the retired set; a later :meth:`peek` skips it
+        entirely (no arm-state side effect) until :meth:`restore_limit_style_rules`
+        is called. Watermark state and any other rule's arm state are
+        unaffected. ``self._rules`` itself is never mutated — retirement is
+        tracked separately so it can be reversed without reconstructing the
+        rule list.
         """
-        self._rules = [(idx, rule) for idx, rule in self._rules if rule.style != "limit"]
+        self._retired.update(idx for idx, rule in self._rules if rule.style == "limit")
+
+    def restore_limit_style_rules(self) -> None:
+        """Undo :meth:`retire_limit_style_rules`: resume evaluating every
+        ``style="limit"`` rule normally, from the next :meth:`peek` onward.
+
+        The one call site (the combined simulator) calls this when a queued
+        ``signal_exit`` close it had already retired the limit-style stops
+        for turns out to have an unusable fill (a nonpositive/non-finite/
+        zero-rounding fill-bar open) — the design doc's uniform
+        nonpositive-exit-reference rule requires treating that firing as if
+        it had never been met, and the retirement was solely a side effect of
+        that firing having been chosen. A bar that elapsed WHILE a rule was
+        retired is not retried retroactively — retirement's effect on that
+        bar's own resting-phase outcome already happened and stands; this only
+        resumes evaluation for bars from this point forward.
+
+        Preconditions: none — idempotent, and harmless when nothing is
+        currently retired.
+        Postconditions: every previously-retired rule's index is removed from
+        the retired set; the next :meth:`peek` evaluates it exactly as if it
+        had never been retired, picking its arm state back up unchanged from
+        wherever it stood at retirement (no bar's trigger check happened for
+        it while retired, so there is nothing to reconcile). Watermark state
+        and every other rule's own state are unaffected.
+        """
+        self._retired.clear()
 
     def step(self, bar: "Bar") -> Optional[Tuple[int, float]]:
         """Evaluate ``bar``, then ratchet the watermark.
