@@ -176,27 +176,47 @@ class _FakeCursor:
             self._check_arity(sql, row, expected)
         self.executed.append((sql, rows))
 
+    @staticmethod
+    def _copy_row(row: Any) -> Any:
+        """Return a shallow copy of a queued row, or ``row`` unchanged if it isn't a dict.
+
+        Preconditions:
+            None.
+        Postconditions:
+            Returns ``dict(row)`` when ``row`` is a dict (every ``dict_rows=True``
+            caller's shape); returns ``row`` itself otherwise (e.g. a tuple, already
+            immutable). Shared by ``fetchall``/``fetchone`` so a caller mutating a
+            returned row can never corrupt ``self._rows`` or a later fetch on the
+            same cursor — the two methods stay symmetric rather than one copying
+            and the other handing out a live reference.
+        """
+        return dict(row) if isinstance(row, dict) else row
+
     def fetchall(self) -> list[Any]:
         """Return the rows queued at construction.
 
         Preconditions:
             None.
         Postconditions:
-            Returns ``list(self._rows)`` — a fresh list each call, so a caller
-            mutating the returned list cannot corrupt what a later ``fetchall``
-            call on the same cursor would return.
+            Returns a fresh list of :func:`_copy_row` copies — mutating an entry
+            in the returned list, or the list itself, cannot corrupt ``self._rows``
+            or what a later ``fetchall``/``fetchone`` call on the same cursor
+            would return.
         """
-        return list(self._rows)
+        return [self._copy_row(row) for row in self._rows]
 
     def fetchone(self) -> Optional[Any]:
-        """Return the first queued row, or ``None`` when none were queued.
+        """Return a copy of the first queued row, or ``None`` when none were queued.
 
         Preconditions:
             None.
         Postconditions:
-            Returns ``self._rows[0]`` if ``self._rows`` is non-empty, else ``None``.
+            Returns :func:`_copy_row` of ``self._rows[0]`` if ``self._rows`` is
+            non-empty, else ``None`` — mutating the returned row cannot corrupt
+            ``self._rows`` or what a later ``fetchall``/``fetchone`` call would
+            return, matching ``fetchall``'s own guarantee.
         """
-        return self._rows[0] if self._rows else None
+        return self._copy_row(self._rows[0]) if self._rows else None
 
 
 def install_fake_cursor(

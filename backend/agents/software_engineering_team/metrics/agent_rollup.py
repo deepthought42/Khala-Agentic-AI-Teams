@@ -90,7 +90,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from software_engineering_team.metrics._stats import median as _median
@@ -347,8 +347,6 @@ def compute_agent_rollup(
     """
     if window_days <= 0:
         raise ValueError("window_days must be > 0")
-    from datetime import timedelta
-
     from software_engineering_team.shared import trace_store
 
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=window_days)

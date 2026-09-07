@@ -32,9 +32,12 @@ _INSERT_SQL = (
 
 # The exact column set the agent/phase rollup's pure computation reads (see
 # metrics.agent_rollup._rollup_for_group) — deliberately not ``SELECT *``.
-# se_agent_traces carries 19 columns; a rollup query has no use for ``model``,
+# se_agent_traces carries 19 columns; the rollup query reads only these eight.
+# ``ts`` and ``job_id`` are the two other columns fetch_traces_since touches, but
+# only in its WHERE clause, not projected here. The remaining nine — ``model``,
 # ``status``, ``outcome``, ``objective``, ``request_id``, ``task_id``, ``team``,
-# ``total_tokens``, or ``id``, so a wide trace table never becomes a wide read.
+# ``total_tokens``, ``id`` — are not needed at all, so a wide trace table never
+# becomes a wide read.
 _ROLLUP_COLUMNS = (
     "agent_key",
     "phase",

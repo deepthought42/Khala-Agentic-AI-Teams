@@ -372,31 +372,37 @@ def test_compute_agent_rollup_groups_written_traces(_schema, monkeypatch) -> Non
     from software_engineering_team.metrics.agent_rollup import compute_agent_rollup
     from software_engineering_team.shared import trace_store
 
-    assert trace_store.write_trace(
-        _Rec(
-            job_id="jRollup1",
-            agent_key="backend",
-            phase="execution",
-            cost_usd=1.0,
-            prompt_tokens=100,
-            completion_tokens=50,
-            cache_read_tokens=20,
-            latency_ms=150,
-            request_id="rr1",
+    assert (
+        trace_store.write_trace(
+            _Rec(
+                job_id="jRollup1",
+                agent_key="backend",
+                phase="execution",
+                cost_usd=1.0,
+                prompt_tokens=100,
+                completion_tokens=50,
+                cache_read_tokens=20,
+                latency_ms=150,
+                request_id="rr1",
+            )
         )
+        is True
     )
-    assert trace_store.write_trace(
-        _Rec(
-            job_id="jRollup2",
-            agent_key="frontend",
-            phase="design",
-            cost_usd=2.0,
-            prompt_tokens=200,
-            completion_tokens=80,
-            cache_creation_tokens=40,
-            latency_ms=300,
-            request_id="rr2",
+    assert (
+        trace_store.write_trace(
+            _Rec(
+                job_id="jRollup2",
+                agent_key="frontend",
+                phase="design",
+                cost_usd=2.0,
+                prompt_tokens=200,
+                completion_tokens=80,
+                cache_creation_tokens=40,
+                latency_ms=300,
+                request_id="rr2",
+            )
         )
+        is True
     )
 
     m = compute_agent_rollup(1.0)
@@ -409,3 +415,5 @@ def test_compute_agent_rollup_groups_written_traces(_schema, monkeypatch) -> Non
     narrowed = compute_agent_rollup(1.0, job_id="jRollup1")
     assert narrowed.by_agent["backend"].call_count == 1
     assert "frontend" not in narrowed.by_agent
+    assert narrowed.by_phase["execution"].call_count == 1
+    assert "design" not in narrowed.by_phase
