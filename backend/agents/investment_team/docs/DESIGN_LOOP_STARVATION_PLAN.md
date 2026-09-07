@@ -188,9 +188,19 @@ finding whose entire value is precision. Starvation is a *relative* verdict: a
 rule is starved when none of its fires lands on a bar no earlier rule covers.
 Drop a symbol and a rule that fires independently only on that symbol looks
 starved on the survivors — so the reviewer would be handed a defect report for a
-design that is correct, and asked to revise it. The synthesis path never has this
-problem because it runs `TargetSymbolCoverageGate.check_fetch` and breaks on a
-critical before its own reachability probe.
+design that is correct, and asked to revise it.
+
+Synthesis is only *partly* protected against this, and the limit is worth stating
+precisely rather than assuming parity: it runs `TargetSymbolCoverageGate.check_fetch`
+and breaks on a critical before its own reachability probe, but that gate raises a
+critical only when `spec.target_symbols` is non-empty and one of those named
+targets is missing. With an empty `target_symbols` it never compares the resolved
+default universe against what was fetched, so synthesis proceeds into
+`_run_synthesis_reachability_probe` with a partial default universe. **The design
+probe specified here is therefore stricter than synthesis on this axis, by
+design.** Whether synthesis should adopt the same source-agnostic check is a
+genuine question, but it is a change to the synthesis gate's contract and belongs
+to its own story — not this one.
 
 The rule is therefore simple and source-agnostic: compare the symbols that came
 back with bars against the **full resolved request** — whatever
