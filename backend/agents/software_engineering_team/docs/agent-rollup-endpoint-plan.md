@@ -253,12 +253,49 @@ repo already has:
    "degrade to empty" — which is already the endpoint's stated contract, so it
    costs no new semantics. Note the empty result this produces is exactly cause 4
    in §4.4's ambiguity list, which is why that list matters.
-2. **Collapse concurrent polls.** Dashboard polling is the concurrency the risk
-   actually names, and repeated identical queries are the cheapest thing in the
-   world to deduplicate: cache the computed rollup in `shared.cache` under a
-   short TTL keyed by `(window_days, job_id)`. Ten pollers then cost one query.
-   Staleness of up to a minute on a 30-day cost rollup is not a meaningful loss of
-   fidelity.
+2. **Collapse concurrent polls** with a small process-local TTL memo — **not**
+   `shared.cache`. Dashboard polling is the concurrency the risk names, and
+   repeated identical queries are the cheapest thing to deduplicate. But
+   `shared.cache` cannot express the bound this mitigation needs, and an earlier
+   draft of this plan wrongly claimed it could. Verified against the module:
+
+   - `SharedCache.set(key, value, *, max_entries)` (`shared/cache/interface.py`)
+     takes **no TTL parameter** at all.
+   - `RedisBackend` writes with `ex=self._cache_ttl_s`, one backend-wide value
+     from `REDIS_CACHE_TTL_S` — default **3600s**, shared with every other
+     consumer (code-review caches, `compact_text` memoization, QA/security/devops
+     caches). Shortening it for this rollup changes staleness and eviction for all
+     of them; leaving it gives up to an hour of staleness, 60× the bound this
+     mitigation claims.
+   - `MemoryBackend` (the fallback when `REDIS_URL`/`REDIS_HOST` is unset) has
+     **no expiry whatsoever** — a pure LRU evicting only on `max_entries`. A "short
+     TTL" there is not merely wrong, it is unimplementable; the entry would serve
+     indefinitely.
+   - `RedisBackend._require_logical_key` rejects colon-containing keys with a
+     `ValueError` *before* any Redis call, so a `f"{window}:{job_id}"` key would
+     violate the never-raise requirement on the cache path.
+
+   Extending the `SharedCache` protocol and both backends with per-entry TTL is a
+   cross-cutting shared-infra change this story has no business making in passing.
+   Instead: a module-local `dict[key, (expires_at_monotonic, payload)]` in the
+   route module, keyed by a tuple (no key-encoding question, no `:` hazard),
+   with an explicit few-tens-of-seconds TTL. Roughly fifteen lines, directly
+   testable with a fake clock, and it touches nothing else.
+
+   **It is per-worker, not shared.** With N API workers, N pollers can still cost
+   N queries per TTL rather than one — a real limitation, stated rather than
+   glossed. It is still a large reduction against unbounded concurrent polling,
+   and it is the honest amount of mechanism this risk currently justifies given
+   nobody has measured the query yet.
+
+   **The empty result is cached too, on a shorter TTL.** A `statement_timeout`
+   cancel (mitigation 1) yields the empty literal, and that value is cached like
+   any other — otherwise "ten pollers cost one query" holds only on the success
+   path, and during a pathology every poller pays a full timeout against a
+   database already in trouble, which is exactly when the collapse matters most.
+   Caching it does delay recovery from a transient failure, so the empty entry
+   gets a distinctly shorter TTL (single-digit seconds) than a successful one:
+   the stampede still collapses, and recovery is visible almost immediately.
 
 **Rejected for this story: incrementally maintained summary buckets.** A
 materialized per-bucket rollup is the correct answer at sufficient scale, and it
@@ -276,8 +313,10 @@ roughly a third of the alias budget (~5s), that is the trigger to open the summa
 table story — with evidence attached, rather than building it speculatively now.
 
 **Scope honesty.** This makes the story larger than "wire an existing function to
-an existing route" — it adds a store function, a row-shape adapter, and
-parity tests. Call it a 3, not a 2. The alternative is knowingly putting an
+an existing route" — it adds a store function, a row-shape adapter, a small
+process-local TTL memo (~15 lines plus fake-clock tests), and parity tests. It
+does **not** add a per-entry TTL to `shared.cache`; that was considered and
+rejected above as shared-infra work this story has no business doing in passing. Call it a 3, not a 2. The alternative is knowingly putting an
 unbounded, retention-window-wide scan behind an HTTP GET, which is not a
 trade worth making to protect a complexity score.
 
@@ -288,8 +327,13 @@ trade worth making to protect a complexity score.
 Add `fetch_trace_rollup_rows(cutoff, *, job_id=None)` — the aggregating read from
 §3.5. It runs the `GROUPING SETS` query, splits the result by the `GROUPING()`
 tags into the three views, and returns them already shaped as `CallRollup` field
-dicts. Same best-effort contract as its neighbours: `[]`/empty on a disabled or
-failing Postgres, logged at DEBUG, never raised.
+dicts. Same best-effort contract as its neighbours — never raises, logs at DEBUG
+— but its empty value is the **same three-view shape as its success value**:
+`{"by_agent": {}, "by_phase": {}, "by_agent_phase": {}}` on a disabled or failing
+Postgres, never a bare `[]`. A function whose success return is a three-view
+mapping must not change type on failure; the caller then needs no normalization
+step, and §4.3's "all three dicts are `{}`" assertion holds at the store boundary
+as well as the payload boundary.
 
 Run it under a transaction-local `statement_timeout` per §3.5, following
 `shared.postgres.client.probe_cursor`'s pattern, so a pathological window is
@@ -312,10 +356,11 @@ Same for rounding.
    its assertions about DORA fields.
 2. Add `_rollup_payload(window)` per §3.3, built on the §4.1 aggregating read
    rather than `compute_agent_rollup`'s row-materializing path (§3.5), and wrap it
-   in the short-TTL `shared.cache` entry from §3.5 so concurrent dashboard polls
-   collapse to one query. A cache miss, a cache-backend outage, or a stale-read
-   failure must degrade to a live query and then to the empty literal — never
-   raise.
+   in the process-local TTL memo from §3.5 (**not** `shared.cache` — see there for
+   why) so concurrent dashboard polls collapse to one query per worker. Cache both
+   successful and empty results, the latter on a shorter TTL. Any failure in the
+   memo path degrades to a live query and then to the empty literal — never
+   raises.
 3. Rewrite `metrics_dora` as the three-line composition in §3.3, and extend its
    docstring: what the new key is, that it is additive, and that it is empty
    rather than absent when there is no trace data.
@@ -366,12 +411,20 @@ New tests:
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
 | Window is shared | request `window_days=7` | both `body["window_days"]` and `body["agent_rollup"]["window_days"]` are `7.0` |
 
-Separately, in `test_agent_rollup.py`: a **parity test** asserting the §4.1
-aggregating read and `compute_from_traces` produce identical `CallRollup`s for the
-same underlying rows — the guard that keeps §3.5's SQL/Python correspondence from
-drifting. Run it against the live-Postgres CI job (the SQL is the thing under
-test, so a fake cursor would test nothing); if that job is not available for this
-suite, assert the correspondence at the row-shape adapter instead and say so.
+Separately, in **`test_observability_stores_pg.py`** — the suite already wired to
+the live-Postgres CI job, and the same file §5's live-Postgres command runs — a
+**parity test** asserting the §4.1 aggregating read and `compute_from_traces`
+agree over the same underlying rows: the guard that keeps §3.5's SQL/Python
+correspondence from drifting. It belongs there and not in `test_agent_rollup.py`
+because the SQL is the thing under test; a fake cursor would exercise none of
+`percentile_cont`/`percentile_disc`/`GROUPING SETS`, so a unit-suite home would
+let the guard pass while never running against a real server.
+
+"Agree" is not "equal in every field" — per §3.5, assert **equality** for
+`call_count`, the token sums, and both percentiles, and **agreement within
+`1e-9`** for `total_cost_usd`, which is canonical in `compute_from_traces` and
+only approximated by the SQL path. An exact-equality assertion on cost would flake
+near a 6-decimal boundary.
 
 Patching note: both `compute_agent_rollup` and the new read resolve `trace_store`
 via a function-local import, so `monkeypatch.setattr(trace_store, ..., ...)` on
@@ -422,9 +475,18 @@ metrics module only as a line in the project-layout tree). It should cover:
   error key on the payload would change the shape this story promises to leave
   alone). Link `SE_TRACE_TO_POSTGRES` and `SE_TRACE_RETENTION_DAYS` in
   `docs/ENV_VARS.md`.
-- The query shape from §3.5: the endpoint aggregates server-side, so a wide
-  window is bounded work rather than a full-table materialization — worth stating
-  so nobody reintroduces the row-materializing read for convenience.
+- The query shape from §3.5, in the honest form the risk table uses — not
+  "bounded work", which overstates it. The endpoint aggregates server-side, so a
+  wide window bounds the **transfer and result size** (one row per group) rather
+  than materializing raw rows; the **database scan is still proportional to the
+  window**. Say both halves, so nobody reintroduces the row-materializing read for
+  convenience *and* nobody reads this as a performance guarantee.
+- The route's exposure assumption. `GET /dora` is unauthenticated and this change
+  widens what it serves from an aggregate cost figure to a per-agent, per-phase
+  token and cost breakdown — a sharper picture of internal system behaviour, even
+  though it contains no user data. Authentication is out of scope here (§7), so
+  the README must state the assumption that route runs under: internal or trusted
+  networks only. An undocumented trust assumption is the one that gets violated.
 
 **`docs/ENV_VARS.md`** — the `SE_TRACE_TO_POSTGRES` entry currently says the
 traces are "the substrate the metrics endpoint reads for per-job and total
@@ -471,8 +533,11 @@ unchanged; running them is a check that the assumption in §2 (additive keys pas
 through the alias untouched) holds.
 
 Also verify by hand, once, against a populated database: the §4.1 aggregating
-read and `compute_from_traces` over the same window must agree field-for-field.
-That is the claim §3.5 rests on, and it is cheap to confirm directly.
+read and `compute_from_traces` over the same window must agree field-for-field —
+**except `total_cost_usd`, which is compared within `1e-9`** per §3.5, since the
+pure function is canonical for it and the SQL path only approximates it. A
+last-decimal difference there is expected, not a failed check. That is the claim
+§3.5 rests on, and it is cheap to confirm directly.
 
 ## 6. Risks
 
@@ -481,7 +546,8 @@ That is the claim §3.5 rests on, and it is cheap to confirm directly.
 | The existing key-set assertion in `test_api_metrics.py` fails | Anticipated in §4.3 — it is the intended signal that the response shape changed, not a surprise |
 | A rollup failure degrades the DORA payload | §3.3's split failure boundaries, tested with non-empty sentinels in both directions (§4.3) — the naive form of that test proves nothing |
 | An HTTP-reachable unbounded scan over the retention window | §3.5: aggregate in SQL via `GROUPING SETS` + ordered-set aggregates; one row per group, never the raw rows. This was the plan's original mistake, corrected |
-| Aggregating bounds transfer but **not** the database scan | Acknowledged in §3.5, not papered over: a `statement_timeout` turns the worst case into "degrade to empty", and a short-TTL cache collapses concurrent polls. The same unbounded-window aggregate (`fetch_cost_since`) already serves this route today; a summary table is the escalation, gated on a measured p95 rather than speculation |
+| Aggregating bounds transfer but **not** the database scan | Acknowledged in §3.5, not papered over: a `statement_timeout` turns the worst case into "degrade to empty", and a process-local TTL memo collapses concurrent polls *per worker*. The same unbounded-window aggregate (`fetch_cost_since`) already serves this route today; a summary table is the escalation, gated on a measured p95 rather than speculation |
+| A mitigation assumed to exist in shared infrastructure that does not | This plan already made that mistake once (`shared.cache` has no per-entry TTL — no TTL parameter on the protocol, one global `REDIS_CACHE_TTL_S` on Redis, no expiry at all on the memory fallback). §3.5 now records what was verified in the module rather than what seemed reasonable, and takes a fifteen-line local memo instead of a shared-infra change the story never budgeted |
 | SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-9` |
 | Operators misread an empty rollup as a broken sink | §4.4 documents all five causes and the order to check them; the response genuinely cannot distinguish them |
 | The empty-rollup literal drifts from `AgentRollupMetrics` | Drift-guard test, mirroring the one that already protects the DORA literal |
