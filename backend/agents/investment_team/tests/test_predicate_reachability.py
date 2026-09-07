@@ -725,6 +725,22 @@ def test_rule_shadowed_only_after_an_earlier_rule_warms_up_is_a_warning_not_a_cr
     assert "entry[0] covers" in detail
 
 
+def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_trading() -> None:
+    # The prefix fires are entry-eligible only because the backtest stream
+    # marks no bar as warm-up. Paper trading suppresses entries across its
+    # priming prefix, so the author must not read "it opens positions" as
+    # holding wherever the strategy ends up running.
+    spec = _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+    )
+    detail = _starvation(spec)[0].details
+    assert "In THIS backtest" in detail
+    assert "does not survive paper trading" in detail
+    assert "shadowed on every executable bar" in detail
+    assert "Treat it as starved wherever it actually has to trade" in detail
+
+
 def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:
     spec = _spec(
         Predicate(lhs="bar.close", op=">", rhs=_sma(200)),

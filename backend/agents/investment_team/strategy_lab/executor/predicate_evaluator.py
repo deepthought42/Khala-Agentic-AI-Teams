@@ -297,12 +297,15 @@ def evaluate_entry_rules(
 
         Because warmup does not put a rule into ``S_i``, a rule ``j`` whose
         only members of ``S_j \\ union(S_i for i < j)`` sit in the window's
-        warmup prefix is *reachable* by this definition, not starved — and it
-        genuinely is: ``executor/reference_entries.py``'s ``replay_entries``
-        walks every bar from index 0 and will open positions from it there.
-        It is still worth flagging, because it stops contributing the moment
-        the earlier rules warm up; the probe reports that case as its own
-        lesser finding rather than folding it into either verdict.
+        warmup prefix is *reachable* by this definition, not starved — and in
+        a backtest it genuinely is: ``HistoricalReplayStream`` emits every bar
+        with ``is_warmup`` False, so ``TradingService`` will open positions
+        from it there. That entry-eligibility is mode-specific: paper trading
+        primes from a prefix emitted with ``is_warmup=True``, which
+        short-circuits before the engine's entry dispatch, so the same rule is
+        fully starved once it has to trade live. The probe reports this case as
+        its own lesser finding, worded to name both, rather than folding it
+        into either verdict.
 
         Like "dead"/"reachable", "structurally starved" is a per-dataset,
         data-dependent verdict — the same spec can be starved on one fetched
