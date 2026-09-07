@@ -80,12 +80,17 @@ list, leaving `readiness_results` untouched for the memoization and recording
 paths. Recording would double-report against the synthesis-phase starvation
 gates already on the timeline. Reviewer delivery is the whole ask.
 
-**D4 — Fail open, everywhere.** No symbols, no bars, a fetch exception, fewer
-than two entry rules, or the flag off ⇒ empty list ⇒ the reviewer sees exactly
-today's findings. `probe_starvation` already returns `[]` for falsy
-`market_data` and for `len(entry_rules) < 2`, so most of this is free; the fetch
-needs its own `try`/`except` + debug log, mirroring `_readiness_price_provider`
-and `_compute_regime_summary`.
+**D4 — Fail open, everywhere, at two layers.** No symbols, no bars, a fetch
+exception, a probe exception, fewer than two entry rules, or the flag off ⇒
+empty list ⇒ the reviewer sees exactly today's findings. `probe_starvation`
+already returns `[]` for falsy `market_data` and for `len(entry_rules) < 2`, so
+some of this is free. The rest needs a guard in *both* places, mirroring
+`_readiness_price_provider` and `_compute_regime_summary`: inside
+`_fetch_design_probe_bars` for a failing fetch, and around the whole
+fetch-probe-render sequence in `_design_starvation_findings` for a failure of
+the seam or the probe itself. One layer is not enough — a guard inside the seam
+cannot catch the seam being unavailable, and a diagnostic that can abort a
+design cycle is worse than no diagnostic.
 
 **D5 — `STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, default `true`.**
 Matches `STRATEGY_LAB_MECHANICAL_REPAIR_ENABLED` / `STRATEGY_LAB_REGIME_SUMMARY_ENABLED`
@@ -183,6 +188,23 @@ disturb it.
       `to_starvation_gate_results(..., phase="design")`, store on the cache, return.
       `"design"` is a valid `StrategyLabPhase` literal — no models change needed.
 
+      Two contract details this helper must get right, both of them easy to get
+      wrong and both pinned by tests in Task 5:
+
+      1. **An outer `try` / `except Exception` → `logger.debug(...)` → `[]` wraps
+         the fetch, the probe and the render.** Step 1.1's guard sits *inside*
+         `_fetch_design_probe_bars` and so cannot catch a failure of the seam
+         itself, nor one raised by `probe_starvation` /
+         `to_starvation_gate_results` on a spec shape they did not expect.
+         A design-time diagnostic must never abort a cycle, so the guard belongs
+         at both layers.
+      2. **Write `cache.signature` only after bars were obtained and probed.**
+         `None` bars — the fail-open return of a transient fetch error — must
+         return `[]` *without* touching the cache. Storing an empty findings
+         list under the current signature would make the next
+         reachability-equivalent round serve that empty result instead of
+         retrying, caching the very exception Step 1.1 promises not to cache.
+
 ### Task 3: The merge
 
 **File:** `backend/agents/investment_team/strategy_lab/orchestrator_design.py`
@@ -248,9 +270,16 @@ disturb it.
       `readiness_results` itself was not mutated (the fresh-merge invariant).
 - [ ] **Step 5.5** — *Memo.* Direct-call test: two rounds with a reachability-equivalent
       spec probe once (count `_fetch_design_probe_bars` / `probe_starvation` calls);
-      changing `target_symbols` alone re-probes.
-- [ ] **Step 5.6** — *Fail-open.* `_fetch_design_probe_bars` raising ⇒ `[]`, no
-      exception escapes, cycle completes.
+      changing `target_symbols` alone re-probes. Plus the negative: a round whose
+      fetch returned `None` leaves the cache unwritten, so the next round with an
+      unchanged signature probes again rather than serving a memoized empty
+      (Step 2.4 detail 2).
+- [ ] **Step 5.6** — *Fail-open, at both layers* (Step 2.4 detail 1).
+      *Outer:* `_fetch_design_probe_bars` monkeypatched to raise ⇒ `[]`, no
+      exception escapes, cycle completes — the seam's own `except` cannot catch
+      this, only the helper's can. *Inner:* `market_data_service.fetch_multi_symbol_range`
+      raising through the real seam ⇒ `None` ⇒ `[]`. *Probe:* `probe_starvation`
+      raising ⇒ `[]`. All three leave the reviewer's findings exactly as today.
 
 ### Task 6: Docs
 
