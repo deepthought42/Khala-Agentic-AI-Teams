@@ -420,7 +420,8 @@ def first_exit_intent_for_position(
 
     ``exclude_rule_index``, when set, is the spec index of a rule ceded to a
     resting-order mechanism for this run (e.g. the entry_price
-    stop-loss migration's resting ``STOP`` attachment) — see
+    stop-loss migration's entry-fill attachment — a resting ``STOP`` for a
+    market-style rule, a resting ``STOP_LIMIT`` for a limit-style one) — see
     :func:`_filtered_intent_for_rule` for why this is an index match rather
     than an intent-shape filter like the other two.
 

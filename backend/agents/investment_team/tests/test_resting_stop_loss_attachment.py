@@ -1178,3 +1178,23 @@ def test_end_to_end_limit_style_fill_carries_engine_exit_stop_loss_reason() -> N
     outcome = sim.process_bar(_bar("2024-01-03", open_price=97.0, high=98.0, low=92.0, close=93.0))
     [trade] = outcome.closed_trades
     assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+
+
+def test_validate_prices_rejects_reanchoring_stop_limit_without_the_limit_fraction() -> None:
+    """The reverse implication, which is what makes "one anchor for both prices"
+    structural: a leg whose stop re-anchors AND that carries a limit must say how
+    the limit follows. Without this check a caller could construct the
+    mixed-anchor state directly — the stop re-derived off the real fill while
+    ``limit_offset`` stayed on the emission-time anchor — which is exactly the
+    mis-pricing ``entry_price_limit_offset_pct`` exists to prevent."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_limit_offset_pct = None
+    with pytest.raises(ValueError, match="different references"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_accepts_a_bracket_style_stop_limit_leg() -> None:
+    """A leg that does NOT re-anchor (no ``entry_price_pct``, as every bracket
+    leg) is unaffected by that requirement — its absolute ``limit_offset`` is
+    already on the same anchor as its ``stop_price``."""
+    _order_with_leg(StopAttachment(stop_price=95.0, limit_offset=0.95)).validate_prices()

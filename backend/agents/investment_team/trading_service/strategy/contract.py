@@ -489,6 +489,26 @@ class OrderRequest(BaseModel):
                         f"{label}.entry_price_limit_offset_pct requires entry_price_pct "
                         "(the limit re-anchors only because the stop it sits off does)"
                     )
+            # The reverse implication, which is what actually makes "one anchor for
+            # both prices" structural rather than a convention callers may forget:
+            # a leg whose stop re-anchors AND that carries a limit MUST say how the
+            # limit follows. Without this, ``limit_offset`` (an absolute distance)
+            # would stay pinned to the emission-time preview while
+            # ``_materialize_stop_child`` re-anchored ``stop_price`` to the real
+            # fill — the exact mixed-anchor mis-pricing the field exists to prevent,
+            # reachable today by any caller constructing the attachment directly.
+            # Bracket legs are unaffected: they never set ``entry_price_pct``.
+            if (
+                sl.entry_price_pct is not None
+                and sl.limit_offset is not None
+                and sl.entry_price_limit_offset_pct is None
+            ):
+                raise ValueError(
+                    f"{label} sets entry_price_pct with limit_offset but no "
+                    "entry_price_limit_offset_pct: the stop would re-anchor to the "
+                    "entry fill while the limit offset stayed on the emission-time "
+                    "anchor, leaving the leg's two prices on different references"
+                )
         # ``parent_order_id`` / ``oco_group_id`` are engine-internal: the
         # bracket materializer in ``FillSimulator`` calls
         # ``OrderBook.submit_attached`` which clones the request with these

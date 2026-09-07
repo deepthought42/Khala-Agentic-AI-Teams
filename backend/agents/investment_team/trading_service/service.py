@@ -1085,11 +1085,26 @@ class _EngineExitDispatcher:
                 #   safer than leaving it: the replacement is a GUARANTEED market
                 #   close, whereas this latched limit already failed to fill once.
                 #
+                # The skip is narrowed to THIS migration's own leg by reason, not
+                # to "has a parent": ``resolve_resting_stop_loss_attachment`` stamps
+                # the leg with the byte-stable ``ENGINE_EXIT_REASON_STOP_LOSS``
+                # literal, while every other attached stop child carries a
+                # different one (a bracket leg's ``engine_exit:bracket_sl``, a
+                # generic ``attached_exits`` leg's ``engine_exit:exit_leg_{idx}``).
+                # Keying on the parent alone would also hide a strategy-supplied
+                # ``attached_stop_loss`` STOP_LIMIT child — which this dispatcher
+                # does NOT own and has always relied on ``resting_limit_stop_id``
+                # to notice — and the spec's own limit-style stop would then emit a
+                # SECOND full-size resting STOP_LIMIT against the same position.
+                #
                 # A dispatcher-emitted stop-limit (no parent) is unaffected: it only
                 # exists because the bar-close evaluator already detected the
                 # breach, so it is post-trigger by construction and stays tracked
                 # from the moment it rests, exactly as before this migration.
-                if po_req.parent_order_id is not None and not po.stop_limit_armed:
+                is_resting_migration_leg = (
+                    po_req.parent_order_id is not None and reason == ENGINE_EXIT_REASON_STOP_LOSS
+                )
+                if is_resting_migration_leg and not po.stop_limit_armed:
                     continue
                 resting_limit_stop_id = po.order_id
         return resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight
@@ -1942,8 +1957,16 @@ def _is_resting_stop_loss(rule: Any) -> bool:
 
     A limit-style rule always carries ``limit_offset_pct`` in ``(0, 1)`` and
     ``basis="entry_price"`` — ``StopLossRule._validate_limit_style`` enforces
-    both — so the ``basis`` test above is the only one that can reject it, and
-    ``_stop_loss_rule_to_leg_specs`` can read ``limit_offset_pct`` unguarded.
+    both — so for the two styles that exist today the ``basis`` test is the only
+    one that can reject a limit-style rule, and ``_stop_loss_rule_to_leg_specs``
+    can read ``limit_offset_pct`` unguarded.
+
+    The style test enumerates both current values rather than being dropped as
+    vacuous: it is a deliberate ALLOWLIST, so a third ``StopLossRule.style`` added
+    later stays bar-close-only until someone decides how it should rest. Dropping
+    it would instead route that new style straight through
+    ``_stop_loss_rule_to_leg_specs``, whose ``style == "limit"`` test would
+    silently shape it as a plain ``STOP``.
     """
     return (
         isinstance(rule, StopLossRule)
@@ -2032,10 +2055,25 @@ def _engine_entry_emission_active(entry_rules: Sequence[Any], sizing: Any) -> bo
     so this predicate makes that carve-out explicit and reusable rather than
     re-deriving it per call site.
 
+    KNOWN GAP (pre-existing, and not closed by this predicate): ceding is
+    run-scoped while attachment is per-ENTRY-ORDER, and ``maybe_emit`` has a
+    second early return this predicate does not model — a symbol outside
+    ``target_symbols``. A run with entry rules, sizing, AND a symbol filter
+    therefore still cedes the rule for the whole run, so a position opened on a
+    non-target symbol by the strategy subprocess (``StreamingHarness`` always
+    runs it) gets no attached leg while the bar-close evaluator has already
+    dropped the rule. The same is true of any position the subprocess opens on
+    its own under an otherwise engine-managed spec. This predicate closes the
+    broad hole — the custom-code path, where NO entry is ever engine-emitted —
+    but a complete fix needs a per-position signal (cede only for positions whose
+    entry order actually carried the leg) rather than a run-level flag, which is
+    a larger change than this migration step.
+
     Preconditions: ``entry_rules`` is the run's (possibly empty) entry-rule
     sequence; ``sizing`` is the run's sizing config or ``None``.
     Postconditions: ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
-    not ``None`` — byte-for-byte the condition ``maybe_emit`` returns early on.
+    not ``None`` — byte-for-byte the FIRST of ``maybe_emit``'s early returns (see
+    the known gap above for the second).
     """
     return bool(entry_rules) and sizing is not None
 

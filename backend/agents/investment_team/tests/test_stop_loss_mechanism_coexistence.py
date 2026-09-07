@@ -493,7 +493,12 @@ def test_limit_style_rule_is_claimed_by_exactly_one_mechanism(resting_enabled: b
 # ---------------------------------------------------------------------------
 
 
-def _scan_with_child(*, armed: bool, parent_order_id: str | None) -> str | None:
+def _scan_with_child(
+    *,
+    armed: bool,
+    parent_order_id: str | None,
+    reason: str | None = None,
+) -> str | None:
     """Run ``_scan_pending_for_gate`` over one opposite-side engine STOP_LIMIT
     and return the ``resting_limit_stop_id`` it reports.
 
@@ -510,7 +515,7 @@ def _scan_with_child(*, armed: bool, parent_order_id: str | None) -> str | None:
         order_type=OrderType.STOP_LIMIT,
         stop_price=95.0,
         limit_price=94.05,
-        reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        reason=reason or f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
     )
     po = PendingOrder(
         order_id="po-1",
@@ -653,3 +658,33 @@ def test_run_cedes_the_stop_only_when_entry_emission_can_attach_it(
 
     assert captured, "TradingService.run did not construct an exit dispatcher"
     assert (captured[0] == 0) is expect_ceded
+
+
+def test_unarmed_strategy_bracket_stop_limit_is_still_reported() -> None:
+    """The un-armed skip is narrowed to THIS migration's leg by reason, not to
+    "has a parent". A strategy-supplied ``attached_stop_loss`` child carries
+    ``engine_exit:bracket_sl`` and is NOT owned by this dispatcher, which has
+    always relied on ``resting_limit_stop_id`` to notice it. Hiding it would let
+    the spec's own limit-style stop emit a SECOND full-size resting STOP_LIMIT
+    against the same position."""
+    assert (
+        _scan_with_child(
+            armed=False,
+            parent_order_id="entry-1",
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}bracket_sl",
+        )
+        == "po-1"
+    )
+
+
+def test_unarmed_generic_attached_exit_leg_is_still_reported() -> None:
+    """Same for a generic ``attached_exits`` leg (``engine_exit:exit_leg_0``):
+    only the resting stop-loss migration's own leg is skipped while un-armed."""
+    assert (
+        _scan_with_child(
+            armed=False,
+            parent_order_id="entry-1",
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}exit_leg_0",
+        )
+        == "po-1"
+    )
