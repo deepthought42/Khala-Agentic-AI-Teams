@@ -137,7 +137,7 @@ token, key, or other private value.
 | CASE-0007 | Null recommendation stringified to the literal "None" | `logic`, `null-deref` | code_review, qa | real | 0040820 | backend |
 | CASE-0008 | Excluded-company match uses substring instead of word boundaries | `logic` | code_review | real | 766c6e5 | backend |
 | CASE-0009 | aria-label bound as a host attribute on mat-checkbox | `logic` | code_review | real | 3fd49f5 | frontend |
-| CASE-0010 | Endpoint returns a shape the documented response contract forbids | `spec-compliance` | code_review | invented | — | backend |
+| CASE-0010 | Missing report answered with 200 instead of the documented 404 | `spec-compliance` | code_review | invented | — | backend |
 | CASE-0011 | Cache root read from an environment variable that is never set | `standards` | code_review | real | c6169cd | backend |
 | CASE-0012 | Native blocking alert() used for an error toast | `standards` | code_review | real | 086a4894 | frontend |
 | CASE-0013 | Factory overwrites its own injected llm_client | `integration` | code_review | real | e325ad8 | backend |

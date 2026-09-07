@@ -1,5 +1,5 @@
 case_id: CASE-0010
-title: Endpoint returns a shape the documented response contract forbids
+title: Missing report answered with 200 instead of the documented 404
 language: python
 stack: fastapi
 gates: [code_review]
