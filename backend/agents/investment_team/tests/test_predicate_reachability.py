@@ -729,16 +729,21 @@ def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_tr
     # The prefix fires are entry-eligible only because the backtest stream
     # marks no bar as warm-up. Paper trading suppresses entries across its
     # priming prefix, so the author must not read "it opens positions" as
-    # holding wherever the strategy ends up running.
+    # holding wherever the strategy ends up running — but the paper outcome is
+    # a property of that run's prime length, not a second absolute: the API
+    # permits warmup_bars=0, and LiveStream._warmup then skips priming
+    # entirely, leaving the earlier rule warming up on live executable bars.
     spec = _spec(
         Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
         extra_entries=[_entry(_BROAD)],
     )
     detail = _starvation(spec)[0].details
     assert "In THIS backtest" in detail
-    assert "does not survive paper trading" in detail
-    assert "shadowed on every executable bar" in detail
+    assert "depends on that run's priming" in detail
+    assert "shorter or disabled prime" in detail
     assert "Treat it as starved wherever it actually has to trade" in detail
+    # Never restate the paper case as an absolute in either direction.
+    assert "does not survive paper trading" not in detail
 
 
 def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:

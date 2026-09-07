@@ -29,9 +29,9 @@ where the earlier rules cannot yet fire, and where the backtest's every-bar
 replay therefore really does select it — is reported as a ``warning`` instead,
 since it does open positions in that backtest and the ``critical``'s
 "contributes no entries" claim would be false about it. Paper trading suppresses
-entries across its priming prefix, so there the same rule is fully starved; the
-finding says so rather than the probe guessing at an execution mode it has no
-context for.
+entries across its priming prefix, so how much of that head start survives there
+depends on how long the prime is; the finding states that dependency rather than
+the probe guessing at an execution mode it has no context for.
 
 Path semantics:
   * Compiled path (``requires_custom_code=False``): the engine decides entries
@@ -247,11 +247,17 @@ class _RuleStarvation:
     That entry-eligibility is specific to the backtest. Paper trading primes
     the strategy from a historical prefix emitted with ``is_warmup=True``
     (``modes/paper_trade.py``), and those bars short-circuit before
-    ``engine_entries.maybe_emit`` — so a prefix long enough to warm the earlier
-    rules leaves the later rule shadowed on every executable bar, i.e. fully
-    starved. The probe has no paper-trade context at synthesis time and does
-    not guess at one; instead the ``"warmup_only"`` finding says outright that
-    the contribution it counted is backtest-only.
+    ``engine_entries.maybe_emit``. How much of the head start survives there
+    is a property of the run, not of the spec: a prime long enough to warm the
+    earlier rules (``PaperTradeConfig.warmup_bars`` defaults to 500) leaves the
+    later rule shadowed on every executable bar and fully starved, while a
+    shorter prime — the API permits ``warmup_bars=0``, and ``LiveStream._warmup``
+    also skips priming when the provider cannot serve the strategy timeframe —
+    keeps the earlier rules warming up into live bars, where the later rule can
+    still be selected. The probe has no paper-trade context at synthesis time
+    and does not guess at one; the ``"warmup_only"`` finding instead scopes its
+    count to this backtest and states that dependency rather than declaring any
+    single paper outcome.
 
     Invariants: ``rule_index >= 1`` (rule 0 has nothing before it and can never
     be starved); ``0 <= independent_fires <= fires <= evaluated``;
@@ -798,9 +804,10 @@ class PredicateReachabilityProbe(GateResultsMixin):
             would be false about the very run being gated; but it stops
             contributing the moment those rules warm up, which is a shadowing
             bug the author still has to see. Hence a warning, whose text also
-            names the paper-trading case (priming prefix suppressed, rule fully
-            starved) rather than leaving the reader to assume the backtest's
-            entry-eligibility holds everywhere.
+            says how the paper-trading case depends on that run's priming
+            length rather than leaving the reader to assume the backtest's
+            entry-eligibility holds everywhere — or, having been told it does
+            not, to assume every paper run starves the rule outright.
           * ``"abstained_bars"`` / ``"abstained_thin"`` → ``info``, so an
             abstention is visible on the gate timeline instead of being
             indistinguishable from "checked, nothing found".
@@ -853,12 +860,15 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         f"earlier rule is warm {steady_state}. In THIS backtest it will open "
                         "positions at the start of the window and then never again, so its "
                         "contribution is an artefact of the fetched window's left edge rather "
-                        "than of the strategy — and it does not survive paper trading at all, "
-                        "which suppresses entries across its priming prefix and so leaves this "
-                        "rule shadowed on every executable bar. Treat it as starved wherever it "
-                        "actually has to trade: fold its conditions into the earlier rule's "
-                        "all_of, list it BEFORE the broader rule if it is the intended higher "
-                        "priority, or loosen it so it can fire where the earlier rules don't."
+                        "than of the strategy. How much of it survives a paper run depends on "
+                        "that run's priming: paper trading suppresses entries across its warm-up "
+                        "prefix, so a prime long enough to warm the earlier rules (the default is "
+                        "500 bars) leaves this rule shadowed on every executable bar and fully "
+                        "starved, while a shorter or disabled prime carries part of the head "
+                        "start into live bars. Treat it as starved wherever it actually has to "
+                        "trade: fold its conditions into the earlier rule's all_of, list it "
+                        "BEFORE the broader rule if it is the intended higher priority, or "
+                        "loosen it so it can fire where the earlier rules don't."
                     )
                     if custom:
                         detail += (

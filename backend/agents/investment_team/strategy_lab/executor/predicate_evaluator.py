@@ -302,10 +302,12 @@ def evaluate_entry_rules(
         with ``is_warmup`` False, so ``TradingService`` will open positions
         from it there. That entry-eligibility is mode-specific: paper trading
         primes from a prefix emitted with ``is_warmup=True``, which
-        short-circuits before the engine's entry dispatch, so the same rule is
-        fully starved once it has to trade live. The probe reports this case as
-        its own lesser finding, worded to name both, rather than folding it
-        into either verdict.
+        short-circuits before the engine's entry dispatch, so a prime long
+        enough to warm the earlier rules starves the later one outright once it
+        has to trade live — while a shorter or disabled prime leaves those
+        rules warming up into live bars, where it can still be selected. The
+        probe reports this case as its own lesser finding, worded to name that
+        dependency, rather than folding it into either verdict.
 
         Like "dead"/"reachable", "structurally starved" is a per-dataset,
         data-dependent verdict — the same spec can be starved on one fetched
