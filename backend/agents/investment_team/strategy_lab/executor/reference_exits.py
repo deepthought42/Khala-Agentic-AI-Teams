@@ -1299,6 +1299,35 @@ class RestingTakeProfitFamily:
         """
         return self._remaining_qty
 
+    def _prospective_terminal(self, qty: float, price: float) -> Optional[Tuple[float, float]]:
+        """Whether committing ``(qty, price)`` now would close the position, and at what price.
+
+        The single computation :meth:`peek` and :meth:`commit` both need —
+        factored out so the "would this be the final fill, and if so, what
+        does the quantity-weighted, rounded price come out to" question has
+        exactly one answer, computed the same way everywhere it is asked.
+
+        Preconditions: none. Pure: reads ``self._fills``/``self._remaining_qty``,
+        mutates nothing.
+        Postconditions: returns ``None`` when ``qty`` would leave
+        ``_remaining_qty`` above :data:`_FILL_QTY_REL_TOL` of zero — i.e. NOT
+        the final fill, so there is nothing yet to round or validate.
+        Otherwise returns ``(weighted_price, terminal_price)``: the
+        quantity-weighted average across every entry already in
+        ``self._fills`` plus ``(qty, price)`` (UNROUNDED), and ``price``
+        itself (the terminal slice's own bucket, per this class's uniform
+        "bucket from terminal, round the blend once" discipline). The caller
+        decides usability by rounding: ``round(weighted_price,
+        decimals_for(terminal_price))``.
+        """
+        prospective_remaining = self._remaining_qty - qty
+        if prospective_remaining > self._original_qty * _FILL_QTY_REL_TOL:
+            return None
+        prospective_fills = [*self._fills, (qty, price)]
+        total_qty = sum(q for q, _ in prospective_fills)
+        weighted_price = sum(q * p for q, p in prospective_fills) / total_qty
+        return weighted_price, price
+
     def peek(self, bar: "Bar") -> Optional[_TakeProfitCandidate]:
         """Resolve ``bar``'s winning take-profit-family candidate WITHOUT applying it.
 
@@ -1316,10 +1345,13 @@ class RestingTakeProfitFamily:
         :meth:`step` did (already closed; no take-profit-family intent fires
         this bar) — or the winning candidate, fully resolved (quantity and
         price) but not yet reflected in ``_fills``/``_remaining_qty``/any
-        ladder's ``next_rung``. The returned candidate's ``price`` is always
-        finite and positive: an intent whose target resolves to <= 0 or
-        non-finite (reachable when an unbounded ``pct >= 1`` on the short
-        side lands at or below zero) is skipped in favor of the NEXT
+        ladder's ``next_rung``. A returned candidate is always genuinely
+        usable: an intent whose RAW target resolves to <= 0 or non-finite
+        (reachable when an unbounded ``pct >= 1`` on the short side lands at
+        or below zero), or one that IS raw-valid but would be this bar's
+        terminal fill and whose quantity-weighted, ROUNDED price would be
+        <= 0 (a tiny positive price can round away to zero — see
+        :meth:`_prospective_terminal`) — is skipped in favor of the NEXT
         take-profit-family intent in the same ``intents`` list — a different
         standalone target or ladder rung at a higher ``exit_rule_index`` still
         gets a chance to win this bar — exactly as if the degenerate intent's
@@ -1374,11 +1406,24 @@ class RestingTakeProfitFamily:
 
             price = _take_profit_target(self._anchor, pct, self._side)
             if not (price > 0 and math.isfinite(price)):
-                # Degenerate target — does not fire on this bar, but a
+                # Degenerate RAW target — does not fire on this bar, but a
                 # DIFFERENT family intent later in this same bar's list may
                 # still be valid; keep scanning rather than returning None
                 # outright.
                 continue
+            terminal = self._prospective_terminal(qty, price)
+            if terminal is not None:
+                weighted_price, terminal_price = terminal
+                if not (round(weighted_price, decimals_for(terminal_price)) > 0):
+                    # RAW-valid, but this candidate would be the terminal
+                    # fill and its blended, rounded price would be <= 0 —
+                    # the SAME masking risk as the raw-invalid case above,
+                    # one stage further down the pipeline: without this,
+                    # commit() would correctly refuse it (see commit's own
+                    # docstring), but this bar's resting phase would never
+                    # learn there was a DIFFERENT, valid candidate later in
+                    # the same intents list.
+                    continue
             return _TakeProfitCandidate(
                 exit_rule_index=winner.rule_index,
                 exit_rule_kind=winner.rule_kind,
@@ -1418,31 +1463,36 @@ class RestingTakeProfitFamily:
         :data:`_FILL_QTY_REL_TOL` of zero, else ``None`` (rung fired, position
         still open).
         """
-        prospective_remaining = self._remaining_qty - candidate.qty
-        is_terminal = prospective_remaining <= self._original_qty * _FILL_QTY_REL_TOL
-        if is_terminal:
-            prospective_fills = [*self._fills, (candidate.qty, candidate.price)]
-            total_qty = sum(q for q, _ in prospective_fills)
-            weighted_price = sum(q * p for q, p in prospective_fills) / total_qty
-            if not (round(weighted_price, decimals_for(candidate.price)) > 0):
+        terminal = self._prospective_terminal(candidate.qty, candidate.price)
+        if terminal is not None:
+            weighted_price, terminal_price = terminal
+            if not (round(weighted_price, decimals_for(terminal_price)) > 0):
                 # The blended, rounded closing price is unusable — treated as
                 # if this candidate's trigger had not been met, so NOTHING is
                 # mutated. A later bar may still close the position via this
                 # same rung (if still reachable) or a different rule kind.
+                # Unreachable through the normal peek()-then-commit pipeline
+                # (peek() screens this exact condition via the same
+                # _prospective_terminal call before ever returning the
+                # candidate) — kept as commit()'s own defense for a candidate
+                # constructed directly, bypassing peek(), the way this
+                # method's precondition already documents as the caller's
+                # discipline to observe, not this method's to assume.
                 return None
 
         self._fills.append((candidate.qty, candidate.price))
-        self._remaining_qty = prospective_remaining
+        self._remaining_qty -= candidate.qty
         if candidate.ladder_rule_index is not None:
             self._ladder_by_index[candidate.ladder_rule_index].next_rung += 1
 
-        if not is_terminal:
+        if terminal is None:
             return None  # rung fired, position still open — keep walking
+        weighted_price, terminal_price = terminal
         return _TakeProfitFireResult(
             exit_rule_index=candidate.exit_rule_index,
             exit_rule_kind=candidate.exit_rule_kind,
             raw_price=weighted_price,
-            terminal_price=candidate.price,
+            terminal_price=terminal_price,
             level_index=candidate.level_index,
         )
 

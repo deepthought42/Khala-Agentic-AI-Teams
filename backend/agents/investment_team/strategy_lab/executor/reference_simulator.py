@@ -667,8 +667,14 @@ def _simulate_symbol(
     per the design doc's own "one symbol never holds two overlapping
     positions" argument). A position still open when ``symbol_bars`` ends —
     including a re-entry after an earlier close — produces no trade for that
-    open remainder. When ``spec.target_symbols`` is non-empty and ``symbol``
-    is not in it, returns an empty list without evaluating any bar.
+    open remainder. A matched entry trigger whose fill-bar open, rounded to
+    its own production bucket, would be ``<= 0`` opens no position at all —
+    the raw open can pass :func:`~.reference_entries.fill_entry_at`'s own
+    positive-finite guard yet still round away to zero, which this module's
+    own :func:`_finish_trade` would otherwise only discover at
+    ``ReferenceTrade`` construction, aborting the whole run. When
+    ``spec.target_symbols`` is non-empty and ``symbol`` is not in it, returns
+    an empty list without evaluating any bar.
     Invariants: no side effects on ``spec``/``symbol_bars``; deterministic in
     its inputs.
     """
@@ -693,7 +699,17 @@ def _simulate_symbol(
             if match is not None:
                 rule, rule_idx = match
                 fill = fill_entry_at(symbol, symbol_bars, i, rule.side, rule_idx)
-                if fill is not None:
+                # A fill-bar open that is raw-positive-finite (fill_entry_at's
+                # own guard) can still round to <= 0 at its own bucket — a
+                # tiny positive price can round away to zero — which would
+                # only surface later, at ReferenceTrade construction, and
+                # abort the whole run. Suppressed HERE, before a position
+                # (and its resting books) ever opens off a price this
+                # module could never legitimately emit, mirroring the
+                # trigger-close gate's own "as if the trigger had not been
+                # met" treatment rather than opening a position doomed to
+                # crash at its eventual close.
+                if fill is not None and round_reference_price(fill.entry_price) > 0:
                     pos = _open_position(fill, working_rules, entry_slippage_bps)
     return out
 

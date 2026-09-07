@@ -22,6 +22,7 @@ from investment_team.strategy_lab.executor.reference_exits import (
     ReferenceTakeProfitExit,
     RestingStopLoss,
     RestingTakeProfitFamily,
+    _TakeProfitCandidate,
     entry_price_basis,
     replay_signal_exits,
     replay_stop_loss_exits,
@@ -1581,26 +1582,50 @@ def test_peek_skips_an_invalid_same_family_candidate_and_returns_the_next_valid_
 
 
 def test_commit_refuses_a_terminal_close_that_rounds_to_zero_without_mutating_state():
-    """A standalone target's raw price can be positive and finite (passing
-    ``peek``'s own guard) yet still round away to zero at its own bucket --
-    e.g. ``round(0.00004, 4) == 0.0``. Since a fill already applied could
-    never be cleanly un-applied, this must be decided BEFORE any mutation:
-    ``remaining_qty``/``_fills`` must stay exactly as they were, so a later
-    bar (or a different rule kind entirely) still gets a chance to close the
-    position."""
+    """White-box test of ``commit``'s own defense, constructing the candidate
+    directly rather than via ``peek`` -- ``peek`` now screens this exact
+    condition itself (see the ``peek`` rescan test below), so a candidate it
+    returns is never invalid this way; this pins ``commit``'s contract in
+    isolation for a candidate that bypasses ``peek`` entirely. A standalone
+    target's raw price can be positive and finite yet still round away to
+    zero at its own bucket -- e.g. ``round(0.00004, 4) == 0.0``. Since a fill
+    already applied could never be cleanly un-applied, this must be decided
+    BEFORE any mutation: ``remaining_qty``/``_fills`` must stay exactly as
+    they were, so a later bar (or a different rule kind entirely) still gets
+    a chance to close the position."""
     rules = [TakeProfitRule(pct=0.6)]
     family = RestingTakeProfitFamily(side="short", symbol="AAA", anchor=0.0001, rules=rules)
-    bar = _bar(0.0001, 0.0001, 0.00001, 0.0001)  # low reaches the 0.00004 target
-
-    candidate = family.peek(bar)
-    assert candidate is not None
-    assert candidate.price == pytest.approx(0.00004)
+    candidate = _TakeProfitCandidate(
+        exit_rule_index=0,
+        exit_rule_kind="take_profit",
+        qty=1.0,
+        price=0.00004,
+        level_index=None,
+        ladder_rule_index=None,
+    )
 
     fired = family.commit(candidate)
 
     assert fired is None
     assert family.remaining_qty == 1.0  # untouched -- the commit never happened
-    assert family.peek(bar) == candidate  # nothing moved; same candidate available again
+
+
+def test_peek_rescans_past_a_terminal_candidate_that_would_round_to_zero():
+    """The lowest-index candidate can be RAW-valid (passing the check the
+    prior rescan test pins) yet still be this bar's terminal fill with a
+    blended, rounded price of <= 0 -- one stage further down the pipeline
+    than a raw-invalid target. ``peek`` must catch this itself and rescan to
+    a DIFFERENT, valid candidate rather than returning the doomed one and
+    relying on ``commit`` to silently swallow it with no fallback."""
+    rules = [TakeProfitRule(pct=0.6), TakeProfitRule(pct=0.1)]
+    family = RestingTakeProfitFamily(side="short", symbol="AAA", anchor=0.0001, rules=rules)
+    bar = _bar(0.0001, 0.0001, 0.00001, 0.0001)  # low reaches both targets
+
+    candidate = family.peek(bar)
+
+    assert candidate is not None
+    assert candidate.exit_rule_index == 1
+    assert candidate.price == pytest.approx(0.00009)  # rounds to 0.0001 -- usable
 
 
 def test_remaining_qty_starts_at_the_nominal_original_quantity():

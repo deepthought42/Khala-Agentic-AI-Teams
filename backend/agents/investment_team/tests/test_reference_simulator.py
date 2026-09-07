@@ -302,6 +302,26 @@ def test_entry_price_is_rounded_to_its_own_production_bucket():
     assert trade.entry_price == 100.12  # rounded to the 2dp bucket (>= 10), not 100.12345
 
 
+def test_an_entry_price_that_would_round_to_zero_opens_no_position():
+    """Fresh evidence after the entry-price-rounding fix above: a fill-bar
+    open can be raw-positive-finite (passing ``fill_entry_at``'s own guard)
+    yet still round away to zero at its own bucket -- e.g.
+    ``round(0.00004, 4) == 0.0`` -- which would otherwise only surface at
+    ``ReferenceTrade`` construction and abort the whole run. A signal exit
+    that would otherwise close the position normally proves the entry itself
+    never opens, not merely that the eventual trade is suppressed."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(0.00004, 0.00004, 0.00004, 50, d[2]),  # entry fill @0.00004 (rounds to 0);
+        # also a signal trigger (close < 100), eligible on entry_bar itself
+        _bar(90, 90, 90, 90, d[3]),  # would-be signal-exit fill, if a position had opened
+    ]
+    spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=100.0))])
+    assert simulate(spec, {"AAA": bars}) == []
+
+
 def test_a_degenerate_trigger_close_does_not_open_a_position_even_though_the_predicate_fires():
     """Design doc §5 "Entries": a trigger bar whose close is <= 0 or
     non-finite must not open a position, mirroring production's
@@ -436,6 +456,26 @@ def test_a_take_profit_target_that_rounds_to_zero_does_not_crash_simulate():
     ]
     spec = _spec([TakeProfitRule(pct=0.6)], entry_side="short")
     assert simulate(spec, {"AAA": bars}) == []
+
+
+def test_a_terminal_take_profit_that_rounds_to_zero_does_not_mask_a_valid_higher_index_one():
+    """Further evidence beyond the round-to-zero guard above: that guard
+    correctly refuses to commit the doomed candidate, but by itself leaves
+    the resting phase with nothing -- the SAME masking risk as an invalid
+    RAW candidate, one stage further down the pipeline. ``peek`` must rescan
+    to the valid, higher-index candidate rather than leaving the bar's
+    resting phase empty-handed."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(0.0001, 0.0001, 0.0001, 0.0001, d[2]),  # entry fill @0.0001 (short anchor=0.0001)
+        _bar(0.0001, 0.0001, 0.00001, 0.0001, d[3]),  # low reaches both 0.00004 and 0.00009
+    ]
+    spec = _spec([TakeProfitRule(pct=0.6), TakeProfitRule(pct=0.1)], entry_side="short")
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 1)
+    assert trade.exit_price == 0.0001  # 0.00009 rounded to the 4dp bucket
 
 
 def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
