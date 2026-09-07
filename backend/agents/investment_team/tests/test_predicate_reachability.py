@@ -738,12 +738,29 @@ def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_tr
         extra_entries=[_entry(_BROAD)],
     )
     detail = _starvation(spec)[0].details
-    assert "In THIS backtest" in detail
-    assert "depends on that run's priming" in detail
+    assert "in THIS backtest" in detail
+    assert "depends on the run's priming" in detail
     assert "shorter or disabled prime" in detail
     assert "Treat it as starved wherever it actually has to trade" in detail
     # Never restate the paper case as an absolute in either direction.
     assert "does not survive paper trading" not in detail
+
+
+def test_warmup_only_finding_claims_selection_not_a_filled_order() -> None:
+    # The probe proves the rule wins first-match priority on those bars, not
+    # that an order results: _EngineEntryDispatcher.maybe_emit returns before
+    # evaluating entry rules while the symbol holds a position or a pending
+    # entry, and a matched entry can be risk-sized to zero. The finding must
+    # claim the former and disclaim the latter.
+    spec = _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+    )
+    detail = _starvation(spec)[0].details
+    assert "first-match priority selects" in detail
+    assert "does not model" in detail
+    assert "risk sizing" in detail
+    assert "will open positions" not in detail
 
 
 def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:

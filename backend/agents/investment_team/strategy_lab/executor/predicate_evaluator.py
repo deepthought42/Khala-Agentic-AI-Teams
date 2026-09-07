@@ -299,8 +299,11 @@ def evaluate_entry_rules(
         only members of ``S_j \\ union(S_i for i < j)`` sit in the window's
         warmup prefix is *reachable* by this definition, not starved — and in
         a backtest it genuinely is: ``HistoricalReplayStream`` emits every bar
-        with ``is_warmup`` False, so ``TradingService`` will open positions
-        from it there. That entry-eligibility is mode-specific: paper trading
+        with ``is_warmup`` False, so entry evaluation is reached on every bar
+        and this loop returns it there. (Selection is as far as this goes: the
+        engine skips entry evaluation entirely while the symbol holds a
+        position or a pending entry, and risk sizing can cap a matched entry to
+        zero — so "selected" does not promise an order.) That entry-eligibility is mode-specific: paper trading
         primes from a prefix emitted with ``is_warmup=True``, which
         short-circuits before the engine's entry dispatch, so a prime long
         enough to warm the earlier rules starves the later one outright once it

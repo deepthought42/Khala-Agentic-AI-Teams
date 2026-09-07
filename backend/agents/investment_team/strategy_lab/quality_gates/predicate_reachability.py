@@ -27,11 +27,11 @@ abstains with an ``info`` rather than mistaking a rarely-firing rule for a
 starved one. A rule whose only unshadowed fires land on the warmup prefix —
 where the earlier rules cannot yet fire, and where the backtest's every-bar
 replay therefore really does select it — is reported as a ``warning`` instead,
-since it does open positions in that backtest and the ``critical``'s
-"contributes no entries" claim would be false about it. Paper trading suppresses
-entries across its priming prefix, so how much of that head start survives there
-depends on how long the prime is; the finding states that dependency rather than
-the probe guessing at an execution mode it has no context for.
+since first-match priority does pick it there and the ``critical``'s "never the
+rule selected" claim would be false about it. Paper trading suppresses entries
+across its priming prefix, so how much of that head start survives there depends
+on how long the prime is; the finding states that dependency rather than the
+probe guessing at an execution mode it has no context for.
 
 Path semantics:
   * Compiled path (``requires_custom_code=False``): the engine decides entries
@@ -234,15 +234,24 @@ class _RuleStarvation:
     window, and it exists because the steady-state window alone cannot answer
     the question the finding claims to answer. ``evaluate_entry_rules`` selects
     a rule only on ``"satisfied"``, so an earlier rule that is still warming up
-    does NOT win its bar — and in the backtest this probe gates, every bar is
-    entry-eligible from index 0: ``HistoricalReplayStream`` (fed the very
-    ``market_data`` swept here) emits each ``BarEvent`` with ``is_warmup``
+    does NOT win its bar — and in the backtest this probe gates, every bar
+    reaches entry evaluation from index 0: ``HistoricalReplayStream`` (fed the
+    very ``market_data`` swept here) emits each ``BarEvent`` with ``is_warmup``
     defaulted to False, so ``TradingService`` never takes the warm-up
     short-circuit in ``_process_bar_strategy_response``. A rule that fires on
-    the warmup prefix while no earlier rule is satisfied therefore DOES open
-    positions in the backtest, however thoroughly the steady-state window
-    shadows it. Counting those bars is what keeps :attr:`verdict` from claiming
-    "contributes no entries" about a rule that demonstrably contributes some.
+    the warmup prefix while no earlier rule is satisfied is therefore the rule
+    first-match priority SELECTS there, however thoroughly the steady-state
+    window shadows it. Counting those bars is what keeps :attr:`verdict` from
+    claiming a rule is never the selection when it demonstrably is.
+
+    Selection is the most this can prove, and the most the finding claims.
+    ``_EngineEntryDispatcher.maybe_emit`` returns before evaluating entry rules
+    at all while the symbol holds a position or a pending entry (and for an
+    untargeted symbol), and a matched entry whose ``_compute_qty`` lands at or
+    below zero exits as ``risk_capped_skip`` — none of which this probe models.
+    The negative verdicts are unaffected by that gap, since a rule that is never
+    selected cannot produce an order however the portfolio is placed; only the
+    positive direction needs the qualifier, and carries it.
 
     That entry-eligibility is specific to the backtest. Paper trading primes
     the strategy from a historical prefix emitted with ``is_warmup=True``
@@ -671,7 +680,7 @@ class PredicateReachabilityProbe(GateResultsMixin):
         fires as :attr:`_RuleStarvation.warmup_independent_fires`. That is not
         an inconsistency between the two: ``probe_pairs`` reports no findings,
         while this verdict does, and a finding that ignored those bars would
-        call a rule starved that the backtest demonstrably trades.
+        call a rule starved that the backtest demonstrably selects.
 
         Per-leg diagnostics are computed only for a ``"starved"`` verdict on a
         multi-leaf rule, decomposing the STARVED rule's own leaves against its
@@ -798,16 +807,18 @@ class PredicateReachabilityProbe(GateResultsMixin):
             teaches, so a deliberate priority ordering is adjudicable rather
             than merely accused.
           * ``"warmup_only"`` → ``warning`` on both paths. In the backtest this
-            gate precedes, the rule DOES open positions — on the warmup prefix,
-            where the earlier rules cannot yet fire and every bar is still
-            entry-eligible — so ``critical``'s "contributes no entries" claim
-            would be false about the very run being gated; but it stops
-            contributing the moment those rules warm up, which is a shadowing
-            bug the author still has to see. Hence a warning, whose text also
-            says how the paper-trading case depends on that run's priming
-            length rather than leaving the reader to assume the backtest's
-            entry-eligibility holds everywhere — or, having been told it does
-            not, to assume every paper run starves the rule outright.
+            gate precedes, first-match priority DOES select the rule — on the
+            warmup prefix, where the earlier rules cannot yet fire and every
+            bar still reaches entry evaluation — so ``critical``'s "never the
+            rule selected" claim would be false about the very run being gated;
+            but it stops being selected the moment those rules warm up, which
+            is a shadowing bug the author still has to see. Hence a warning,
+            whose text states selection rather than promising an order (the
+            engine can skip evaluation or size to zero), and says how the
+            paper-trading case depends on that run's priming length rather than
+            leaving the reader to assume the backtest's behaviour holds
+            everywhere — or, having been told it does not, to assume every
+            paper run starves the rule outright.
           * ``"abstained_bars"`` / ``"abstained_thin"`` → ``info``, so an
             abstention is visible on the gate timeline instead of being
             indistinguishable from "checked, nothing found".
@@ -857,18 +868,22 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         f"earlier rule is still warming up: it fires on "
                         f"{v.warmup_independent_fires} warmup-prefix bar(s) that no earlier rule "
                         f"is satisfied on, but across the {v.evaluated} bar(s) where every "
-                        f"earlier rule is warm {steady_state}. In THIS backtest it will open "
-                        "positions at the start of the window and then never again, so its "
-                        "contribution is an artefact of the fetched window's left edge rather "
-                        "than of the strategy. How much of it survives a paper run depends on "
-                        "that run's priming: paper trading suppresses entries across its warm-up "
-                        "prefix, so a prime long enough to warm the earlier rules (the default is "
-                        "500 bars) leaves this rule shadowed on every executable bar and fully "
-                        "starved, while a shorter or disabled prime carries part of the head "
-                        "start into live bars. Treat it as starved wherever it actually has to "
-                        "trade: fold its conditions into the earlier rule's all_of, list it "
-                        "BEFORE the broader rule if it is the intended higher priority, or "
-                        "loosen it so it can fire where the earlier rules don't."
+                        f"earlier rule is warm {steady_state}. So in THIS backtest it is the rule "
+                        "first-match priority selects at the start of the window and never "
+                        "after — whether any given selection becomes an order still depends on "
+                        "state this probe does not model (the engine skips entry evaluation "
+                        "while the symbol holds a position or a pending entry, and risk sizing "
+                        "can cap a matched entry to zero). Its window into the strategy is an "
+                        "artefact of the fetched window's left edge either way. How much of that "
+                        "head start survives a paper run depends on the run's priming: paper "
+                        "trading suppresses entries across its warm-up prefix, so a prime long "
+                        "enough to warm the earlier rules (the default is 500 bars) leaves this "
+                        "rule shadowed on every executable bar and fully starved, while a "
+                        "shorter or disabled prime carries part of the head start into live "
+                        "bars. Treat it as starved wherever it actually has to trade: fold its "
+                        "conditions into the earlier rule's all_of, list it BEFORE the broader "
+                        "rule if it is the intended higher priority, or loosen it so it can fire "
+                        "where the earlier rules don't."
                     )
                     if custom:
                         detail += (
