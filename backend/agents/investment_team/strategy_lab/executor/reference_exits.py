@@ -110,7 +110,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Literal, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    FrozenSet,
+    List,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from ...models import StrategySpec
 from ..spec_dsl import (
@@ -737,7 +748,9 @@ class RestingStopLoss:
             return None
         return self._market_fill_price(stop_loss_level(rule, position), bar)
 
-    def peek(self, bar: "Bar") -> Optional[Tuple[int, float]]:
+    def peek(
+        self, bar: "Bar", *, skip: FrozenSet[int] = frozenset()
+    ) -> Optional[Tuple[int, float]]:
         """Resolve ``bar``'s winning stop candidate WITHOUT ratcheting the watermark.
 
         The trigger-decision half of what a single :meth:`step` call used to do
@@ -749,27 +762,42 @@ class RestingStopLoss:
         kind (if any) wins the bar, which is why it lives in the separate
         :meth:`advance` instead.
 
+        ``skip`` lets a caller that already tried this bar's winning index and
+        found it unusable for a reason THIS class cannot see itself — a raw
+        price that rounds (or blends with a foreign take-profit book) to <= 0,
+        which only :func:`~.reference_simulator._finalize_exit_price` can
+        determine — ask for the NEXT reachable candidate instead, without
+        this class needing any knowledge of that external rounding/blending
+        concern. Empty by default so every other caller is unaffected.
+
         Preconditions: same as :meth:`step` — ``bar`` is strictly later than
         the position's entry bar, and this is called at most once per bar
-        before :meth:`advance` is called for that same bar.
+        before :meth:`advance` is called for that same bar (though it may be
+        called MULTIPLE times for that same bar with a growing ``skip``, to
+        retry past a candidate a caller has already rejected).
         Postconditions: returns ``(exit_rule_index, unrounded_fill_price)`` for
-        the winning rule, or ``None`` when no rule fills on this bar — the
-        SAME tie-break as :meth:`step` (ascending spec index). May still latch
-        a limit-style rule's index into ``_armed`` as a side effect: arming is
+        the winning rule NOT in ``skip``, or ``None`` when no such rule fills
+        on this bar — the SAME tie-break as :meth:`step` (ascending spec
+        index) among the candidates not skipped. May still latch a
+        limit-style rule's index into ``_armed`` as a side effect: arming is
         a fact about this bar's own price action, independent of whether this
         candidate goes on to win the bar against a competing kind, so it is not
-        deferred to :meth:`advance` or to a caller's later commit decision.
-        Calling this twice for the same bar with no intervening state change
-        returns the same result both times.
+        deferred to :meth:`advance` or to a caller's later commit decision —
+        idempotent to call again for an already-armed index.
+        Calling this twice for the same bar and ``skip`` with no intervening
+        state change returns the same result both times.
         """
         winner: Optional[Tuple[int, float]] = None
         for idx, rule in self._rules:
-            if idx in self._retired:
+            if idx in self._retired or idx in skip:
                 # Skipped before _candidate_price is even called: a retired
                 # rule takes no part in this bar's evaluation at all — no
                 # arm-state side effect — so a later restore_limit_style_rules
                 # resumes it exactly where it left off, per that method's own
-                # docstring.
+                # docstring. A rule in ``skip`` was already tried by THIS
+                # caller for THIS bar and found unusable, but it was not
+                # retired (a later, independent call with a fresh ``skip``
+                # must still see it).
                 continue
             price = self._candidate_price(idx, rule, bar)
             if price is None:

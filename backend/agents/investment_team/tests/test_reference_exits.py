@@ -687,6 +687,20 @@ def test_step_equals_peek_then_advance():
     via_split.advance(next_bar)
 
 
+def test_peek_skip_excludes_an_index_and_returns_the_next_reachable_stop():
+    """``skip`` lets a caller retry past a candidate it already tried and
+    rejected for a reason this class cannot see itself (a raw price that
+    rounds to <= 0 once the combined simulator finalizes it) -- proven
+    directly here without going through that external finalize step."""
+    rule0 = StopLossRule(pct=0.90, basis="entry_price")  # level = 0.0001*0.10 = 0.00001
+    rule1 = StopLossRule(pct=0.10, basis="entry_price")  # level = 0.0001*0.90 = 0.00009
+    book = RestingStopLoss(side="long", symbol="AAA", anchor=0.0001, rules=[(0, rule0), (1, rule1)])
+    bar = _bar(0.0001, 0.0001, 0.000005, 0.0001)  # low reaches both levels
+
+    assert book.peek(bar) == pytest.approx((0, 0.00001))
+    assert book.peek(bar, skip=frozenset({0})) == pytest.approx((1, 0.00009))
+
+
 def test_peek_alone_does_not_ratchet_the_watermark():
     """Calling ``peek`` twice for the same bar, with no ``advance`` in
     between, must return the same result both times — the watermark check

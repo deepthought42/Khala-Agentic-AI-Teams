@@ -418,6 +418,31 @@ def test_an_invalid_lower_index_stop_candidate_does_not_mask_a_valid_take_profit
     assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 1)
 
 
+def test_a_lower_index_stop_that_rounds_to_zero_rescans_to_a_valid_higher_index_stop():
+    """The same rescan the take-profit family already gets, but for the stop
+    book: a stop whose RAW price passes ``peek``'s own guard can still round
+    to <= 0 once ``_finalize_exit_price`` applies production's bucket -- and
+    unlike the cross-book masking above, there is no OTHER rule kind here at
+    all to fall back on, so the fix must let the stop book itself offer a
+    DIFFERENT, valid stop at a higher index."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(0.0001, 0.0001, 0.0001, 0.0001, d[2]),  # entry fill @0.0001 (anchor=0.0001)
+        _bar(0.0001, 0.0001, 0.000005, 0.0001, d[3]),  # low reaches both stop levels
+    ]
+    spec = _spec(
+        [
+            StopLossRule(pct=0.90, basis="entry_price"),
+            StopLossRule(pct=0.10, basis="entry_price"),
+        ]
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("stop_loss", 1)
+    assert trade.exit_price == 0.0001  # 0.00009 rounded to the 4dp bucket
+
+
 def test_a_same_family_invalid_take_profit_does_not_mask_a_valid_one_at_a_higher_index():
     """A degenerate take-profit candidate must not stop
     ``RestingTakeProfitFamily`` from finding a DIFFERENT, valid candidate in

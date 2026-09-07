@@ -142,6 +142,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     get_args,
 )
@@ -539,7 +540,6 @@ def _process_exit_bar(
     """
     resting_eligible = i >= pos.entry.entry_bar + 1
     if resting_eligible:
-        stop_candidate = pos.stop_book.peek(bar) if pos.stop_book is not None else None
         # No raw-price validity filter needed here for tp_candidate the way
         # there is for stop_candidate below: RestingTakeProfitFamily.peek()
         # already guarantees a returned candidate's raw price is finite and
@@ -555,18 +555,30 @@ def _process_exit_bar(
         # or blend away to <= 0 once _finalize_exit_price applies production's
         # own rounding bucket and any prior take-profit rungs' blend — e.g. an
         # entry price small enough that a deep stop's level survives peek's raw
-        # check but rounds to zero. Finalizing it HERE, before stop_wins, means
-        # an unusable stop is discarded before it can win that priority
-        # comparison by rule-index alone — a lower-index stop that turns out
-        # unusable must not block a legitimate higher-index take-profit
-        # reachable on the same bar. The finalized price is reused directly
-        # below rather than recomputed, since _finalize_exit_price has no side
-        # effects to redo.
+        # check but rounds to zero. RestingStopLoss itself cannot screen this
+        # the way RestingTakeProfitFamily.peek() screens its own rounding
+        # concern, since the blend depends on pos.tp_book — external state the
+        # stop book has no visibility into. So this loop retries with a
+        # growing ``skip`` set, asking for the NEXT reachable stop each time
+        # one fails to finalize, before stop_wins is ever decided — otherwise
+        # a lower-index stop that turns out unusable would mask BOTH a
+        # different, valid stop at a higher index AND a legitimate take-profit
+        # reachable on the same bar. Bounded by len(working stop rules): each
+        # iteration adds the just-tried index to ``skip``, so peek() has
+        # strictly fewer candidates left to offer every time.
+        stop_candidate: Optional[Tuple[int, float]] = None
         stop_price: Optional[float] = None
-        if stop_candidate is not None:
-            stop_price = _finalize_exit_price(pos, stop_candidate[1])
-            if stop_price is None:
-                stop_candidate = None
+        if pos.stop_book is not None:
+            tried_stop_indices: Set[int] = set()
+            while True:
+                candidate = pos.stop_book.peek(bar, skip=frozenset(tried_stop_indices))
+                if candidate is None:
+                    break
+                price = _finalize_exit_price(pos, candidate[1])
+                if price is not None:
+                    stop_candidate, stop_price = candidate, price
+                    break
+                tried_stop_indices.add(candidate[0])
         if pos.stop_book is not None:
             # Ratcheted exactly once per bar regardless of which book (if
             # either) wins — mirrors RestingStopLoss.step's own "extended
