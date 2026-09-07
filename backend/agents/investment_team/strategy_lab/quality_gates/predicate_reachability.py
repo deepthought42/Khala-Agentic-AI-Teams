@@ -886,12 +886,12 @@ class PredicateReachabilityProbe(GateResultsMixin):
                 elif kind == "abstained_thin":
                     results.append(
                         self._info(
-                            f"Entry rule {rule_id} (side={v.side}) fires {v.covered_fires} "
-                            f"time(s) over {v.evaluated} judged post-warmup bar(s), all of them "
-                            f"also covered by an earlier rule ({_coverage_text(v.coverage)}) — "
-                            f"fewer than {_MIN_STARVATION_FIRES} covered fires is too few to "
-                            "separate structural starvation from a merely rarely-firing rule, "
-                            "so it is not reported as starved.",
+                            f"Entry rule {rule_id} (side={v.side}): {_fire_evidence_text(v)}, "
+                            f"all of them also covered by an earlier rule "
+                            f"({_coverage_text(v.coverage)}) — fewer than "
+                            f"{_MIN_STARVATION_FIRES} covered fires is too few to separate "
+                            "structural starvation from a merely rarely-firing rule, so it is "
+                            "not reported as starved.",
                             rule_id=rule_id,
                         )
                     )
@@ -932,9 +932,9 @@ class PredicateReachabilityProbe(GateResultsMixin):
                     results.append(self._warning(detail, rule_id=rule_id))
                 elif kind == "starved":
                     detail = (
-                        f"Entry rule {rule_id} (side={v.side}) is structurally starved: it fires "
-                        f"{v.covered_fires} time(s) over {v.evaluated} judged post-warmup "
-                        f"bar(s), and an earlier, higher-priority rule fires on every one of them "
+                        f"Entry rule {rule_id} (side={v.side}) is structurally starved: "
+                        f"{_fire_evidence_text(v)}, and an earlier, higher-priority rule fires "
+                        f"on every one of them "
                         f"({_coverage_text(v.coverage)}) — under first-match-wins priority "
                         f"{rule_id} is never the rule selected, so it contributes no entries as "
                         "ordered. Resolve by folding its conditions into the earlier rule's "
@@ -988,6 +988,42 @@ def _leg_diagnostic(r: _RuleReachability) -> str:
     return (
         "Every condition holds on its own but they never co-occur on the same bar "
         "(the all_of conjunction is unsatisfiable on this data)."
+    )
+
+
+def _fire_evidence_text(v: _RuleStarvation) -> str:
+    """Render a starvation verdict's fire counts without implying one ratio.
+
+    Preconditions: ``v`` is a :class:`_RuleStarvation` on a rung that counts
+    covered fires (``"starved"`` or ``"abstained_thin"``), so
+    :attr:`_RuleStarvation.covered_fires` is non-zero.
+    Postconditions: names every fire the rule has, split by where it landed,
+    and never divides a total by a window that excludes part of it. Prefix
+    fires are outside :attr:`_RuleStarvation.evaluated` by construction — that
+    denominator counts only bars where EVERY earlier rule is warm — so
+    printing ``covered_fires`` against it can read as "100 time(s) over 30
+    bar(s)" and would also call a prefix fire post-warmup, which it is not
+    (it is post-warmup for this rule alone, inside another rule's prefix).
+    Pure; three shapes:
+
+      * no prefix fires — the counts share a window, so the original
+        ``N over M post-warmup bar(s)`` phrasing is both accurate and shortest.
+      * prefix fires only — states the total and that the steady-state window
+        saw none, so the window is still reported rather than silently dropped.
+      * both — gives the total once and then each part with its own window.
+    """
+    assert v.covered_fires, "fire evidence requires at least one covered fire"
+    if not v.warmup_covered_fires:
+        return f"it fires {v.fires} time(s) over {v.evaluated} post-warmup bar(s)"
+    if not v.fires:
+        return (
+            f"it fires {v.warmup_covered_fires} time(s), every one of them on the warmup "
+            f"prefix, and not at all across the {v.evaluated} bar(s) where every earlier "
+            "rule is warm"
+        )
+    return (
+        f"it fires {v.covered_fires} time(s) — {v.fires} across the {v.evaluated} bar(s) "
+        f"where every earlier rule is warm, {v.warmup_covered_fires} on the warmup prefix"
     )
 
 

@@ -558,7 +558,7 @@ def test_starvation_finding_leads_with_evidence_and_names_remedies() -> None:
     # message.
     spec = _spec(_BROAD, extra_entries=[_entry(_NARROW)])
     detail = _starvation(spec)[0].details
-    assert "fires 149 time(s) over 300 judged post-warmup bar(s)" in detail  # the evidence
+    assert "fires 149 time(s) over 300 post-warmup bar(s)" in detail  # the evidence
     assert "entry[0] covers 149" in detail  # who shadows it, and by how much
     assert "folding its conditions" in detail  # remedy 1: fold
     assert "listing it BEFORE the broader rule" in detail  # remedy 2: reorder
@@ -617,7 +617,7 @@ def test_rarely_firing_rule_below_the_evidence_floor_abstains_with_info() -> Non
     assert r.severity == "info"
     assert r.passed is True
     assert r.rule_id == "entry[1]"
-    assert "fires 4 time(s) over 300 judged post-warmup bar(s)" in r.details
+    assert "fires 4 time(s) over 300 post-warmup bar(s)" in r.details
     assert "rarely-firing" in r.details
     assert "structurally starved" not in r.details
 
@@ -632,7 +632,7 @@ def test_evidence_floor_boundary_four_versus_five_covered_fires() -> None:
 
     at = _starvation(five)
     assert [r.severity for r in at] == ["critical"]
-    assert "fires 5 time(s) over 300 judged post-warmup bar(s)" in at[0].details
+    assert "fires 5 time(s) over 300 post-warmup bar(s)" in at[0].details
 
 
 def test_a_single_independent_fire_makes_a_rare_rule_reachable() -> None:
@@ -910,6 +910,59 @@ def test_covered_prefix_fires_count_toward_the_evidence_floor() -> None:
     five = _verdict(_pattern(60, range(5, 10)), warming, _pattern(60, range(5, 10)))
     assert (five.warmup_covered_fires, five.covered_fires) == (5, 5)
     assert five.verdict == "starved"
+
+
+def _fire_evidence(fires: int, warmup_covered: int, evaluated: int = 30) -> str:
+    from investment_team.strategy_lab.quality_gates.predicate_reachability import (
+        _fire_evidence_text,
+    )
+
+    return _fire_evidence_text(
+        _RuleStarvation(
+            rule_index=1,
+            side="long",
+            evaluated=evaluated,
+            fires=fires,
+            independent_fires=0,
+            coverage=((0, fires + warmup_covered),),
+            legs=(),
+            warmup_covered_fires=warmup_covered,
+        )
+    )
+
+
+def test_fire_evidence_never_divides_a_total_by_a_window_that_excludes_part_of_it() -> None:
+    # Prefix fires are outside `evaluated` by construction, so printing the
+    # total against it reads as "100 time(s) over 30 bar(s)" and calls a prefix
+    # fire post-warmup, which it is not. Each shape reports its own window.
+    only_steady = _fire_evidence(fires=12, warmup_covered=0)
+    assert only_steady == "it fires 12 time(s) over 30 post-warmup bar(s)"
+
+    only_prefix = _fire_evidence(fires=0, warmup_covered=100)
+    assert "fires 100 time(s), every one of them on the warmup prefix" in only_prefix
+    assert "not at all across the 30 bar(s)" in only_prefix
+    assert "100 time(s) over 30" not in only_prefix
+
+    both = _fire_evidence(fires=8, warmup_covered=100)
+    assert "fires 108 time(s)" in both
+    assert "8 across the 30 bar(s) where every earlier rule is warm" in both
+    assert "100 on the warmup prefix" in both
+    assert "108 time(s) over 30" not in both
+
+
+def test_starved_and_thin_findings_both_use_the_split_evidence_clause() -> None:
+    # A steady-state window with no fires at all, and every fire on the prefix:
+    # the impossible-ratio shape. Both rungs must render it coherently.
+    warming = ["warmup"] * 40 + ["miss"] * 30
+    for satisfied, expect_severity in ((range(0, 40), "critical"), (range(0, 4), "info")):
+        v = _verdict(_pattern(70, satisfied), warming, _pattern(70, satisfied))
+        results = PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        assert [r.severity for r in results] == [expect_severity]
+        detail = results[0].details
+        assert "every one of them on the warmup prefix" in detail
+        assert "not at all across the 30 bar(s)" in detail
 
 
 def test_a_rule_with_no_fire_anywhere_is_still_dead() -> None:
