@@ -371,13 +371,17 @@ def _finalize_exit_price(pos: _OpenPosition, raw_closing_price: float) -> Option
     walk, never let it reach :class:`ReferenceTrade` construction.
 
     Preconditions: none (``raw_closing_price`` may be any float). Called only
-    for a STOP or ``signal_exit`` close — a take-profit-family close rounds
-    its own already-committed :class:`~.reference_exits._TakeProfitFireResult`
-    directly, matching :func:`~.reference_exits.resolve_take_profit_family_exit`'s
-    existing, already-tested behavior, since a take-profit target's price is
-    analytically bounded away from zero whenever the post-slippage anchor it
-    derives from was itself accepted (:func:`~.reference_exits.entry_price_basis`
-    already rejects an anchor that rounds to zero).
+    for a STOP or ``signal_exit`` close — a take-profit-family close instead
+    rounds its own already-committed
+    :class:`~.reference_exits._TakeProfitFireResult` directly, matching
+    :func:`~.reference_exits.resolve_take_profit_family_exit`'s existing,
+    already-tested behavior. A take-profit candidate's price is NOT
+    analytically bounded away from zero the way this function's own STOP/
+    signal callers effectively are in practice — an unbounded ``pct`` can
+    still put a short's target at or below zero — so that family is guarded
+    separately, at the point its candidate is peeked in
+    :func:`_process_exit_bar` (before it can even enter that bar's
+    cross-book priority comparison), rather than here.
     Postconditions: returns ``None`` when ``raw_closing_price`` is not a finite
     positive number, or when the correctly rounded/blended price would be
     ``<= 0``. Otherwise returns the price a :class:`ReferenceTrade` should
@@ -511,6 +515,30 @@ def _process_exit_bar(
     if resting_eligible:
         stop_candidate = pos.stop_book.peek(bar) if pos.stop_book is not None else None
         tp_candidate = pos.tp_book.peek(bar) if pos.tp_book is not None else None
+        if tp_candidate is not None and not (
+            tp_candidate.price > 0 and math.isfinite(tp_candidate.price)
+        ):
+            # A degenerate candidate (non-finite, or <= 0 — reachable when a
+            # valid pct >= 1 target on the short side lands at or below zero
+            # and a garbage nonpositive bar low reaches it; see
+            # TakeProfitRule/TakeProfitLevel.pct's unbounded Field(gt=0)) is
+            # discarded HERE, before it can enter the stop_wins priority
+            # comparison below — not merely before commit(). Filtering it
+            # only inside the tp branch (checked after stop_wins was already
+            # decided) let an invalid LOWER-index candidate still win that
+            # comparison by rule-index alone, masking a legitimate
+            # higher-index stop reachable on the very same bar and leaving
+            # the position open with no trade emitted. Discarding it here
+            # makes it invisible to this bar's resting phase entirely, so a
+            # valid stop candidate is free to win on its own merits, and
+            # commit() still never sees it — the book's
+            # fills/cursor/remaining_qty stay untouched and a later bar or
+            # another rule kind may still close the position, exactly as if
+            # the rule had not triggered this bar (the design doc's uniform
+            # nonpositive-exit-reference rule). Letting it reach
+            # ReferenceTrade construction instead would abort the whole
+            # simulate() run over one bad bar, which that rule forbids.
+            tp_candidate = None
         if pos.stop_book is not None:
             # Ratcheted exactly once per bar regardless of which book (if
             # either) wins — mirrors RestingStopLoss.step's own "extended
@@ -529,23 +557,7 @@ def _process_exit_bar(
             # resting phase produced no winner at all (see
             # _finalize_exit_price's own docstring on why this narrow case is
             # not retried against the other book).
-        # The price guard below is deliberately checked BEFORE commit(), not
-        # after: a degenerate tp_candidate (non-finite, or <= 0 — reachable
-        # when a valid pct >= 1 target on the short side lands at or below
-        # zero and a garbage nonpositive bar low reaches it; see
-        # TakeProfitRule/TakeProfitLevel.pct's unbounded Field(gt=0)) must
-        # never reach pos.tp_book.commit at all. Committing it and discarding
-        # the result afterward would still corrupt the book's
-        # fills/cursor/remaining_qty bookkeeping, and — worse — the resulting
-        # price reaches ReferenceTrade.__post_init__'s exit_price > 0
-        # invariant and aborts the whole simulate() run over one bad bar,
-        # which the design doc's uniform nonpositive-exit-reference rule
-        # forbids: this candidate must be suppressed exactly as if the rule
-        # had not triggered this bar, leaving the book untouched so a later
-        # bar or another rule kind may still close the position.
-        elif tp_candidate is not None and (
-            tp_candidate.price > 0 and math.isfinite(tp_candidate.price)
-        ):
+        elif tp_candidate is not None:
             fired = pos.tp_book.commit(tp_candidate)
             if fired is not None:
                 price = round(fired.raw_price, decimals_for(fired.terminal_price))

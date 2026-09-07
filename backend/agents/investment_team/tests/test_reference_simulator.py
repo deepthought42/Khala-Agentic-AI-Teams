@@ -298,6 +298,29 @@ def test_take_profit_beats_stop_when_take_profit_has_the_lower_index():
     assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 0)
 
 
+def test_an_invalid_lower_index_take_profit_candidate_does_not_mask_a_valid_stop():
+    """A degenerate take-profit candidate (nonpositive target, pct >= 1 on the
+    short side) must not win the cross-book priority comparison by rule index
+    alone. Filtering it only at commit time -- after stop_wins was already
+    decided by comparing raw indices -- let it silently suppress a
+    legitimately reachable, higher-index stop on the very same bar, leaving
+    the position open with no trade emitted at all."""
+    d = _dates(4)
+    bars = [
+        _bar(101, 101, 101, 101, d[0]),
+        _bar(99, 100, 98, 99, d[1]),  # trigger: close < 100
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 (short anchor=100)
+        _bar(100, 110, -60, 100, d[3]),  # stop(105) reached AND tp target(-50) "reached"
+    ]
+    spec = _spec(
+        [TakeProfitRule(pct=1.5), StopLossRule(pct=0.05, basis="entry_price")],
+        entry_side="short",
+        entry_rules=[EntryRule(side="short", when=Predicate(lhs="bar.close", op="<", rhs=100.0))],
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("stop_loss", 1)
+
+
 def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
     """FIFO by materialization time: the stop was resting since entry, strictly
     earlier than a signal triggered afterward, so it wins the shared fill bar."""
