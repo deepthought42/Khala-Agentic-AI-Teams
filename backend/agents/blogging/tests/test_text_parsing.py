@@ -404,25 +404,98 @@ _GUARDED_NAMES = _GUARDED_HELPERS | {f"_{name}" for name in _GUARDED_HELPERS}
 
 _CANONICAL_MODULE = Path(tp.__file__).resolve()
 _BLOGGING_ROOT = _CANONICAL_MODULE.parent.parent
+_CANONICAL_DOTTED = "agents.blogging.shared.text_parsing"
 
 
-def _delegates_to_canonical(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _dotted_name(node: ast.expr) -> str | None:
+    """Flatten a ``Name``/``Attribute`` chain into ``"a.b.c"``.
+
+    Preconditions:
+        - ``node`` is any expression node.
+    Postconditions:
+        - Returns the dotted source spelling when the chain bottoms out in a
+          plain ``Name`` (so ``tp.helper`` -> ``"tp.helper"``).
+        - Returns ``None`` for any other base — a call, subscript or literal —
+          which callers treat as "not a resolvable reference".
+    """
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _canonical_bindings(tree: ast.Module, helper: str) -> tuple[set[str], set[str]]:
+    """Names this module binds to ``helper`` itself, and to the text_parsing module.
+
+    Preconditions:
+        - ``tree`` is a parsed module; ``helper`` is a public helper name.
+    Postconditions:
+        - Returns ``(direct, modules)``. ``direct`` holds every local name bound
+          to the canonical ``helper`` function, whether imported from
+          ``…shared.text_parsing`` or through the ``…blogging.shared`` package
+          re-export. ``modules`` holds every local name bound to the
+          ``text_parsing`` module itself, including dotted spellings left by a
+          plain ``import``. ``asname`` aliases are honoured throughout.
+        - Only the module's own import statements are consulted; nothing is
+          imported or executed.
+    """
+    direct: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            # Absolute ``agents.blogging.shared.text_parsing`` and the relative
+            # ``from .text_parsing import …`` used inside shared/__init__.py.
+            from_canonical = module.endswith("shared.text_parsing") or (
+                node.level > 0 and module == "text_parsing"
+            )
+            from_shared_pkg = module.endswith("blogging.shared") or (
+                node.level > 0 and module in ("", "shared")
+            )
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name == helper and (from_canonical or from_shared_pkg):
+                    direct.add(local)
+                if alias.name == "text_parsing" and from_shared_pkg:
+                    modules.add(local)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if not alias.name.endswith("shared.text_parsing"):
+                    continue
+                # ``import x.y.text_parsing`` binds the root but is spelled in
+                # full at the call site; ``as`` binds the alias.
+                modules.add(alias.asname or alias.name)
+    return direct, modules
+
+
+def _delegates_to_canonical(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, direct: set[str], modules: set[str]
+) -> bool:
     """True when the body is an optional docstring plus ``return <canonical>(...)``.
 
     Preconditions:
         - ``node`` is a function definition node from a successfully parsed
           module, whose name is one of ``_GUARDED_NAMES``.
+        - ``direct`` and ``modules`` are that module's ``_canonical_bindings``
+          for the helper this definition shadows.
     Postconditions:
         - Returns True only when the body, once a leading docstring (or any
           bare-constant expression statement) is discarded, is exactly one
-          ``Return`` whose value calls the shared helper this definition
-          shadows — ``helper(...)`` or ``module.helper(...)``, where ``helper``
-          is ``node.name`` with one leading underscore stripped.
+          ``Return`` whose value calls the canonical helper — either a bare
+          name bound to it (in ``direct``), or ``qualifier.helper`` where the
+          whole dotted ``qualifier`` is bound to the text_parsing module (in
+          ``modules``).
         - Returns False for every other shape: an empty body, a ``return`` of a
-          literal or bare name (``return []``, ``return exc``), and a ``return``
-          calling anything other than the canonical helper. Counting statements
-          alone is not enough — a one-line re-implementation is still a second
-          implementation, and would otherwise pass as a shim.
+          literal or bare name (``return []``, ``return exc``), a call to
+          anything else, and — because the qualifier is resolved rather than
+          discarded — a same-named call through an unrelated binding such as
+          ``self.helper(...)`` or ``unrelated.helper(...)``. Matching on the
+          final attribute alone would accept those, so the guard would pass a
+          shim that never reaches the shared implementation.
         - Does not evaluate or import the source it inspects.
     """
     body = [
@@ -432,16 +505,57 @@ def _delegates_to_canonical(node: ast.FunctionDef | ast.AsyncFunctionDef) -> boo
     ]
     if len(body) != 1 or not isinstance(body[0], ast.Return):
         return False
-    call = body[0].value
-    if not isinstance(call, ast.Call):
+    return _is_canonical_call(body[0].value, node.name.removeprefix("_"), direct, modules)
+
+
+def _is_canonical_call(
+    value: ast.expr | None, helper: str, direct: set[str], modules: set[str]
+) -> bool:
+    """True when ``value`` is a call that resolves to the canonical ``helper``.
+
+    Preconditions:
+        - ``helper`` is the public helper name the caller must delegate to.
+    Postconditions:
+        - True only for ``name(...)`` where ``name`` is in ``direct``, or
+          ``qualifier.helper(...)`` where ``qualifier`` is in ``modules``.
+        - False for a non-call, an unresolvable callee, or any other binding.
+    """
+    if not isinstance(value, ast.Call):
         return False
-    if isinstance(call.func, ast.Name):
-        called = call.func.id
-    elif isinstance(call.func, ast.Attribute):
-        called = call.func.attr
-    else:
+    dotted = _dotted_name(value.func)
+    if dotted is None:
         return False
-    return called == node.name.removeprefix("_")
+    if "." not in dotted:
+        return dotted in direct
+    qualifier, _, attr = dotted.rpartition(".")
+    return attr == helper and qualifier in modules
+
+
+def _rebinds_guarded_name(
+    value: ast.expr | None, helper: str, direct: set[str], modules: set[str]
+) -> bool:
+    """True when an assignment to a guarded name is an acceptable re-export or shim.
+
+    Preconditions:
+        - ``value`` is the right-hand side of an assignment whose target name is
+          in ``_GUARDED_NAMES``; ``helper`` is the canonical name it shadows.
+    Postconditions:
+        - True for a bare alias of a canonically-bound name
+          (``_unwrap_llm_cause = unwrap_llm_cause``) and for a ``lambda`` whose
+          body is a canonical call.
+        - False otherwise — notably for ``lambda …: []`` and any
+          ``functools.partial``-style binding, which are second implementations
+          wearing a guarded name.
+    """
+    dotted = _dotted_name(value) if value is not None else None
+    if dotted is not None:
+        if "." not in dotted:
+            return dotted in direct
+        qualifier, _, attr = dotted.rpartition(".")
+        return attr == helper and qualifier in modules
+    if isinstance(value, ast.Lambda):
+        return _is_canonical_call(value.body, helper, direct, modules)
+    return False
 
 
 def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> None:
@@ -457,9 +571,15 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
     That is what lets ``BlogWriterAgent._format_feedback_item_line`` —
     deliberately kept as a one-line shim so existing monkeypatch-based tests
     keep working — pass with no exemption, and what lets a future shim of the
-    same shape be added without editing this test. Requiring the *call*, not
-    merely a single statement, is what stops a one-line re-implementation
-    (``return []``) from being waved through as a delegation.
+    same shape be added without editing this test.
+
+    Two refinements keep "shape" from being trivially satisfiable. Requiring a
+    *call* stops a one-line re-implementation (``return []``) passing as a
+    delegation. Resolving that call's qualifier against the module's own
+    imports — rather than comparing only the final attribute name — stops
+    ``self.helper(...)`` or ``unrelated.helper(...)`` passing as one. Bindings
+    made by assignment (``_helper = lambda …``) are checked too, so a guarded
+    name cannot dodge the scan by not being a ``def``.
 
     ``shared/json_retry.py``'s ``_unwrap_event_loop_exception`` is not matched
     (different name) and is out of scope: it returns ``None`` where
@@ -474,13 +594,24 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - unparseable source is CI lint's job
             continue
+        rel = path.relative_to(_BLOGGING_ROOT)
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if node.name in _GUARDED_NAMES and not _delegates_to_canonical(node):
-                offenders.append(
-                    f"{path.relative_to(_BLOGGING_ROOT)}:{node.lineno} defines {node.name}"
-                )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name not in _GUARDED_NAMES:
+                    continue
+                helper = node.name.removeprefix("_")
+                direct, modules = _canonical_bindings(tree, helper)
+                if not _delegates_to_canonical(node, direct, modules):
+                    offenders.append(f"{rel}:{node.lineno} defines {node.name}")
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if not isinstance(target, ast.Name) or target.id not in _GUARDED_NAMES:
+                        continue
+                    helper = target.id.removeprefix("_")
+                    direct, modules = _canonical_bindings(tree, helper)
+                    if not _rebinds_guarded_name(node.value, helper, direct, modules):
+                        offenders.append(f"{rel}:{node.lineno} binds {target.id}")
 
     assert not offenders, (
         "These definitions re-implement a helper that shared/text_parsing.py owns:\n  "
@@ -489,5 +620,7 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
         "in one copy and not the others. Import the helper from "
         "agents.blogging.shared.text_parsing instead, or — if a named attribute is needed "
         "as a test patch point — reduce the definition to a body that does nothing but "
-        "`return` a call to that helper, which this guard allows anywhere."
+        "`return` a call to that imported helper. The call must resolve to the shared "
+        "module through this module's own imports: a matching final attribute name on an "
+        "unrelated object (`self.helper(...)`) does not count."
     )
