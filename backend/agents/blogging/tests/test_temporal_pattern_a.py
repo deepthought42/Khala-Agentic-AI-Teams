@@ -493,6 +493,7 @@ def test_planning_dto_round_trips_real_model() -> None:
     dto = PlanningStageResult(
         planning_phase_result=ppr.model_dump(mode="json"),
         elicited_stories_text="a story",
+        selected_title="My Chosen Title",
         status="PASS",
     ).model_dump()
 
@@ -502,6 +503,22 @@ def test_planning_dto_round_trips_real_model() -> None:
     assert ppr2.content_plan.title_candidates[0].title == "My Title"
     assert ppr2.planning_iterations_used == 1
     assert rehydrated.elicited_stories_text == "a story"
+    assert rehydrated.selected_title == "My Chosen Title"
+
+
+def test_planning_dto_selected_title_defaults_to_none() -> None:
+    """selected_title is optional at both ends of the boundary.
+
+    A FAIL DTO needs no extra fields, and a payload written before the field
+    existed (no key at all) still validates — so a workflow already in flight at
+    deploy time replays without a schema error.
+    """
+    from agents.blogging.temporal.phase_models import PlanningStageResult
+
+    assert PlanningStageResult(status="FAIL").model_dump()["selected_title"] is None
+
+    legacy = {"planning_phase_result": {}, "elicited_stories_text": None, "status": "PASS"}
+    assert PlanningStageResult.model_validate(legacy).selected_title is None
 
 
 def test_draft_and_gates_dto_round_trip_real_model() -> None:
