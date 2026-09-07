@@ -58,12 +58,14 @@ lines.
 **D1 — A separate fetch seam on `DesignMixin`, not `_fetch_market_data`.**
 Add `_fetch_design_probe_bars(spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`
 to `orchestrator_design.py`. It reuses `resolve_strategy_symbols` +
-`fetch_multi_symbol_range` but returns bare bars, not the `_MarketDataFetch`
-audit envelope — design records no requested-vs-fetched audit trail or
-`provider_used` snapshot, so the envelope is dead weight there. The separate seam
-is justified on its own merits *and* it leaves the two "synthesis was not
-entered" tests meaning exactly what they say. Their comments get one clarifying
-line so a future reader does not mistake the design probe for a loophole.
+`fetch_multi_symbol_range` but returns bare bars rather than the
+`_MarketDataFetch` envelope: design persists no audit row, so the
+requested/fetched/`provider_used` *record fields* have no consumer here. It does
+still compute requested-vs-fetched coverage internally — see D9, that part is
+load-bearing, not bookkeeping. The separate seam is justified on its own merits
+*and* it leaves the two "synthesis was not entered" tests meaning exactly what
+they say. Their comments get one clarifying line so a future reader does not
+mistake the design probe for a loophole.
 
 It belongs on the mixin, not the base class. `MIXIN_BOUNDARIES.md` reserves
 `orchestrator.py` for "helpers genuinely used by two or more mixins" and assigns
@@ -174,6 +176,35 @@ not actually hold. Demoting the severity is a smaller, testable change that
 keeps the step honest. The follow-up adjudication step still owns pinning the
 no-hard-block behaviour with its own test; this step's job is not to break it.
 
+**D9 — A partial fetch must suppress the probe, not be probed.**
+`MarketDataCache.get_or_fetch_multi` does not raise when one symbol of many
+fails: `store.py`'s per-symbol worker logs a warning and returns `None`, and
+`parallel_map(..., skip_none=True)` drops it. The result is a **nonempty partial
+mapping**, so neither fail-open guard in D4 fires — they catch exceptions, and
+there is no exception.
+
+That is not merely a coverage gap, it manufactures false positives in the one
+finding whose entire value is precision. Starvation is a *relative* verdict: a
+rule is starved when none of its fires lands on a bar no earlier rule covers.
+Drop a symbol and a rule that fires independently only on that symbol looks
+starved on the survivors — so the reviewer would be handed a defect report for a
+design that is correct, and asked to revise it. The synthesis path never has this
+problem because it runs `TargetSymbolCoverageGate.check_fetch` and breaks on a
+critical before its own reachability probe.
+
+The seam therefore mirrors that gate's critical condition rather than inventing
+one: when `spec.target_symbols` is non-empty and any of those targets (stripped,
+upper-cased, as the gate compares them) is absent from the symbols that came back
+with bars, return `None` — no bars, no probe, no finding, cache untouched, and
+the next round retries. An empty `target_symbols` is deliberately *not* a
+shortfall: that spec is running the asset-class default universe, where a partial
+fetch is normal and the verdict across what did arrive still means what it says
+— which is exactly the distinction `check_fetch` draws.
+
+Suppressing rather than reporting is the right call for this consumer: a design
+round that cannot judge starvation soundly should say nothing, and the synthesis
+gate still reports the coverage shortfall on the timeline where it belongs.
+
 ---
 
 ## Global constraints
@@ -218,6 +249,10 @@ no-hard-block behaviour with its own test; this step's job is not to break it.
   - memo on `(tuple(symbols), spec.asset_class, config.start_date, config.end_date, as_of)`
     in a lazily-created `self._design_probe_bars_cache`, mirroring
     `_benchmark_bars_cache` (an exception is **not** cached);
+  - after the fetch, apply D9's coverage check: if `spec.target_symbols` is
+    non-empty and any target (stripped/upper-cased) is missing from the symbols
+    that returned bars, return `None`. A partial fetch is silent — no exception
+    reaches the guard below — and probing one would fabricate starvation;
   - wrap the fetch in `try` / `except Exception` → `logger.debug(...)` → `None`.
     A design-time diagnostic must never crash or stall a cycle.
   - Docstring states the invariant explicitly: *this is not the synthesis fetch
@@ -260,7 +295,12 @@ no-hard-block behaviour with its own test; this step's job is not to break it.
       Mutable holder so the memo survives rounds without widening
       `_review_and_handle_critique`'s return tuple (its 3-tuple shape has direct-call tests).
 - [ ] **Step 2.4** — `_design_starvation_findings(self, *, spec, config, cache) -> List[QualityGateResult]`:
-      flag off / `config is None` / `cache is None` ⇒ `[]`; signature unchanged ⇒
+      flag off / `config is None` / `cache is None` ⇒ `[]`; **fewer than two
+      entry rules ⇒ `[]` before any fetch** (`probe_starvation` returns `[]` for
+      `len(entry_rules) < 2`, so fetching the universe first to reach a
+      guaranteed-empty verdict is pure waste on a common, valid spec shape —
+      and the flag defaults on, so every review round of every single-rule spec
+      would pay it); signature unchanged ⇒
       `cache.findings`; otherwise fetch bars, `probe_starvation`, filter to
       `verdict == "starved"` (D2), render with
       `to_starvation_gate_results(..., phase="design")`, **demote any `critical`
@@ -364,6 +404,15 @@ no-hard-block behaviour with its own test; this step's job is not to break it.
       this, only the helper's can. *Inner:* `market_data_service.fetch_multi_symbol_range`
       raising through the real seam ⇒ `None` ⇒ `[]`. *Probe:* `probe_starvation`
       raising ⇒ `[]`. All three leave the reviewer's findings exactly as today.
+- [ ] **Step 5.7** — *No fetch when starvation is impossible* (Step 2.4). A
+      readiness-clean single-entry-rule spec must not invoke the seam at all:
+      patch `_fetch_design_probe_bars` with a `_must_not_run` raiser, like the
+      existing `_market_must_not_run` pattern, and assert the cycle completes.
+- [ ] **Step 5.8** — *Partial fetch suppresses the probe* (D9). Bars returned for
+      a strict subset of a spec's explicit `target_symbols` ⇒ `[]`, and
+      `probe_starvation` is never called. Plus the negative: the same partial
+      shape with `target_symbols` empty (asset-class default universe) still
+      probes, since that is not a shortfall.
 
 ### Task 6: Docs
 
@@ -406,6 +455,8 @@ suddenly slows down is the signal it did not take.
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
+| A silently partial fetch fabricates a starvation finding | Coverage check mirroring `TargetSymbolCoverageGate.check_fetch` suppresses the probe (D9), pinned by Step 5.8 |
+| Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
 
