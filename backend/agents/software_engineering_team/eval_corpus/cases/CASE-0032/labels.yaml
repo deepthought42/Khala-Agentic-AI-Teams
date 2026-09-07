@@ -3,11 +3,10 @@
   defect_class: resource-leak
   severity: medium
   polarity: must_find
-  file_path: user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts
-  line: 191
-  line_end: 191
+  file_path: user-interface/src/app/components/flowchart-panel/flowchart-panel.component.ts
+  line: 12
+  line_end: 14
   description: >
-    The listener closes over `this` and no reference to it is retained, so it
-    can never be removed. Nodes still in the document therefore keep the
-    component reachable after it is destroyed, and the `data-bound` marker
-    survives on any node that outlives a rebuild.
+    The handler is registered on `window`, which outlives every component, and
+    closes over `this`. Nothing removes it, so each instantiation leaves
+    another listener holding a destroyed component alive.

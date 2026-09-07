@@ -8,4 +8,4 @@
   line_end: 14
   description: >
     `datetime` is used to stamp the report but is never imported, so the
-    module raises NameError on the first call.
+    module raises NameError on the first call to `build`.

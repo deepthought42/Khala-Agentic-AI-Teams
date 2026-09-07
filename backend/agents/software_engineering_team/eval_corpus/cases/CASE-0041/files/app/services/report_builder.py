@@ -11,7 +11,7 @@ def build(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Assemble one report document."""
     assert rows is not None, "rows is required"
     return {
-        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "generated_at": datetime.utcnow().isoformat(),
         "row_count": len(rows),
         "rows": rows,
     }

@@ -62,9 +62,9 @@ are not synchronized with a moving `main`.
 |---|---|
 | Case directories | 40 |
 | `must_find` labels | 45 |
-| Cases from real history | 26 (65%) |
-| Invented cases | 14 (35%) |
-| Labels from real history | 31 of 45 (69%) |
+| Cases from real history | 25 (63%) |
+| Invented cases | 15 (38%) |
+| Labels from real history | 30 of 45 (67%) |
 | Backend-primary cases | 32 (80%) |
 | Frontend-primary cases | 8 (20%) |
 
@@ -113,7 +113,7 @@ written to prevent.
 
 ### Substitutions from the selection plan
 
-Three of the plan's cited commits did not survive contact with their actual
+Four of the plan's cited commits did not survive contact with their actual
 diffs. Every substitution is recorded here rather than forced.
 
 - **`standards` (frontend), `CASE-0012`.** The plan cites `1308c1d` for a
@@ -129,6 +129,14 @@ diffs. Every substitution is recorded here rather than forced.
   injection fix exists in the history to source from, so `CASE-0020` is
   authored as an invented case with a request-reachable injection and marked
   `sourcing: invented`.
+- **`resource-leak` (frontend), `CASE-0032`.** The plan cites `caed749` for
+  flowchart click listeners that are never removed. Whether that is a leak is
+  arguable: the listeners bind to nodes inside the component's own view, which
+  the framework tears down with the component, so the node/closure cycle is
+  collectable with or without `removeEventListener`. Ground truth cannot rest on
+  a contested reading, so `CASE-0032` is authored as an invented case whose
+  listener is held by `window` — an object that genuinely outlives every
+  component — and marked `sourcing: invented`.
 - **`architecture`, `CASE-0015`.** The plan cites `ae3ccf70` for a
   team-agnostic platform test importing a domain team package. That pull
   request introduced *and* fixed the violation within itself, so the violating
@@ -172,7 +180,7 @@ token, key, or other private value.
 | CASE-0029 | Cancellation check and status write are not atomic | `race-condition` | qa | real | cb8aded | backend |
 | CASE-0030 | Lock released between session enumeration and write-back | `race-condition` | qa | real | f5eb3e9 | backend |
 | CASE-0031 | Read-then-delete is not atomic, so pop can return stale data | `race-condition` | qa | real | 56c2fcd | backend |
-| CASE-0032 | Flowchart click listeners are added without ever being removed | `resource-leak` | qa | real | caed749 | frontend |
+| CASE-0032 | Window listener registered on init and never removed | `resource-leak` | qa | invented | — | frontend |
 | CASE-0033 | Component subscribes throughout with no teardown on destroy | `resource-leak` | qa | real | 9ac88a3 | frontend |
 | CASE-0034 | OHLC values coerced with float() without a null guard | `null-deref` | qa | real | c0e71da | backend |
 | CASE-0035 | Explicit null field stringified into the literal "None" | `null-deref` | qa | real | fd3b9a0 | backend |
@@ -191,7 +199,7 @@ token, key, or other private value.
 These are inherited from `CORPUS_SELECTION_PLAN.md` §7 and hold for the cases
 here:
 
-- Fifteen classes carry a single `must_find` label, so one miss swings that
+- Twenty-three of the 31 classes carry a single `must_find` label, so one miss swings that
   class's measured recall from 100% to 0%. The corpus confirms a gate catches
   *an* instance, not that it generalizes.
 - The matching rule skips the defect-class check for `qa` labels entirely,
@@ -205,6 +213,6 @@ here:
   These cases use true repository paths, so recall for those two gates will
   read pessimistically. That is a real property of the gates' output shape,
   not an artifact to be tuned away by shortening paths.
-- Thirteen cases are invented rather than drawn from history — a structurally
+- Fifteen cases are invented rather than drawn from history — a structurally
   weaker grade of evidence. Each states in its `origin.note` why no real
   example was available.

@@ -1,9 +1,15 @@
 case_id: CASE-0032
-title: Flowchart click listeners are added without ever being removed
+title: Window listener registered on init and never removed
 language: typescript
 stack: angular
 gates: [qa]
 mode: diff
 origin:
-  sourcing: real
-  commit: caed749
+  sourcing: invented
+  note: >
+    The cited commit (caed749) tracks and removes flowchart click listeners,
+    but its leak is arguable: the listeners are bound to nodes inside the
+    component's own view, which the framework tears down with the component,
+    so the node/closure cycle is collectable either way. Ground truth has to
+    be uncontestable, so this case uses a listener held by an object that
+    genuinely outlives the component.

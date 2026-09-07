@@ -8,6 +8,5 @@
   line_end: 18
   description: >
     The endpoint mutates account state, is authenticated purely by the session
-    cookie, and accepts a form-encoded body with no origin check and no anti-
-    forgery token, so any third-party page can drive it on a logged-in user's
-    behalf.
+    cookie, and accepts a form-encoded body with no origin check and no CSRF
+    token, so any third-party page can drive it on a logged-in user's behalf.

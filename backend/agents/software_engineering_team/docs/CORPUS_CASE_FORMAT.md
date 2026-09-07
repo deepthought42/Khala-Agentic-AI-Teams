@@ -128,8 +128,11 @@ actually shipped from a plausible construction, without leaving the case file:
   defect, and its labels' line numbers are positions in the post-diff file
   (the state of the file at the fix commit's parent). A real case stays pinned
   to its origin commit; it is not resynchronized as the repository moves on.
-- **`note`** is required when `sourcing: invented` and states why no real
-  example was available — a search that came back empty, or a structural
+- **`note`** is *required* when `sourcing: invented` and *permitted* when
+  `sourcing: real` — a real case may use it to record that its fixture was drawn
+  from a different commit than the selection plan originally cited, or any other
+  provenance nuance worth keeping beside the case. When required, it states why
+  no real example was available — a search that came back empty, or a structural
   reason the class cannot survive in merged history. "No example was found"
   alone is not a reason.
 
