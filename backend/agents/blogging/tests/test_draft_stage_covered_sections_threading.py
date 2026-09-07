@@ -2,13 +2,15 @@
 
 The planning stage records which plan sections already received an author story, but
 the writer only stops emitting a redundant ``[Author: ...]`` placeholder for them if
-the draft stage reads that set off the context and hands it on. These tests pin both
-hand-off points (the initial-draft ``WriterInput`` and the ``draft_input_kwargs`` given
-to ``_fill_story_placeholders``), the ``set`` -> sorted-list normalization, and that the
-``None`` the field still carries in Temporal mode is a safe no-op rather than a crash.
+the draft stage reads that set off the context and hands it to every writer call.
+There are five such call sites, and coverage has to reach all of them: a later
+revision that dropped it would lose the suppression block and could reintroduce a
+placeholder for a section whose story is sitting in the same prompt. These tests pin
+each site — the two that run without a job store and the three that need the HITL
+flow — plus the ``set`` -> sorted-list normalization and the ``None``/empty no-ops.
 
 Harness mirrors ``test_draft_stage_selected_title_threading.py``, which pins the same
-two call sites for ``selected_title``.
+sites for ``selected_title``.
 """
 
 from __future__ import annotations
@@ -22,17 +24,24 @@ COVERED_SECTIONS = {"Why it broke", "Intro"}
 # the writer's prompt has to be.
 EXPECTED_ORDER = ["Intro", "Why it broke"]
 
+# draft_editor_iterations needed to reach the copy-edit escalation branch: the stage's
+# loop sets copy_edit_num = iteration - 1 and escalates when copy_edit_num hits
+# COPY_EDIT_ESCALATION_THRESHOLD (10), i.e. iteration 11.
+_ESCALATION_ITERATIONS = 11
 
-def _capturing_stub_writer_class(captured_inputs: list) -> type:
+
+def _capturing_stub_writer_class(captured_inputs: list, *, uncertainty_questions: list) -> type:
     """A BlogWriterAgent stand-in recording every writer input it is handed.
 
     Preconditions:
         - ``captured_inputs`` is a list the caller owns and reads after the run.
+        - ``uncertainty_questions`` is what ``identify_uncertainty_questions`` should
+          return (empty to skip the uncertainty-answer revision path).
     Postconditions:
         - Returns a class (not an instance) suitable for monkeypatching a module's
-          ``BlogWriterAgent`` reference. Each ``run``/``revise_from_user_feedback``
-          call appends a ``(kind, input)`` pair, where ``input`` exposes
-          ``covered_sections``.
+          ``BlogWriterAgent`` reference. Every ``run``/``revise_from_user_feedback``
+          call appends a ``(kind, input)`` pair to ``captured_inputs``, where
+          ``input`` always exposes ``covered_sections``.
     """
     from agents.blogging.blog_writer_agent.models import WriterOutput
 
@@ -48,16 +57,15 @@ def _capturing_stub_writer_class(captured_inputs: list) -> type:
             return WriterOutput(draft="# Revised\n\nBody.")
 
         def revise_from_user_feedback(self, *a, covered_sections=None, **kw):
+            # Recorded as a namespace so callers can assert on ``.covered_sections``
+            # uniformly across both call shapes.
             captured_inputs.append(
-                (
-                    "revise_from_user_feedback",
-                    SimpleNamespace(covered_sections=covered_sections),
-                )
+                ("revise_from_user_feedback", SimpleNamespace(covered_sections=covered_sections))
             )
             return WriterOutput(draft="# Revised\n\nBody.")
 
         def identify_uncertainty_questions(self, *a, **kw):
-            return []
+            return list(uncertainty_questions)
 
         def analyze_user_feedback_for_guideline_updates(self, *a, **kw):
             return []
@@ -66,6 +74,39 @@ def _capturing_stub_writer_class(captured_inputs: list) -> type:
             return "escalation summary"
 
     return _CapturingStubWriter
+
+
+def _never_approving_editor_class() -> type:
+    """A BlogCopyEditorAgent stub that never approves and never repeats itself.
+
+    ``FeedbackTracker`` keys an issue by ``(category, severity, location)`` and calls the
+    loop stalled once consecutive rounds overlap by >0.80 Jaccard. Varying ``location``
+    each round keeps every signature distinct, so the loop reaches the escalation branch
+    instead of breaking early on the stall check.
+    """
+    from agents.blogging.blog_copy_editor_agent.models import CopyEditorOutput, FeedbackItem
+
+    class _StubEditor:
+        def __init__(self, *a, **kw):
+            self._calls = 0
+
+        def run(self, *a, **kw):
+            self._calls += 1
+            return CopyEditorOutput(
+                approved=False,
+                summary=f"revise round {self._calls}",
+                feedback_items=[
+                    FeedbackItem(
+                        category="style",
+                        severity="must_fix",
+                        location=f"paragraph {self._calls}",
+                        issue=f"Distinct issue {self._calls}.",
+                        suggestion=f"Fix issue {self._calls}.",
+                    )
+                ],
+            )
+
+    return _StubEditor
 
 
 def _spy_fill_story_placeholders(captured_kwargs: list):
@@ -83,25 +124,42 @@ def _spy_fill_story_placeholders(captured_kwargs: list):
     return _fill
 
 
-def _install_fake_job_store(monkeypatch):
-    """Monkeypatch the job-store surface so the HITL paths run without a real store."""
+def _install_fake_job_store(monkeypatch, *, draft_feedback_script: list, submitted_answers: list):
+    """Monkeypatch the job-store surface so the HITL paths run without a real store.
+
+    ``_wait_for_hitl`` is replaced wholesale (False = "user responded, not cancelled") so
+    no test blocks on polling. ``draft_feedback_script`` is consumed one entry per
+    ``get_user_draft_feedback`` call, falling back to an approval once exhausted so no
+    review loop spins forever.
+    """
     from agents.blogging.agent_implementations.pipeline import draft_stage as ds
     from agents.blogging.shared import blog_job_store
 
     monkeypatch.setattr(ds, "_wait_for_hitl", lambda *_a, **_kw: False)
     monkeypatch.setattr(ds, "add_blog_pending_questions", lambda *_a, **_kw: None)
     monkeypatch.setattr(ds, "record_guideline_updates", lambda *_a, **_kw: None)
+
     monkeypatch.setattr(blog_job_store, "request_draft_feedback", lambda *_a, **_kw: None)
     monkeypatch.setattr(blog_job_store, "is_waiting_for_draft_feedback", lambda *_a, **_kw: False)
     monkeypatch.setattr(
-        blog_job_store, "get_blog_job", lambda *_a, **_kw: {"submitted_answers": []}
+        blog_job_store, "get_blog_job", lambda *_a, **_kw: {"submitted_answers": submitted_answers}
     )
+    feedback = iter(draft_feedback_script)
     monkeypatch.setattr(
-        blog_job_store, "get_user_draft_feedback", lambda *_a, **_kw: {"approved": True}
+        blog_job_store,
+        "get_user_draft_feedback",
+        lambda *_a, **_kw: next(feedback, {"approved": True}),
     )
 
 
-def _run_stage(monkeypatch, *, covered_sections, job_store: bool = False) -> list:
+def _run_stage(
+    monkeypatch,
+    *,
+    covered_sections,
+    editor_class=None,
+    job_store: bool = False,
+    draft_editor_iterations: int = 2,
+) -> list:
     """Drive ``run_draft_stage`` and return the ``(kind, input)`` pairs it produced."""
     import agents.blogging.agent_implementations.blog_writing_process_v2 as v2
     from agents.blogging.agent_implementations.pipeline.context import PipelineContext
@@ -112,9 +170,18 @@ def _run_stage(monkeypatch, *, covered_sections, job_store: bool = False) -> lis
     from ._content_plan_test_utils import make_minimal_planning_phase_result
 
     captured: list = []
+    questions = (
+        [SimpleNamespace(question_id="q1", question="Which framing?", context="ctx")]
+        if job_store
+        else []
+    )
     monkeypatch.setattr(v2, "load_style_file", lambda *a, **kw: "guidelines text")
-    monkeypatch.setattr(v2, "BlogWriterAgent", _capturing_stub_writer_class(captured))
-    monkeypatch.setattr(v2, "BlogCopyEditorAgent", make_stub_editor_class())
+    monkeypatch.setattr(
+        v2,
+        "BlogWriterAgent",
+        _capturing_stub_writer_class(captured, uncertainty_questions=questions),
+    )
+    monkeypatch.setattr(v2, "BlogCopyEditorAgent", editor_class or make_stub_editor_class())
 
     ppr = make_minimal_planning_phase_result()
     ctx = PipelineContext(
@@ -123,9 +190,11 @@ def _run_stage(monkeypatch, *, covered_sections, job_store: bool = False) -> lis
         llm_client=object(),
         length_policy=resolve_length_policy(),
         series_context=None,
+        # Without a job store the HITL steps are skipped and the draft goes straight
+        # to the automated copy-edit loop.
         job_id="job-1" if job_store else None,
         job_updater=(lambda **_kw: None) if job_store else None,
-        draft_editor_iterations=2,
+        draft_editor_iterations=draft_editor_iterations,
         max_rewrite_iterations=1,
         run_gates=False,
         planning_phase_result=ppr,
@@ -154,13 +223,82 @@ def test_draft_stage_threads_covered_sections_into_story_fill_kwargs(monkeypatch
     from agents.blogging.agent_implementations.pipeline import draft_stage as ds
 
     monkeypatch.setattr(ds, "_fill_story_placeholders", _spy_fill_story_placeholders(fill_kwargs))
-    _install_fake_job_store(monkeypatch)
+    _install_fake_job_store(monkeypatch, draft_feedback_script=[], submitted_answers=[])
 
     _run_stage(monkeypatch, covered_sections=COVERED_SECTIONS, job_store=True)
 
     assert fill_kwargs, "story-placeholder refill was never called"
     for kwargs in fill_kwargs:
         assert kwargs["covered_sections"] == EXPECTED_ORDER
+
+
+def test_draft_stage_threads_covered_sections_through_hitl_revisions(monkeypatch) -> None:
+    """The uncertainty-answer and author-feedback revisions receive coverage too.
+
+    Both pass ``elicited_stories``; without the matching ``covered_sections`` the writer
+    would drop the suppression block and could re-add an ``[Author: ...]`` placeholder
+    for a section whose story is in that very prompt.
+    """
+    fill_kwargs: list = []
+    from agents.blogging.agent_implementations.pipeline import draft_stage as ds
+
+    monkeypatch.setattr(ds, "_fill_story_placeholders", _spy_fill_story_placeholders(fill_kwargs))
+    _install_fake_job_store(
+        monkeypatch,
+        # First review round asks for changes (driving the author-feedback revision),
+        # the second approves so the loop terminates.
+        draft_feedback_script=[
+            {"approved": False, "feedback": "Tighten the intro."},
+            {"approved": True},
+        ],
+        submitted_answers=[{"question_id": "q1", "selected_answer": "The second framing."}],
+    )
+
+    captured = _run_stage(monkeypatch, covered_sections=COVERED_SECTIONS, job_store=True)
+
+    revisions = [inp for kind, inp in captured if kind == "revise_from_user_feedback"]
+    assert len(revisions) >= 2, f"expected both HITL revisions, got {len(revisions)}"
+    for kind, writer_input in captured:
+        assert writer_input.covered_sections == EXPECTED_ORDER, (
+            f"{kind} call did not receive covered_sections"
+        )
+
+
+def test_draft_stage_threads_covered_sections_into_escalation_revision(monkeypatch) -> None:
+    """The copy-edit escalation revision also receives coverage.
+
+    Reaching it needs a job store plus an editor that never approves, so the loop runs
+    to the escalation threshold.
+    """
+    fill_kwargs: list = []
+    from agents.blogging.agent_implementations.pipeline import draft_stage as ds
+
+    monkeypatch.setattr(ds, "_fill_story_placeholders", _spy_fill_story_placeholders(fill_kwargs))
+    _install_fake_job_store(
+        monkeypatch,
+        # Approve at draft review so the run reaches the copy-edit loop, then return
+        # feedback at the escalation prompt to drive its revision.
+        draft_feedback_script=[
+            {"approved": True},
+            {"approved": False, "feedback": "Still needs a rewrite."},
+        ],
+        submitted_answers=[],
+    )
+
+    captured = _run_stage(
+        monkeypatch,
+        covered_sections=COVERED_SECTIONS,
+        editor_class=_never_approving_editor_class(),
+        job_store=True,
+        draft_editor_iterations=_ESCALATION_ITERATIONS,
+    )
+
+    revisions = [inp for kind, inp in captured if kind == "revise_from_user_feedback"]
+    assert revisions, "escalation revision never fired"
+    for kind, writer_input in captured:
+        assert writer_input.covered_sections == EXPECTED_ORDER, (
+            f"{kind} call did not receive covered_sections"
+        )
 
 
 def test_draft_stage_treats_none_covered_sections_as_a_no_op(monkeypatch) -> None:

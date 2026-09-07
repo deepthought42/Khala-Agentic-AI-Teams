@@ -59,13 +59,15 @@ def run_draft_stage(
           is free to choose its own title.
         - ``ctx.covered_sections`` is the set of plan section titles that already
           received an author story during planning, or ``None``. This stage sorts it
-          into the list the writer takes and threads it into the initial-draft
-          ``WriterInput`` and the ``draft_input_kwargs`` handed to
-          ``_fill_story_placeholders``, so the draft omits an ``[Author: ...]``
-          placeholder for a section already covered instead of re-interviewing the
-          author for a story they gave during planning. Empty or ``None`` is the
-          documented no-op: the writer's prompts are then exactly what they were
-          before the field existed. It is ``None`` in Temporal mode today —
+          into the list the writer takes and threads it into every writer call that
+          also receives ``elicited_stories``: the initial-draft ``WriterInput``, the
+          ``draft_input_kwargs`` handed to ``_fill_story_placeholders``, and all three
+          ``revise_from_user_feedback`` rounds (uncertainty answers, author feedback,
+          copy-edit escalation). Coverage has to reach every one of them — a later
+          round that omitted it would drop the suppression block and could reintroduce
+          an ``[Author: ...]`` placeholder for a section whose story is sitting in the
+          same prompt. Empty or ``None`` is the documented no-op: the writer's prompts
+          are then exactly what they were before the field existed. It is ``None`` in Temporal mode today —
           ``PlanningStageResult`` does not carry it and neither
           ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so
           suppression is thread-mode-only until that plumbing lands.
@@ -344,6 +346,7 @@ def run_draft_stage(
                                 tone_or_purpose=brief.tone_or_purpose,
                                 selected_title=selected_title,
                                 elicited_stories=elicited_stories_text or None,
+                                covered_sections=covered_sections,
                                 allowed_claims=allowed_claims,
                                 target_word_count=length_policy.target_word_count,
                                 length_guidance=build_draft_length_instruction(length_policy),
@@ -447,6 +450,7 @@ def run_draft_stage(
                         tone_or_purpose=brief.tone_or_purpose,
                         selected_title=selected_title,
                         elicited_stories=elicited_stories_text or None,
+                        covered_sections=covered_sections,
                         allowed_claims=allowed_claims,
                         target_word_count=length_policy.target_word_count,
                         length_guidance=build_draft_length_instruction(length_policy),
@@ -646,6 +650,7 @@ def run_draft_stage(
                             tone_or_purpose=brief.tone_or_purpose,
                             selected_title=selected_title,
                             elicited_stories=elicited_stories_text or None,
+                            covered_sections=covered_sections,
                             allowed_claims=allowed_claims,
                             target_word_count=length_policy.target_word_count,
                             length_guidance=build_draft_length_instruction(length_policy),
