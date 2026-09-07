@@ -55,15 +55,24 @@ lines.
 
 ## Design decisions
 
-**D1 — A separate fetch seam, not `_fetch_market_data`.**
-Add `_fetch_design_probe_bars(spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`.
-It reuses `resolve_strategy_symbols` + `fetch_multi_symbol_range` but returns bare
-bars, not the `_MarketDataFetch` audit envelope — design records no
-requested-vs-fetched audit trail or `provider_used` snapshot, so the envelope is
-dead weight there. The separate seam is justified on its own merits *and* it
-leaves the two "synthesis was not entered" tests meaning exactly what they say.
-Their comments get one clarifying line so a future reader does not mistake the
-design probe for a loophole.
+**D1 — A separate fetch seam on `DesignMixin`, not `_fetch_market_data`.**
+Add `_fetch_design_probe_bars(spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`
+to `orchestrator_design.py`. It reuses `resolve_strategy_symbols` +
+`fetch_multi_symbol_range` but returns bare bars, not the `_MarketDataFetch`
+audit envelope — design records no requested-vs-fetched audit trail or
+`provider_used` snapshot, so the envelope is dead weight there. The separate seam
+is justified on its own merits *and* it leaves the two "synthesis was not
+entered" tests meaning exactly what they say. Their comments get one clarifying
+line so a future reader does not mistake the design probe for a loophole.
+
+It belongs on the mixin, not the base class. `MIXIN_BOUNDARIES.md` reserves
+`orchestrator.py` for "helpers genuinely used by two or more mixins" and assigns
+the whole per-design-attempt orchestration to `DesignMixin`; this seam has
+exactly one consumer, `_design_starvation_findings`, in that mixin. Keeping it
+there also keeps all of Task 1 in one file and leaves the seam patchable through
+`StrategyLabOrchestrator` exactly as before — `monkeypatch.setattr` on the
+subclass shadows the mixin's attribute, which is all the conftest stub and the
+fail-open tests need.
 
 **D2 — Merge only `starved` verdicts, drop the abstention `info`s.**
 `to_starvation_gate_results` emits `info` findings for `abstained_bars` /
@@ -118,9 +127,52 @@ nothing should: that list feeds the readiness memoization and the gate-recording
 paths, and D3 keeps it clean.
 
 `_coerce_critique` derives `ready` from the reviewer's own `issues`, never from
-the deterministic findings, so a `critical` starvation finding cannot hard-block
-by construction today. Step 2 pins that property with a test; this step must not
-disturb it.
+the deterministic findings — but that alone does **not** make the merge
+behaviourally inert, and an earlier draft of this plan wrongly claimed it did.
+See D8.
+
+**D8 — Merge the finding at `warning` on the design path; never `critical`.**
+The reviewer's system prompt (`agents/design_review.py`, the response-contract
+block) states:
+
+> `ready=true` ONLY when no deterministic finding is critical AND you cannot
+> identify a substantive defect.
+
+So the prompt, not `_coerce_critique`, is what a `critical` deterministic finding
+acts through. `to_starvation_gate_results` emits `critical` for a starved rule on
+the compiled path — merge that verbatim and a compliant reviewer is instructed to
+return `ready=false` even for a deliberate narrow-then-broad priority ordering it
+would otherwise accept. The design loop would then revise or churn to the round
+cap on a spec that was never defective: precisely the hard-block churn this whole
+line of work exists to avoid.
+
+The merge therefore demotes a starved verdict to `warning` on the design path.
+This is not a workaround for the prompt rule, it is the correct severity for this
+consumer:
+
+- `critical` in this codebase means *the deterministic gate has already decided*.
+  On the synthesis gate timeline that is exactly right — a starved rule provably
+  contributes zero entries on that data, and nothing downstream is asked to
+  weigh it. Those synthesis-phase findings keep `critical` and are untouched.
+- The reason to show the reviewer at all is that a deliberate priority ordering
+  is legitimate and only a judge can tell the two apart. A finding presented for
+  adjudication must not also instruct the judge how to rule. `warning` puts it in
+  front of the reviewer with full evidence and leaves the verdict open — which
+  is what the finding's own wording already assumes when it offers the three
+  resolutions (fold, reorder, loosen).
+
+Nothing mechanical is tripped by a `warning` here: `_coerce_critique`'s
+`demote_min_severity` reads the reviewer's own returned `issues`, not the
+deterministic findings rendered into the prompt.
+
+The considered alternative was to ship this step with the flag defaulting to
+`false` and let the adjudication step flip it. Rejected: it would leave the
+delivery path dark in production, so the first round of real traffic through it
+would arrive with the adjudication change rather than before it, and the step's
+own acceptance criterion — the reviewer receives the finding each round — would
+not actually hold. Demoting the severity is a smaller, testable change that
+keeps the step honest. The follow-up adjudication step still owns pinning the
+no-hard-block behaviour with its own test; this step's job is not to break it.
 
 ---
 
@@ -141,8 +193,7 @@ disturb it.
 
 | File | Role |
 |---|---|
-| `strategy_lab/orchestrator.py` | **Add** `_fetch_design_probe_bars` next to `_fetch_market_data` |
-| `strategy_lab/orchestrator_design.py` | Reset the per-attempt bars memo in `_run_design_attempt`; **add** `_design_starvation_probe_enabled()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
+| `strategy_lab/orchestrator_design.py` | **Add** `_fetch_design_probe_bars` on `DesignMixin`; reset its per-attempt memo in `_run_design_attempt`; **add** `_design_starvation_probe_enabled()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
 | `investment_team/tests/conftest.py` | **Add** autouse fixture stubbing `_fetch_design_probe_bars` → `None` so the existing suite stays hermetic |
 | `investment_team/tests/test_strategy_lab_design_loop.py` | Reviewer-receives-the-finding test; no-starved-rules-unchanged test; flag-off test; clarify the two `_market_must_not_run` comments |
 | `investment_team/tests/test_strategy_lab_design_review_helpers.py` | Direct-call unit tests for the merge and the memo |
@@ -153,10 +204,12 @@ disturb it.
 
 ### Task 1: The design-time bars seam
 
-**File:** `backend/agents/investment_team/strategy_lab/orchestrator.py`
+**File:** `backend/agents/investment_team/strategy_lab/orchestrator_design.py`
+(both steps — the seam is `DesignMixin`'s, per D1)
 
 - [ ] **Step 1.1** — Add `_fetch_design_probe_bars(self, spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`
-      next to `_fetch_market_data`:
+      to `DesignMixin`, modelled on `orchestrator.py`'s `_fetch_market_data`
+      but keeping only what the probe needs:
   - resolve symbols via `self.market_data_service.resolve_strategy_symbols(spec)`;
     empty ⇒ `None`;
   - `as_of = (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None`
@@ -171,18 +224,11 @@ disturb it.
     path; `_fetch_market_data` remains synthesis-only and remains the marker
     tests use for "synthesis was entered".*
 
-**File:** `backend/agents/investment_team/strategy_lab/orchestrator_design.py`
-
 - [ ] **Step 1.2** — Reset `self._design_probe_bars_cache = {}` in
-      `_run_design_attempt`, beside the existing
+      `_run_design_attempt` (same file, `DesignMixin`), beside the existing
       `self._consecutive_spec_mutation_rounds = {}` and
-      `self._benchmark_bars_cache = {}` resets.
-      Note the file: `_run_design_attempt` is defined on `DesignMixin` in
-      `orchestrator_design.py` (the reset block sits around lines 1573-1583),
-      not in `orchestrator.py`, which only inherits it. The memo it clears is
-      the one Step 1.1 creates on `self`, so the attribute is shared across the
-      two files but the reset belongs here — put it in the wrong file and bars
-      leak across design attempts.
+      `self._benchmark_bars_cache = {}` resets around lines 1573-1583.
+      Without the reset, bars leak across design attempts.
 
 ### Task 2: Probe helpers in the design orchestrator
 
@@ -217,7 +263,10 @@ disturb it.
       flag off / `config is None` / `cache is None` ⇒ `[]`; signature unchanged ⇒
       `cache.findings`; otherwise fetch bars, `probe_starvation`, filter to
       `verdict == "starved"` (D2), render with
-      `to_starvation_gate_results(..., phase="design")`, store on the cache, return.
+      `to_starvation_gate_results(..., phase="design")`, **demote any `critical`
+      result to `warning`** (D8 — a `critical` deterministic finding instructs
+      the reviewer to return `ready=false`, which would hard-block a deliberate
+      priority ordering), store on the cache, return.
       `"design"` is a valid `StrategyLabPhase` literal — no models change needed.
 
       Two contract details this helper must get right, both of them easy to get
@@ -292,6 +341,9 @@ disturb it.
       `"structurally starved"` **and both** `entry[0]` and `entry[1]` — the
       acceptance criterion is that the presentation *names* the starving and
       starved rules, so assert on both ids, not just the phrase.
+      Assert the merged finding's severity is `warning`, never `critical` (D8),
+      on a compiled-path spec — the path where `to_starvation_gate_results`
+      would otherwise emit `critical`.
 - [ ] **Step 5.2** — *No starved rules ⇒ unchanged.* Two independently reachable
       rules with bars that trigger an abstention: assert the reviewer's findings
       are byte-identical to the no-probe run (this is the test that pins D2).
@@ -353,6 +405,7 @@ suddenly slows down is the signal it did not take.
 | Existing tests newly hit the network | Autouse conftest stub (Task 4) |
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
+| A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
 
