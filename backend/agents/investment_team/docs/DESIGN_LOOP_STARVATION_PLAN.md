@@ -131,8 +131,8 @@ disturb it.
 
 | File | Role |
 |---|---|
-| `strategy_lab/orchestrator.py` | **Add** `_fetch_design_probe_bars`; reset the per-attempt bars memo in `_run_design_attempt` alongside `_benchmark_bars_cache` |
-| `strategy_lab/orchestrator_design.py` | **Add** `_design_starvation_probe_enabled()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
+| `strategy_lab/orchestrator.py` | **Add** `_fetch_design_probe_bars` next to `_fetch_market_data` |
+| `strategy_lab/orchestrator_design.py` | Reset the per-attempt bars memo in `_run_design_attempt`; **add** `_design_starvation_probe_enabled()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
 | `investment_team/tests/conftest.py` | **Add** autouse fixture stubbing `_fetch_design_probe_bars` → `None` so the existing suite stays hermetic |
 | `investment_team/tests/test_strategy_lab_design_loop.py` | Reviewer-receives-the-finding test; no-starved-rules-unchanged test; flag-off test; clarify the two `_market_must_not_run` comments |
 | `investment_team/tests/test_strategy_lab_design_review_helpers.py` | Direct-call unit tests for the merge and the memo |
@@ -160,9 +160,19 @@ disturb it.
   - Docstring states the invariant explicitly: *this is not the synthesis fetch
     path; `_fetch_market_data` remains synthesis-only and remains the marker
     tests use for "synthesis was entered".*
-- [ ] **Step 1.2** — Reset `self._design_probe_bars_cache = {}` at the top of
-      `_run_design_attempt`, where `_benchmark_bars_cache` and
-      `_consecutive_spec_mutation_rounds` are already reset.
+
+**File:** `backend/agents/investment_team/strategy_lab/orchestrator_design.py`
+
+- [ ] **Step 1.2** — Reset `self._design_probe_bars_cache = {}` in
+      `_run_design_attempt`, beside the existing
+      `self._consecutive_spec_mutation_rounds = {}` and
+      `self._benchmark_bars_cache = {}` resets.
+      Note the file: `_run_design_attempt` is defined on `DesignMixin` in
+      `orchestrator_design.py` (the reset block sits around lines 1573-1583),
+      not in `orchestrator.py`, which only inherits it. The memo it clears is
+      the one Step 1.1 creates on `self`, so the attribute is shared across the
+      two files but the reset belongs here — put it in the wrong file and bars
+      leak across design attempts.
 
 ### Task 2: Probe helpers in the design orchestrator
 
