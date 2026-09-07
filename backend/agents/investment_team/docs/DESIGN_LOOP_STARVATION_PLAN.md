@@ -192,18 +192,35 @@ design that is correct, and asked to revise it. The synthesis path never has thi
 problem because it runs `TargetSymbolCoverageGate.check_fetch` and breaks on a
 critical before its own reachability probe.
 
-The seam therefore mirrors that gate's critical condition rather than inventing
-one: when `spec.target_symbols` is non-empty and any of those targets (stripped,
-upper-cased, as the gate compares them) is absent from the symbols that came back
-with bars, return `None` — no bars, no probe, no finding, cache untouched, and
-the next round retries. An empty `target_symbols` is deliberately *not* a
-shortfall: that spec is running the asset-class default universe, where a partial
-fetch is normal and the verdict across what did arrive still means what it says
-— which is exactly the distinction `check_fetch` draws.
+The rule is therefore simple and source-agnostic: compare the symbols that came
+back with bars against the **full resolved request** — whatever
+`resolve_strategy_symbols` returned — and on any shortfall return `None`: no
+bars, no probe, no finding, cache untouched, next round retries.
 
-Suppressing rather than reporting is the right call for this consumer: a design
-round that cannot judge starvation soundly should say nothing, and the synthesis
-gate still reports the coverage shortfall on the timeline where it belongs.
+An earlier draft of this decision suppressed only when an explicitly requested
+`target_symbols` entry was missing, on the grounds that
+`TargetSymbolCoverageGate.check_fetch` treats an implicit universe differently.
+That was the wrong lesson to draw from that gate. Its distinction is about
+**reporting severity** — how loudly to report that the realized universe missed
+the operator's stated intent — and intent is exactly what changes between an
+explicit list and a default one. Soundness is a different question, and the
+probe's answer to it does not care where a symbol came from:
+`resolve_strategy_symbols` returns a concrete list either way, `_build_views`
+sweeps whatever bars arrive, and a rule that fires independently only on the
+dropped symbol reads as starved on the survivors in both cases. Mirroring a
+severity rule to decide a soundness question is a category error, and it left the
+default-universe path — the more common one — exposed to the very false positive
+D9 exists to prevent.
+
+The availability cost is real and accepted: one flaky symbol in a ten-symbol
+default universe suppresses that round's probe entirely. That is the right trade
+for this finding. `FAITHFUL_EXECUTION.md` states plainly that precision is what
+makes it worth having — "a finding on a correct spec would train authors to
+ignore the finding entirely" — and D4's posture is already that a round which
+cannot judge soundly says nothing. The durable content-hashed cache also means a
+symbol that fetched once stays available, so a persistent shortfall is the
+exception. The synthesis gate still reports the coverage shortfall on the
+timeline that owns it.
 
 ---
 
@@ -249,10 +266,11 @@ gate still reports the coverage shortfall on the timeline where it belongs.
   - memo on `(tuple(symbols), spec.asset_class, config.start_date, config.end_date, as_of)`
     in a lazily-created `self._design_probe_bars_cache`, mirroring
     `_benchmark_bars_cache` (an exception is **not** cached);
-  - after the fetch, apply D9's coverage check: if `spec.target_symbols` is
-    non-empty and any target (stripped/upper-cased) is missing from the symbols
-    that returned bars, return `None`. A partial fetch is silent — no exception
-    reaches the guard below — and probing one would fabricate starvation;
+  - after the fetch, apply D9's coverage check: if any symbol of the resolved
+    request is missing from those that returned bars, return `None` — explicit
+    `target_symbols` and the asset-class default universe alike. A partial fetch
+    is silent (no exception reaches the guard below) and probing one would
+    fabricate starvation;
   - wrap the fetch in `try` / `except Exception` → `logger.debug(...)` → `None`.
     A design-time diagnostic must never crash or stall a cycle.
   - Docstring states the invariant explicitly: *this is not the synthesis fetch
@@ -409,10 +427,13 @@ gate still reports the coverage shortfall on the timeline where it belongs.
       patch `_fetch_design_probe_bars` with a `_must_not_run` raiser, like the
       existing `_market_must_not_run` pattern, and assert the cycle completes.
 - [ ] **Step 5.8** — *Partial fetch suppresses the probe* (D9). Bars returned for
-      a strict subset of a spec's explicit `target_symbols` ⇒ `[]`, and
-      `probe_starvation` is never called. Plus the negative: the same partial
-      shape with `target_symbols` empty (asset-class default universe) still
-      probes, since that is not a shortfall.
+      a strict subset of the resolved request ⇒ `[]`, and `probe_starvation` is
+      never called. Run it **twice** — once with explicit `target_symbols`, once
+      with `target_symbols` empty so the request is the asset-class default
+      universe — because the whole point of D9's correction is that the two paths
+      behave identically. A test that pinned only the explicit case would pin the
+      bug. Plus the positive control: a complete fetch of the same universe does
+      probe.
 
 ### Task 6: Docs
 
@@ -455,7 +476,7 @@ suddenly slows down is the signal it did not take.
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
-| A silently partial fetch fabricates a starvation finding | Coverage check mirroring `TargetSymbolCoverageGate.check_fetch` suppresses the probe (D9), pinned by Step 5.8 |
+| A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
