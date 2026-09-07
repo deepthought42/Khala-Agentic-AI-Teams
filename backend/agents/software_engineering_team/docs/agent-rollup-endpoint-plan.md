@@ -18,16 +18,22 @@ shape any current consumer already reads.
 
 | Piece | Location | State |
 |---|---|---|
-| Pure grouping/percentile math | `metrics/agent_rollup.compute_from_traces` | Done |
-| Postgres-reading wrapper | `metrics/agent_rollup.compute_agent_rollup` | Done |
-| Narrow column read | `shared/trace_store.fetch_traces_since` | Done, returns `[]` when Postgres is off or the query fails |
+| Pure grouping/percentile math | `metrics/agent_rollup.compute_from_traces` | Done — stays the definition of record; **not** the endpoint's read path (§3.5) |
+| Postgres-reading wrapper | `metrics/agent_rollup.compute_agent_rollup` | Done — correct for REPL/offline callers; materializes rows, so not what the route calls (§3.5) |
+| Narrow column read | `shared/trace_store.fetch_traces_since` | Done, returns `[]` when Postgres is off or the query fails. No `LIMIT`, no aggregation — see §3.5 |
 | The route to extend | `api/routes/status.py:66` (`metrics_dora`) | Serves DORA + cost, clamps `window_days` to `[1, 365]` |
+| Existing SQL-aggregating read (the precedent) | `shared/trace_store.fetch_cost_since` | `SUM(cost_usd) GROUP BY job_id` — the pattern §3.5's new read follows |
 | Unified-API alias | `unified_api/main.py:1586` (`se_metrics_alias`) | Forwards to `/dora` and returns `resp.json()` verbatim — **additive keys pass through with no change** |
 
 Consequence: the "Postgres unset / empty table" case is already non-erroring at
-the source. `fetch_traces_since` returns `[]`, `compute_from_traces` produces a
-well-formed `AgentRollupMetrics` with three empty dicts. The route work is
-wiring plus a defensive fallback, not new error handling.
+the source — every trace read in this module returns empty rather than raising,
+and `compute_from_traces` turns an empty row set into a well-formed
+`AgentRollupMetrics` with three empty dicts. That acceptance criterion costs
+nothing to satisfy.
+
+What is *not* free is the read itself. The existing pieces were built for a
+caller holding rows in memory; putting that path behind an HTTP GET is the one
+place this story has real design work, and §3.5 is where it happens.
 
 ## 3. Design decisions
 
@@ -117,24 +123,111 @@ wanted):
   phase list maintained somewhere; a stale list would silently report zero-call
   groups for agents that were renamed, which is worse than omitting them.
 
-### 3.5 Payload size
+### 3.5 The HTTP read must aggregate in SQL, not materialize rows
 
-`by_agent_phase` is bounded by (distinct agent keys) x (distinct phases) actually
-observed in the window — tens of entries, not thousands, because the grouping
-happens over agent identities, not calls. No pagination or row cap is warranted.
-(`fetch_traces_since` deliberately has no row cap; percentiles cannot be computed
-SQL-side, so a wide window reads every matching row. That is a pre-existing
-property of the read path, unchanged here, and worth noting in the README so
-operators know a 365-day window is a real query.)
+**Response size is not the constraint; the scan is.** `by_agent_phase` is bounded
+by (distinct agent keys) x (distinct phases) — tens of entries. That says nothing
+about the query behind it, and reasoning from the small response to "no bound
+needed" is the wrong inference.
+
+Look at what `/dora` does today. Its cost read is
+`SELECT job_id, SUM(cost_usd) ... WHERE ts >= %s GROUP BY job_id` — Postgres
+aggregates, and the route receives one row per job. **The endpoint materializes
+zero `se_agent_traces` rows.** `fetch_traces_since`, by contrast, is
+`SELECT <8 columns> FROM se_agent_traces WHERE ts >= %s` with no `LIMIT` and no
+aggregation: every matching row crosses the wire and becomes a Python dict.
+
+So this is not "a pre-existing property of the read path, unchanged here." It is
+a **new property of the endpoint**, and the defaults make it maximal:
+`SE_TRACE_RETENTION_DAYS` defaults to 30 and `window_days` defaults to 30, so the
+default request reads essentially the entire traces table — on every poll, per
+concurrent caller, against a 15s alias timeout (`SE_METRICS_ALIAS_TIMEOUT`). The
+`idx_se_agent_traces_ts` index bounds the *scan*, not the *result set*. And this
+degrades precisely as the epic succeeds: more trace volume is the goal.
+
+**Do this:** add an aggregating read alongside `fetch_traces_since` — one query,
+one row per group, nothing unbounded materialized:
+
+```sql
+SELECT agent_key, phase,
+       GROUPING(agent_key) AS g_agent, GROUPING(phase) AS g_phase,
+       COUNT(*)                                   AS call_count,
+       SUM(cost_usd::numeric)                     AS total_cost_usd,
+       SUM(input_tokens)                          AS total_input_tokens,
+       SUM(output_tokens)                         AS total_output_tokens,
+       SUM(cache_read_tokens)                     AS total_cache_read_tokens,
+       SUM(cache_creation_tokens)                 AS total_cache_creation_tokens,
+       percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS latency_ms_median,
+       percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_ms_p95
+FROM se_agent_traces
+WHERE ts >= %s
+GROUP BY GROUPING SETS ((agent_key), (phase), (agent_key, phase))
+```
+
+One query yields all three views; `GROUPING()` tags which set each row came from.
+
+**The parity question is settled, not hand-waved.** The concern with moving math
+SQL-side is that the endpoint would report different numbers than the unit-tested
+`_stats` helpers. It does not — the definitions coincide exactly:
+
+| Statistic | `_stats` (Python) | Postgres | Parity |
+|---|---|---|---|
+| `median` | sorted midpoint, **averaging** the two middle values at even `n` | `percentile_cont(0.5)` — linear interpolation, which at the median of an even sample *is* their average | Exact |
+| `p95` | nearest rank, `ordered[ceil(0.95n) - 1]`, no interpolation | `percentile_disc(0.95)` — first value whose cumulative distribution ≥ 0.95, i.e. `ordered[ceil(0.95n) - 1]` | Exact |
+| `total_cost_usd` | `math.fsum` (order-independent) | `SUM(cost_usd::numeric)` — exact decimal, then round to 6 dp | Exact; the `::numeric` cast is load-bearing, since `SUM(double precision)` is not order-deterministic under a parallel plan |
+
+The `max(1, ...)`/`min(n, ...)` clamps in `_stats.p95` are no-ops for `0 < f <= 1`
+and `n >= 1`, so they do not perturb the correspondence.
+
+Note that `fetch_traces_since`'s docstring currently asserts "percentiles cannot
+be computed SQL-side" as the reason it has no row cap. That claim is false —
+ordered-set aggregates have existed since PostgreSQL 9.4. Correct that comment as
+part of this work; leaving it would keep justifying the unbounded read.
+
+**`compute_from_traces` does not change.** It stays the pure, unit-tested
+definition of record and the path for callers holding rows. This mirrors what
+`dora` already does: `compute_from_events` consumes a SQL-side-pre-aggregated
+`cost` argument rather than summing raw rows itself. SQL-side aggregation
+consumed by a pure function is this module's *established* pattern, not a
+departure from it.
+
+**Rejected: a row cap.** `fetch_traces_since`'s docstring rejects it correctly —
+truncation silently understates counts and percentiles, which is worse than a
+slow query. That reasoning argues for aggregating, not for shipping the
+unbounded scan.
+
+**Scope honesty.** This makes the story larger than "wire an existing function to
+an existing route" — it adds a store function, a row-shape adapter, and
+parity tests. Call it a 3, not a 2. The alternative is knowingly putting an
+unbounded, retention-window-wide scan behind an HTTP GET, which is not a
+trade worth making to protect a complexity score.
 
 ## 4. Changes, file by file
 
-### 4.1 `backend/agents/software_engineering_team/api/routes/status.py`
+### 4.1 `backend/agents/software_engineering_team/shared/trace_store.py`
+
+Add `fetch_trace_rollup_rows(cutoff, *, job_id=None)` — the aggregating read from
+§3.5. It runs the `GROUPING SETS` query, splits the result by the `GROUPING()`
+tags into the three views, and returns them already shaped as `CallRollup` field
+dicts. Same best-effort contract as its neighbours: `[]`/empty on a disabled or
+failing Postgres, logged at DEBUG, never raised.
+
+`fetch_traces_since` stays — it is still the right read for a caller that wants
+raw rows, and `compute_from_traces` still consumes them. Correct its docstring's
+"percentiles cannot be computed SQL-side" claim (§3.5).
+
+The `cache_read_ratio` is **not** computed in SQL: it is derived from sums the
+query already returns, so deriving it in Python keeps one definition of the ratio
+(and its `None`-when-denominator-is-zero rule) rather than two that can drift.
+Same for rounding.
+
+### 4.2 `backend/agents/software_engineering_team/api/routes/status.py`
 
 1. Extract the current body of `metrics_dora` into `_dora_payload(window)`
    verbatim — no behavior change, so the existing fallback test keeps passing on
    its assertions about DORA fields.
-2. Add `_rollup_payload(window)` per §3.3.
+2. Add `_rollup_payload(window)` per §3.3, built on the §4.1 aggregating read
+   rather than `compute_agent_rollup`'s row-materializing path (§3.5).
 3. Rewrite `metrics_dora` as the three-line composition in §3.3, and extend its
    docstring: what the new key is, that it is additive, and that it is empty
    rather than absent when there is no trace data.
@@ -145,35 +238,58 @@ Return type stays `-> dict`, matching every other handler in this router; no
 Pydantic response model is introduced. (`DoraMetrics` and `AgentRollupMetrics`
 are the schema of record, and both already have drift-guard tests.)
 
-### 4.2 `backend/agents/software_engineering_team/tests/test_api_metrics.py`
+### 4.3 `backend/agents/software_engineering_team/tests/test_api_metrics.py`
 
 One existing test needs updating, and it is the one easy thing to miss:
 
 - `test_metrics_dora_falls_back_to_zeroed_shape_on_compute_failure` asserts
   `set(body.keys()) == set(DoraMetrics(...).to_dict().keys())`. It must become
-  `... == expected_keys | {"agent_rollup"}`, and should additionally assert the
-  rollup is still populated (empty, not missing) when *only* the DORA
-  computation blows up — that is the §3.3 independence property, under test.
+  `... == expected_keys | {"agent_rollup"}`.
+
+**Isolation tests must use non-empty sentinels in both directions.** The obvious
+formulation of these two tests proves nothing. Under `pytest` there is no
+`POSTGRES_HOST`, so an unpatched DORA payload is *already* zeroed and an
+unpatched rollup is *already* empty — meaning "DORA survived a rollup failure"
+and "a single shared `try`/`except` zeroed both" produce byte-identical
+responses. The assertion passes either way and the §3.3 property goes untested.
+
+The fix is to stub the **surviving** side with a distinctive value and assert it
+comes back unchanged:
+
+- *Rollup fails, DORA survives*: patch `compute_dora` to return a
+  `DoraMetrics(deployment_count=7, total_cost_usd=1.25, ...)` sentinel **and**
+  patch the rollup read to raise. Assert `body["deployment_count"] == 7` and
+  `body["total_cost_usd"] == 1.25` — not merely that the keys exist. A shared
+  fallback would return `0`, failing the test as it should.
+- *DORA fails, rollup survives*: patch `compute_dora` to raise **and** patch the
+  §4.1 aggregating read to return rows for two agent keys. Assert the DORA half
+  is the zeroed literal *and* that `agent_rollup["by_agent"]` is non-empty with
+  the expected `call_count`. A shared fallback would return `{}`.
 
 New tests:
 
 | Test | Method | Asserts |
 |---|---|---|
-| Populated window | monkeypatch `trace_store.fetch_traces_since` to return a handful of rows across two agent keys and two phases | `agent_rollup.by_agent` / `by_phase` / `by_agent_phase` keys and a spot-checked `total_cost_usd`, `call_count`, `cache_read_ratio` |
-| Empty window | monkeypatch `fetch_traces_since` to return `[]` | all three dicts are `{}`, `window_days` echoes the request, status 200 |
-| Postgres unset | no monkeypatching (the pytest env has no `POSTGRES_HOST`) | 200 with an empty rollup — the real code path, not a stub |
-| Rollup compute failure | monkeypatch `agent_rollup.compute_agent_rollup` to raise | 200, DORA payload intact and non-zeroed-by-the-rollup-failure, `agent_rollup` is the empty literal |
+| Populated window | patch the §4.1 aggregating read to return groups across two agent keys and two phases | all three views' keys, plus spot-checked `total_cost_usd`, `call_count`, `cache_read_ratio` |
+| Empty window | patch it to return no groups | all three dicts are `{}`, `window_days` echoes the request, 200 |
+| Postgres unset | no patching (the pytest env has no `POSTGRES_HOST`) | 200 with an empty rollup — the real code path, not a stub |
+| Rollup fails, DORA survives | sentinel `DoraMetrics` + rollup read raises | the sentinel's non-zero values survive verbatim; `agent_rollup` is the empty literal |
+| DORA fails, rollup survives | `compute_dora` raises + rollup read returns groups | DORA half is the zeroed literal; `agent_rollup` is non-empty |
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
 | Window is shared | request `window_days=7` | both `body["window_days"]` and `body["agent_rollup"]["window_days"]` are `7.0` |
 
-Patching note: `compute_agent_rollup` resolves `trace_store` via a
-function-local import, so `monkeypatch.setattr(trace_store,
-"fetch_traces_since", ...)` on the module object takes effect at call time. This
-exercises the real grouping math end to end through the route rather than
-stubbing the rollup itself, which is what makes the "populated window" test
-worth writing.
+Separately, in `test_agent_rollup.py`: a **parity test** asserting the §4.1
+aggregating read and `compute_from_traces` produce identical `CallRollup`s for the
+same underlying rows — the guard that keeps §3.5's SQL/Python correspondence from
+drifting. Run it against the live-Postgres CI job (the SQL is the thing under
+test, so a fake cursor would test nothing); if that job is not available for this
+suite, assert the correspondence at the row-shape adapter instead and say so.
 
-### 4.3 Documentation
+Patching note: both `compute_agent_rollup` and the new read resolve `trace_store`
+via a function-local import, so `monkeypatch.setattr(trace_store, ..., ...)` on
+the module object takes effect at call time.
+
+### 4.4 Documentation
 
 **`backend/agents/software_engineering_team/README.md`** — add a
 `## Metrics and observability` section (the README currently documents the
@@ -196,11 +312,31 @@ metrics module only as a line in the project-layout tree). It should cover:
   genuine miss at call time.
 - A one-line `curl` example plus a `jq` one-liner that sorts `by_agent` by
   `total_cost_usd` — the actual question this endpoint exists to answer.
-- The dependency on the trace sink: an empty rollup with a healthy pipeline means
-  no traces are being persisted. Link to `SE_TRACE_TO_POSTGRES` in
-  `docs/ENV_VARS.md`, and note `SE_TRACE_RETENTION_DAYS` bounds how far back a
-  window can see.
-- The wide-window read note from §3.5.
+- **An empty rollup is ambiguous — do not document it as one diagnosis.** The
+  read cannot distinguish its own failure modes: `fetch_traces_since` (and the
+  §4.1 aggregating read, which keeps the same contract) returns empty *both* when
+  no rows match *and* when the query fails, and the route's own fallback returns
+  the empty literal on any exception. So `{}` means one of at least five things,
+  and the README must list them rather than pick one:
+  1. The window genuinely contains no SE-attributed LLM calls (an idle install —
+     the common, healthy case).
+  2. The sink is opted out (`SE_TRACE_TO_POSTGRES` set falsy).
+  3. Postgres is not configured (`POSTGRES_HOST` unset).
+  4. Postgres is configured but the query failed — logged at DEBUG in
+     `trace_store`, invisible in the response.
+  5. Rows existed but were pruned (`SE_TRACE_RETENTION_DAYS`, default 30) before
+     the requested window could see them.
+
+  Order the operator's checks accordingly: confirm calls actually happened in the
+  window first, then the sink flag, then the DEBUG logs — not "assume the sink is
+  broken". If distinguishing these from the response itself is ever wanted, that
+  is a separate health/error-state surface, deliberately not in scope here (an
+  error key on the payload would change the shape this story promises to leave
+  alone). Link `SE_TRACE_TO_POSTGRES` and `SE_TRACE_RETENTION_DAYS` in
+  `docs/ENV_VARS.md`.
+- The query shape from §3.5: the endpoint aggregates server-side, so a wide
+  window is bounded work rather than a full-table materialization — worth stating
+  so nobody reintroduces the row-materializing read for convenience.
 
 **`docs/ENV_VARS.md`** — the `SE_TRACE_TO_POSTGRES` entry currently says the
 traces are "the substrate the metrics endpoint reads for per-job and total
@@ -208,7 +344,7 @@ spend". Extend that sentence to name the per-agent/per-phase rollup as the secon
 consumer and cross-reference the new README section, so the trace-sink variable
 and the endpoint that surfaces it point at each other in both directions.
 
-### 4.4 `user-interface/src/app/models/se-metrics.model.ts` (optional, recommended)
+### 4.5 `user-interface/src/app/models/se-metrics.model.ts` (optional, recommended)
 
 The model's docstring claims it mirrors `DoraMetrics.to_dict()`; after this
 change that is no longer the whole payload. Add `AgentCallRollup` and
@@ -228,11 +364,17 @@ python -m pytest agents/software_engineering_team/tests/test_api_metrics.py -v
 python -m pytest agents/software_engineering_team/tests/test_agent_rollup.py -v
 python -m pytest unified_api/tests/test_job_proxy_routes.py -k se_metrics -v
 
-# Coverage on the one modified source file (90% floor)
+# Coverage on both modified source files (90% floor)
 python -m pytest agents/software_engineering_team/tests/test_api_metrics.py \
-  --cov=software_engineering_team.api.routes.status --cov-report=term-missing
+  agents/software_engineering_team/tests/test_agent_rollup.py \
+  --cov=software_engineering_team.api.routes.status \
+  --cov=software_engineering_team.shared.trace_store --cov-report=term-missing
 
-# From user-interface/ — only if §4.4 is included
+# The SQL in §4.1 needs a real server — run the live-Postgres path for the
+# parity test; a fake cursor would not exercise percentile_cont/percentile_disc
+python -m pytest agents/software_engineering_team/tests/test_observability_stores_pg.py -v
+
+# From user-interface/ — only if §4.5 is included
 npx tsc --noEmit && npm test
 ```
 
@@ -240,20 +382,29 @@ The unified-API alias tests stub the upstream body, so they should pass
 unchanged; running them is a check that the assumption in §2 (additive keys pass
 through the alias untouched) holds.
 
+Also verify by hand, once, against a populated database: the §4.1 aggregating
+read and `compute_from_traces` over the same window must agree field-for-field.
+That is the claim §3.5 rests on, and it is cheap to confirm directly.
+
 ## 6. Risks
 
 | Risk | Mitigation |
 |---|---|
-| The existing key-set assertion in `test_api_metrics.py` fails | Anticipated in §4.2 — it is the intended signal that the response shape changed, not a surprise |
-| A rollup failure degrades the DORA payload | §3.3's split failure boundaries, with a dedicated test |
-| A wide window reads a large number of trace rows | Pre-existing property of `fetch_traces_since`; documented in the README rather than papered over with a row cap that would understate percentiles |
+| The existing key-set assertion in `test_api_metrics.py` fails | Anticipated in §4.3 — it is the intended signal that the response shape changed, not a surprise |
+| A rollup failure degrades the DORA payload | §3.3's split failure boundaries, tested with non-empty sentinels in both directions (§4.3) — the naive form of that test proves nothing |
+| An HTTP-reachable unbounded scan over the retention window | §3.5: aggregate in SQL via `GROUPING SETS` + ordered-set aggregates; one row per group, never the raw rows. This was the plan's original mistake, corrected |
+| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table (`percentile_cont(0.5)` ≡ averaging median; `percentile_disc(0.95)` ≡ nearest-rank p95; `SUM(::numeric)` ≡ `fsum`), locked by the parity test in §4.3 |
+| Operators misread an empty rollup as a broken sink | §4.4 documents all five causes and the order to check them; the response genuinely cannot distinguish them |
 | The empty-rollup literal drifts from `AgentRollupMetrics` | Drift-guard test, mirroring the one that already protects the DORA literal |
 | A consumer reads `agent_rollup` as absent-when-empty | The key is always present; empty is three empty dicts, never `null` or missing. Stated in the route docstring, the README, and asserted in tests |
 
 ## 7. Explicitly out of scope
 
-- A frontend dashboard or chart for the rollup (§4.4 is type declarations only).
+- A frontend dashboard or chart for the rollup (§4.5 is type declarations only).
 - Authentication or rate-limiting changes to the metrics route.
+- A health/error-state surface that would let a caller distinguish "no data" from
+  "the read failed" (§4.4) — it would change the response shape this story
+  promises to leave alone.
 - Alerting or thresholds on the reported numbers.
 - Any change to the DORA metrics themselves.
 - Backfilling traces for historical runs.
