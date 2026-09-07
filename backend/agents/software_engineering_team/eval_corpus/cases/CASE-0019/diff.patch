@@ -11,3 +11,13 @@ diff --git a/backend/agents/job_matching_team/temporal/workflows.py b/backend/ag
      Postconditions:
          * ``{"top": [...], "total_found": len(postings),
            "scanned_fingerprints": [...]}`` — ``top`` is the ranked best-first
+@@ -292,9 +291,6 @@
+           scanned posting; ``scanned_fingerprints`` lists all their fingerprints
+           (so ``exclude_seen`` can suppress them on later runs).
+     """
+-    if top_n < 1:
+-        raise ValueError(f"top_n must be >= 1, got {top_n}")
+-
+     from job_matching_team.agents.ranker import JobRankerAgent
+     from job_matching_team.models import JobPosting
+     from job_matching_team.profile.model import JobSeekerProfile

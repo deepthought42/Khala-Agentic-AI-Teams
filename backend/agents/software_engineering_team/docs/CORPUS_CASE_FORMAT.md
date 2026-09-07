@@ -124,10 +124,14 @@ actually shipped from a plausible construction, without leaving the case file:
 - **`commit`** is the short SHA of the origin commit and is required when
   `sourcing: real`, omitted otherwise. That commit is the *fix* — the ground
   truth for what the defect was and where it lived. A real case's `diff.patch`
-  is therefore the inverse of that commit, reduced to the files carrying the
-  defect, and its labels' line numbers are positions in the post-diff file
-  (the state of the file at the fix commit's parent). A real case stays pinned
-  to its origin commit; it is not resynchronized as the repository moves on.
+  is therefore the inverse of that commit, reduced to the change blocks its
+  labels point at. **The patch applies to the origin commit itself** — the
+  fixed file — and the post-diff file is what that produces: the fixed file
+  with only the labeled blocks reverted. It is not the fix commit's parent,
+  because the parent still carries whatever else that commit repaired, and a
+  fixture must contain no defect it does not label. Labels' line numbers are
+  positions in that produced file. A real case stays pinned to its origin
+  commit; it is not resynchronized as the repository moves on.
 - **`note`** is *required* when `sourcing: invented` and *permitted* when
   `sourcing: real` — a real case may use it to record that its fixture was drawn
   from a different commit than the selection plan originally cited, or any other

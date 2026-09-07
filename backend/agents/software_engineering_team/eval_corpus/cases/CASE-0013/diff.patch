@@ -1,6 +1,15 @@
 diff --git a/strands_research_agent/strands_integration.py b/strands_research_agent/strands_integration.py
 --- a/strands_research_agent/strands_integration.py
 +++ b/strands_research_agent/strands_integration.py
+@@ -3,7 +3,7 @@
+ from typing import Any, Dict
+ 
+ from .agent import ResearchAgent
+-from .llm import LLMClient
++from .llm import LLMClient, OllamaLLMClient
+ from .models import ResearchBriefInput, ResearchAgentOutput
+ 
+ 
 @@ -19,7 +19,9 @@
      Postconditions:
          - Returns a ResearchAgent instance configured with the given llm_client.

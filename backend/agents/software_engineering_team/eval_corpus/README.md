@@ -61,6 +61,17 @@ Each patch is rebuilt mechanically as a diff from the fixed file to the fixed
 file with only the labeled blocks reverted, and every label re-anchored in the
 result, so no fixture contains an unlabeled defect.
 
+A labeled block does not always stand alone. It may call a name whose import
+moved out with the fix, or claim in a docstring a precondition that a sibling
+block enforces; and a fix that *moves* code appears as a deletion at the new
+site paired with an insertion at the old one. Reverting only the block a label
+sits in then produces a fixture that raises `NameError` instead of exhibiting
+its defect, states a defect the surviving code still prevents, or contains both
+copies of the moved code. Reduction therefore carries those dependencies along
+with the labeled block — they are part of the same defect, not additions to it.
+Two cases have no reducible subset at all and keep the whole inverse; both are
+named under Limits below.
+
 That changes what a patch applies to. The base is the **origin commit itself**
 — the fixed file — and the post-diff file is what applying the patch to it
 produces: the fixed file with only the labeled blocks reverted. It is no longer
@@ -227,13 +238,17 @@ here:
   These cases use true repository paths, so recall for those two gates will
   read pessimistically. That is a real property of the gates' output shape,
   not an artifact to be tuned away by shortening paths.
-- **`CASE-0033` is the one fixture that still carries more than its labeled
-  defect.** Its label is file-wide, because the defect *is* file-wide — a
-  component that opens twelve subscriptions and implements no teardown. There is
-  no single block to reduce it to, and a gate that reports each subscription
-  separately will produce findings the one-per-label rule leaves unmatched. The
-  case is honest about a systemic omission; its precision contribution is not
-  meaningful and should be read that way.
+- **Two fixtures carry the whole inverse commit rather than a reduced subset,
+  because their defect does not live in one block.** `CASE-0033`'s label is
+  file-wide, since the defect *is* file-wide — a component that opens twelve
+  subscriptions and implements no teardown. `CASE-0029` replaced an atomic
+  compare-and-set with a check-then-write at four call sites in one function,
+  and the import, the docstring and every site move together; reverting a
+  subset leaves the fixture calling a name the remaining sites still need.
+  Both are one design defect repeated, which a gate reports once, so each
+  keeps a single label — but a gate that reports each site separately will
+  produce findings the one-per-label rule leaves unmatched. Their precision
+  contribution is not meaningful and should be read that way.
 - Fifteen cases are invented rather than drawn from history — a structurally
   weaker grade of evidence. Each states in its `origin.note` why no real
   example was available.

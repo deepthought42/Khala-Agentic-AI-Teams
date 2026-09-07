@@ -4,8 +4,8 @@
   severity: medium
   polarity: must_find
   file_path: backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
-  line: 280
-  line_end: 304
+  line: 281
+  line_end: 305
   description: >
     This review-gated execution block, including its two failure branches, is
     duplicated verbatim in the sibling frontend orchestrator. Both derive from

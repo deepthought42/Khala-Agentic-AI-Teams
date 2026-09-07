@@ -1,7 +1,15 @@
 diff --git a/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py b/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
 --- a/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
 +++ b/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
-@@ -277,28 +277,36 @@
+@@ -26,6 +26,7 @@
+ from .models import (
+     BackendCodeV2WorkflowResult,
+     MicrotaskReviewConfig,
++    MicrotaskReviewFailedError,
+     Phase,
+     ToolAgentKind,
+ )
+@@ -277,28 +278,36 @@
  
          config = review_config or MicrotaskReviewConfig()
  
