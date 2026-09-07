@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import HTTPException
-
 from shared.hitl.models import SubmitAnswersRequest
 
 
@@ -38,7 +36,21 @@ def validate_answers(data: Dict[str, Any], request: SubmitAnswersRequest) -> Lis
           later resume can match answers to re-asked questions by text). Each dict
           is ``{question_id, question_text, selected_option_id, other_text}`` with
           ``other_text`` returned raw (un-stripped).
+
+    ``HTTPException`` is imported HERE rather than at module scope so that
+    importing ``shared.hitl`` does not drag ``fastapi`` (and through it
+    starlette/anyio/sniffio) into every consumer's import graph. That matters
+    beyond tidiness: this package is imported by Temporal workflow code, and the
+    temporalio sandbox re-imports a workflow module's parent packages before the
+    module itself. Executing fastapi's import chain inside that sandbox fails
+    with "Restriction state not present. Using subclasses of proxied objects is
+    unsupported." It is the same principle ``shared/hitl/testing.py`` already
+    documents for keeping ``temporalio`` out of this package's transitive graph,
+    applied in the other direction. After the first call the import is a
+    ``sys.modules`` lookup, so the cost is a dict hit per invocation.
     """
+    from fastapi import HTTPException
+
     if not data.get("waiting_for_answers"):
         raise HTTPException(status_code=400, detail="Job is not waiting for answers.")
     pending = data.get("pending_questions", [])

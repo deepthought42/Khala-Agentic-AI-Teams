@@ -4,84 +4,38 @@
 ``workflow.wait_condition``. This file proves the property that shape exists
 for: the wait is durable, so a worker that dies while a workflow is parked can
 be replaced by a fresh worker that rebuilds the pause purely from replayed
-history and resumes correctly.
+history and resumes correctly. The sibling
+``test_temporal_signal_no_default.py`` proves the negative half -- that a wait
+nobody answers never resumes at all.
 
-The two ``WorkflowEnvironment`` tests are ``@pytest.mark.integration``, so
+The ``WorkflowEnvironment`` tests here are ``integration``-marked, so
 ``backend/conftest.py`` skips them unless pytest is invoked with
 ``-m integration`` -- the same status every other ``WorkflowEnvironment`` test
-in this repo has. They additionally ``pytest.skip`` when the ephemeral Temporal
-test-server binary cannot be downloaded (see
-``shared.temporal.testing.workflow_environment``). The structural test at the
-bottom is NOT integration-marked: it runs in the ordinary suite and pins that
-the probe workflow is a well-formed ``@workflow.defn`` composing the mixin, so
-a broken probe surfaces even where the server is unreachable.
+in this repo has. CI runs them under exactly that marker in the
+``test-shared-packages`` job, with ``TEMPORAL_TEST_SERVER_REQUIRED`` set so a
+failed test-server download fails the job instead of skipping (see
+``shared.temporal.testing.workflow_environment``); locally, with that flag
+unset, an unreachable ``temporal.download`` degrades to a skip. The structural
+test at the bottom is NOT integration-marked: it runs in the ordinary suite and
+pins that the probe workflow is a well-formed ``@workflow.defn`` composing the
+mixin, so a broken probe surfaces even where the server is unreachable.
+
+The worker/park scaffolding lives in ``_probe_env`` so this file and the
+no-default sibling drive byte-identical workers -- a divergence there (a sticky
+cache left enabled, say) would quietly weaken one file's proof.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 import pytest
 
 from shared.hitl.temporal_signal import SUBMIT_ANSWERS_SIGNAL
+from shared.hitl.tests._probe_env import ANSWERS, probe_worker, wait_until_parked
 from shared.hitl.tests._wait_probe_workflow import WAIT_PROBE_TASK_QUEUE, HitlWaitProbeWorkflow
 
 RESUME_TOKEN = "probe-job-1:abc123"
-ANSWERS = [{"question_id": "q1", "selected_option_id": "yes", "other_text": None}]
-
-
-@contextlib.asynccontextmanager
-async def _probe_worker(env):
-    """Run a probe worker against an already-started ``env``.
-
-    Preconditions:
-        - ``env`` is a live ``WorkflowEnvironment``.
-    Postconditions:
-        - Yields once the worker is polling ``WAIT_PROBE_TASK_QUEUE``. Exiting
-          stops that worker WITHOUT shutting down ``env``, so a later call can
-          start a replacement worker against the same environment -- which is
-          how the worker-restart test below simulates a worker dying mid-pause.
-        - ``max_cached_workflows=0`` disables the sticky cache, so a replacement
-          worker rebuilds workflow state by replaying history from event 1
-          rather than resuming from an in-memory snapshot. That is what makes
-          this a replay test and not merely a reconnect test.
-    """
-    from temporalio.worker import Worker
-
-    async with Worker(
-        env.client,
-        task_queue=WAIT_PROBE_TASK_QUEUE,
-        workflows=[HitlWaitProbeWorkflow],
-        max_cached_workflows=0,
-    ) as worker:
-        yield worker
-
-
-async def _wait_until_parked(handle, *, timeout_s: float = 10.0) -> None:
-    """Block until history shows the workflow has processed a task and parked.
-
-    Preconditions:
-        - ``handle`` is a live workflow handle; ``timeout_s`` is positive.
-    Postconditions:
-        - Returns once history contains a ``WORKFLOW_TASK_COMPLETED`` event (the
-          task in which ``run`` reached ``wait_condition``). Raises
-          ``TimeoutError`` naming the observed event types otherwise.
-    """
-    assert timeout_s > 0, "timeout_s must be positive"
-
-    from temporalio.api.enums.v1 import EventType
-
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while True:
-        events = list((await handle.fetch_history()).events)
-        if any(e.event_type == EventType.EVENT_TYPE_WORKFLOW_TASK_COMPLETED for e in events):
-            return
-        if asyncio.get_running_loop().time() >= deadline:
-            raise TimeoutError(
-                f"timed out waiting for the probe to park; history event_type ints={[int(e.event_type) for e in events]}"
-            )
-        await asyncio.sleep(0.05)
 
 
 @pytest.mark.integration
@@ -96,20 +50,20 @@ async def test_wait_survives_a_worker_restart_and_replays_deterministically() ->
     from shared.temporal.testing import workflow_environment
 
     async with workflow_environment() as env:
-        async with _probe_worker(env):
+        async with probe_worker(env):
             handle = await env.client.start_workflow(
                 HitlWaitProbeWorkflow.run,
                 RESUME_TOKEN,
                 id="hitl-wait-probe-worker-restart",
                 task_queue=WAIT_PROBE_TASK_QUEUE,
             )
-            await _wait_until_parked(handle)
+            await wait_until_parked(handle)
         # Worker A is gone. The signal is durable server-side, so it is recorded
         # into history with nothing running to observe it -- the buffered/armed
         # distinction now has to survive purely as replayed state.
         await handle.signal(SUBMIT_ANSWERS_SIGNAL, {"resume_token": RESUME_TOKEN, "answers": ANSWERS})
 
-        async with _probe_worker(env):
+        async with probe_worker(env):
             # Auto time-skipping would race past an unbounded wait_condition to
             # the run timeout before the replacement worker finishes replaying.
             with env.auto_time_skipping_disabled():
@@ -132,7 +86,7 @@ async def test_a_signal_that_beats_the_wait_is_not_lost() -> None:
     from shared.temporal.testing import workflow_environment
 
     async with workflow_environment() as env:
-        async with _probe_worker(env):
+        async with probe_worker(env):
             handle = await env.client.start_workflow(
                 HitlWaitProbeWorkflow.run,
                 RESUME_TOKEN,
@@ -150,7 +104,7 @@ async def test_a_signal_that_beats_the_wait_is_not_lost() -> None:
 
 
 def test_probe_workflow_is_a_well_formed_defn_composing_the_mixin() -> None:
-    """Not integration-marked on purpose: the two tests above cannot run without
+    """Not integration-marked on purpose: the tests above cannot run without
     the ephemeral test-server binary, so without this the probe class would be
     unexercised anywhere the download is blocked. Pins that it is a real
     ``@workflow.defn``, registers ``submit_answers`` through the mixin, and
@@ -168,3 +122,101 @@ def test_probe_workflow_is_a_well_formed_defn_composing_the_mixin() -> None:
     assert wf._submitted_answers is None
     assert wf._buffered_signals == {}
     assert callable(wf.wait_for_answers)
+
+
+def test_probe_workflow_registers_the_parked_state_query() -> None:
+    """The no-default tests read the pause through this query, so a probe that
+    silently stopped registering it would turn their strongest assertion into a
+    connection error rather than a failed claim. Runs in the ordinary suite for
+    the same reason as the structural test above."""
+    from shared.hitl.testing import get_workflow_definition
+    from shared.hitl.tests._wait_probe_workflow import PARKED_STATE_QUERY
+
+    defn = get_workflow_definition(HitlWaitProbeWorkflow)
+    assert PARKED_STATE_QUERY == "parked_state"
+    assert PARKED_STATE_QUERY in defn.queries
+    assert defn.queries[PARKED_STATE_QUERY].name == "parked_state"
+
+
+def test_parked_state_reports_the_pause_without_leaking_the_answers() -> None:
+    """The query reports whether an answer is latched, never what it is. A query
+    that returned answer content would be a second way to read the batch out of
+    a paused workflow, and this probe exists to prove there is exactly one."""
+    wf = HitlWaitProbeWorkflow()
+
+    assert wf.parked_state() == {"active_resume_token": None, "has_submitted_answers": False}
+
+    wf._active_resume_token = RESUME_TOKEN
+    wf.submit_answers({"resume_token": RESUME_TOKEN, "answers": ANSWERS})
+
+    state = wf.parked_state()
+    assert state == {"active_resume_token": RESUME_TOKEN, "has_submitted_answers": True}
+    # The exact-dict assertion above already pins today's shape; this pins the
+    # PROPERTY, so a future field carrying answer content fails even if someone
+    # updates the literal above to match it.
+    assert all(isinstance(value, (str, bool, type(None))) for value in state.values()), (
+        f"parked_state grew a structured field that could carry answer content: {state}"
+    )
+
+
+def test_importing_shared_hitl_does_not_pull_in_fastapi() -> None:
+    """The invariant that makes every WorkflowEnvironment test in this package
+    runnable at all, and the reason ``validation`` imports ``HTTPException``
+    lazily.
+
+    The temporalio sandbox re-imports a workflow module's PARENT PACKAGES before
+    the module itself, so ``shared/hitl/__init__.py`` executes inside the sandbox
+    when the probe loads. When that reached ``fastapi``, the sandbox failed with
+    "Restriction state not present. Using subclasses of proxied objects is
+    unsupported" -- past the point any ``imports_passed_through()`` block inside
+    the probe could help, since parent-package imports are not in its scope.
+
+    Checked in a subprocess because this one cannot be asserted in-process: the
+    test session has fastapi loaded for other reasons, so ``sys.modules`` here
+    says nothing about what importing ``shared.hitl`` alone would pull in.
+
+    Not integration-marked deliberately: this must fail in the ordinary suite
+    rather than only in a job that skips where the test server is unreachable."""
+    import subprocess
+    import sys
+
+    probe = "import sys; import shared.hitl; print('fastapi' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "False", (
+        "importing shared.hitl pulled fastapi into the import graph; the temporalio sandbox "
+        "re-imports this package when loading a workflow that lives under it, and executing "
+        f"fastapi's import chain there fails. stdout={result.stdout!r} stderr={result.stderr[-400:]!r}"
+    )
+
+
+def test_the_probe_runs_under_productions_sandbox_configuration_exactly() -> None:
+    """The probe is only evidence about production if it runs under production's
+    sandbox. Pins that it uses ``_build_workflow_runner`` with no relaxation of
+    its own: a probe sandboxed more loosely than production would miss what
+    production catches.
+
+    The equality is the point, not a formality. The tempting fix for the sandbox
+    failure above was a probe-only passthrough entry; this test is what makes
+    reintroducing one a visible decision rather than a quiet downgrade."""
+    from shared.hitl.tests._probe_env import probe_workflow_runner
+    from shared.temporal.worker import _build_workflow_runner
+
+    production = set(_build_workflow_runner().restrictions.passthrough_modules)
+    probe = set(probe_workflow_runner().restrictions.passthrough_modules)
+
+    assert production, "production's passthrough list is empty; this comparison would be vacuous"
+    assert probe == production, (
+        f"the probe's sandbox diverges from production's: extra={sorted(probe - production)}, "
+        f"missing={sorted(production - probe)}"
+    )
+    for module in ("shared", "shared.hitl", "shared.hitl.tests"):
+        assert module not in probe, (
+            f"{module!r} is a dotted prefix of the probe workflow's own module, and passthrough "
+            "matches by prefix -- passing it through would stop sandboxing the probe entirely"
+        )

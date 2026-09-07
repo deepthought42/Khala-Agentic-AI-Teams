@@ -144,3 +144,41 @@ Two modules are deliberately **not** re-exported from `shared/hitl/__init__.py`,
 |---|---|
 | `temporal_signal` | `HitlAnswerSignalMixin` -- the Temporal durable-HITL primitive, extracted from `CodingTeamWorkflow`'s inline state machine so `PlanningWorkflow` can compose the identical contract. Two halves: the `submit_answers` signal handler (validate/buffer/reject/accept an answer batch against a workflow's active pause) and `wait_for_answers` (arm a pause for a `resume_token`, drain a signal that arrived before the wait began, then suspend on `workflow.wait_condition` until a validated, token-matching batch lands -- no timeout, no default-answer path). Callers with a durable answer store pass `verify` to reconcile against it, since a signal is a wake-up hint rather than the answer itself. Production code; imported by workflow modules. |
 | `testing` | Test-only assertion helpers (`assert_workflow_registers_submit_answers`, `get_workflow_definition`) for verifying a workflow class registers the `submit_answers` signal, following the sibling `shared/temporal/testing.py` / `shared/postgres/testing.py` convention of keeping test-support utilities out of the production surface. Imported only from test files. |
+
+## The durable wait's guarantee, and how it is proven
+
+`wait_for_answers` is defined by what it does **not** do: there is no timeout, no
+default answer, and no auto-answer fallback. A workflow nobody answers stays paused
+indefinitely. That is the feature, not a gap in it.
+
+The failure this prevents is not hypothetical. Planning's `resolve_pra_answers`
+auto-picks each question's default option whenever no answer callback is supplied,
+so a wait that quietly gave up would raise nothing anywhere — it would produce a
+plan built on an answer no human ever saw. A guarantee stated only in a docstring
+is the same thing with extra steps, so the claim is carried by four kinds of test,
+each covering a hole the others leave:
+
+| Where | What it proves | Why it cannot be proven elsewhere |
+|---|---|---|
+| `tests/test_temporal_signal.py` | The state machine's shape, against a fake `wait_condition`. | Fast, exhaustive over payload shapes, and runs with no server. |
+| `tests/test_temporal_signal_no_default.py` | An unanswered wait is still parked after a decade of *skipped* time; malformed payloads leave it parked and it remains answerable afterwards. | "Stays paused forever" cannot be shown by waiting — only by skipping the clock on a real server. |
+| `tests/test_temporal_signal_replay.py` | The pause rebuilds from replayed history after a worker dies mid-wait. | A durable pause that cannot replay never resumes, which fails the guarantee from the other side. |
+| `tests/test_no_default_answer_path.py` | Statically, that no fallback construct exists in the module at all. | A behavioral test only shows the wait held for the inputs it tried; the absence claim is universal. |
+
+The `WorkflowEnvironment` tests are `integration`-marked. CI runs them under
+`-m integration` in `test-shared-packages`, with `TEMPORAL_TEST_SERVER_REQUIRED`
+set so a failed test-server download fails the job instead of skipping it — a
+negative guarantee asserted by a test that silently stops running is not a
+guarantee. Locally, with that flag unset, an unreachable `temporal.download`
+degrades to a skip and the static and fake-driven suites still run.
+
+**`verify` is not a default, and must not be "simplified" into one.** It is the
+one release that does not involve a signal, and it is legitimate for a specific
+reason: a signal is a wake-up hint, not the answer. With a durable answer store
+the store is the truth, and the signal may have been evicted past the buffer cap
+or never sent at all. So `verify` reconciles against that store, is supplied by
+the caller rather than owned by this module, defaults to `None`, and returns
+`None` rather than content of its own — the module still cannot invent an answer.
+A `verify` that ever acquired a module-level default callable would be exactly the
+auto-answer path everything above exists to forbid; `test_no_default_answer_path.py`
+fails if one appears.
