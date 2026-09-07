@@ -3401,7 +3401,9 @@ def test_finalize_never_attaches_a_skip_marker_as_brief_content(
     monkeypatch.setattr(api_main, "_strategies", {})
     monkeypatch.setattr(api_main, "_backtests", {})
 
-    record = _make_finalize_test_record("lab-brief-skip-marker-own-category")  # asset_class="equities"
+    record = _make_finalize_test_record(
+        "lab-brief-skip-marker-own-category"
+    )  # asset_class="equities"
     storage = {
         "by_asset_class": {"stocks": {"skipped": True, "skipped_reason": "no_prior_records"}}
     }

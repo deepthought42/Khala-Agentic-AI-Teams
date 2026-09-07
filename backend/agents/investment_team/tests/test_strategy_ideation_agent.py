@@ -195,7 +195,9 @@ def _build_record(*, winning: bool, with_trades: bool = True) -> StrategyLabReco
         signal_definition="sig",
         timeframe="1d",
     )
-    config = BacktestConfig(start_date="2020-01-01", end_date="2024-12-31", initial_capital=100_000.0)
+    config = BacktestConfig(
+        start_date="2020-01-01", end_date="2024-12-31", initial_capital=100_000.0
+    )
     result = BacktestResult(
         total_return_pct=50.0 if winning else -5.0,
         annualized_return_pct=20.0 if winning else -2.0,

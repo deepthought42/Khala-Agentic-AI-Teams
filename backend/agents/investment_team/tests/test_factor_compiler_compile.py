@@ -110,20 +110,24 @@ def test_compile_atr_breakout() -> None:
 
 def test_compile_bool_and_or_not() -> None:
     g_and = _genome(
-        BoolAnd(children=[
-            CompareGT(left=SMA(period=10), right=Const(value=1)),
-            CompareLT(left=SMA(period=20), right=Const(value=200)),
-        ]),
+        BoolAnd(
+            children=[
+                CompareGT(left=SMA(period=10), right=Const(value=1)),
+                CompareLT(left=SMA(period=20), right=Const(value=200)),
+            ]
+        ),
         CompareLT(left=SMA(period=20), right=Const(value=50)),
     )
     src_and = compile_genome(g_and)
     assert "_n_" in src_and
 
     g_or = _genome(
-        BoolOr(children=[
-            CompareGT(left=SMA(period=10), right=Const(value=1)),
-            CompareGT(left=SMA(period=20), right=Const(value=2)),
-        ]),
+        BoolOr(
+            children=[
+                CompareGT(left=SMA(period=10), right=Const(value=1)),
+                CompareGT(left=SMA(period=20), right=Const(value=2)),
+            ]
+        ),
         CompareLT(left=SMA(period=20), right=Const(value=50)),
     )
     src_or = compile_genome(g_or)

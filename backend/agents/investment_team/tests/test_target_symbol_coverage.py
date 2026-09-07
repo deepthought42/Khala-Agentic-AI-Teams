@@ -234,9 +234,7 @@ def test_check_breadth_passes_when_multi_target_and_multi_traded_symbols() -> No
     gate = TargetSymbolCoverageGate()
     spec = _spec(target_symbols=["QQQ", "SPY"])
 
-    results = gate.check_breadth(
-        spec, trades=[_trade("QQQ"), _trade("SPY", trade_num=2)]
-    )
+    results = gate.check_breadth(spec, trades=[_trade("QQQ"), _trade("SPY", trade_num=2)])
 
     assert _criticals(results) == []
     assert _warnings(results) == []
@@ -282,9 +280,7 @@ def test_check_breadth_case_insensitive() -> None:
     gate = TargetSymbolCoverageGate()
     spec = _spec(target_symbols=["QQQ", "SPY"])
 
-    results = gate.check_breadth(
-        spec, trades=[_trade("qqq"), _trade("QQQ", trade_num=2)]
-    )
+    results = gate.check_breadth(spec, trades=[_trade("qqq"), _trade("QQQ", trade_num=2)])
 
     warnings = _warnings(results)
     assert len(warnings) == 1

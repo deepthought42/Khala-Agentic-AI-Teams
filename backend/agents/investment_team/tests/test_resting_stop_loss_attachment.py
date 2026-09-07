@@ -991,8 +991,14 @@ def test_limit_style_resolved_prices_match_bracket_stop_leg(side: OrderSide) -> 
     resting = resolve_resting_stop_loss_attachment(rule, side, 100.0)
     bracket_stop, _ = resolve_bracket_attachments(bracket, side, 100.0)
 
-    assert resting.stop_price == pytest.approx(bracket_stop.stop_price)
-    assert resting.limit_offset == pytest.approx(bracket_stop.limit_offset)
+    # EXACT equality, not ``pytest.approx``: both adapters feed the same
+    # ``resolve_exit_leg_attachments`` the same numbers, so the results are
+    # bit-identical by construction — which is the claim being verified. A 1e-6
+    # tolerance is ~9 orders of magnitude looser than a ULP here, so it would
+    # still pass if the two paths ever diverged by exactly the floating-point
+    # noise ``entry_price_limit_offset_pct`` exists to avoid.
+    assert resting.stop_price == bracket_stop.stop_price
+    assert resting.limit_offset == bracket_stop.limit_offset
     assert resting.limit_offset_kind == bracket_stop.limit_offset_kind
 
 
@@ -1178,6 +1184,12 @@ def test_end_to_end_limit_style_fill_carries_engine_exit_stop_loss_reason() -> N
     outcome = sim.process_bar(_bar("2024-01-03", open_price=97.0, high=98.0, low=92.0, close=93.0))
     [trade] = outcome.closed_trades
     assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    # The reason literal alone is not discriminating — the bar-close evaluator
+    # stamps the same one. The PRICE is: this resting STOP_LIMIT fills at its
+    # limit (95 * 0.98), whereas a bar-close close would fill at the 93.0 close
+    # or a later open. Asserting it makes the test prove which mechanism closed
+    # the position instead of trusting the fixture's feature-flag setup.
+    assert trade.exit_price == pytest.approx(93.1)
 
 
 def test_validate_prices_rejects_reanchoring_stop_limit_without_the_limit_fraction() -> None:

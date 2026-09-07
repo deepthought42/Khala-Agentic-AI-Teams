@@ -1245,7 +1245,9 @@ def _critical_anomaly() -> QualityGateResult:
 
 def _drive_anomaly_recovery(orch: StrategyLabOrchestrator):
     return orch._handle_critical_anomalies(
-        state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+        state=_DesignAttemptState(
+            spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+        ),
         exec_result=_zero_trade_exec_result(),
         market_data=_market_data(),
         config=_config(),
@@ -1331,7 +1333,9 @@ def test_generic_refine_leaves_flag_unset() -> None:
     )
 
     recovery = orch._handle_critical_anomalies(
-        state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+        state=_DesignAttemptState(
+            spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+        ),
         # No zero_trade_category -> ZTR branch is skipped.
         exec_result=StrategyRunResult(success=True, trades=[]),
         market_data=_market_data(),
@@ -1358,7 +1362,9 @@ def test_handle_critical_anomalies_rejects_empty_critical_anomalies() -> None:
         ValueError, match="_handle_critical_anomalies requires at least one critical"
     ):
         orch._handle_critical_anomalies(
-            state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+            state=_DesignAttemptState(
+                spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+            ),
             exec_result=_zero_trade_exec_result(),
             market_data=_market_data(),
             config=_config(),
@@ -1381,7 +1387,9 @@ def test_handle_critical_anomalies_rejects_invalid_market_data(bad_market_data) 
 
     with pytest.raises(ValueError, match="market_data must be non-empty"):
         orch._handle_critical_anomalies(
-            state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+            state=_DesignAttemptState(
+                spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+            ),
             exec_result=_zero_trade_exec_result(),
             market_data=bad_market_data,
             config=_config(),
@@ -1495,7 +1503,9 @@ def test_other_zero_trade_category_still_uses_code_repair() -> None:
     orch.predicate_conformance_gate.check = lambda code, spec, **kw: []
 
     recovery = orch._handle_critical_anomalies(
-        state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+        state=_DesignAttemptState(
+            spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+        ),
         # NO_ORDERS_EMITTED -> specialised repair, not redesign routing.
         exec_result=_zero_trade_exec_result(),
         market_data=_market_data(),
@@ -1542,7 +1552,9 @@ def test_handle_critical_anomalies_propagates_budget_exhaustion_from_ztr(
     with use_budget(spent_budget):
         with pytest.raises(DesignBudgetExhausted) as exc_info:
             orch._handle_critical_anomalies(
-                state=_DesignAttemptState(spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()),
+                state=_DesignAttemptState(
+                    spec=_spec(), code="# original code\n", trades=[], metrics=_metrics_for()
+                ),
                 exec_result=_zero_trade_exec_result(),
                 market_data=_market_data(),
                 config=_config(),
@@ -1620,7 +1632,9 @@ def test_wire_schema_category_enum_matches_canonical_zero_trade_category() -> No
     the ``_ExpectancyForecastWire`` / ``risk_limits`` rationale in that file)
     rather than importing ``ZeroTradeCategory`` directly. This test is the
     guard that keeps the two lists from drifting apart."""
-    schema_categories = frozenset(ZERO_TRADE_REPAIR_SCHEMA["properties"]["root_cause_category"]["enum"])
+    schema_categories = frozenset(
+        ZERO_TRADE_REPAIR_SCHEMA["properties"]["root_cause_category"]["enum"]
+    )
     assert schema_categories == frozenset(get_args(ZeroTradeCategory))
 
 

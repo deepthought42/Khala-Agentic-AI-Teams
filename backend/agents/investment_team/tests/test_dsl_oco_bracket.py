@@ -168,9 +168,7 @@ def test_format_rule_renders_bracket() -> None:
         "OCO bracket: stop 3% / target 6%"
     )
     limit = _bracket(stop_pct=0.03, tp_pct=0.06, style="limit", limit_offset_pct=0.01)
-    assert (
-        format_rules_for_prompt([limit]) == "OCO bracket: stop 3% (limit, 1% offset) / target 6%"
-    )
+    assert format_rules_for_prompt([limit]) == "OCO bracket: stop 3% (limit, 1% offset) / target 6%"
 
 
 def test_first_side_stop_factor_recognizes_bracket_stop() -> None:

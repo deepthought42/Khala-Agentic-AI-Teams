@@ -51,20 +51,20 @@ def _rsi(period: int = 14) -> IndicatorRef:
 @pytest.mark.parametrize(
     "op,const,expected",
     [
-        (">", 100.0, "false"),   # rsi can equal 100 but never exceed it
-        (">", 99.0, None),       # reachable (99 < rsi <= 100)
-        (">=", 100.0, None),     # reachable (rsi can hit 100)
+        (">", 100.0, "false"),  # rsi can equal 100 but never exceed it
+        (">", 99.0, None),  # reachable (99 < rsi <= 100)
+        (">=", 100.0, None),  # reachable (rsi can hit 100)
         (">=", 101.0, "false"),  # rsi never reaches 101
-        ("<", 0.0, "false"),     # rsi never below 0
-        ("<", 1.0, None),        # reachable (rsi can be 0 < 1)
-        ("<=", 0.0, None),       # reachable (rsi can be 0)
-        ("<=", -1.0, "false"),   # rsi never <= -1
-        ("<", 101.0, "true"),    # every rsi value < 101
-        (">", -1.0, "true"),     # every rsi value > -1
-        ("<=", 100.0, "true"),   # every rsi value <= 100
-        (">=", 0.0, "true"),     # every rsi value >= 0
+        ("<", 0.0, "false"),  # rsi never below 0
+        ("<", 1.0, None),  # reachable (rsi can be 0 < 1)
+        ("<=", 0.0, None),  # reachable (rsi can be 0)
+        ("<=", -1.0, "false"),  # rsi never <= -1
+        ("<", 101.0, "true"),  # every rsi value < 101
+        (">", -1.0, "true"),  # every rsi value > -1
+        ("<=", 100.0, "true"),  # every rsi value <= 100
+        (">=", 0.0, "true"),  # every rsi value >= 0
         ("==", 150.0, "false"),  # equality to an out-of-range value
-        ("==", 50.0, None),      # reachable
+        ("==", 50.0, None),  # reachable
         ("==", -5.0, "false"),
     ],
 )
@@ -88,13 +88,18 @@ def test_bounded_cross_inside_range_is_reachable() -> None:
 
 def test_adx_and_stochastic_are_bounded_too() -> None:
     assert _bounded_indicator_verdict(_pred(IndicatorRef(name="adx"), ">", 100.0))[0] == "false"
-    assert _bounded_indicator_verdict(_pred(IndicatorRef(name="stochastic"), ">", 100.0))[0] == "false"
+    assert (
+        _bounded_indicator_verdict(_pred(IndicatorRef(name="stochastic"), ">", 100.0))[0] == "false"
+    )
 
 
 def test_unbounded_indicator_is_undecidable() -> None:
     # SMA / EMA / MACD / ATR / VWAP / Bollinger are price-scaled — no constant
     # is trivially out of range, so the rule abstains.
-    assert _bounded_indicator_verdict(_pred(IndicatorRef(name="sma", params={"period": 20}), ">", 1e9)) is None
+    assert (
+        _bounded_indicator_verdict(_pred(IndicatorRef(name="sma", params={"period": 20}), ">", 1e9))
+        is None
+    )
     assert _bounded_indicator_verdict(_pred(IndicatorRef(name="macd"), "<", -1e9)) is None
 
 

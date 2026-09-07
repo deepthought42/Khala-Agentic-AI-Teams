@@ -32,9 +32,7 @@ def test_design_review_module_import_does_not_read_prompt_files() -> None:
     """
     backend_root = Path(__file__).resolve().parents[3]
     agents_root = backend_root / "agents"
-    prompt_dir = (
-        Path(__file__).resolve().parent.parent / "strategy_lab" / "prompts"
-    ).resolve()
+    prompt_dir = (Path(__file__).resolve().parent.parent / "strategy_lab" / "prompts").resolve()
 
     script = f"""
 from pathlib import Path
@@ -68,9 +66,9 @@ if mod._get_system_prompt.cache_info().currsize != 0:
 """
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(agents_root), env.get("PYTHONPATH", "")]
-    ).rstrip(os.pathsep)
+    env["PYTHONPATH"] = os.pathsep.join([str(agents_root), env.get("PYTHONPATH", "")]).rstrip(
+        os.pathsep
+    )
 
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -80,9 +78,7 @@ if mod._get_system_prompt.cache_info().currsize != 0:
         cwd=str(backend_root),
         check=False,
     )
-    assert result.returncode == 0, (
-        f"stdout={result.stdout!r} stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
 
 
 def test_design_review_prompt_helpers_include_stop_order_and_body() -> None:

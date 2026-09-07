@@ -346,7 +346,9 @@ def test_checkpoint_is_frozen(build: Callable[..., PipelineCheckpoint]) -> None:
     ],
     ids=_STAGE_CHECKPOINT_IDS,
 )
-def test_mismatched_stage_rejected(build: Callable[..., PipelineCheckpoint], mismatched_stage: PipelineStage) -> None:
+def test_mismatched_stage_rejected(
+    build: Callable[..., PipelineCheckpoint], mismatched_stage: PipelineStage
+) -> None:
     with pytest.raises(ValidationError):
         build(stage=mismatched_stage)
 
@@ -462,7 +464,9 @@ def test_malformed_code_hash_rejected() -> None:
     ],
     ids=["review", "refinement", "alignment"],
 )
-def test_negative_rounds_completed_rejected(build: Callable[..., PipelineCheckpoint], field_name: str) -> None:
+def test_negative_rounds_completed_rejected(
+    build: Callable[..., PipelineCheckpoint], field_name: str
+) -> None:
     with pytest.raises(ValidationError):
         build(**{field_name: -1})
 

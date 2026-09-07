@@ -588,7 +588,12 @@ def test_dispatcher_emitted_stop_limit_is_always_reported(armed: bool) -> None:
             "sizing",
             True,
         ),
-        ([], "sizing", False),  # custom-code path: mode layers pass entry_rules=None
+        # The custom-code path proper: the mode layers pass ``entry_rules=None``,
+        # which ``TradingService.__init__`` then stores as an empty list — so both
+        # shapes must read as inactive, and both are exercised here rather than
+        # only the post-``__init__`` one.
+        (None, "sizing", False),
+        ([], "sizing", False),
         ([EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=90.0))], None, False),
         ([], None, False),
     ],

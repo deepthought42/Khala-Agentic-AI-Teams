@@ -123,9 +123,7 @@ def test_compute_regime_summary_uptrend_low_vol() -> None:
     def fetch(symbol: str, asset_class: str, days: int) -> List[OHLCVBar]:
         return bars
 
-    summary = compute_regime_summary(
-        fetch, computed_at=_COMPUTED_AT, benchmarks={"stocks": "SPY"}
-    )
+    summary = compute_regime_summary(fetch, computed_at=_COMPUTED_AT, benchmarks={"stocks": "SPY"})
 
     assert not summary.degraded
     assert summary.computed_at == _COMPUTED_AT
@@ -183,9 +181,7 @@ def test_compute_regime_summary_fetch_raises_is_fail_open() -> None:
     def boom(symbol: str, asset_class: str, days: int) -> List[OHLCVBar]:
         raise RuntimeError("provider down")
 
-    summary = compute_regime_summary(
-        boom, computed_at=_COMPUTED_AT, benchmarks={"stocks": "SPY"}
-    )
+    summary = compute_regime_summary(boom, computed_at=_COMPUTED_AT, benchmarks={"stocks": "SPY"})
     assert summary.entries == []
     assert summary.degraded
     assert "SPY" in (summary.degraded_reason or "")

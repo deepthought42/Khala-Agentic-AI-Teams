@@ -36,12 +36,20 @@ class _StubCache:
 
     def get_or_fetch(self, *, symbol, asset_class, frequency, start, end, fetch_fn, as_of=None):
         self.get_or_fetch_calls.append(
-            {"symbol": symbol, "asset_class": asset_class, "frequency": frequency,
-             "start": start, "end": end, "as_of": as_of}
+            {
+                "symbol": symbol,
+                "asset_class": asset_class,
+                "frequency": frequency,
+                "start": start,
+                "end": end,
+                "as_of": as_of,
+            }
         )
         return self._single_return
 
-    def get_or_fetch_multi(self, *, symbols, asset_class, frequency, start, end, fetch_fn, as_of=None):
+    def get_or_fetch_multi(
+        self, *, symbols, asset_class, frequency, start, end, fetch_fn, as_of=None
+    ):
         self.get_or_fetch_multi_calls.append({"symbols": symbols, "as_of": as_of})
         return {s: self._multi_return.get(s, ([], None)) for s in symbols}
 
@@ -63,7 +71,9 @@ def svc_with_stub_cache() -> tuple[MarketDataService, _StubCache]:
 
 
 def _bar(date_str: str, *, close: float = 100.0, volume: float = 1_000_000.0) -> OHLCVBar:
-    return OHLCVBar(date=date_str, open=close, high=close + 0.5, low=close - 0.5, close=close, volume=volume)
+    return OHLCVBar(
+        date=date_str, open=close, high=close + 0.5, low=close - 0.5, close=close, volume=volume
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +122,12 @@ def test_fetch_ohlcv_delegates_to_ohlcv_range(svc_with_stub_cache) -> None:
 
 def test_fetch_multi_symbol_delegates_to_multi_range(svc_with_stub_cache) -> None:
     svc, cache = svc_with_stub_cache
-    cache.set_multi({
-        "AAA": ([_bar("2024-06-01")], _StubMeta("yahoo")),
-        "BBB": ([], None),  # filtered out
-    })
+    cache.set_multi(
+        {
+            "AAA": ([_bar("2024-06-01")], _StubMeta("yahoo")),
+            "BBB": ([], None),  # filtered out
+        }
+    )
     out = svc.fetch_multi_symbol(["AAA", "BBB"], "stocks", days=30)
     assert "AAA" in out
     assert "BBB" not in out
@@ -161,9 +173,7 @@ def test_fetch_multi_symbol_range_populates_last_quality_report(
     import investment_team.execution.data_quality as dq
 
     sentinel = object()
-    monkeypatch.setattr(
-        dq, "validate_market_data", lambda **kwargs: sentinel
-    )
+    monkeypatch.setattr(dq, "validate_market_data", lambda **kwargs: sentinel)
 
     out = svc.fetch_multi_symbol_range(["AAA"], "stocks", "2024-05-01", "2024-06-01")
     assert "AAA" in out
@@ -200,9 +210,7 @@ def test_fetch_multi_symbol_range_dedups_crypto_aliases_to_single_fetch(
     shared_bar = _bar("2024-06-01")
     cache.set_multi({"BTC": ([shared_bar], _StubMeta("yahoo"))})
 
-    out = svc.fetch_multi_symbol_range(
-        ["BTC", "BTC-USD"], "crypto", "2024-05-01", "2024-06-01"
-    )
+    out = svc.fetch_multi_symbol_range(["BTC", "BTC-USD"], "crypto", "2024-05-01", "2024-06-01")
     # Cache requested the single deduped canonical symbol.
     assert cache.get_or_fetch_multi_calls[-1]["symbols"] == ["BTC"]
     # Both caller spellings come back, mapped to the same bars.

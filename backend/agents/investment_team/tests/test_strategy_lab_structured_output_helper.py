@@ -266,7 +266,9 @@ def test_invoke_structured_with_schema_charges_per_provider_call_inside_closure(
     captured: Dict[str, Any] = {}
     real_run_structured_agent = so_mod.run_structured_agent
 
-    def _spy_run_structured_agent(fn: Any, prompt: str, *args: Any, charge: bool, **kwargs: Any) -> Any:
+    def _spy_run_structured_agent(
+        fn: Any, prompt: str, *args: Any, charge: bool, **kwargs: Any
+    ) -> Any:
         captured["charge"] = charge
         # No up-front charges before the envelope starts.
         charged_before_run_structured_agent.append(charge_calls)

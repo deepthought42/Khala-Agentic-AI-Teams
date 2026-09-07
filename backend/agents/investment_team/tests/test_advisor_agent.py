@@ -36,7 +36,9 @@ from investment_team.models import (
 
 
 def test_extract_all_numbers_handles_suffixes_and_commas() -> None:
-    nums = FinancialAdvisorAgent._extract_all_numbers("I make 120,000 and have 1.5m saved, 10k cash")
+    nums = FinancialAdvisorAgent._extract_all_numbers(
+        "I make 120,000 and have 1.5m saved, 10k cash"
+    )
     assert nums == [120000.0, 1_500_000.0, 10_000.0]
 
 
@@ -292,7 +294,9 @@ def test_validation_agent_reports_failed_checks() -> None:
             ValidationCheck(name="backtest_quality", status=ValidationStatus.FAIL, details="bad"),
             ValidationCheck(name="walk_forward", status=ValidationStatus.PASS, details=""),
             ValidationCheck(name="stress_test", status=ValidationStatus.PASS, details=""),
-            ValidationCheck(name="transaction_cost_model", status=ValidationStatus.PASS, details=""),
+            ValidationCheck(
+                name="transaction_cost_model", status=ValidationStatus.PASS, details=""
+            ),
             ValidationCheck(name="liquidity_impact", status=ValidationStatus.PASS, details=""),
         ],
     )
@@ -311,7 +315,9 @@ def _valid_validation_report(strategy_id: str = "s") -> ValidationReport:
             ValidationCheck(name="backtest_quality", status=ValidationStatus.PASS, details=""),
             ValidationCheck(name="walk_forward", status=ValidationStatus.PASS, details=""),
             ValidationCheck(name="stress_test", status=ValidationStatus.PASS, details=""),
-            ValidationCheck(name="transaction_cost_model", status=ValidationStatus.PASS, details=""),
+            ValidationCheck(
+                name="transaction_cost_model", status=ValidationStatus.PASS, details=""
+            ),
             ValidationCheck(name="liquidity_impact", status=ValidationStatus.PASS, details=""),
         ],
     )
@@ -377,7 +383,9 @@ def test_promotion_gate_revise_on_validation_failures() -> None:
             ValidationCheck(name="backtest_quality", status=ValidationStatus.FAIL, details="bad"),
             ValidationCheck(name="walk_forward", status=ValidationStatus.PASS, details=""),
             ValidationCheck(name="stress_test", status=ValidationStatus.PASS, details=""),
-            ValidationCheck(name="transaction_cost_model", status=ValidationStatus.PASS, details=""),
+            ValidationCheck(
+                name="transaction_cost_model", status=ValidationStatus.PASS, details=""
+            ),
             ValidationCheck(name="liquidity_impact", status=ValidationStatus.PASS, details=""),
         ],
     )

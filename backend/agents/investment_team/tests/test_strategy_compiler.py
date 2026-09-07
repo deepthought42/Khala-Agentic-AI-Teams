@@ -862,7 +862,10 @@ def test_emitted_indicator_helpers_have_type_hints() -> None:
         exit_rules=[StopLossRule(pct=0.05)],
     )
     sma_code = compile_strategy(sma_spec)
-    assert 'def sma(self, history: list, period: int, source: str = "close") -> float | None:' in sma_code
+    assert (
+        'def sma(self, history: list, period: int, source: str = "close") -> float | None:'
+        in sma_code
+    )
     assert "def _src(self, bar: object, source: str) -> float:" in sma_code
 
     bb_spec = _spec(
@@ -880,7 +883,7 @@ def test_emitted_indicator_helpers_have_type_hints() -> None:
     )
     bb_code = compile_strategy(bb_spec)
     assert (
-        'def bollinger_bands(self, history: list, period: int = 20, num_std: float = 2.0, '
+        "def bollinger_bands(self, history: list, period: int = 20, num_std: float = 2.0, "
         'source: str = "close", select: str = "middle") -> float | None:'
     ) in bb_code
 

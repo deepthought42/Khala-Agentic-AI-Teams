@@ -3613,12 +3613,16 @@ def test_compute_signal_brief_snapshot_fails_open_on_expert_init_failure(monkeyp
         raise RuntimeError("expert init failed")
 
     monkeypatch.setattr(
-        api_main, "_snapshot_prior_records", lambda *, reverse=False: [_signal_brief_prior_record("stocks")]
+        api_main,
+        "_snapshot_prior_records",
+        lambda *, reverse=False: [_signal_brief_prior_record("stocks")],
     )
     monkeypatch.setattr(api_main, "FreeTierMarketDataProvider", _FakeProvider)
     monkeypatch.setattr(api_main, "SignalIntelligenceExpert", _boom_expert)
 
-    briefs, storage = api_main._compute_signal_brief_snapshot("SPY", ["crypto", "forex", "futures", "commodities"])
+    briefs, storage = api_main._compute_signal_brief_snapshot(
+        "SPY", ["crypto", "forex", "futures", "commodities"]
+    )
 
     assert briefs == {}
     assert storage["by_asset_class"]["stocks"] == {
@@ -3650,13 +3654,17 @@ def test_compute_signal_brief_snapshot_survives_provider_close_failure(monkeypat
         raise RuntimeError("expert failed too")
 
     monkeypatch.setattr(
-        api_main, "_snapshot_prior_records", lambda *, reverse=False: [_signal_brief_prior_record("stocks")]
+        api_main,
+        "_snapshot_prior_records",
+        lambda *, reverse=False: [_signal_brief_prior_record("stocks")],
     )
     monkeypatch.setattr(api_main, "FreeTierMarketDataProvider", _FakeProvider)
     monkeypatch.setattr(api_main, "SignalIntelligenceExpert", _boom_expert)
 
     # Must not raise despite close() also failing.
-    briefs, storage = api_main._compute_signal_brief_snapshot("SPY", ["crypto", "forex", "futures", "commodities"])
+    briefs, storage = api_main._compute_signal_brief_snapshot(
+        "SPY", ["crypto", "forex", "futures", "commodities"]
+    )
 
     assert briefs == {}
     assert storage["by_asset_class"]["stocks"]["skipped"] is True
@@ -3816,7 +3824,9 @@ def test_compute_signal_brief_snapshot_isolates_one_categorys_expert_failure(mon
     monkeypatch.setattr(api_main, "FreeTierMarketDataProvider", _signal_brief_fake_provider())
     monkeypatch.setattr(api_main, "SignalIntelligenceExpert", _FakeExpert)
 
-    briefs, storage = api_main._compute_signal_brief_snapshot("SPY", ["forex", "futures", "commodities"])
+    briefs, storage = api_main._compute_signal_brief_snapshot(
+        "SPY", ["forex", "futures", "commodities"]
+    )
 
     # The failing category is absent from briefs and carries a skip marker...
     assert "stocks" not in briefs
@@ -3881,7 +3891,9 @@ def test_compute_signal_brief_snapshot_isolates_a_scoped_to_failure(monkeypatch)
     from investment_team.api import main as api_main
 
     monkeypatch.setattr(
-        api_main, "_snapshot_prior_records", lambda *, reverse=False: [_signal_brief_prior_record("stocks")]
+        api_main,
+        "_snapshot_prior_records",
+        lambda *, reverse=False: [_signal_brief_prior_record("stocks")],
     )
 
     class _FakeExpert:
@@ -3898,7 +3910,9 @@ def test_compute_signal_brief_snapshot_isolates_a_scoped_to_failure(monkeypatch)
 
     monkeypatch.setattr(MarketLabContext, "scoped_to", _boom_scoped_to)
 
-    briefs, storage = api_main._compute_signal_brief_snapshot("SPY", ["crypto", "forex", "futures", "commodities"])
+    briefs, storage = api_main._compute_signal_brief_snapshot(
+        "SPY", ["crypto", "forex", "futures", "commodities"]
+    )
 
     assert briefs == {}
     assert storage["by_asset_class"]["stocks"] == {
@@ -3917,7 +3931,9 @@ def test_compute_signal_brief_snapshot_propagates_an_assertion_error(monkeypatch
     from investment_team.api import main as api_main
 
     monkeypatch.setattr(
-        api_main, "_snapshot_prior_records", lambda *, reverse=False: [_signal_brief_prior_record("stocks")]
+        api_main,
+        "_snapshot_prior_records",
+        lambda *, reverse=False: [_signal_brief_prior_record("stocks")],
     )
 
     class _FakeExpert:
@@ -3928,7 +3944,9 @@ def test_compute_signal_brief_snapshot_propagates_an_assertion_error(monkeypatch
     monkeypatch.setattr(api_main, "SignalIntelligenceExpert", _FakeExpert)
 
     with pytest.raises(AssertionError, match="canonical PROMPT_ASSET_CLASSES member"):
-        api_main._compute_signal_brief_snapshot("SPY", ["crypto", "forex", "futures", "commodities"])
+        api_main._compute_signal_brief_snapshot(
+            "SPY", ["crypto", "forex", "futures", "commodities"]
+        )
 
 
 def test_compute_signal_brief_snapshot_excludes_an_alias_spelling(monkeypatch):

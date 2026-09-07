@@ -284,8 +284,12 @@ def test_macd_view_per_bar_cost_is_flat_in_history() -> None:
     """
     window = 100
     total_bars = 2200
-    early = _measure_view_window(total_bars, 600, 600 + window, max_bars=total_bars, refs=_MACD_VIEW_REFS)
-    late = _measure_view_window(total_bars, 2100, 2100 + window, max_bars=total_bars, refs=_MACD_VIEW_REFS)
+    early = _measure_view_window(
+        total_bars, 600, 600 + window, max_bars=total_bars, refs=_MACD_VIEW_REFS
+    )
+    late = _measure_view_window(
+        total_bars, 2100, 2100 + window, max_bars=total_bars, refs=_MACD_VIEW_REFS
+    )
     ratio = late / max(early, 1e-9)
     if os.environ.get("BENCH_STREAMING_INDICATORS_VERBOSE"):
         print(

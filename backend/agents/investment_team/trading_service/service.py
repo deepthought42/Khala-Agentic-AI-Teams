@@ -2261,6 +2261,16 @@ class _EngineEntryDispatcher:
         # (``_compute_qty``) reads these cached values instead of re-normalizing
         # the asset class on every entry.
         self._fractional: bool = is_fractional_asset_class(self.asset_class)
+        # Whether this dispatcher can emit entries at all — and therefore whether
+        # anything can attach a resting exit leg. ``entry_rules``/``sizing`` are
+        # fixed at construction, so this is derived once here rather than on every
+        # ``maybe_emit`` call, like the other per-run constants below. Assigned via
+        # the SHARED ``_engine_entry_emission_active`` (not an inlined restatement)
+        # so it cannot drift from the identical condition ``TradingService.run``
+        # applies before ceding a stop-loss rule to the resting mechanism.
+        self._entry_emission_active: bool = _engine_entry_emission_active(
+            self.entry_rules, self.sizing
+        )
         # Whether the dispatcher applies the runtime position clamp for this
         # sizing kind. EVERY engine sizing kind is clamped to ``max_position_pct``
         # at the sizing price so the cap is a true pre-entry sizing bound: we
@@ -2356,7 +2366,7 @@ class _EngineEntryDispatcher:
         views: Dict[str, StreamingHistoryView],
         result: "TradingServiceResult",
     ) -> None:
-        if not _engine_entry_emission_active(self.entry_rules, self.sizing):
+        if not self._entry_emission_active:
             return
         if self.target_symbols and cur_bar.symbol not in self.target_symbols:
             return
