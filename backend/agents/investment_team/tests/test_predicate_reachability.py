@@ -971,6 +971,7 @@ def _fire_evidence(fires: int, warmup_covered: int, evaluated: int = 30) -> str:
             coverage=((0, fires + warmup_covered),),
             legs=(),
             warmup_covered_fires=warmup_covered,
+            warmup_conclusive_bars=warmup_covered,
         )
     )
 
@@ -1007,6 +1008,52 @@ def test_starved_and_thin_findings_both_use_the_split_evidence_clause() -> None:
         detail = results[0].details
         assert "every one of them on the warmup prefix" in detail
         assert "not at all across the 30 bar(s)" in detail
+
+
+def test_conclusive_prefix_coverage_is_not_gated_by_the_steady_state_bar_floor() -> None:
+    # entry[0] never finishes warming up over the whole window (an indicator
+    # whose lookback exceeds it), so the steady-state window is empty. entry[1]
+    # is satisfied throughout and shadows every fire entry[2] has. The bar floor
+    # guards inference from ABSENCE — "never fired, so dead" — while starvation
+    # argues from PRESENCE and has its own floor, so withholding here would
+    # abstain on a question the data has already settled.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, ["satisfied"] * 60)
+    assert v.evaluated == 0
+    assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (0, 0, 0)
+    assert v.covered_fires == 60
+    assert v.warmup_coverage == ((1, 60),)
+    assert v.verdict == "starved"
+
+
+def test_conclusive_prefix_bars_do_not_lower_the_starvation_evidence_floor() -> None:
+    # Same shape but only four covered fires. The window is judgeable — 60
+    # conclusive bars — so the abstention is the thin-evidence one, not the
+    # bar-count one: judged_bars is a window-coverage floor, and
+    # _MIN_STARVATION_FIRES is what guards the starvation claim itself.
+    later = _pattern(60, range(0, 4))
+    v = _verdict(later, ["warmup"] * 60, ["satisfied"] * 60)
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 60, 60)
+    assert v.covered_fires == 4
+    assert v.verdict == "abstained_thin"
+
+
+def test_a_short_window_still_abstains_on_bars_even_when_every_bar_is_conclusive() -> None:
+    # Nineteen conclusive bars is still nineteen bars. The carve-out restores
+    # bars the warming rule made unaskable; it does not lower the floor.
+    later = _pattern(19, range(19))
+    v = _verdict(later, ["warmup"] * 19, ["satisfied"] * 19)
+    assert (v.warmup_conclusive_bars, v.judged_bars) == (19, 19)
+    assert v.covered_fires == 19
+    assert v.verdict == "abstained_bars"
+
+
+def test_prefix_bars_with_no_satisfied_earlier_rule_stay_unjudged() -> None:
+    # Nothing covers these bars, so the warming rule's eventual verdict is
+    # exactly what would decide them — genuinely unjudged, not conclusive.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, ["miss"] * 60)
+    assert (v.warmup_conclusive_bars, v.judged_bars) == (0, 0)
+    assert v.warmup_independent_fires == 60
+    assert v.verdict == "abstained_bars"
 
 
 def test_a_rule_with_no_fire_anywhere_is_still_dead() -> None:

@@ -287,6 +287,7 @@ class _RuleStarvation:
     warmup_independent_fires: int = 0
     warmup_covered_fires: int = 0
     warmup_coverage: tuple[tuple[int, int], ...] = ()
+    warmup_conclusive_bars: int = 0
 
     def __post_init__(self) -> None:
         """Enforce the counting and ordering invariants at construction time."""
@@ -296,6 +297,9 @@ class _RuleStarvation:
         )
         assert self.warmup_independent_fires >= 0, "warmup_independent_fires must be >= 0"
         assert self.warmup_covered_fires >= 0, "warmup_covered_fires must be >= 0"
+        assert self.warmup_covered_fires <= self.warmup_conclusive_bars, (
+            "every covered prefix fire lands on a conclusive prefix bar"
+        )
         assert all(count > 0 for _, count in self.warmup_coverage), (
             "warmup_coverage must hold only earlier rules that covered at least one fire"
         )
@@ -311,6 +315,35 @@ class _RuleStarvation:
         assert list(self.coverage) == sorted(self.coverage, key=lambda kv: (-kv[1], kv[0])), (
             "coverage must be ordered by descending covered fires, then ascending index"
         )
+
+    @property
+    def judged_bars(self) -> int:
+        """Bars on which this rule's selection outcome is settled.
+
+        Postconditions: ``evaluated + warmup_conclusive_bars`` — the
+        steady-state window plus the prefix bars where a *satisfied* earlier
+        rule settles the question anyway. Floors :attr:`verdict`'s
+        ``"abstained_bars"`` rung against ``_MIN_EVALUATED_BARS``.
+
+        A prefix bar is excluded from :attr:`evaluated` because *some* earlier
+        rule is warming and so cannot be asked whether it would have covered
+        the fire. That uncertainty evaporates when a DIFFERENT earlier rule is
+        satisfied there: ``evaluate_entry_rules`` returns that rule, the
+        warming one is not in the running, and this rule is not selected —
+        settled, whatever the warming rule would eventually have done. Counting
+        those bars keeps an earlier rule that never finishes warming up over
+        the whole window (a lookback longer than the data) from collapsing
+        ``evaluated`` to zero and abstaining on a rule the same window shows
+        shadowed on every fire.
+
+        Bars where no earlier rule is satisfied stay out: there the warming
+        rule's eventual verdict is exactly what would decide the bar, so it is
+        genuinely unjudged. This is a window-coverage floor, not an evidence
+        floor — ``_MIN_STARVATION_FIRES`` is what guards the starvation claim
+        itself, so a short window still abstains here even when every one of
+        its few bars is conclusive.
+        """
+        return self.evaluated + self.warmup_conclusive_bars
 
     @property
     def combined_coverage(self) -> tuple[tuple[int, int], ...]:
@@ -355,9 +388,9 @@ class _RuleStarvation:
 
         Postconditions: returns the FIRST matching rung, checked in this
         order —
-          * ``"abstained_bars"`` — fewer than ``_MIN_EVALUATED_BARS`` bars
-            judged against every earlier rule; a window-coverage problem, not a
-            reachability verdict.
+          * ``"abstained_bars"`` — fewer than ``_MIN_EVALUATED_BARS``
+            :attr:`judged_bars`; a window-coverage problem, not a reachability
+            verdict.
           * ``"reachable"`` — fires at least once, in the steady-state window,
             on a bar no earlier rule covers, so first-match-wins can actually
             select it.
@@ -391,7 +424,7 @@ class _RuleStarvation:
         regardless of check order (both require zero independent fires of
         either kind). Deterministic; depends only on this instance's counts.
         """
-        if self.evaluated < _MIN_EVALUATED_BARS:
+        if self.judged_bars < _MIN_EVALUATED_BARS:
             return "abstained_bars"
         if self.independent_fires > 0:
             return "reachable"
@@ -563,14 +596,19 @@ def _starvation_verdicts(
         independent_fires = 0
         warmup_independent_fires = 0
         warmup_covered_fires = 0
+        warmup_conclusive_bars = 0
         covered: Dict[int, int] = {}
         warmup_covered: Dict[int, int] = {}
         for k, status in enumerate(statuses[j]):
             if status == "warmup":
                 continue
             if any_earlier_warmup[k]:
+                hits = earlier_hits[k]
+                if hits:
+                    # Coverage is settled here despite the warming rule: it
+                    # cannot win the bar, and a satisfied earlier rule does.
+                    warmup_conclusive_bars += 1
                 if status == "satisfied":
-                    hits = earlier_hits[k]
                     if hits:
                         warmup_covered_fires += 1
                         for index in hits:
@@ -603,6 +641,7 @@ def _starvation_verdicts(
                 warmup_coverage=tuple(
                     sorted(warmup_covered.items(), key=lambda kv: (-kv[1], kv[0]))
                 ),
+                warmup_conclusive_bars=warmup_conclusive_bars,
             )
         )
     return out
