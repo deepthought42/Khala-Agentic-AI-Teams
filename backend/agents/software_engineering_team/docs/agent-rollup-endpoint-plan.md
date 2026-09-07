@@ -166,18 +166,43 @@ GROUP BY GROUPING SETS ((agent_key), (phase), (agent_key, phase))
 
 One query yields all three views; `GROUPING()` tags which set each row came from.
 
-**The parity question is settled, not hand-waved.** The concern with moving math
-SQL-side is that the endpoint would report different numbers than the unit-tested
-`_stats` helpers. It does not — the definitions coincide exactly:
+**Parity with the `_stats` helpers — exact for the statistics, canonical-plus-tolerance for cost.**
+The concern with moving math SQL-side is that the endpoint would report different
+numbers than the unit-tested helpers. For the percentiles and the integer sums it
+does not. For the cost sum it can, and the plan says so rather than overclaiming.
 
 | Statistic | `_stats` (Python) | Postgres | Parity |
 |---|---|---|---|
-| `median` | sorted midpoint, **averaging** the two middle values at even `n` | `percentile_cont(0.5)` — linear interpolation, which at the median of an even sample *is* their average | Exact |
-| `p95` | nearest rank, `ordered[ceil(0.95n) - 1]`, no interpolation | `percentile_disc(0.95)` — first value whose cumulative distribution ≥ 0.95, i.e. `ordered[ceil(0.95n) - 1]` | Exact |
-| `total_cost_usd` | `math.fsum` (order-independent) | `SUM(cost_usd::numeric)` — exact decimal, then round to 6 dp | Exact; the `::numeric` cast is load-bearing, since `SUM(double precision)` is not order-deterministic under a parallel plan |
+| `median` | sorted midpoint, **averaging** the two middle values at even `n` | `percentile_cont(0.5)` — linear interpolation, which at the median of an even sample *is* their average | **Exact**, and it rests on `latency_ms` being `INTEGER` (see the DDL): the two middle values are exact integers, so `(a + b) / 2` is exact in IEEE double on both sides |
+| `p95` | nearest rank, `ordered[ceil(0.95n) - 1]`, no interpolation | `percentile_disc(0.95)` — first value whose cumulative distribution ≥ 0.95, i.e. `ordered[ceil(0.95n) - 1]` | **Exact** — `percentile_disc` selects an actual sample value, so there is no arithmetic to diverge |
+| token sums, `call_count` | Python `int` accumulation | `SUM(<integer column>)`, `COUNT(*)` | **Exact** — integer arithmetic, no representation question |
+| `total_cost_usd` | `math.fsum` over the raw `float8` values | `SUM(cost_usd::numeric)` | **Not exact.** `compute_from_traces` is canonical; the SQL path is compared within tolerance. See below |
 
 The `max(1, ...)`/`min(n, ...)` clamps in `_stats.p95` are no-ops for `0 < f <= 1`
 and `n >= 1`, so they do not perturb the correspondence.
+
+**Why the cost sum cannot be claimed exact.** `cost_usd` is stored as
+`DOUBLE PRECISION`. `math.fsum` sums those binary doubles and rounds once.
+`cost_usd::numeric` converts each value *first*, and since PostgreSQL 12 a
+`float8 → numeric` cast goes through the shortest decimal representation that
+round-trips — so the double nearest `0.1` becomes exactly `0.1`, not
+`0.1000000000000000055511151231257827…`. Summing the decimals is therefore a
+different arithmetic domain than summing the doubles, and for a group whose total
+lands near a 6-decimal rounding boundary the two can round to different values. A
+parity fixture over representative rows cannot establish a for-all-values
+guarantee, so do not write one that implies it.
+
+Resolution: **`compute_from_traces` is the canonical definition of
+`total_cost_usd`.** The parity test asserts the percentiles, token sums and counts
+are *equal*, and that the two cost sums agree within a tolerance well under the
+6-decimal reporting granularity (`1e-9` absolute is ample). The README says the
+figure is a sum of float-stored per-call costs and is not to be reconciled to the
+cent against an external ledger — which was always true and is now stated.
+
+Keep the `::numeric` cast regardless: it removes the *other* nondeterminism, since
+`SUM(double precision)` is not order-deterministic under a parallel plan, and a
+figure that changes between two identical requests is worse than one that differs
+from `fsum` in the ninth decimal.
 
 Note that `fetch_traces_since`'s docstring currently asserts "percentiles cannot
 be computed SQL-side" as the reason it has no row cap. That claim is false —
@@ -196,6 +221,60 @@ truncation silently understates counts and percentiles, which is worse than a
 slow query. That reasoning argues for aggregating, not for shipping the
 unbounded scan.
 
+**What aggregating does and does not bound.** Be precise here, because it is easy
+to overclaim. `GROUPING SETS` bounds the *transfer* and the *Python-side* work: it
+does not bound the database scan, and the ordered-set aggregates still sort each
+group's latency sample server-side. What changed is the shape of the risk, not its
+existence:
+
+- *Before*: N rows on the wire, N Python dicts, N-element Python lists, CPython
+  `sorted()` — inside the API worker process, GIL-bound, per request.
+- *After*: an index range scan on `idx_se_agent_traces_ts` plus a hash aggregate
+  with per-group sorts, in the database, returning tens of rows.
+
+That is a different order of concern, but it is not *no* concern, and the endpoint
+already lives with exactly this shape: `fetch_cost_since` is
+`SUM(cost_usd) ... WHERE ts >= %s GROUP BY job_id` — the same unbounded-window
+aggregate, over the same table, on this same route, in production today. So an
+unbounded-window aggregate on `/dora` is the endpoint's existing posture. If that
+posture is wrong it is wrong for both queries, and changing it is a platform
+decision about how the metrics route is served — not something this story should
+decide unilaterally on the back of one added key.
+
+Two bounded mitigations *are* this story's to take, and both reuse machinery the
+repo already has:
+
+1. **Bound the query.** Run the read under a transaction-local `statement_timeout`,
+   the pattern `shared.postgres.client.probe_cursor` already establishes (the
+   shared pool deliberately sets none globally, so each bounded read scopes its
+   own). A pathological window is then cancelled server-side and falls into the
+   empty-rollup literal, instead of pinning a pooled connection until the alias's
+   15s timeout. That converts the worst case from "saturate and time out" into
+   "degrade to empty" — which is already the endpoint's stated contract, so it
+   costs no new semantics. Note the empty result this produces is exactly cause 4
+   in §4.4's ambiguity list, which is why that list matters.
+2. **Collapse concurrent polls.** Dashboard polling is the concurrency the risk
+   actually names, and repeated identical queries are the cheapest thing in the
+   world to deduplicate: cache the computed rollup in `shared.cache` under a
+   short TTL keyed by `(window_days, job_id)`. Ten pollers then cost one query.
+   Staleness of up to a minute on a 30-day cost rollup is not a meaningful loss of
+   fidelity.
+
+**Rejected for this story: incrementally maintained summary buckets.** A
+materialized per-bucket rollup is the correct answer at sufficient scale, and it
+is a project, not a story: a summary table, an incremental maintenance path,
+backfill for existing rows, staleness semantics, and a new consistency question
+("the summary says X, the raw traces say Y") that this endpoint does not have
+today. The parent epic already places a built-out metrics pipeline (OTLP /
+collector) out of scope; this is the same category of answer.
+
+**Escalate on measurement, not on speculation.** Nobody has measured this query at
+a real install's row count, and "might be slow at scale" is not a number. Record
+one: run the aggregating query against the largest available `se_agent_traces` at
+the default 30-day window and log the timing in the implementing PR. If p95 exceeds
+roughly a third of the alias budget (~5s), that is the trigger to open the summary-
+table story — with evidence attached, rather than building it speculatively now.
+
 **Scope honesty.** This makes the story larger than "wire an existing function to
 an existing route" — it adds a store function, a row-shape adapter, and
 parity tests. Call it a 3, not a 2. The alternative is knowingly putting an
@@ -212,6 +291,11 @@ tags into the three views, and returns them already shaped as `CallRollup` field
 dicts. Same best-effort contract as its neighbours: `[]`/empty on a disabled or
 failing Postgres, logged at DEBUG, never raised.
 
+Run it under a transaction-local `statement_timeout` per §3.5, following
+`shared.postgres.client.probe_cursor`'s pattern, so a pathological window is
+cancelled server-side rather than pinning a pooled connection; a timeout returns
+empty like any other failure, preserving the best-effort contract.
+
 `fetch_traces_since` stays — it is still the right read for a caller that wants
 raw rows, and `compute_from_traces` still consumes them. Correct its docstring's
 "percentiles cannot be computed SQL-side" claim (§3.5).
@@ -227,7 +311,11 @@ Same for rounding.
    verbatim — no behavior change, so the existing fallback test keeps passing on
    its assertions about DORA fields.
 2. Add `_rollup_payload(window)` per §3.3, built on the §4.1 aggregating read
-   rather than `compute_agent_rollup`'s row-materializing path (§3.5).
+   rather than `compute_agent_rollup`'s row-materializing path (§3.5), and wrap it
+   in the short-TTL `shared.cache` entry from §3.5 so concurrent dashboard polls
+   collapse to one query. A cache miss, a cache-backend outage, or a stale-read
+   failure must degrade to a live query and then to the empty literal — never
+   raise.
 3. Rewrite `metrics_dora` as the three-line composition in §3.3, and extend its
    docstring: what the new key is, that it is additive, and that it is empty
    rather than absent when there is no trace data.
@@ -393,7 +481,8 @@ That is the claim §3.5 rests on, and it is cheap to confirm directly.
 | The existing key-set assertion in `test_api_metrics.py` fails | Anticipated in §4.3 — it is the intended signal that the response shape changed, not a surprise |
 | A rollup failure degrades the DORA payload | §3.3's split failure boundaries, tested with non-empty sentinels in both directions (§4.3) — the naive form of that test proves nothing |
 | An HTTP-reachable unbounded scan over the retention window | §3.5: aggregate in SQL via `GROUPING SETS` + ordered-set aggregates; one row per group, never the raw rows. This was the plan's original mistake, corrected |
-| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table (`percentile_cont(0.5)` ≡ averaging median; `percentile_disc(0.95)` ≡ nearest-rank p95; `SUM(::numeric)` ≡ `fsum`), locked by the parity test in §4.3 |
+| Aggregating bounds transfer but **not** the database scan | Acknowledged in §3.5, not papered over: a `statement_timeout` turns the worst case into "degrade to empty", and a short-TTL cache collapses concurrent polls. The same unbounded-window aggregate (`fetch_cost_since`) already serves this route today; a summary table is the escalation, gated on a measured p95 rather than speculation |
+| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-9` |
 | Operators misread an empty rollup as a broken sink | §4.4 documents all five causes and the order to check them; the response genuinely cannot distinguish them |
 | The empty-rollup literal drifts from `AgentRollupMetrics` | Drift-guard test, mirroring the one that already protects the DORA literal |
 | A consumer reads `agent_rollup` as absent-when-empty | The key is always present; empty is three empty dicts, never `null` or missing. Stated in the route docstring, the README, and asserted in tests |
@@ -405,6 +494,9 @@ That is the claim §3.5 rests on, and it is cheap to confirm directly.
 - A health/error-state surface that would let a caller distinguish "no data" from
   "the read failed" (§4.4) — it would change the response shape this story
   promises to leave alone.
+- Incrementally maintained summary buckets for the rollup (§3.5) — the right answer
+  at sufficient scale, but a project of its own, and gated on a measured p95 rather
+  than opened speculatively.
 - Alerting or thresholds on the reported numbers.
 - Any change to the DORA metrics themselves.
 - Backfilling traces for historical runs.
