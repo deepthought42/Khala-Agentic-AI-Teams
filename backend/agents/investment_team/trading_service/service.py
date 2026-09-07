@@ -515,6 +515,11 @@ class _EvalGate(NamedTuple):
     resting_limit_stop_id: Optional[str]
     entry_continuation_in_flight: bool
     scaled_partial_in_flight: bool
+    #: Whether the resting stop-loss migration's entry-attached leg is CURRENTLY
+    #: on the book for this position. Gates the cede: the rule is handed to the
+    #: resting mechanism only while that mechanism actually has protection in
+    #: place — see ``_EngineExitDispatcher._evaluate``.
+    resting_stop_child_present: bool
     pending: List[PendingOrder]
 
 
@@ -683,6 +688,7 @@ class _EngineExitDispatcher:
             gate.pos,
             cur_bar,
             exclude_resting_limit_stop=exclude_resting_limit_stop,
+            resting_stop_child_present=gate.resting_stop_child_present,
             exclude_scaled=exclude_scaled,
         )
         if intent is None:
@@ -961,13 +967,19 @@ class _EngineExitDispatcher:
         scan = self._scan_pending_for_gate(tracked, pos, pending)
         if scan is None:
             return None  # an in-flight engine MARKET full close is already pending
-        resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight = scan
+        (
+            resting_limit_stop_id,
+            entry_continuation_in_flight,
+            scaled_partial_in_flight,
+            resting_stop_child_present,
+        ) = scan
         return _EvalGate(
             tracked=tracked,
             pos=pos,
             resting_limit_stop_id=resting_limit_stop_id,
             entry_continuation_in_flight=entry_continuation_in_flight,
             scaled_partial_in_flight=scaled_partial_in_flight,
+            resting_stop_child_present=resting_stop_child_present,
             pending=pending,
         )
 
@@ -1019,6 +1031,7 @@ class _EngineExitDispatcher:
         resting_limit_stop_id: Optional[str] = None
         entry_continuation_in_flight = False
         scaled_partial_in_flight = False
+        resting_stop_child_present = False
         for po in pending:
             po_req = po.request
             if po_req.side == tracked.side:
@@ -1057,6 +1070,19 @@ class _EngineExitDispatcher:
                     continue
                 # In-flight guaranteed FULL close — stand the whole bar down.
                 return None
+            # This migration's own entry-attached leg, for THIS position: parent set
+            # (only ``submit_attached`` can), the byte-stable stop-loss reason, and
+            # bound to this position's entry. Covers both shapes the migration
+            # attaches — a plain STOP for a market-style rule, a STOP_LIMIT for a
+            # limit-style one — since the cede below is about whether protection
+            # EXISTS, not about its order type.
+            is_resting_migration_leg = (
+                po_req.parent_order_id is not None
+                and reason == ENGINE_EXIT_REASON_STOP_LOSS
+                and po.working_against_entry_order_id == pos.entry_order_id
+            )
+            if is_resting_migration_leg:
+                resting_stop_child_present = True
             if track_resting and po_req.order_type == OrderType.STOP_LIMIT:
                 # An ENTRY-ATTACHED stop-limit (``parent_order_id`` set — only
                 # ``OrderBook.submit_attached`` can set it, and ``submit`` rejects
@@ -1101,13 +1127,15 @@ class _EngineExitDispatcher:
                 # exists because the bar-close evaluator already detected the
                 # breach, so it is post-trigger by construction and stays tracked
                 # from the moment it rests, exactly as before this migration.
-                is_resting_migration_leg = (
-                    po_req.parent_order_id is not None and reason == ENGINE_EXIT_REASON_STOP_LOSS
-                )
                 if is_resting_migration_leg and not po.stop_limit_armed:
                     continue
                 resting_limit_stop_id = po.order_id
-        return resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight
+        return (
+            resting_limit_stop_id,
+            entry_continuation_in_flight,
+            scaled_partial_in_flight,
+            resting_stop_child_present,
+        )
 
     def _evaluate(
         self,
@@ -1118,6 +1146,7 @@ class _EngineExitDispatcher:
         *,
         exclude_resting_limit_stop: bool = False,
         exclude_scaled: bool = False,
+        resting_stop_child_present: bool = False,
     ) -> Optional[ExitIntent]:
         """Run the pure rule evaluator and pick the intent to act on.
 
@@ -1181,7 +1210,23 @@ class _EngineExitDispatcher:
             cursor_map=cursor_map,
             exclude_limit_style=exclude_resting_limit_stop,
             exclude_scaled=exclude_scaled,
-            exclude_rule_index=self.exclude_rule_index,
+            # PER-POSITION cede, not run-level: hand the rule to the resting
+            # mechanism only while that mechanism actually has protection on the
+            # book for THIS position. ``self.exclude_rule_index`` says which rule
+            # was ceded for the run; ``resting_stop_child_present`` says whether
+            # the cede is currently earned.
+            #
+            # The two diverge whenever attachment lags the cede, and the window is
+            # not exotic — a participation-capped entry under the default
+            # ``REQUEUE_NEXT_BAR`` policy is partially open for one or more bars
+            # before its terminal slice, and ``FillSimulator`` deliberately defers
+            # materialization until then so the children are sized to the
+            # cumulative position rather than the first slice. Ceding run-wide
+            # would leave that partial position with neither mechanism: no child
+            # yet, and the rule already dropped from this evaluator. Same for a
+            # position the strategy subprocess opens on a symbol the entry
+            # dispatcher skips.
+            exclude_rule_index=(self.exclude_rule_index if resting_stop_child_present else None),
         )
 
     @cached_property

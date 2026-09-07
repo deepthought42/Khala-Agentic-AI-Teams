@@ -262,6 +262,43 @@ def _entry_bar(close: float = 100.0) -> Bar:
     )
 
 
+def _rest_stop_child_on_book(order_book: OrderBook, *, entry_order_id: str) -> None:
+    """Put a resting stop-loss child on the book, shaped as
+    ``FillSimulator._materialize_stop_child`` produces one: parent-attached,
+    carrying the byte-stable ``engine_exit:stop_loss`` reason, and bound to the
+    position it protects. That triple is what ``_scan_pending_for_gate``
+    recognises as this migration's own protection for the position.
+    """
+    parent = order_book.submit(
+        OrderRequest(
+            client_order_id="c-parent",
+            symbol="AAA",
+            side=OrderSide.LONG,
+            qty=100.0,
+            order_type=OrderType.MARKET,
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+        expect_brackets=True,
+    )
+    child = order_book.submit_attached(
+        OrderRequest(
+            client_order_id="c-sl",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=100.0,
+            order_type=OrderType.STOP,
+            stop_price=95.0,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+        parent_order_id=parent.order_id,
+        oco_group_id=f"oco_{parent.order_id}",
+    )
+    child.working_against_entry_order_id = entry_order_id
+
+
 @pytest.mark.parametrize("resting_enabled", [True, False])
 def test_resting_and_bar_close_mechanisms_never_both_claim_the_same_rule(
     resting_enabled: bool,
@@ -320,13 +357,20 @@ def test_resting_and_bar_close_mechanisms_never_both_claim_the_same_rule(
         close=94.0,
         volume=1_000_000.0,
     )
+    # Put the entry-attached child on the book for the resting case, since the
+    # cede is now PER-POSITION: the rule is ceded only while that protection
+    # actually exists. An empty book with an open position is the partial-fill /
+    # unattached window, covered separately below.
+    order_book = OrderBook()
+    if resting_enabled:
+        _rest_stop_child_on_book(order_book, entry_order_id="o1")
     result = TradingServiceResult()
     exits.maybe_emit(
         cur_bar=bar,
         position_tracker=tracker,
         portfolio=portfolio,
         pending_for_prev=[],
-        order_book=OrderBook(),
+        order_book=order_book,
         result=result,
     )
     bar_close_fired = result.execution_diagnostics.exit_rule_firings.get("stop_loss", 0) == 1
@@ -524,6 +568,10 @@ def _scan_with_child(
         submitted_equity=1_000_000.0,
     )
     po.stop_limit_armed = armed
+    # ``_materialize_stop_child`` binds the child to the position it protects at
+    # materialization; the scan requires that binding so a stale child from a
+    # prior position on the same symbol never counts as this one's protection.
+    po.working_against_entry_order_id = "entry-1"
     tracked = _TrackedPosition(
         side=OrderSide.LONG,
         entry_price=100.0,
@@ -693,3 +741,84 @@ def test_unarmed_generic_attached_exit_leg_is_still_reported() -> None:
         )
         == "po-1"
     )
+
+
+# ---------------------------------------------------------------------------
+# The cede is PER-POSITION: it is earned by protection actually existing, not
+# by the run-level feature check alone.
+# ---------------------------------------------------------------------------
+
+
+def _bar_close_fires(*, child_on_book: bool, style: str = "market") -> bool:
+    """Run one bar through ``maybe_emit`` with the stop rule ceded at the run
+    level, and report whether the bar-close evaluator still fired for it.
+
+    ``child_on_book`` models whether the entry-attached protection has been
+    materialized yet — the thing that distinguishes a fully-attached position
+    from one still inside its partial-fill window.
+    """
+    rule = (
+        _limit_stop_rule()
+        if style == "limit"
+        else StopLossRule(pct=0.05, basis="entry_price", style="market")
+    )
+    exits = _EngineExitDispatcher(exit_rules=[rule], exclude_rule_index=0)
+    tracker = {
+        "AAA": _TrackedPosition(
+            side=OrderSide.LONG,
+            entry_price=100.0,
+            entry_order_id="o1",
+            just_opened=False,
+            high_since_entry=100.0,
+            low_since_entry=100.0,
+        )
+    }
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    portfolio.positions["AAA"] = Position(
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=100.0,
+        entry_price=100.0,
+        entry_bid_price=100.0,
+        entry_timestamp="2024-01-01",
+        entry_order_id="o1",
+        entry_client_order_id="c-o1",
+        original_qty=100.0,
+        entry_order_type="market",
+    )
+    order_book = OrderBook()
+    if child_on_book:
+        _rest_stop_child_on_book(order_book, entry_order_id="o1")
+    result = TradingServiceResult()
+    exits.maybe_emit(
+        cur_bar=_entry_bar(close=94.0),  # below the 95 floor -> the rule triggers
+        position_tracker=tracker,
+        portfolio=portfolio,
+        pending_for_prev=[],
+        order_book=order_book,
+        result=result,
+    )
+    return result.execution_diagnostics.exit_rule_firings.get("stop_loss", 0) == 1
+
+
+@pytest.mark.parametrize("style", ["market", "limit"])
+def test_bar_close_still_protects_a_position_with_no_attached_child_yet(style: str) -> None:
+    """The finding this guards: ``FillSimulator`` materializes attached exits only
+    on the parent entry's TERMINAL slice, so a participation-capped entry under
+    the default ``REQUEUE_NEXT_BAR`` policy is partially open for one or more
+    bars with no protective child. Ceding run-wide would leave that position with
+    neither mechanism and let a breach run past the configured level. The rule
+    stays bar-close-evaluated until the protection actually exists.
+
+    Not limit-specific — a market-style rule reaches the same window — so both
+    styles are covered.
+    """
+    assert _bar_close_fires(child_on_book=False, style=style) is True
+
+
+@pytest.mark.parametrize("style", ["market", "limit"])
+def test_bar_close_stands_down_once_the_attached_child_exists(style: str) -> None:
+    """The other half of the same contract: once the entry-attached protection is
+    on the book, the rule IS ceded, so exactly one mechanism can act on a given
+    trigger — never both, which is what the coexistence step exists to prevent."""
+    assert _bar_close_fires(child_on_book=True, style=style) is False
