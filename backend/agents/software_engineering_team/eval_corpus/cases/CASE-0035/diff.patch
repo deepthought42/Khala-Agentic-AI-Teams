@@ -1,17 +1,11 @@
 diff --git a/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py b/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
 --- a/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
 +++ b/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
-@@ -262,10 +262,10 @@
-             depends_on = None
- 
-         return OpenQuestion(
--            id=_str_or_default(q_data.get("id"), f"q{index}"),
--            question_text=_str_or_default(q_data.get("question_text")),
--            context=_str_or_default(q_data.get("context")),
+@@ -265,7 +265,7 @@
+             id=_str_or_default(q_data.get("id"), f"q{index}"),
+             question_text=_str_or_default(q_data.get("question_text")),
+             context=_str_or_default(q_data.get("context")),
 -            recommendation=_str_or_default(q_data.get("recommendation")),
-+            id=str(q_data.get("id", f"q{index}")),
-+            question_text=str(q_data.get("question_text", "")),
-+            context=str(q_data.get("context", "")),
 +            recommendation=str(q_data.get("recommendation", "")),
              options=options,
              allow_multiple=bool(q_data.get("allow_multiple", False)),
