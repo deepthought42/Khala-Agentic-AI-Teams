@@ -1,5 +1,5 @@
 case_id: CASE-0005
-title: Helper module name shadows the stdlib logging module
+title: Predicate name is the inverse of what the function returns
 language: python
 stack: fastapi
 gates: [code_review]

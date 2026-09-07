@@ -1,29 +1,36 @@
-diff --git a/app/agents/support_agent/logging.py b/app/agents/support_agent/logging.py
+diff --git a/app/agents/support_agent/validation.py b/app/agents/support_agent/validation.py
 new file mode 100644
 --- /dev/null
-+++ b/app/agents/support_agent/logging.py
-@@ -0,0 +1,24 @@
-+"""Structured log helpers for the support agent."""
++++ b/app/agents/support_agent/validation.py
+@@ -0,0 +1,31 @@
++"""Ticket validation helpers."""
 +
 +from __future__ import annotations
 +
-+import json
-+import logging as _stdlib_logging
 +from typing import Any
 +
++from .queue import enqueue
 +
-+def event(name: str, **fields: Any) -> str:
-+    """Render one structured log line.
++
++def is_valid(ticket: dict[str, Any]) -> list[str]:
++    """Collect the reasons a ticket cannot be accepted.
 +
 +    Preconditions:
-+        * ``name`` is a non-empty event name.
++        * ``ticket`` is a mapping.
 +    Postconditions:
-+        * Returns a single-line JSON string with ``event`` set to ``name``.
++        * Returns one message per failed check; empty when nothing failed.
 +    """
-+    assert name, "event name is required"
-+    return json.dumps({"event": name, **fields}, sort_keys=True)
++    assert isinstance(ticket, dict), "ticket must be a mapping"
++    problems: list[str] = []
++    if not ticket.get("body"):
++        problems.append("body is empty")
++    if not ticket.get("reporter"):
++        problems.append("reporter is missing")
++    return problems
 +
 +
-+def get_logger(module: str) -> _stdlib_logging.Logger:
-+    """Return the module logger."""
-+    return _stdlib_logging.getLogger(module)
++def accept(ticket: dict[str, Any]) -> bool:
++    """Enqueue a ticket that passes validation."""
++    if is_valid(ticket):
++        return enqueue(ticket)
++    return False

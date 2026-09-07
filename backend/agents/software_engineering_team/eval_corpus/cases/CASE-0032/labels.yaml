@@ -7,6 +7,7 @@
   line: 191
   line_end: 191
   description: >
-    A click listener is attached to every flowchart node each time the chart
-    is redrawn, and no reference is retained to remove them. Each redraw
-    leaves the previous generation of listeners attached to detached nodes.
+    The listener closes over `this` and no reference to it is retained, so it
+    can never be removed. Nodes still in the document therefore keep the
+    component reachable after it is destroyed, and the `data-bound` marker
+    survives on any node that outlives a rebuild.

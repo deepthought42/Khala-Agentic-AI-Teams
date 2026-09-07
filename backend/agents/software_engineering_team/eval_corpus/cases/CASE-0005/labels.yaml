@@ -1,13 +1,13 @@
 - label_id: L1
   gate: code_review
   defect_class: naming
-  severity: low
+  severity: medium
   polarity: must_find
-  file_path: app/agents/support_agent/logging.py
-  line: 1
-  line_end: 1
+  file_path: app/agents/support_agent/validation.py
+  line: 10
+  line_end: 10
   description: >
-    New helper module named `logging.py` shadows the stdlib `logging` module
-    for any sibling that does `import logging`, so `logger =
-    logging.getLogger(__name__)` in the package resolves to this module
-    instead.
+    `is_valid` reads as a predicate but returns the list of validation
+    failures, so it is truthy exactly when the ticket is invalid. The caller
+    below reads `if is_valid(ticket)` and enqueues precisely the tickets that
+    failed.

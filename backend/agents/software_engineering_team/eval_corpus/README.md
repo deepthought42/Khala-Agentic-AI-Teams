@@ -16,7 +16,7 @@ Governing specifications, all under [`../docs/`](../docs/):
 
 ## What is here today
 
-**40 case directories (`CASE-0005`–`CASE-0044`), carrying 43 `must_find`
+**40 case directories (`CASE-0005`–`CASE-0044`), carrying 45 `must_find`
 labels.** This is the recall half of the corpus. The
 false-positive-resistance half is authored separately and is not present yet,
 so the corpus is not yet complete against the selection plan's 60-case target.
@@ -61,24 +61,29 @@ are not synchronized with a moving `main`.
 | Measure | Value |
 |---|---|
 | Case directories | 40 |
-| `must_find` labels | 43 |
-| Cases from real history | 27 (68%) |
-| Invented cases | 13 (32%) |
-| Labels from real history | 30 of 43 (70%) |
+| `must_find` labels | 45 |
+| Cases from real history | 26 (65%) |
+| Invented cases | 14 (35%) |
+| Labels from real history | 31 of 45 (69%) |
 | Backend-primary cases | 32 (80%) |
 | Frontend-primary cases | 8 (20%) |
 
 ### Per-class must-find counts against the selection plan
 
-Every class matches its target in `CORPUS_SELECTION_PLAN.md` §3 exactly; no
-class is over- or under-supplied.
+Every class matches its target in `CORPUS_SELECTION_PLAN.md` §3 exactly except
+`auth`, which carries 4 labels against a target of 2. `CASE-0023`'s diff opens
+three Slack endpoints to unsigned requests, not one, so it carries a label per
+site. Labelling only the first would have left a gate that correctly reports
+either of the others producing unmatched findings — a precision penalty for
+being right. The extra labels add no class variety; they exist so the fixture's
+ground truth is complete.
 
 | Class | Target | Actual | | Class | Target | Actual |
 |---|---|---|---|---|---|---|
 | `naming` | 1 | 1 | | `injection` | 1 | 1 |
 | `structure` | 1 | 1 | | `xss` | 1 | 1 |
 | `logic` | 3 | 3 | | `csrf` | 1 | 1 |
-| `spec-compliance` | 1 | 1 | | `auth` | 2 | 2 |
+| `spec-compliance` | 1 | 1 | | `auth` | 2 | **4** |
 | `standards` | 2 | 2 | | `crypto` | 1 | 1 |
 | `integration` | 1 | 1 | | `insecure-deserialization` | 1 | 1 |
 | `testing` | 1 | 1 | | `ssrf` | 1 | 1 |
@@ -108,14 +113,22 @@ written to prevent.
 
 ### Substitutions from the selection plan
 
-Two of the plan's cited commits did not survive contact with their actual
-diffs. Both substitutions are recorded here rather than forced.
+Three of the plan's cited commits did not survive contact with their actual
+diffs. Every substitution is recorded here rather than forced.
 
 - **`standards` (frontend), `CASE-0012`.** The plan cites `1308c1d` for a
   native `alert()` replaced by the application's snackbar convention. That
   commit's net squashed diff contains no `alert()` — the call had already been
   removed by `086a4894`, which is the commit that actually performs the
   substitution. `CASE-0012` is sourced from `086a4894`.
+- **`injection`, `CASE-0020`.** The plan cites `27691e3` for an f-string-
+  interpolated SQL table name. That commit hardened a fixed code literal that
+  was never attacker-controlled — defence in depth, not a vulnerability the
+  gates should have caught — so inverting it produces no exploitable defect.
+  Every real SQL path in this codebase parameterizes its values, and no genuine
+  injection fix exists in the history to source from, so `CASE-0020` is
+  authored as an invented case with a request-reachable injection and marked
+  `sourcing: invented`.
 - **`architecture`, `CASE-0015`.** The plan cites `ae3ccf70` for a
   team-agnostic platform test importing a domain team package. That pull
   request introduced *and* fixed the violation within itself, so the violating
@@ -132,7 +145,7 @@ token, key, or other private value.
 
 | Case | Title | Class(es) | Gate(s) | Sourcing | Origin | Stack |
 |---|---|---|---|---|---|---|
-| CASE-0005 | Helper module name shadows the stdlib logging module | `naming` | code_review | invented | — | backend |
+| CASE-0005 | Predicate name is the inverse of what the function returns | `naming` | code_review | invented | — | backend |
 | CASE-0006 | Response model defined inline in agent.py instead of models.py | `structure` | code_review | invented | — | backend |
 | CASE-0007 | Null recommendation stringified to the literal "None" | `logic`, `null-deref` | code_review, qa | real | 0040820 | backend |
 | CASE-0008 | Excluded-company match uses substring instead of word boundaries | `logic` | code_review | real | 766c6e5 | backend |
@@ -147,10 +160,10 @@ token, key, or other private value.
 | CASE-0017 | Redundant `or` fallback masks a valid falsy value | `maintainability` | code_review | real | 66bc52d5 | backend |
 | CASE-0018 | Crash handler leaves the dedicated error field unset | `side-effects`, `inconsistent-state` | code_review, qa | real | c8cbbb7 | backend |
 | CASE-0019 | Docstring documents a precondition the function never enforces | `documentation` | code_review | real | c0db42b | backend |
-| CASE-0020 | SQL table identifier interpolated with no identifier validation | `injection` | security | real | 27691e3 | backend |
+| CASE-0020 | Request query parameters interpolated into a raw SQL string | `injection` | security | invented | — | backend |
 | CASE-0021 | Trigger description interpolated unescaped into trusted SVG | `xss` | security | real | 7e11ddc | frontend |
 | CASE-0022 | State-changing endpoint accepts a cookie-authenticated cross-origin form post | `csrf` | security | invented | — | backend |
-| CASE-0023 | Webhook signature verification skipped when the secret is unset | `auth` | security | real | f1f605b | backend |
+| CASE-0023 | Webhook signature verification skipped when the secret is unset | `auth` ×3 | security | real | f1f605b | backend |
 | CASE-0024 | Repository-relative path joined without containment check | `auth`, `unvalidated-input` | qa, security | real | c5a9017 | backend |
 | CASE-0025 | Encryption key falls back to a hard-coded literal | `crypto` | security | invented | — | backend |
 | CASE-0026 | Cached payload deserialized with pickle | `insecure-deserialization` | security | invented | — | backend |
