@@ -93,7 +93,10 @@ def test_publishability_skip_reason_joins_in_veto_order():
         realism_passed=False,
         trades_aligned=False,
         runtime_lookahead_violation=True,
-    ) == ("exit_rule_conformance_failed,realism_failed,alignment_unresolved,lookahead_violation")
+    ) == (
+        "exit_rule_conformance_failed,realism_failed,"
+        "alignment_unresolved,lookahead_violation"
+    )
 
 
 def test_publishability_skip_reason_single_realism_failed():

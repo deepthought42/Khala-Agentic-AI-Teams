@@ -1005,9 +1005,7 @@ def test_budget_exhaustion_after_repair_preserves_repaired_spec(
 
     monkeypatch.setattr(StrategyLabOrchestrator, "_fetch_market_data", _market_must_not_run)
 
-    record = orch.run_cycle(
-        prior_records=[], config=_config(), exclude_asset_classes=_EXCLUDE_ALL_BUT_FOREX
-    )
+    record = orch.run_cycle(prior_records=[], config=_config(), exclude_asset_classes=_EXCLUDE_ALL_BUT_FOREX)
 
     assert record.backtest.status == "failed: budget_exhausted"
     # The repaired spec is preserved (forex/1h/40% draft → 1d/25% after repair).

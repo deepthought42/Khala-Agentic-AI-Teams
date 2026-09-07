@@ -61,18 +61,7 @@ def test_parse_binance_trade_defaults_missing_size_to_zero() -> None:
 
 
 def test_parse_binance_kline_skips_unclosed() -> None:
-    payload = {
-        "k": {
-            "x": False,
-            "T": 0,
-            "s": "BTCUSDT",
-            "i": "1m",
-            "o": "1",
-            "h": "2",
-            "l": "0",
-            "c": "1.5",
-        }
-    }
+    payload = {"k": {"x": False, "T": 0, "s": "BTCUSDT", "i": "1m", "o": "1", "h": "2", "l": "0", "c": "1.5"}}
     assert parse_binance_kline(payload) is None
 
 
@@ -105,14 +94,8 @@ def test_parse_binance_kline_returns_native_bar_for_closed_candle() -> None:
 def test_parse_binance_kline_handles_missing_volume() -> None:
     payload = {
         "k": {
-            "x": True,
-            "T": 0,
-            "s": "BTCUSDT",
-            "i": "1m",
-            "o": "1",
-            "h": "1",
-            "l": "1",
-            "c": "1",
+            "x": True, "T": 0, "s": "BTCUSDT", "i": "1m",
+            "o": "1", "h": "1", "l": "1", "c": "1",
         }
     }
     bar = parse_binance_kline(payload)
@@ -140,10 +123,7 @@ def test_dispatch_routes_kline_event() -> None:
 
 
 def test_dispatch_unwraps_combined_stream_envelope() -> None:
-    msg = {
-        "stream": "btcusdt@trade",
-        "data": {"e": "trade", "T": 0, "s": "BTCUSDT", "p": "1", "q": "1"},
-    }
+    msg = {"stream": "btcusdt@trade", "data": {"e": "trade", "T": 0, "s": "BTCUSDT", "p": "1", "q": "1"}}
     out = dispatch_binance_message(msg)
     assert isinstance(out, NativeTick)
 
@@ -262,9 +242,7 @@ class _StubConnection:
 class _StubConnect:
     """Async context manager returned by a stubbed ``websockets.connect``."""
 
-    def __init__(
-        self, connection: _StubConnection | None = None, raise_on_enter: BaseException | None = None
-    ) -> None:
+    def __init__(self, connection: _StubConnection | None = None, raise_on_enter: BaseException | None = None) -> None:
         self._connection = connection
         self._raise = raise_on_enter
         self.calls: list[tuple[tuple, dict]] = []
@@ -302,54 +280,27 @@ def test_pump_coroutine_dispatches_messages_to_queue(
 ) -> None:
     """Happy path: scripted frames parse and land on the queue as NativeEvents."""
     trade_frame = json.dumps(
-        {
-            "stream": "btcusdt@trade",
-            "data": {"e": "trade", "T": 0, "s": "BTCUSDT", "p": "1.5", "q": "0.25"},
-        }
+        {"stream": "btcusdt@trade", "data": {"e": "trade", "T": 0, "s": "BTCUSDT", "p": "1.5", "q": "0.25"}}
     )
     kline_frame = json.dumps(
         {
             "stream": "btcusdt@kline_1m",
             "data": {
                 "e": "kline",
-                "k": {
-                    "x": True,
-                    "T": 0,
-                    "s": "BTCUSDT",
-                    "i": "1m",
-                    "o": "1",
-                    "h": "2",
-                    "l": "0.5",
-                    "c": "1.8",
-                    "v": "9",
-                },
+                "k": {"x": True, "T": 0, "s": "BTCUSDT", "i": "1m", "o": "1", "h": "2", "l": "0.5", "c": "1.8", "v": "9"},
             },
         }
     )
     bad_json_frame = "not-json"
     unclosed_kline_frame = json.dumps(
-        {
-            "e": "kline",
-            "k": {
-                "x": False,
-                "T": 0,
-                "s": "BTCUSDT",
-                "i": "1m",
-                "o": "1",
-                "h": "2",
-                "l": "0",
-                "c": "1.5",
-            },
-        }
+        {"e": "kline", "k": {"x": False, "T": 0, "s": "BTCUSDT", "i": "1m", "o": "1", "h": "2", "l": "0", "c": "1.5"}}
     )
 
     connection = _StubConnection([trade_frame, bad_json_frame, unclosed_kline_frame, kline_frame])
     connect_stub = _StubConnect(connection=connection)
     monkeypatch.setattr(websockets, "connect", connect_stub)
 
-    asyncio.run(
-        asyncio.wait_for(_pump_coroutine(url="wss://x/stream", state=pump_state), timeout=2.0)
-    )
+    asyncio.run(asyncio.wait_for(_pump_coroutine(url="wss://x/stream", state=pump_state), timeout=2.0))
 
     events = _drain_queue(pump_state.events)
     # 2 dispatched events (trade + closed kline) + None sentinel

@@ -56,13 +56,8 @@ def api_state(monkeypatch: pytest.MonkeyPatch):
     from investment_team.api import main as api_main
 
     for attr in (
-        "_profiles",
-        "_proposals",
-        "_strategies",
-        "_validations",
-        "_backtests",
-        "_strategy_lab_records",
-        "_paper_trading_sessions",
+        "_profiles", "_proposals", "_strategies", "_validations",
+        "_backtests", "_strategy_lab_records", "_paper_trading_sessions",
         "_advisor_sessions",
     ):
         monkeypatch.setattr(api_main, attr, _InMemoryDict())
@@ -75,12 +70,8 @@ def _winning_strategy():
     from investment_team.models import StrategySpec
 
     return StrategySpec(
-        strategy_id="strat-w",
-        authored_by="x",
-        asset_class="equities",
-        hypothesis="h",
-        signal_definition="s",
-        timeframe="1d",
+        strategy_id="strat-w", authored_by="x", asset_class="equities",
+        hypothesis="h", signal_definition="s", timeframe="1d",
         strategy_code="def x(): pass",
     )
 
@@ -93,17 +84,11 @@ def _seed_running_session(api_state, *, session_id: str = "pt-live"):
 
     strategy = _winning_strategy()
     session = PaperTradingSession(
-        session_id=session_id,
-        lab_record_id="lab-w",
-        strategy=strategy,
-        status=PaperTradingStatus.OPENING,
-        initial_capital=100_000.0,
-        current_capital=100_000.0,
-        symbols_traded=[],
-        data_source="live",
-        data_period_start="",
-        data_period_end="",
-        started_at="2024-06-01T00:00:00Z",
+        session_id=session_id, lab_record_id="lab-w", strategy=strategy,
+        status=PaperTradingStatus.OPENING, initial_capital=100_000.0,
+        current_capital=100_000.0, symbols_traded=[],
+        data_source="live", data_period_start="",
+        data_period_end="", started_at="2024-06-01T00:00:00Z",
     )
     api_state._paper_trading_sessions[session_id] = session
     return strategy
@@ -190,16 +175,10 @@ def test_live_paper_background_marks_completed_on_clean_termination(
 
     monkeypatch.setattr(mds, "MarketDataService", lambda: _FakeMarketService(["AAA"]))
 
-    _install_run_paper_trade(
-        monkeypatch,
-        _FakeRunResult(
-            trades=[],
-            fill_count=5,
-            provider_id="binance",
-            terminated_reason="min_fills_reached",
-            error=None,
-        ),
-    )
+    _install_run_paper_trade(monkeypatch, _FakeRunResult(
+        trades=[], fill_count=5, provider_id="binance",
+        terminated_reason="min_fills_reached", error=None,
+    ))
 
     from investment_team.api.main import RunPaperTradingRequest, _run_live_paper_trading_background
 
@@ -233,9 +212,14 @@ def test_live_paper_background_falls_back_to_default_timeframe(
     _install_run_paper_trade(monkeypatch, _FakeRunResult(), captured=captured)
 
     req = api_main.RunPaperTradingRequest(lab_record_id="lab-w")
-    api_main._run_live_paper_trading_background("pt-default-timeframe", "lab-w", strategy, req)
+    api_main._run_live_paper_trading_background(
+        "pt-default-timeframe", "lab-w", strategy, req
+    )
 
-    assert captured["paper_config"].kwargs["strategy_timeframe"] == api_main._DEFAULT_TIMEFRAME
+    assert (
+        captured["paper_config"].kwargs["strategy_timeframe"]
+        == api_main._DEFAULT_TIMEFRAME
+    )
 
 
 def test_live_paper_background_marks_failed_on_lookahead_violation(
@@ -248,9 +232,9 @@ def test_live_paper_background_marks_failed_on_lookahead_violation(
     import investment_team.market_data_service as mds
 
     monkeypatch.setattr(mds, "MarketDataService", lambda: _FakeMarketService(["AAA"]))
-    _install_run_paper_trade(
-        monkeypatch, _FakeRunResult(terminated_reason="lookahead_violation", error="bar.next_close")
-    )
+    _install_run_paper_trade(monkeypatch, _FakeRunResult(
+        terminated_reason="lookahead_violation", error="bar.next_close"
+    ))
 
     from investment_team.api.main import RunPaperTradingRequest, _run_live_paper_trading_background
 
@@ -353,16 +337,10 @@ def test_live_paper_background_logs_when_session_removed_before_success_write(
     import investment_team.market_data_service as mds
 
     monkeypatch.setattr(mds, "MarketDataService", lambda: _FakeMarketService(["AAA"]))
-    _install_run_paper_trade(
-        monkeypatch,
-        _FakeRunResult(
-            trades=[],
-            fill_count=5,
-            provider_id="binance",
-            terminated_reason="min_fills_reached",
-            error=None,
-        ),
-    )
+    _install_run_paper_trade(monkeypatch, _FakeRunResult(
+        trades=[], fill_count=5, provider_id="binance",
+        terminated_reason="min_fills_reached", error=None,
+    ))
 
     from investment_team.api.main import RunPaperTradingRequest, _run_live_paper_trading_background
 

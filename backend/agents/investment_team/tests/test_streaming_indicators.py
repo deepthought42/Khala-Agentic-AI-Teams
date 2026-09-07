@@ -1684,10 +1684,7 @@ def _legacy_stochastic_d(bars: List[_Bar], k_period: int, d_period: int) -> floa
     """Cold reference for %D at bars[-1]."""
     if len(bars) < k_period + d_period - 1:
         return None
-    k_vals = [
-        _legacy_stochastic_k(bars[: end + 1], k_period)
-        for end in range(len(bars) - d_period, len(bars))
-    ]
+    k_vals = [_legacy_stochastic_k(bars[: end + 1], k_period) for end in range(len(bars) - d_period, len(bars))]
     return sum(k_vals) / d_period
 
 

@@ -867,9 +867,7 @@ def test_resume_strategy_lab_run_returns_503_when_pre_dispatch_revalidation_fail
     no workflow ever dispatched."""
     from investment_team.api import main as api_main
 
-    api_main._active_runs["run-revalidate-fail"] = _resumable_state(
-        "run-revalidate-fail", generation=1
-    )
+    api_main._active_runs["run-revalidate-fail"] = _resumable_state("run-revalidate-fail", generation=1)
     stub = _StubLabClient(jobs=[{"job_id": "run-revalidate-fail", "generation": 1}])
 
     real_get_job = stub.get_job
@@ -908,9 +906,7 @@ def test_resume_strategy_lab_run_revalidation_failure_does_not_regress_concurren
     has already superseded and stop the legitimate newer one."""
     from investment_team.api import main as api_main
 
-    api_main._active_runs["run-revalidate-fail2"] = _resumable_state(
-        "run-revalidate-fail2", generation=1
-    )
+    api_main._active_runs["run-revalidate-fail2"] = _resumable_state("run-revalidate-fail2", generation=1)
     stub = _StubLabClient(jobs=[{"job_id": "run-revalidate-fail2", "generation": 1}])
 
     real_get_job = stub.get_job
@@ -1599,9 +1595,7 @@ def test_restart_strategy_lab_run_rollback_does_not_regress_concurrently_minted_
         )
 
     monkeypatch.setattr(
-        sl_sw,
-        "start_strategy_lab_batch_workflow",
-        _dispatch_collides_after_a_concurrent_replica_wins,
+        sl_sw, "start_strategy_lab_batch_workflow", _dispatch_collides_after_a_concurrent_replica_wins
     )
 
     resp = api_client.post("/strategy-lab/runs/run-race2/restart")
@@ -3579,7 +3573,6 @@ def test_get_strategy_lab_run_status_defaults_generation_to_one_when_absent(
 
     assert resp.status_code == 200
     assert resp.json()["generation"] == 1
-
 
 def test_get_strategy_lab_run_status_degrades_malformed_current_cycle_to_none(api_client) -> None:
     """A ``current_cycle`` dict that fails ``StrategyLabCycleProgress``

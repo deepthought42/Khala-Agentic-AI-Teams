@@ -149,10 +149,7 @@ def test_format_indicator_ref_handles_all_indicator_families() -> None:
     assert _format_indicator_ref(IndicatorRef(name="ema", params={"period": 50})) == "ema(50)"
     assert _format_indicator_ref(IndicatorRef(name="rsi")) == "rsi(14)"
     assert _format_indicator_ref(IndicatorRef(name="macd")) == "macd(12,26,9)"
-    assert (
-        _format_indicator_ref(IndicatorRef(name="macd", params={"output": "signal"}))
-        == "macd_signal(12,26,9)"
-    )
+    assert _format_indicator_ref(IndicatorRef(name="macd", params={"output": "signal"})) == "macd_signal(12,26,9)"
     bb_mid = _format_indicator_ref(IndicatorRef(name="bollinger"))
     assert bb_mid == "bollinger_middle(20,2)"
     assert _format_indicator_ref(IndicatorRef(name="atr")) == "atr(14)"

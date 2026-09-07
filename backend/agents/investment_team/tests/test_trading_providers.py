@@ -52,15 +52,7 @@ def test_alpaca_historical_requires_auth(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("ALPACA_PAID_FEED", raising=False)
     adapter = AlpacaAdapter()
     with pytest.raises(RuntimeError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"],
-                asset_class="equities",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="1m",
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="2024-01-01", end="2024-01-02", timeframe="1m"))
 
 
 def test_alpaca_live_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,11 +71,7 @@ def test_alpaca_historical_authed_raises_not_implemented(
     monkeypatch.setenv("ALPACA_API_SECRET_KEY", "fixture-placeholder-not-a-secret")
     adapter = AlpacaAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"))
 
 
 def test_alpaca_build_returns_adapter() -> None:
@@ -107,11 +95,7 @@ def test_coinbase_smallest_available() -> None:
 def test_coinbase_historical_raises_not_implemented() -> None:
     adapter = CoinbaseAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["BTC-USD"], asset_class="crypto", start="x", end="y", timeframe="1m"
-            )
-        )
+        list(adapter.historical(symbols=["BTC-USD"], asset_class="crypto", start="x", end="y", timeframe="1m"))
 
 
 def test_coinbase_live_raises_not_implemented() -> None:
@@ -143,11 +127,7 @@ def test_oanda_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
     adapter = OandaAdapter()
     with pytest.raises(RuntimeError):
-        list(
-            adapter.historical(
-                symbols=["EURUSD"], asset_class="fx", start="x", end="y", timeframe="5s"
-            )
-        )
+        list(adapter.historical(symbols=["EURUSD"], asset_class="fx", start="x", end="y", timeframe="5s"))
     with pytest.raises(RuntimeError):
         list(adapter.live(symbols=["EURUSD"], asset_class="fx", native_timeframe="tick"))
 
@@ -157,11 +137,7 @@ def test_oanda_authed_raises_not_implemented(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account-placeholder")
     adapter = OandaAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["EURUSD"], asset_class="fx", start="x", end="y", timeframe="5s"
-            )
-        )
+        list(adapter.historical(symbols=["EURUSD"], asset_class="fx", start="x", end="y", timeframe="5s"))
     with pytest.raises(NotImplementedError):
         list(adapter.live(symbols=["EURUSD"], asset_class="fx", native_timeframe="tick"))
 
@@ -188,11 +164,7 @@ def test_polygon_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYGON_API_KEY", raising=False)
     adapter = PolygonAdapter()
     with pytest.raises(RuntimeError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"))
     with pytest.raises(RuntimeError):
         list(adapter.live(symbols=["AAPL"], asset_class="equities", native_timeframe="tick"))
 
@@ -201,11 +173,7 @@ def test_polygon_authed_raises_not_implemented(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("POLYGON_API_KEY", "fixture-placeholder-not-a-secret")
     adapter = PolygonAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"))
 
 
 def test_polygon_build() -> None:
@@ -230,11 +198,7 @@ def test_databento_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABENTO_API_KEY", raising=False)
     adapter = DatabentoAdapter()
     with pytest.raises(RuntimeError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1s"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1s"))
     with pytest.raises(RuntimeError):
         list(adapter.live(symbols=["AAPL"], asset_class="equities", native_timeframe="tick"))
 
@@ -243,11 +207,7 @@ def test_databento_authed_raises_not_implemented(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("DATABENTO_API_KEY", "fixture-placeholder-not-a-secret")
     adapter = DatabentoAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1s"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1s"))
 
 
 def test_databento_build() -> None:
@@ -295,11 +255,7 @@ def test_twelve_data_historical_raises_not_implemented(monkeypatch: pytest.Monke
     monkeypatch.setenv("TWELVE_DATA_PLAN", "pro")
     adapter = TwelveDataAdapter()
     with pytest.raises(NotImplementedError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="x", end="y", timeframe="1m"))
 
 
 def test_twelve_data_build() -> None:
@@ -323,44 +279,20 @@ def test_binance_smallest_available() -> None:
 def test_binance_historical_rejects_non_crypto() -> None:
     adapter = BinanceAdapter()
     with pytest.raises(ValueError):
-        list(
-            adapter.historical(
-                symbols=["AAPL"],
-                asset_class="equities",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="1m",
-            )
-        )
+        list(adapter.historical(symbols=["AAPL"], asset_class="equities", start="2024-01-01", end="2024-01-02", timeframe="1m"))
 
 
 def test_binance_historical_rejects_rest_unsupported_timeframe() -> None:
     adapter = BinanceAdapter()
     with pytest.raises(ValueError) as exc:
-        list(
-            adapter.historical(
-                symbols=["BTC"],
-                asset_class="crypto",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="15s",
-            )
-        )
+        list(adapter.historical(symbols=["BTC"], asset_class="crypto", start="2024-01-01", end="2024-01-02", timeframe="15s"))
     assert "15s" in str(exc.value)
 
 
 def test_binance_historical_rejects_unknown_timeframe() -> None:
     adapter = BinanceAdapter()
     with pytest.raises(ValueError):
-        list(
-            adapter.historical(
-                symbols=["BTC"],
-                asset_class="crypto",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="3d",
-            )
-        )
+        list(adapter.historical(symbols=["BTC"], asset_class="crypto", start="2024-01-01", end="2024-01-02", timeframe="3d"))
 
 
 def _stub_httpx(monkeypatch: pytest.MonkeyPatch, responses: List[Any]) -> None:
@@ -415,17 +347,8 @@ def test_binance_historical_yields_bars(monkeypatch: pytest.MonkeyPatch) -> None
         # [open_time, open, high, low, close, volume, close_time, ...]
         [
             1704067200000,  # 2024-01-01 00:00:00 UTC
-            "100.0",
-            "101.0",
-            "99.0",
-            "100.5",
-            "10.0",
-            1704067260000,
-            "0",
-            0,
-            "0",
-            "0",
-            "0",
+            "100.0", "101.0", "99.0", "100.5", "10.0",
+            1704067260000, "0", 0, "0", "0", "0",
         ]
     ]
     _stub_httpx(monkeypatch, [_Resp(200, payload_1), _Resp(200, [])])
@@ -459,15 +382,7 @@ def test_binance_historical_handles_region_block(monkeypatch: pytest.MonkeyPatch
     _stub_httpx(monkeypatch, [_Resp()])
     adapter = BinanceAdapter()
     with pytest.raises(ProviderRegionBlocked):
-        list(
-            adapter.historical(
-                symbols=["BTC"],
-                asset_class="crypto",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="1m",
-            )
-        )
+        list(adapter.historical(symbols=["BTC"], asset_class="crypto", start="2024-01-01", end="2024-01-02", timeframe="1m"))
 
 
 def test_binance_historical_handles_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -484,15 +399,7 @@ def test_binance_historical_handles_non_200(monkeypatch: pytest.MonkeyPatch) -> 
     _stub_httpx(monkeypatch, [_Resp()])
     adapter = BinanceAdapter()
     with pytest.raises(ProviderError):
-        list(
-            adapter.historical(
-                symbols=["BTC"],
-                asset_class="crypto",
-                start="2024-01-01",
-                end="2024-01-02",
-                timeframe="1m",
-            )
-        )
+        list(adapter.historical(symbols=["BTC"], asset_class="crypto", start="2024-01-01", end="2024-01-02", timeframe="1m"))
 
 
 def test_binance_live_rejects_non_crypto() -> None:

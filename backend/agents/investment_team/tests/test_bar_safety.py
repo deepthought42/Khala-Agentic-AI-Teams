@@ -409,13 +409,8 @@ def test_requeue_on_partial_fill_refreshes_submitted_at() -> None:
 
     # Bar 1: thin volume triggers participation cap → partial fill + requeue
     bar1 = Bar(
-        symbol="AAA",
-        timestamp="2024-01-02",
-        open=100.0,
-        high=101.0,
-        low=99.0,
-        close=100.0,
-        volume=1_000.0,
+        symbol="AAA", timestamp="2024-01-02",
+        open=100.0, high=101.0, low=99.0, close=100.0, volume=1_000.0,
     )
     outcome1 = sim.process_bar(bar1)
 
@@ -429,13 +424,8 @@ def test_requeue_on_partial_fill_refreshes_submitted_at() -> None:
     # Bar 2: the requeued order fills on the next bar without tripping the
     # look-ahead guard (submitted_at="2024-01-02" < fill_bar="2024-01-03").
     bar2 = Bar(
-        symbol="AAA",
-        timestamp="2024-01-03",
-        open=100.0,
-        high=101.0,
-        low=99.0,
-        close=100.0,
-        volume=1_000_000.0,
+        symbol="AAA", timestamp="2024-01-03",
+        open=100.0, high=101.0, low=99.0, close=100.0, volume=1_000_000.0,
     )
     outcome2 = sim.process_bar(bar2)
     assert len(outcome2.entry_fills) >= 1

@@ -193,9 +193,9 @@ assert req.paper_trading_lookback_days == 90, req.paper_trading_lookback_days
 """
     env = os.environ.copy()
     env["STRATEGY_LAB_MAX_PAPER_TRADING_LOOKBACK_DAYS"] = "90"
-    env["PYTHONPATH"] = os.pathsep.join([str(agents_root), env.get("PYTHONPATH", "")]).rstrip(
-        os.pathsep
-    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(agents_root), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
 
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -228,9 +228,9 @@ assert MAX_PAPER_TRADING_LOOKBACK_DAYS == 30, MAX_PAPER_TRADING_LOOKBACK_DAYS
 """
     env = os.environ.copy()
     env["STRATEGY_LAB_MAX_PAPER_TRADING_LOOKBACK_DAYS"] = "10"
-    env["PYTHONPATH"] = os.pathsep.join([str(agents_root), env.get("PYTHONPATH", "")]).rstrip(
-        os.pathsep
-    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(agents_root), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
 
     result = subprocess.run(
         [sys.executable, "-c", script],

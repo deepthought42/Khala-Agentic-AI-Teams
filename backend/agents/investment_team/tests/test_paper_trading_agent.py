@@ -48,7 +48,9 @@ def _make_strategy(*, code: str | None = "def x(): pass\n") -> StrategySpec:
         hypothesis="h",
         signal_definition="s",
         timeframe="1d",
-        entry_rules=[EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=1.0))],
+        entry_rules=[
+            EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=1.0))
+        ],
         exit_rules=[SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=0.5))],
         strategy_code=code,
     )
@@ -108,9 +110,7 @@ def _trade(n: int) -> TradeRecord:
 
 def _bars() -> List[OHLCVBar]:
     return [
-        OHLCVBar(
-            date=f"2024-06-{i + 1:02d}", open=100, high=101, low=99, close=100, volume=1_000_000
-        )
+        OHLCVBar(date=f"2024-06-{i + 1:02d}", open=100, high=101, low=99, close=100, volume=1_000_000)
         for i in range(5)
     ]
 
@@ -128,9 +128,7 @@ class _FakeRunResult:
     ) -> None:
         self.trades = trades
         self.result = result
-        self.service_result = _FakeServiceResult(
-            error=error, lookahead_violation=lookahead_violation
-        )
+        self.service_result = _FakeServiceResult(error=error, lookahead_violation=lookahead_violation)
 
 
 class _FakeServiceResult:
@@ -203,9 +201,7 @@ def _result(*, win=60.0, ret=20.0, sharpe=1.5, dd=5.0, pf=2.0) -> BacktestResult
 def test_compare_performance_aligned_when_metrics_match_and_sample_sufficient() -> None:
     bt = _result()
     pt = _result(win=58.0, ret=21.0, sharpe=1.55, dd=4.5, pf=2.1)
-    cmp_ = PaperTradingAgent.compare_performance(
-        pt, bt, paper_trade_count=30, backtest_trade_count=30
-    )
+    cmp_ = PaperTradingAgent.compare_performance(pt, bt, paper_trade_count=30, backtest_trade_count=30)
     assert cmp_.overall_aligned is True
     assert cmp_.win_rate_aligned is True
     assert cmp_.return_aligned is True
@@ -216,9 +212,7 @@ def test_compare_performance_aligned_when_metrics_match_and_sample_sufficient() 
 def test_compare_performance_marks_insufficient_sample_as_unaligned() -> None:
     bt = _result()
     pt = _result()
-    cmp_ = PaperTradingAgent.compare_performance(
-        pt, bt, paper_trade_count=5, backtest_trade_count=30
-    )
+    cmp_ = PaperTradingAgent.compare_performance(pt, bt, paper_trade_count=5, backtest_trade_count=30)
     assert cmp_.overall_aligned is False
 
 
@@ -345,9 +339,7 @@ def test_run_session_calls_llm_when_not_aligned(patched_run_backtest) -> None:
     pt_trades = [_trade(i + 1) for i in range(30)]
     patched_run_backtest.append(_FakeRunResult(trades=pt_trades, result=pt_result))
 
-    llm = _StubLLM(
-        ['{"analysis": "low return", "strategy_weaknesses": [], "improvement_suggestions": []}']
-    )
+    llm = _StubLLM(['{"analysis": "low return", "strategy_weaknesses": [], "improvement_suggestions": []}'])
     agent = PaperTradingAgent(llm_client=llm)
     strategy = _make_strategy()
     backtest = _make_backtest_record(strategy, trade_count=30)

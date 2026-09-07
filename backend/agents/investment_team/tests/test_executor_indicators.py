@@ -584,8 +584,12 @@ def test_windowed_vwap_zero_volume_window_falls_back_to_avg_close() -> None:
             "volume": volume,
         }
     )
-    ref = compute_indicator_series(IndicatorRef(name="vwap", params={"period": large_period}), df)
-    win = ind._windowed_vwap(df["high"], df["low"], df["close"], df["volume"], period=large_period)
+    ref = compute_indicator_series(
+        IndicatorRef(name="vwap", params={"period": large_period}), df
+    )
+    win = ind._windowed_vwap(
+        df["high"], df["low"], df["close"], df["volume"], period=large_period
+    )
     # Matches the runtime bar-for-bar, and the zero-volume tail is finite (avg close).
     pd.testing.assert_series_equal(win.reset_index(drop=True), ref.reset_index(drop=True))
     assert not pd.isna(win.iloc[-1])
