@@ -918,6 +918,7 @@ class _DraftAgent(Protocol):
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
+        covered_sections: Optional[List[str]] = None,
         allowed_claims: Optional[dict[str, Any]] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
@@ -975,7 +976,10 @@ def _fill_story_placeholders(
         draft_input_kwargs: Base kwargs (``audience``, ``tone_or_purpose``,
             ``selected_title``, ``allowed_claims``, ``target_word_count``,
             ``length_guidance``) forwarded to ``revise_from_user_feedback``;
-            must not include ``elicited_stories``.
+            must not include ``elicited_stories``. May also carry the optional
+            ``covered_sections`` (plan sections that already had an author story
+            before this fill), forwarded so the revision does not re-introduce a
+            placeholder for one of them; omitting it suppresses nothing.
         work_dir: Optional directory for draft artifacts. If ``None``, no draft
             artifact is persisted.
         iteration: Current draft iteration number.
@@ -994,7 +998,9 @@ def _fill_story_placeholders(
           ``_REQUIRED_DRAFT_INPUT_KEYS`` (``audience``, ``tone_or_purpose``,
           ``selected_title``, ``allowed_claims``, ``target_word_count``,
           ``length_guidance``) — unchecked when there are no placeholders,
-          since ``draft_input_kwargs`` then goes unused.
+          since ``draft_input_kwargs`` then goes unused. ``covered_sections`` is
+          deliberately NOT among the required keys: it is read with ``.get()`` so a
+          caller without coverage data behaves exactly as before.
     Postconditions:
         - Returns ``(updated_draft_result, updated_elicited_stories_text)``.
         - When placeholders exist, the collected narratives and skip
@@ -1219,6 +1225,11 @@ def _fill_story_placeholders(
             tone_or_purpose=draft_input_kwargs["tone_or_purpose"],
             selected_title=draft_input_kwargs["selected_title"],
             elicited_stories=elicited_stories_text or None,
+            # .get(), unlike the subscripts around it: this key is optional, so a
+            # caller predating it (or one with no coverage data) still works, and it
+            # stays out of _REQUIRED_DRAFT_INPUT_KEYS. Absent means "suppress nothing",
+            # which is the pre-existing behavior.
+            covered_sections=draft_input_kwargs.get("covered_sections"),
             allowed_claims=draft_input_kwargs["allowed_claims"],
             target_word_count=draft_input_kwargs["target_word_count"],
             length_guidance=draft_input_kwargs["length_guidance"],

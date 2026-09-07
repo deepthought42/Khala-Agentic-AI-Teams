@@ -35,12 +35,17 @@ class PipelineContext:
           already received an author narrative (a fresh interview or a story-bank
           hit). It is populated by the planning stage in thread mode: it is
           ``None`` before the planning stage runs and a ``set[str]`` (possibly
-          empty) afterward. Consumption by the draft stage and threading it
-          across the Temporal activity boundary are both follow-ups —
-          ``PlanningStageResult`` doesn't carry it yet and neither
-          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seed it
-          (unlike ``elicited_stories_text``, which both do) — so today nothing
-          reads this field in either execution mode.
+          empty) afterward. The draft stage reads it, sorts it into a list, and
+          threads it into the writer's draft and post-fill revision prompts, which
+          then omit the ``[Author: ...]`` placeholder for the named sections instead
+          of re-interviewing the author for a story planning already collected. An
+          empty set suppresses nothing, reproducing the pre-existing prompts exactly.
+          Threading it across the Temporal activity boundary is still a follow-up —
+          ``PlanningStageResult`` doesn't carry it and neither
+          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seed it (unlike
+          ``elicited_stories_text``, which both do) — so in Temporal mode it stays at
+          its ``None`` default and no suppression happens, the same divergence
+          ``selected_title`` has below.
         - ``selected_title`` is populated by the planning stage, after outline
           approval (``_run_title_selection``, a no-op without a configured job
           store). The draft stage reads it and threads it into the writer/revision

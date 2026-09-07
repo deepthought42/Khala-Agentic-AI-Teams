@@ -57,6 +57,19 @@ def run_draft_stage(
           — in Temporal mode today — because it does not yet cross the activity
           boundary; see ``PipelineContext``'s invariants). At ``None`` the writer
           is free to choose its own title.
+        - ``ctx.covered_sections`` is the set of plan section titles that already
+          received an author story during planning, or ``None``. This stage sorts it
+          into the list the writer takes and threads it into the initial-draft
+          ``WriterInput`` and the ``draft_input_kwargs`` handed to
+          ``_fill_story_placeholders``, so the draft omits an ``[Author: ...]``
+          placeholder for a section already covered instead of re-interviewing the
+          author for a story they gave during planning. Empty or ``None`` is the
+          documented no-op: the writer's prompts are then exactly what they were
+          before the field existed. It is ``None`` in Temporal mode today —
+          ``PlanningStageResult`` does not carry it and neither
+          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so
+          suppression is thread-mode-only until that plumbing lands, the same
+          divergence ``selected_title`` currently has.
         - The human-in-the-loop steps (story-placeholder filling and the interactive
           draft-review loop with uncertainty questions / author feedback / guideline
           updates) require a job store: they run only when BOTH ``ctx.job_id`` and
@@ -119,6 +132,11 @@ def run_draft_stage(
     planning_phase_result = ctx.planning_phase_result
     plan = ctx.plan
     elicited_stories_text = ctx.elicited_stories_text
+    # sorted() both normalizes the set to the list WriterInput takes and pins a stable
+    # order (set iteration varies run to run under hash randomization). The guard covers
+    # the empty set and the None the field still holds in Temporal mode, where planning's
+    # value does not yet cross the activity boundary.
+    covered_sections = sorted(ctx.covered_sections) if ctx.covered_sections else None
     selected_title = ctx.selected_title
     _update = _make_update(job_updater)
 
@@ -174,6 +192,7 @@ def run_draft_stage(
                     length_guidance=build_draft_length_instruction(length_policy),
                     selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
+                    covered_sections=covered_sections,
                     allowed_claims=allowed_claims,
                 )
                 draft_output_path = (
@@ -231,6 +250,7 @@ def run_draft_stage(
                         target_word_count=length_policy.target_word_count,
                         length_guidance=build_draft_length_instruction(length_policy),
                         selected_title=selected_title,
+                        covered_sections=covered_sections,
                         allowed_claims=allowed_claims,
                     ),
                     work_dir=work_dir,

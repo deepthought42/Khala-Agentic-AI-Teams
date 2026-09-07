@@ -85,7 +85,21 @@ class DraftReviewResult(BaseModel):
 
 
 class WriterInput(BaseModel):
-    """Input for the blog writer agent: approved content plan and writing context."""
+    """Input for the blog writer agent: approved content plan and writing context.
+
+    Invariants:
+        - ``covered_sections`` names plan sections that already have an author story
+          inside ``elicited_stories``. It only ever *narrows* where the draft prompt
+          asks for a story: a named section gets no ``[Author: ...]`` placeholder
+          because one is already supplied, while every section not named keeps the
+          never-fabricate rule unchanged. It is therefore safe to leave unset —
+          ``None`` and ``[]`` both reproduce the pre-existing prompt exactly — and it
+          never licenses invented first-person detail for any section, including a
+          named one whose story cannot be found in ``elicited_stories``.
+        - ``covered_sections`` is meaningful only alongside a non-blank
+          ``elicited_stories``; set without it, the writer ignores it rather than
+          asserting a story the model cannot find.
+    """
 
     content_plan: ContentPlan = Field(
         ...,
@@ -118,6 +132,15 @@ class WriterInput(BaseModel):
         description=(
             "First-person story narratives elicited by the ghost writer agent. "
             "Incorporate these into the relevant sections to personalise the post."
+        ),
+    )
+    covered_sections: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Plan section titles that already have an author story in elicited_stories. "
+            "The draft prompt names them and suppresses the [Author: ...] placeholder for "
+            "those sections only; every other section keeps the never-fabricate rule "
+            "unchanged. Absent or empty reproduces the prompt exactly as it was before."
         ),
     )
     allowed_claims: Optional[Dict[str, Any]] = Field(

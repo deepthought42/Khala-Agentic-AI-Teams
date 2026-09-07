@@ -176,6 +176,62 @@ def _render_allowed_claims_section(allowed_claims: Optional[dict]) -> str:
     )
 
 
+def _render_covered_sections_section(
+    covered_sections: Optional[List[str]], elicited_stories: Optional[str]
+) -> str:
+    """Render the block naming plan sections that already have an author story.
+
+    Its whole job is to narrow where ``[Author: ...]`` placeholders appear. It never
+    relaxes the surrounding never-fabricate rules, which continue to govern every
+    section it does not name.
+
+    Preconditions:
+        - ``covered_sections`` is ``None`` or a list of plan section titles. Entries
+          that are not non-empty strings are tolerated (skipped), matching
+          ``_render_allowed_claims_section``'s handling of malformed claim entries:
+          a bad entry must not fail a draft.
+        - ``elicited_stories`` is the same value the caller renders into its
+          AUTHOR'S PERSONAL STORIES block, so this function can tell whether that
+          block actually reaches the model.
+    Postconditions:
+        - Returns ``""`` when ``covered_sections`` is absent, empty, or yields no
+          usable title, so an unset field leaves the prompt byte-identical to one
+          built before this field existed.
+        - Returns ``""`` when ``elicited_stories`` is absent or blank, whatever
+          ``covered_sections`` holds. This gate is load-bearing, not defensive
+          tidiness: naming a section as already covered when no stories block
+          reaches the model would assert a story the model cannot find, which is the
+          one input under which a suppression instruction could read as licence to
+          invent one.
+        - Otherwise returns a ``---``-delimited block naming the usable titles,
+          de-duplicated and sorted. Sorting is required for a stable prompt: callers
+          derive this list from a ``set``, whose iteration order varies run to run
+          under hash randomization.
+        - The returned block is self-contained (like the allowed-claims block, so any
+          prompt that embeds it verbatim gets consistent guidance): it states that
+          sections it does not name keep the never-fabricate rules unchanged, and
+          that a named section whose story cannot be found in the stories block still
+          gets a placeholder rather than an invented anecdote.
+    """
+    if not elicited_stories or not elicited_stories.strip():
+        return ""
+    titles = sorted(
+        {s.strip() for s in (covered_sections or []) if isinstance(s, str) and s.strip()}
+    )
+    if not titles:
+        return ""
+    return (
+        "---\n"
+        "SECTIONS ALREADY COVERED BY AN AUTHOR STORY: " + ", ".join(titles) + "\n"
+        "A story for each section named above is already present in the AUTHOR'S PERSONAL "
+        "STORIES section. Use the author's own words there; do not emit an [Author: ...] "
+        "placeholder for those sections. This narrows only where placeholders appear and "
+        "licenses nothing else: for every section not named above, the never-fabricate rules "
+        "apply unchanged, and if you cannot find a story for a named section in the AUTHOR'S "
+        "PERSONAL STORIES section, emit the placeholder for it rather than inventing one."
+    )
+
+
 def _write_draft_to_path(draft: str, path: Union[str, Path]) -> None:
     """Write draft content to path; create parent dirs if needed. Log the saved path.
 
@@ -619,6 +675,24 @@ class BlogWriterAgent(_BlogAgentBase):
               "at least one specific number" checklist item is replaced with a
               "no specific numbers" instruction, so the two mandates never
               conflict for a quantitative topic.
+            - The prompt includes a placeholder-suppression section per
+              ``_render_covered_sections_section(draft_input.covered_sections,
+              draft_input.elicited_stories)``, naming the sections that already have
+              an author story and telling the model to omit the ``[Author: ...]``
+              placeholder for those sections only. It is omitted entirely — leaving
+              the prompt byte-identical to one built without ``covered_sections`` —
+              when that field is absent or empty, and also whenever
+              ``elicited_stories`` is absent or blank, so the prompt never claims a
+              story it did not also supply.
+            - The suppression section narrows placeholder emission and nothing else.
+              The quality checklist's two "NEVER fabricate" clauses and its FINAL
+              CHECK scan are emitted unchanged for every input, and continue to
+              govern every section the suppression section does not name; a named
+              section whose story is not findable in the stories block still gets a
+              placeholder rather than invented first-person detail.
+            - The suppression and allowed-claims sections are independent: one
+              governs first-person stories, the other factual/statistical claims,
+              and neither's presence alters the other's text.
             - Expected LLM parse failures (``LLMJsonParseError``, including when
               Strands wraps them in ``EventLoopException``) soft-fail into a JSON
               fallback, then a placeholder if both paths yield no content.
@@ -673,6 +747,16 @@ class BlogWriterAgent(_BlogAgentBase):
                 "AUTHOR'S PERSONAL STORIES (use these in the relevant sections — do not invent new details beyond what is provided):\n"
                 + draft_input.elicited_stories
             )
+        # Placed here — after the stories it refers to, and above the quality checklist
+        # below — so the checklist's two "NEVER fabricate" clauses and its FINAL CHECK
+        # scan stay exactly as they are, and this block reads as narrowing them rather
+        # than competing with them.
+        covered_sections_section = _render_covered_sections_section(
+            draft_input.covered_sections, draft_input.elicited_stories
+        )
+        if covered_sections_section:
+            prompt_parts.append("")
+            prompt_parts.append(covered_sections_section)
         claims_section = _render_allowed_claims_section(draft_input.allowed_claims)
         if claims_section:
             prompt_parts.append("")
@@ -1113,6 +1197,7 @@ class BlogWriterAgent(_BlogAgentBase):
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
+        covered_sections: Optional[List[str]] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
         uncertainty_answers: Optional[dict[str, str]] = None,
@@ -1135,6 +1220,16 @@ class BlogWriterAgent(_BlogAgentBase):
               ``_render_allowed_claims_section``) when ``allowed_claims`` yields
               a non-empty rendered section, so `[CLAIM:id]` tags survive this
               revision path too; omitted otherwise.
+            - The prompt includes a placeholder-suppression section (per
+              ``_render_covered_sections_section(covered_sections,
+              elicited_stories)``) naming the sections that already have an author
+              story, so a revision that reaches this path after the post-draft story
+              fill does not re-introduce an ``[Author: ...]`` placeholder for a
+              section already covered. Omitted — leaving the prompt byte-identical to
+              one built without ``covered_sections`` — when that argument is absent
+              or empty, and whenever ``elicited_stories`` is absent or blank. It
+              narrows placeholder emission only; the system prompt's never-fabricate
+              rule still governs every section it does not name.
             - Returns a ``WriterOutput`` whose ``draft`` field is the original
               ``draft`` unchanged when it is blank.
             - Otherwise retries the text-completion path up to
@@ -1185,6 +1280,11 @@ class BlogWriterAgent(_BlogAgentBase):
             )
         if elicited_stories:
             prompt_parts.extend(["---", "AUTHOR'S PERSONAL STORIES:\n" + elicited_stories, ""])
+        covered_sections_section = _render_covered_sections_section(
+            covered_sections, elicited_stories
+        )
+        if covered_sections_section:
+            prompt_parts.extend([covered_sections_section, ""])
         claims_section = _render_allowed_claims_section(allowed_claims)
         if claims_section:
             prompt_parts.extend([claims_section, ""])
