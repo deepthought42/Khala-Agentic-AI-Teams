@@ -251,10 +251,32 @@ decide unilaterally on the back of one added key.
 Two bounded mitigations *are* this story's to take, and both reuse machinery the
 repo already has:
 
-1. **Bound the query.** Run the read under a transaction-local `statement_timeout`,
-   the pattern `shared.postgres.client.probe_cursor` already establishes (the
-   shared pool deliberately sets none globally, so each bounded read scopes its
-   own). A pathological window is then cancelled server-side and falls into the
+1. **Bound the query — with a concrete number, not "the pattern".** Run the read
+   under a transaction-local `statement_timeout`, as
+   `shared.postgres.client.probe_cursor` establishes (the shared pool deliberately
+   sets none globally, so each bounded read scopes its own).
+
+   **The budget is `5s`, clamped to `[1s, 10s]`.** Naming it matters more than it
+   looks: `probe_cursor` takes an explicit `timeout_s`, and the nearby
+   `statement_timeout_ms()` accessor reads `POSTGRES_STATEMENT_TIMEOUT_MS`
+   (default `5000`, **floor `0`, where `0` disables the timeout entirely**). An
+   implementer "following the pattern" could therefore inherit a disabled bound,
+   or one longer than the alias budget, and every test in §4.3 would still pass —
+   the mitigation would be decorative. So:
+
+   - Default `5s`, matching `POSTGRES_STATEMENT_TIMEOUT_MS`'s own default so the
+     two do not drift.
+   - **Clamp to a positive floor** (`1s`): a configured `0` must not disable this
+     read's bound, whatever it does elsewhere.
+   - **Ceiling `10s`**, strictly under `SE_METRICS_ALIAS_TIMEOUT` (default `15s`,
+     `unified_api/main.py:1603`), leaving headroom for the DORA half and
+     serialization. A budget at or above the alias timeout is the failure this
+     mitigation exists to prevent: the client gives up first and the query keeps
+     running.
+
+   Note the `5s` budget and the `~5s` escalation threshold below are deliberately
+   the same number: a query that routinely approaches its own timeout *is* the
+   signal to open the summary-table story. A pathological window is then cancelled server-side and falls into the
    empty-rollup literal, instead of pinning a pooled connection until the alias's
    15s timeout. That converts the worst case from "saturate and time out" into
    "degrade to empty" — which is already the endpoint's stated contract, so it
@@ -327,10 +349,21 @@ collector) out of scope; this is the same category of answer.
 
 **Escalate on measurement, not on speculation.** Nobody has measured this query at
 a real install's row count, and "might be slow at scale" is not a number. Record
-one: run the aggregating query against the largest available `se_agent_traces` at
-the default 30-day window and log the timing in the implementing PR. If p95 exceeds
-roughly a third of the alias budget (~5s), that is the trigger to open the summary-
-table story — with evidence attached, rather than building it speculatively now.
+one — but record it properly: **one execution cannot produce a p95.** A single run
+is dominated by whether the buffer cache happened to be warm and what else the
+server was doing, which is exactly the variance the threshold needs to see through.
+
+So: **20 executions** against the largest available `se_agent_traces` at the default
+30-day window, discarding the first (cold-cache) run, taken while the install is
+under representative load rather than idle. Report the median and the p95 of the
+remaining 19 in the implementing PR. **If the p95 exceeds `5s`** — a third of the
+alias budget, and the same number as the query's own timeout above — that is the
+trigger to open the summary-table story, with the sample attached rather than a
+single anecdote.
+
+If 20 runs are impractical against the only available data, say so and state the
+threshold as a single-run bound instead. An honestly-labelled single measurement is
+useful; a single measurement labelled "p95" is not.
 
 **Scope honesty.** This makes the story larger than "wire an existing function to
 an existing route" — it adds a store function, a row-shape adapter, parity tests,
@@ -430,6 +463,24 @@ New tests:
 | DORA fails, rollup survives | `compute_dora` raises + rollup read returns groups | DORA half is the zeroed literal; `agent_rollup` is non-empty |
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
 | Window is shared | request `window_days=7` | both `body["window_days"]` and `body["agent_rollup"]["window_days"]` are `7.0` |
+
+**Two fake-cursor tests for the `statement_timeout` boundary**, in
+`test_observability_stores_pg.py` or a store-level unit test as convenient:
+
+| Test | Asserts |
+|---|---|
+| Timeout is installed **before** the aggregate | the fake cursor records `SET LOCAL statement_timeout = <ms>` as the *first* statement, with a positive value inside `[1000, 10000]`, and the `GROUPING SETS` query strictly after it |
+| Cancellation degrades, not raises | the fake cursor raises psycopg's query-cancelled error on the aggregate; the read returns the empty three-view shape and logs at DEBUG |
+
+These are not optional garnish. §3.5's cache deferral makes `statement_timeout` the
+**only** remaining mitigation on this path, and none of the other planned tests
+would notice its absence: the endpoint tests patch `fetch_trace_rollup_rows`
+wholesale, and the parity test only exercises successful aggregation. Omitting the
+`SET LOCAL`, issuing it *after* the aggregate, or letting a cancellation propagate
+would leave every other specified test green while restoring exactly the unbounded
+request behaviour this plan exists to prevent. Asserting statement *order* is the
+point — a timeout set after the query it was meant to bound is the failure that
+looks correct in a diff.
 
 Separately, in **`test_observability_stores_pg.py`** — a **parity test** asserting the §4.1 aggregating read and `compute_from_traces`
 agree over the same underlying rows: the guard that keeps §3.5's SQL/Python
