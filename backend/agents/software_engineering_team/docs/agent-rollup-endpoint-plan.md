@@ -94,8 +94,13 @@ return payload
 - `_dora_payload(window)` — unchanged logic, including the function-local import
   and the zeroed literal (which stays valid even if the metrics module fails to
   import).
-- `_rollup_payload(window)` — function-local import of `compute_agent_rollup`,
-  same reasoning; on any exception, logs and returns the empty-rollup literal
+- `_rollup_payload(window)` — function-local import of the §4.1 aggregating read
+  (`trace_store.fetch_trace_rollup_rows`), **not** `compute_agent_rollup`: that
+  wrapper calls `fetch_traces_since` and materializes every matching row, which is
+  the exact risk §3.5 exists to remove. It derives `cutoff = now - window_days`
+  itself — the read takes a cutoff, not a window — and shapes the three views onto
+  `AgentRollupMetrics`. Same function-local-import reasoning as `_dora_payload`; on
+  any exception, logs and returns the empty-rollup literal
   `{"window_days": window, "computed_at": <now>, "by_agent": {}, "by_phase": {},
   "by_agent_phase": {}}`, mirroring `AgentRollupMetrics`' field defaults with the
   same "keep in sync with that dataclass" comment the DORA literal already
@@ -108,16 +113,17 @@ always returns a complete shape*.
 ### 3.4 No new query parameters
 
 The route keeps exactly one window knob: the existing `window_days: float =
-30.0`, clamped to `[1, 365]`, passed to both `compute_dora` and
-`compute_agent_rollup`. That satisfies "the same time-window parameter
-convention" with no new convention to document or clamp.
+30.0`, clamped to `[1, 365]`, feeding both `compute_dora` and — via the
+`cutoff = now - window_days` derivation in `_rollup_payload` — the §4.1
+aggregating read. (Not `compute_agent_rollup`; see §3.3.) That satisfies "the same
+time-window parameter convention" with no new convention to document or clamp.
 
 Deliberately deferred (each is a separate, additive change if it is ever
 wanted):
 
-- **`job_id` filter.** `compute_agent_rollup` already accepts it; the endpoint
-  does not expose it. Adding it later is a new optional query param with no
-  shape change.
+- **`job_id` filter.** Both `compute_agent_rollup` and the §4.1 aggregating read
+  accept it; the endpoint does not expose it. Adding it later is a new optional
+  query param with no shape change.
 - **`expected_agent_keys` / `expected_phases` densification.** The endpoint
   reports only what it observed. Densifying would need a canonical agent-key and
   phase list maintained somewhere; a stale list would silently report zero-call
@@ -279,8 +285,24 @@ repo already has:
    cross-cutting shared-infra change this story has no business making in passing.
    Instead: a module-local `dict[key, (expires_at_monotonic, payload)]` in the
    route module, keyed by a tuple (no key-encoding question, no `:` hazard),
-   with an explicit few-tens-of-seconds TTL. Roughly fifteen lines, directly
-   testable with a fake clock, and it touches nothing else.
+   with an explicit few-tens-of-seconds TTL, **and a per-key single-flight lock**.
+
+   The lock is not optional, and a plain TTL dict without it does not deliver
+   this mitigation. `metrics_dora` is a synchronous `def` handler, so FastAPI runs
+   it in the threadpool: concurrent requests execute in parallel threads for real.
+   A bare memo only suppresses queries *after* the first one has finished storing
+   its result — the miss → query → store sequence is not atomic. Ten requests
+   arriving on a cold or just-expired key all miss and all query, each paying a
+   full `statement_timeout` during exactly the pathology this exists to contain.
+   So: a `threading.Lock` per key (or one lock plus an in-flight-result map);
+   the first caller computes, the rest wait and take its result. Double-check the
+   memo after acquiring, since the winner will have filled it.
+
+   Roughly thirty lines with the lock, directly testable with a fake clock — and
+   the test must include a **concurrency regression test** (N threads against a
+   cold key, assert the underlying read is invoked exactly once), not just the
+   sequential TTL-expiry case. Without that test the single-flight property is
+   asserted, not verified.
 
    **It is per-worker, not shared.** With N API workers, N pollers can still cost
    N queries per TTL rather than one — a real limitation, stated rather than
@@ -411,24 +433,58 @@ New tests:
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
 | Window is shared | request `window_days=7` | both `body["window_days"]` and `body["agent_rollup"]["window_days"]` are `7.0` |
 
-Separately, in **`test_observability_stores_pg.py`** — the suite already wired to
-the live-Postgres CI job, and the same file §5's live-Postgres command runs — a
-**parity test** asserting the §4.1 aggregating read and `compute_from_traces`
+Separately, in **`test_observability_stores_pg.py`** — a **parity test** asserting the §4.1 aggregating read and `compute_from_traces`
 agree over the same underlying rows: the guard that keeps §3.5's SQL/Python
 correspondence from drifting. It belongs there and not in `test_agent_rollup.py`
 because the SQL is the thing under test; a fake cursor would exercise none of
 `percentile_cont`/`percentile_disc`/`GROUPING SETS`, so a unit-suite home would
 let the guard pass while never running against a real server.
 
-"Agree" is not "equal in every field" — per §3.5, assert **equality** for
-`call_count`, the token sums, and both percentiles, and **agreement within
-`1e-9`** for `total_cost_usd`, which is canonical in `compute_from_traces` and
-only approximated by the SQL path. An exact-equality assertion on cost would flake
-near a 6-decimal boundary.
+**That file is not currently run by CI, and this story must wire it in.** An
+earlier draft called it "the suite already wired to the live-Postgres job", which
+is false — verified in `.github/workflows/ci.yml`: the SE unit invocation runs
+`-m "not integration"`, and the Postgres job runs `-m integration` against only
+`../unified_api/tests/test_integration_smoke.py`. `test_observability_stores_pg.py`
+carries `pytestmark = pytest.mark.integration` and the team conftest skips
+integration-marked tests unless `-m integration` is passed, so today the file runs
+**nowhere**. Moving the parity test there without wiring would be strictly worse
+than leaving it in the unit suite: a guard that cannot fail is worse than no guard,
+because it reads as coverage.
 
-Patching note: both `compute_agent_rollup` and the new read resolve `trace_store`
-via a function-local import, so `monkeypatch.setattr(trace_store, ..., ...)` on
-the module object takes effect at call time.
+So `.github/workflows/ci.yml` joins this story's file list: add
+`agents/software_engineering_team/tests/test_observability_stores_pg.py` to the
+live-Postgres job's `-m integration` invocation. Confirm it by making the parity
+test fail deliberately once and watching CI go red — a wiring change that is
+never observed failing is not verified.
+
+"Agree" is not "equal in every field" — per §3.5, assert **equality** for
+`call_count`, the token sums, and both percentiles. `total_cost_usd` needs care,
+and the obvious formulation is wrong:
+
+**Compare the *unrounded* sums within `1e-9`; allow the *reported* 6-decimal
+values to differ by one unit in the last place (`1e-6`).** A `1e-9` bound applied
+to the rounded figures fails on precisely the case the tolerance exists to permit
+— when the two domains land on opposite sides of a 6-decimal boundary, the rounded
+values differ by a full `1e-6`, a thousand times the bound. Worked counterexample,
+reproduced locally: one million stored costs of `0.0072073768275` give
+
+```
+math.fsum        -> 7207.376827499999  -> rounds to 7207.376827
+decimal-domain   -> 7207.3768275000000 -> rounds to 7207.376828
+unrounded delta  -> 1e-12      (comfortably inside 1e-9)
+rounded delta    -> 1e-6       (1000x outside 1e-9)
+```
+
+So the assertion must be made against the pre-rounding values, with the
+last-place difference in the reported figure accepted as expected rather than
+treated as drift. Assert both explicitly, since only one of them is the number
+users actually see.
+
+Patching note: the route resolves the aggregating read through a function-local
+import of `trace_store`, so `monkeypatch.setattr(trace_store,
+"fetch_trace_rollup_rows", ...)` on the module object takes effect at call time.
+(`compute_agent_rollup` resolves it the same way, but the route does not call it
+— see §3.3.)
 
 ### 4.4 Documentation
 
