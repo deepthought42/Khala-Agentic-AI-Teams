@@ -286,6 +286,7 @@ class _RuleStarvation:
     legs: tuple[_PairLegCooccurrence, ...]
     warmup_independent_fires: int = 0
     warmup_covered_fires: int = 0
+    warmup_coverage: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         """Enforce the counting and ordering invariants at construction time."""
@@ -295,6 +296,12 @@ class _RuleStarvation:
         )
         assert self.warmup_independent_fires >= 0, "warmup_independent_fires must be >= 0"
         assert self.warmup_covered_fires >= 0, "warmup_covered_fires must be >= 0"
+        assert all(count > 0 for _, count in self.warmup_coverage), (
+            "warmup_coverage must hold only earlier rules that covered at least one fire"
+        )
+        assert all(index < self.rule_index for index, _ in self.warmup_coverage), (
+            "warmup_coverage may only name rules listed before rule_index"
+        )
         assert all(count > 0 for _, count in self.coverage), (
             "coverage must hold only earlier rules that covered at least one fire"
         )
@@ -306,6 +313,29 @@ class _RuleStarvation:
         )
 
     @property
+    def combined_coverage(self) -> tuple[tuple[int, int], ...]:
+        """Every earlier rule that shadows a fire, steady-state and prefix merged.
+
+        Postconditions: one entry per earlier rule that covered at least one
+        fire in either window, its count summing both, ordered by descending
+        count then ascending rule index — the same ordering
+        :attr:`coverage` uses, so :attr:`dominant_index` reads the same way off
+        either.
+
+        :attr:`coverage` and :attr:`warmup_coverage` stay separate underneath
+        because they are counted over different windows, and a clause that
+        pairs one window's fire count with the other's coverers can attribute
+        more fires than it just reported — or name a coverer that only ever
+        fired on the prefix. A clause quoting :attr:`covered_fires` spans both
+        and takes this merged view; one quoting :attr:`fires` alone takes
+        :attr:`coverage`.
+        """
+        merged: Dict[int, int] = dict(self.coverage)
+        for index, count in self.warmup_coverage:
+            merged[index] = merged.get(index, 0) + count
+        return tuple(sorted(merged.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    @property
     def dominant_index(self) -> int:
         """Index of the earlier rule covering the most of this rule's fires.
 
@@ -315,8 +345,9 @@ class _RuleStarvation:
         per-leg diagnostic is computed against, so the diagnostic names the
         single earlier rule that explains most of the shadowing.
         """
-        assert self.coverage, "dominant_index requires a non-empty coverage set"
-        return self.coverage[0][0]
+        merged = self.combined_coverage
+        assert merged, "dominant_index requires a non-empty coverage set"
+        return merged[0][0]
 
     @property
     def verdict(self) -> _StarvationVerdict:
@@ -533,6 +564,7 @@ def _starvation_verdicts(
         warmup_independent_fires = 0
         warmup_covered_fires = 0
         covered: Dict[int, int] = {}
+        warmup_covered: Dict[int, int] = {}
         for k, status in enumerate(statuses[j]):
             if status == "warmup":
                 continue
@@ -542,7 +574,7 @@ def _starvation_verdicts(
                     if hits:
                         warmup_covered_fires += 1
                         for index in hits:
-                            covered[index] = covered.get(index, 0) + 1
+                            warmup_covered[index] = warmup_covered.get(index, 0) + 1
                     else:
                         warmup_independent_fires += 1
                 continue
@@ -568,6 +600,9 @@ def _starvation_verdicts(
                 legs=(),
                 warmup_independent_fires=warmup_independent_fires,
                 warmup_covered_fires=warmup_covered_fires,
+                warmup_coverage=tuple(
+                    sorted(warmup_covered.items(), key=lambda kv: (-kv[1], kv[0]))
+                ),
             )
         )
     return out
@@ -888,7 +923,7 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         self._info(
                             f"Entry rule {rule_id} (side={v.side}): {_fire_evidence_text(v)}, "
                             f"all of them also covered by an earlier rule "
-                            f"({_coverage_text(v.coverage)}) — fewer than "
+                            f"({_coverage_text(v.combined_coverage)}) — fewer than "
                             f"{_MIN_STARVATION_FIRES} covered fires is too few to separate "
                             "structural starvation from a merely rarely-firing rule, so it is "
                             "not reported as starved.",
@@ -907,13 +942,13 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         f"earlier rule is still warming up: it fires on "
                         f"{v.warmup_independent_fires} warmup-prefix bar(s) that no earlier rule "
                         f"is satisfied on, but across the {v.evaluated} bar(s) where every "
-                        f"earlier rule is warm {steady_state}. So in THIS backtest it is the rule "
-                        "first-match priority selects at the start of the window and never "
-                        "after — whether any given selection becomes an order still depends on "
-                        "state this probe does not model (the engine skips entry evaluation "
-                        "while the symbol holds a position or a pending entry, and risk sizing "
-                        "can cap a matched entry to zero). Its window into the strategy is an "
-                        "artefact of the fetched window's left edge either way. How much of that "
+                        f"earlier rule is warm {steady_state}. So {_selection_clause(custom)} at "
+                        "the start of the window and never after — whether any given selection "
+                        "becomes an order still depends on state this probe does not model (the "
+                        "engine skips entry evaluation while the symbol holds a position or a "
+                        "pending entry, and risk sizing can cap a matched entry to zero). Its "
+                        "window into the strategy is an artefact of the fetched window's left "
+                        "edge either way. How much of that "
                         "head start survives a paper run depends on the run's priming: paper "
                         "trading suppresses entries across its warm-up prefix, so a prime long "
                         "enough to warm the earlier rules leaves this rule shadowed on every "
@@ -924,18 +959,14 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         "rule if it is the intended higher priority, or loosen it so it can fire "
                         "where the earlier rules don't."
                     )
-                    if custom:
-                        detail += (
-                            " (custom-code path: the executed code may differ from the spec, but "
-                            "the authored entry logic is shadowed on this data.)"
-                        )
                     results.append(self._warning(detail, rule_id=rule_id))
                 elif kind == "starved":
                     detail = (
                         f"Entry rule {rule_id} (side={v.side}) is structurally starved: "
                         f"{_fire_evidence_text(v)}, and an earlier, higher-priority rule fires "
                         f"on every one of them "
-                        f"({_coverage_text(v.coverage)}) — under first-match-wins priority "
+                        f"({_coverage_text(v.combined_coverage)}) — under first-match-wins "
+                        f"priority "
                         f"{rule_id} is never the rule selected, so it contributes no entries as "
                         "ordered. Resolve by folding its conditions into the earlier rule's "
                         "all_of, listing it BEFORE the broader rule if it is the intended "
@@ -989,6 +1020,30 @@ def _leg_diagnostic(r: _RuleReachability) -> str:
         "Every condition holds on its own but they never co-occur on the same bar "
         "(the all_of conjunction is unsatisfiable on this data)."
     )
+
+
+def _selection_clause(custom: bool) -> str:
+    """Phrase the selection claim for the path the spec actually runs.
+
+    Preconditions: ``custom`` is ``spec.requires_custom_code``.
+    Postconditions: on the compiled path, states plainly that this backtest's
+    first-match priority selects the rule — the engine decides entries with the
+    very evaluator this probe swept. On the custom path it says what the
+    AUTHORED rules would select instead, because the engine never evaluates
+    them at all there: ``modes/backtest.py`` passes ``entry_rules=None`` for a
+    custom spec, so ``_EngineEntryDispatcher.maybe_emit`` returns on its first
+    guard and the executed code may implement entirely different entry logic.
+    A trailing "the executed code may differ" caveat cannot repair a sentence
+    that has already asserted the selection happened, so the claim itself is
+    conditioned rather than annotated. Pure.
+    """
+    if custom:
+        return (
+            "on the authored rules it is the rule first-match priority WOULD select (this "
+            "spec runs custom code, so the engine is handed no entry_rules and never "
+            "evaluates them — the executed logic may differ entirely)"
+        )
+    return "in THIS backtest it is the rule first-match priority selects"
 
 
 def _fire_evidence_text(v: _RuleStarvation) -> str:

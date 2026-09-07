@@ -776,7 +776,11 @@ def test_warmup_only_finding_quotes_no_paper_trade_prime_length() -> None:
     assert "a prime long enough to warm the earlier rules" in detail
 
 
-def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:
+def test_warmup_only_finding_conditions_the_selection_claim_on_the_custom_path() -> None:
+    # modes/backtest.py hands the engine entry_rules=None for a custom spec, so
+    # maybe_emit returns on its first guard and these rules are never evaluated.
+    # A trailing "the executed code may differ" note cannot repair a sentence
+    # that already asserted the selection happened, so the claim is conditioned.
     spec = _spec(
         Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
         custom=True,
@@ -784,7 +788,43 @@ def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:
     )
     results = _starvation(spec)
     assert [r.severity for r in results] == ["warning"]
-    assert "custom-code path" in results[0].details
+    detail = results[0].details
+    assert "on the authored rules it is the rule first-match priority WOULD select" in detail
+    assert "never evaluates them" in detail
+    assert "in THIS backtest it is the rule first-match priority selects" not in detail
+
+
+def test_warmup_only_finding_claims_selection_plainly_on_the_compiled_path() -> None:
+    spec = _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+    )
+    detail = _starvation(spec)[0].details
+    assert "in THIS backtest it is the rule first-match priority selects" in detail
+    assert "WOULD select" not in detail
+
+
+def test_warmup_only_steady_state_clause_uses_steady_state_coverage_only() -> None:
+    # Both covered and independent prefix fires, plus steady-state covered
+    # fires. The clause quotes v.fires, so it must name only the coverers of
+    # those fires — pairing it with the merged view could attribute more fires
+    # than it just reported, or name a coverer that only fired on the prefix.
+    later = _pattern(70, list(range(0, 12)) + list(range(40, 48)))
+    warming = ["warmup"] * 30 + ["miss"] * 40
+    prefix_coverer = _pattern(70, range(0, 6))
+    steady_coverer = _pattern(70, range(40, 48))
+    v = _verdict(later, warming, prefix_coverer, steady_coverer)
+    assert v.warmup_independent_fires == 6  # bars 6-11, nothing covers them
+    assert v.warmup_coverage == ((1, 6),)  # bars 0-5, prefix only
+    assert v.coverage == ((2, 8),)  # bars 40-47, steady state
+    assert v.verdict == "warmup_only"
+    results = PredicateReachabilityProbe().to_starvation_gate_results(
+        [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+    )
+    detail = results[0].details
+    assert "it fires 8 time(s), every one of them also covered by an earlier rule" in detail
+    assert "entry[2] covers 8" in detail
+    assert "entry[1]" not in detail  # a prefix-only coverer never enters this clause
 
 
 def test_warmup_only_finding_reads_never_fires_when_the_steady_window_is_empty() -> None:
@@ -895,7 +935,11 @@ def test_prefix_fires_covered_by_a_satisfied_earlier_rule_still_count_as_starvat
     assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (0, 0, 0)
     assert v.warmup_covered_fires == 10
     assert v.covered_fires == 10
-    assert v.coverage == ((1, 10),)
+    # Coverage stays split by window: these ten fires are all on the prefix, so
+    # the steady-state tuple is empty and the merged view carries them.
+    assert v.coverage == ()
+    assert v.warmup_coverage == ((1, 10),)
+    assert v.combined_coverage == ((1, 10),)
     assert v.dominant_index == 1
     assert v.verdict == "starved"
 
