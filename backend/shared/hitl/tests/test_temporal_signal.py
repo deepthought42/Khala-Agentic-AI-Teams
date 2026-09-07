@@ -482,10 +482,14 @@ class _FakeWaitCondition:
         self.kwargs: list[dict] = []
 
     async def __call__(self, predicate, **kwargs) -> None:
+        # Evaluated ONCE per call, like the real wait_condition: a fake that
+        # polled the predicate twice would silently tolerate a side-effecting
+        # predicate the SDK would not.
+        satisfied = bool(predicate())
         self.predicates.append(predicate)
-        self.satisfied_at_call.append(bool(predicate()))
+        self.satisfied_at_call.append(satisfied)
         self.kwargs.append(kwargs)
-        if predicate():
+        if satisfied:
             return
         assert self._deliverers, "wait_condition parked with nothing left to deliver -- this wait would hang"
         self._deliverers.pop(0)()
