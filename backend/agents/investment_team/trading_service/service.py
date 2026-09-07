@@ -1986,6 +1986,12 @@ def _resting_stop_loss_enabled() -> bool:
     for the position's whole life, which is what lets it fill intrabar at its
     exact level instead of at the next bar's open.
 
+    This being ``True`` is necessary but NOT sufficient for a rule to be ceded:
+    ``TradingService.run`` also requires ``_engine_entry_emission_active``, since
+    a run whose entries are not engine-managed (the custom-code path) can never
+    attach the resting leg, and ceding there would leave the rule with neither
+    mechanism.
+
     The two mechanisms are mutually exclusive for the affected rule by
     construction, not by convention: see ``_first_resting_stop_loss_index``
     (the single source of "which ``exit_rules`` entry this migration step
@@ -2004,6 +2010,34 @@ def _resting_stop_loss_enabled() -> bool:
         "1",
         "yes",
     }
+
+
+def _engine_entry_emission_active(entry_rules: Sequence[Any], sizing: Any) -> bool:
+    """Whether the engine actually emits entries for this run — and therefore
+    whether anything can attach a resting exit leg at entry-fill.
+
+    Single source of the ``_EngineEntryDispatcher.maybe_emit`` precondition,
+    shared with ``TradingService.run``'s decision to cede a stop-loss rule to
+    the resting mechanism. The two MUST agree: ceding a rule the entry
+    dispatcher can never attach for would remove it from the bar-close
+    evaluator while nothing replaced it, leaving the position with no stop
+    enforcement at all.
+
+    The case that makes this load-bearing is the custom-code path
+    (``requires_custom_code``), where the mode layers pass ``entry_rules=None``
+    and the strategy subprocess submits its own entries: the dispatcher never
+    fires, so a resting leg is never attached. ``TradingService.__init__``
+    already applies this same reasoning to an ``oco_bracket``'s stop leg for
+    exactly the same reason — a bracket only protects ENGINE-managed entries —
+    so this predicate makes that carve-out explicit and reusable rather than
+    re-deriving it per call site.
+
+    Preconditions: ``entry_rules`` is the run's (possibly empty) entry-rule
+    sequence; ``sizing`` is the run's sizing config or ``None``.
+    Postconditions: ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
+    not ``None`` — byte-for-byte the condition ``maybe_emit`` returns early on.
+    """
+    return bool(entry_rules) and sizing is not None
 
 
 def _first_resting_stop_loss_index(exit_rules: Sequence[Any]) -> Optional[int]:
@@ -2284,7 +2318,7 @@ class _EngineEntryDispatcher:
         views: Dict[str, StreamingHistoryView],
         result: "TradingServiceResult",
     ) -> None:
-        if not self.entry_rules or self.sizing is None:
+        if not _engine_entry_emission_active(self.entry_rules, self.sizing):
             return
         if self.target_symbols and cur_bar.symbol not in self.target_symbols:
             return
@@ -3122,7 +3156,17 @@ class TradingService:
         # When disabled (the default), ``exclude_rule_idx`` stays ``None`` so
         # ``_EngineExitDispatcher`` evaluates every rule exactly as it does
         # today.
-        resting_stop_loss_enabled = _resting_stop_loss_enabled()
+        # Ceding a rule requires BOTH the feature check and an entry dispatcher
+        # that can actually attach the resting leg. On the custom-code path
+        # (``entry_rules is None`` at construction) the dispatcher never fires, so
+        # ceding there would strip the rule from the bar-close evaluator with
+        # nothing replacing it — the position would run with no stop enforcement
+        # at all. ``_engine_entry_emission_active`` is the shared predicate
+        # ``_EngineEntryDispatcher.maybe_emit`` returns early on, so the two can
+        # never disagree about whether an attachment is possible.
+        resting_stop_loss_enabled = _resting_stop_loss_enabled() and _engine_entry_emission_active(
+            self._entry_rules, self._sizing
+        )
         exclude_rule_idx = (
             _first_resting_stop_loss_index(self._exit_rules) if resting_stop_loss_enabled else None
         )

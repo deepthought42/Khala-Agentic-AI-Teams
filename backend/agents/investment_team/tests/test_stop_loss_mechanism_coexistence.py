@@ -42,6 +42,7 @@ from __future__ import annotations
 import pytest
 
 from investment_team.execution.risk_filter import RiskFilter, RiskLimits
+from investment_team.models import BacktestConfig
 from investment_team.strategy_lab.executor.predicate_evaluator import (
     BarRecord,
     StreamingHistoryView,
@@ -58,6 +59,7 @@ from investment_team.strategy_lab.spec_dsl import (
     StopLossRule,
     TakeProfitRule,
 )
+from investment_team.trading_service import service as service_module
 from investment_team.trading_service.engine.execution_model import RealisticExecutionModel
 from investment_team.trading_service.engine.fill_simulator import FillSimulator, FillSimulatorConfig
 from investment_team.trading_service.engine.order_book import OrderBook, PendingOrder
@@ -65,7 +67,9 @@ from investment_team.trading_service.engine.portfolio import Portfolio, Position
 from investment_team.trading_service.service import (
     _STOP_LOSS_RESTING_ORDER_ENV,
     ENGINE_EXIT_REASON_PREFIX,
+    TradingService,
     TradingServiceResult,
+    _engine_entry_emission_active,
     _EngineEntryDispatcher,
     _EngineExitDispatcher,
     _first_resting_stop_loss_index,
@@ -78,6 +82,9 @@ from investment_team.trading_service.strategy.contract import (
     OrderSide,
     OrderType,
 )
+
+_NOOP_STRATEGY_CODE = "def on_bar(ctx, bar):\n    pass\n"
+
 
 # ---------------------------------------------------------------------------
 # _resting_stop_loss_enabled: the run feature check and its documented default
@@ -561,3 +568,88 @@ def test_dispatcher_emitted_stop_limit_is_always_reported(armed: bool) -> None:
     the breach, so it is post-trigger by construction and stays tracked from the
     moment it rests — unchanged by this migration, in either latch state."""
     assert _scan_with_child(armed=armed, parent_order_id=None) == "po-1"
+
+
+# ---------------------------------------------------------------------------
+# Ceding requires an entry dispatcher that can actually attach the leg.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entry_rules, sizing, expected",
+    [
+        (
+            [EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=90.0))],
+            "sizing",
+            True,
+        ),
+        ([], "sizing", False),  # custom-code path: mode layers pass entry_rules=None
+        ([EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=90.0))], None, False),
+        ([], None, False),
+    ],
+)
+def test_engine_entry_emission_active_matches_maybe_emit_guard(
+    entry_rules, sizing, expected: bool
+) -> None:
+    """The predicate is byte-for-byte the condition ``maybe_emit`` returns early
+    on, so the entry dispatcher and ``TradingService.run`` can never disagree
+    about whether a resting leg can be attached at all."""
+    assert _engine_entry_emission_active(entry_rules, sizing) is expected
+
+
+@pytest.mark.parametrize("style", ["market", "limit"])
+@pytest.mark.parametrize(
+    "entry_rules, expect_ceded",
+    [
+        # Custom-code path: the mode layers pass ``entry_rules=None``, so the
+        # entry dispatcher never fires and no resting leg is ever attached.
+        (None, False),
+        # Engine-managed entries: attachment is possible, so ceding is correct.
+        ([EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=0.0))], True),
+    ],
+    ids=["custom_code", "engine_managed"],
+)
+def test_run_cedes_the_stop_only_when_entry_emission_can_attach_it(
+    style: str,
+    entry_rules,
+    expect_ceded: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises ``TradingService.run``'s ACTUAL wiring, not a restatement of it.
+
+    On the custom-code path nothing can attach the resting leg, so ceding the
+    rule would strip it from the bar-close evaluator with nothing replacing it —
+    the position would run with NO stop enforcement at all. Both execution
+    styles must keep the bar-close path there, even with the feature check on.
+    """
+    monkeypatch.setenv(_STOP_LOSS_RESTING_ORDER_ENV, "true")
+    rule = (
+        _limit_stop_rule()
+        if style == "limit"
+        else StopLossRule(pct=0.05, basis="entry_price", style="market")
+    )
+    # Resting-ELIGIBLE by shape either way — only the absent entry emission may
+    # stop it from being ceded.
+    assert _first_resting_stop_loss_index([rule]) == 0
+
+    captured: list = []
+    real_exit_dispatcher = service_module._EngineExitDispatcher
+
+    def _spy(*args, **kwargs):
+        dispatcher = real_exit_dispatcher(*args, **kwargs)
+        captured.append(dispatcher.exclude_rule_index)
+        return dispatcher
+
+    monkeypatch.setattr(service_module, "_EngineExitDispatcher", _spy)
+
+    service = TradingService(
+        strategy_code=_NOOP_STRATEGY_CODE,
+        config=BacktestConfig(start_date="2024-01-01", end_date="2024-01-03", slippage_bps=0.0),
+        entry_rules=entry_rules,
+        sizing=FixedFractionSizing(fraction=0.02),
+        exit_rules=[rule],
+    )
+    service.run(iter([_entry_bar()]))
+
+    assert captured, "TradingService.run did not construct an exit dispatcher"
+    assert (captured[0] == 0) is expect_ceded
