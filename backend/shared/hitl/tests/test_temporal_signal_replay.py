@@ -159,44 +159,51 @@ def test_parked_state_reports_the_pause_without_leaking_the_answers() -> None:
     )
 
 
-def test_the_probe_runner_keeps_fastapi_out_of_the_sandbox_but_not_the_probe() -> None:
-    """Not integration-marked deliberately: this pins the configuration that
-    makes every WorkflowEnvironment test in this package runnable at all, and
-    it must fail where those tests only skip.
+def test_importing_shared_hitl_does_not_pull_in_fastapi() -> None:
+    """The invariant that makes every WorkflowEnvironment test in this package
+    runnable at all, and the reason ``validation`` imports ``HTTPException``
+    lazily.
 
-    The probe lives under ``shared.hitl``, so the sandbox imports
-    ``shared/hitl/__init__.py`` as a parent package before the probe module's own
-    body -- and that reaches ``fastapi`` via ``validation``, past the point any
-    ``imports_passed_through()`` block inside the probe could help. Passing
-    ``fastapi`` through fixes it; passing ``shared.hitl`` through would too, and
-    would also unsandbox the probe workflow itself, since passthrough matches by
-    dotted prefix. Both halves are asserted, because only checking the first
-    would let that silent downgrade through."""
-    from shared.hitl.tests._probe_env import PROBE_PASSTHROUGH_MODULES, probe_workflow_runner
+    The temporalio sandbox re-imports a workflow module's PARENT PACKAGES before
+    the module itself, so ``shared/hitl/__init__.py`` executes inside the sandbox
+    when the probe loads. When that reached ``fastapi``, the sandbox failed with
+    "Restriction state not present. Using subclasses of proxied objects is
+    unsupported" -- past the point any ``imports_passed_through()`` block inside
+    the probe could help, since parent-package imports are not in its scope.
 
-    passthrough = probe_workflow_runner().restrictions.passthrough_modules
+    Checked in a subprocess because this one cannot be asserted in-process: the
+    test session has fastapi loaded for other reasons, so ``sys.modules`` here
+    says nothing about what importing ``shared.hitl`` alone would pull in.
 
-    assert "fastapi" in passthrough, (
-        "fastapi must resolve from the host: the sandbox's re-import of it drags in "
-        "starlette/anyio/sniffio, which fails with 'Restriction state not present'"
-    )
-    for module in ("shared.hitl", "shared.hitl.tests", "shared"):
-        assert module not in passthrough, (
-            f"{module!r} is a dotted prefix of the probe workflow's own module, so passing it through "
-            "would stop sandboxing the probe -- the exact check this worker exists to run"
-        )
-    assert PROBE_PASSTHROUGH_MODULES == ("fastapi",), (
-        "the probe's extra passthrough list grew; each entry is a hole in the sandbox and needs "
-        "the same justification fastapi carries in _probe_env"
+    Not integration-marked deliberately: this must fail in the ordinary suite
+    rather than only in a job that skips where the test server is unreachable."""
+    import subprocess
+    import sys
+
+    probe = "import sys; import shared.hitl; print('fastapi' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
+    assert result.stdout.strip() == "False", (
+        "importing shared.hitl pulled fastapi into the import graph; the temporalio sandbox "
+        "re-imports this package when loading a workflow that lives under it, and executing "
+        f"fastapi's import chain there fails. stdout={result.stdout!r} stderr={result.stderr[-400:]!r}"
+    )
 
-def test_the_probe_runner_inherits_productions_sandbox_configuration() -> None:
+
+def test_the_probe_runs_under_productions_sandbox_configuration_exactly() -> None:
     """The probe is only evidence about production if it runs under production's
-    sandbox. Pins that it builds on ``_build_workflow_runner`` rather than the SDK
-    default: a probe sandboxed more strictly than production would fail on
-    configuration real workflows never meet, and one sandboxed more loosely would
-    miss what production catches."""
+    sandbox. Pins that it uses ``_build_workflow_runner`` with no relaxation of
+    its own: a probe sandboxed more loosely than production would miss what
+    production catches.
+
+    The equality is the point, not a formality. The tempting fix for the sandbox
+    failure above was a probe-only passthrough entry; this test is what makes
+    reintroducing one a visible decision rather than a quiet downgrade."""
     from shared.hitl.tests._probe_env import probe_workflow_runner
     from shared.temporal.worker import _build_workflow_runner
 
@@ -204,7 +211,12 @@ def test_the_probe_runner_inherits_productions_sandbox_configuration() -> None:
     probe = set(probe_workflow_runner().restrictions.passthrough_modules)
 
     assert production, "production's passthrough list is empty; this comparison would be vacuous"
-    assert production <= probe, f"the probe dropped production passthrough modules: {sorted(production - probe)}"
-    assert probe - production == {"fastapi"}, (
-        f"the probe diverges from production by more than the documented fastapi entry: {sorted(probe - production)}"
+    assert probe == production, (
+        f"the probe's sandbox diverges from production's: extra={sorted(probe - production)}, "
+        f"missing={sorted(production - probe)}"
     )
+    for module in ("shared", "shared.hitl", "shared.hitl.tests"):
+        assert module not in probe, (
+            f"{module!r} is a dotted prefix of the probe workflow's own module, and passthrough "
+            "matches by prefix -- passing it through would stop sandboxing the probe entirely"
+        )

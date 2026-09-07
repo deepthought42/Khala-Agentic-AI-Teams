@@ -10,9 +10,9 @@ anywhere -- it would produce a plan built on an answer no human ever saw.
 
 Proving "stays paused forever" cannot be done by waiting; a test that slept
 would only prove "stays paused for a few seconds". So these run against a real
-time-skipping ``WorkflowEnvironment`` and jump the server clock a decade
-forward, which is the only way to distinguish an unbounded wait from a
-generously-bounded one.
+time-skipping ``WorkflowEnvironment`` and jump the server clock years forward
+-- as far as the environment's own ceiling allows -- which is the only way to
+distinguish an unbounded wait from a generously-bounded one.
 
 Three assertions carry the weight, and each covers a hole the others leave:
 
@@ -45,10 +45,25 @@ from shared.hitl.tests._wait_probe_workflow import WAIT_PROBE_TASK_QUEUE, HitlWa
 
 RESUME_TOKEN = "probe-job-1:abc123"
 
-#: Long enough that any plausible bounded wait -- a forgotten
-#: ``start_to_close_timeout``, a "generous" 30-day fallback, a run timeout
-#: someone adds later -- would have fired well inside it. Skipped, not slept.
-A_DECADE = timedelta(days=3650)
+#: How far to skip when the server imposes no ceiling of its own. Long enough
+#: that any plausible bounded wait -- a forgotten ``start_to_close_timeout``, a
+#: "generous" 30-day fallback, a run timeout someone adds later -- would have
+#: fired well inside it. Skipped, not slept.
+PREFERRED_SKIP = timedelta(days=3650)
+
+#: The Temporal test server stamps a DEFAULT workflow execution and run timeout
+#: on every start (10 years, as of temporalio 1.32), and it cannot be waived
+#: from the client. Skipping past it would end the workflow on the server's
+#: deadline and report a resolved wait -- a true statement about a workflow the
+#: environment killed, not about the mechanism. So the skip is derived from
+#: whatever ceiling history actually records, stopping this margin short of it.
+SERVER_CEILING_MARGIN = timedelta(days=1)
+
+#: Floor on the derived skip. Without it, a server default of (say) five minutes
+#: would silently turn every assertion below into "the wait held for five
+#: minutes" while the suite stayed green -- the exact vacuous pass an absence
+#: test exists to rule out.
+MIN_MEANINGFUL_SKIP = timedelta(days=365)
 
 #: Payloads that must all be refused. Ordered roughly by how far each one gets
 #: into the handler, so a regression that breaks one rejection branch fails
@@ -75,13 +90,14 @@ async def _assert_still_parked(env, handle, *, expect_token: str = RESUME_TOKEN)
         - ``env`` is a live time-skipping ``WorkflowEnvironment``; ``handle``
           refers to a probe workflow that has already reached its wait.
     Postconditions:
-        - Raises ``AssertionError`` unless ALL of: the server clock actually
-          advanced by ``A_DECADE`` (so the test cannot pass vacuously on an
-          environment where skipping silently no-ops), the execution status is
-          ``RUNNING``, history carries no terminal event and no
-          ``WorkflowTaskFailed``, ``parked_state`` reports the pause armed on
-          ``expect_token`` with nothing latched, and ``handle.result()`` does
-          not resolve within a real-time budget.
+        - Raises ``AssertionError`` unless ALL of: the derived skip horizon is at
+          least ``MIN_MEANINGFUL_SKIP`` (so a short server ceiling cannot make
+          this pass vacuously), the server clock actually advanced by that
+          horizon (so an environment where skipping silently no-ops cannot
+          either), the execution status is ``RUNNING``, history carries no
+          terminal event and no ``WorkflowTaskFailed``, ``parked_state`` reports
+          the pause armed on ``expect_token`` with nothing latched, and
+          ``handle.result()`` does not resolve within a real-time budget.
         - Leaves the workflow running; the caller decides whether to resume or
           terminate it.
     """
@@ -95,24 +111,34 @@ async def _assert_still_parked(env, handle, *, expect_token: str = RESUME_TOKEN)
     # skip and every assertion below would then report a resolved wait -- a
     # true statement about a workflow the environment killed, not about the
     # mechanism. Failing here instead names the real cause.
+    # Read the server's own deadline BEFORE skipping and stay inside it. The
+    # probe sets no timeout, but the test server stamps its default onto every
+    # start, so "skip a fixed decade" would land on that deadline and report a
+    # resolved wait that the environment, not the mechanism, produced.
     started = events[0].workflow_execution_started_event_attributes
-    assert not started.HasField("workflow_execution_timeout") and not started.HasField("workflow_run_timeout"), (
-        "the probe was started with an execution or run timeout "
-        f"(execution={started.workflow_execution_timeout}, run={started.workflow_run_timeout}); "
-        f"skipping {A_DECADE.days} days would then end it on a deadline rather than proving the wait is unbounded"
+    ceilings = [
+        timedelta(seconds=field.seconds)
+        for field in (started.workflow_execution_timeout, started.workflow_run_timeout)
+        if field.seconds
+    ]
+    horizon = min(ceilings) - SERVER_CEILING_MARGIN if ceilings else PREFERRED_SKIP
+    assert horizon >= MIN_MEANINGFUL_SKIP, (
+        f"the server's execution/run ceiling ({min(ceilings) if ceilings else None}) leaves only {horizon} "
+        "to skip, which is too short for 'still parked' to mean anything -- this assertion would pass "
+        "vacuously rather than prove the wait is unbounded"
     )
 
     before = await env.get_current_time()
-    await env.sleep(A_DECADE)
+    await env.sleep(horizon)
     after = await env.get_current_time()
-    assert after - before >= A_DECADE, (
+    assert after - before >= horizon, (
         f"the environment did not actually skip time ({before} -> {after}); every assertion below "
         "would then be measuring a wait that was never given the chance to expire"
     )
 
     description = await handle.describe()
     assert description.status == WorkflowExecutionStatus.RUNNING, (
-        f"the wait resolved on its own after {A_DECADE.days} skipped days (status={description.status}); "
+        f"the wait resolved on its own after {horizon.days} skipped days (status={description.status}); "
         "an unanswered pause must never reach a terminal state"
     )
 
@@ -149,10 +175,10 @@ async def _assert_still_parked(env, handle, *, expect_token: str = RESUME_TOKEN)
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_an_unanswered_wait_never_completes_even_after_a_decade_of_skipped_time() -> None:
-    """The headline guarantee: send nothing at all, skip ten years, and the
-    workflow is still parked on its token with no answer -- not completed, not
-    timed out, not resumed with a fabricated batch."""
+async def test_an_unanswered_wait_never_completes_even_after_years_of_skipped_time() -> None:
+    """The headline guarantee: send nothing at all, skip as far as the server
+    allows, and the workflow is still parked on its token with no answer -- not
+    completed, not timed out, not resumed with a fabricated batch."""
     from shared.temporal.testing import workflow_environment
 
     async with workflow_environment() as env:

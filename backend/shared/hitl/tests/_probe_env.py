@@ -27,61 +27,46 @@ from shared.hitl.tests._wait_probe_workflow import WAIT_PROBE_TASK_QUEUE, HitlWa
 ANSWERS: List[Dict[str, Any]] = [{"question_id": "q1", "selected_option_id": "yes", "other_text": None}]
 
 
-#: Modules the probe's sandbox must resolve from the host rather than re-import.
-#:
-#: The temporalio sandbox re-imports the workflow's defining module, and Python
-#: imports a module's PARENT PACKAGES first. The probe lives at
-#: ``shared.hitl.tests._wait_probe_workflow``, so the sandbox executes
-#: ``shared/hitl/__init__.py``, which imports ``validation``, which imports
-#: ``fastapi`` at module scope. That drags starlette/anyio/sniffio into the
-#: sandbox, where a class subclassing a restriction-proxied object fails with
-#: "Restriction state not present. Using subclasses of proxied objects is
-#: unsupported."
-#:
-#: Note where this happens: BEFORE the probe module's own body runs, so the
-#: ``workflow.unsafe.imports_passed_through()`` block inside it cannot cover it.
-#: A parent package's imports are simply not in scope for that guard. The real
-#: production workflow composing this mixin (``PlanningWorkflow``) is unaffected
-#: because it lives under ``planning_team``, reaching ``shared.hitl`` only from
-#: inside its passthrough block -- this is a consequence of the PROBE's location,
-#: not a defect in the mixin.
-#:
-#: Passing ``fastapi`` through (rather than ``shared.hitl``) is deliberate:
-#: passthrough matches by dotted prefix, so ``shared.hitl`` would also pass
-#: through ``shared.hitl.tests._wait_probe_workflow`` itself and the probe would
-#: stop being sandboxed at all -- gutting the very check this worker exists to
-#: run. ``fastapi`` is never touched by a workflow ``run()`` body, which is the
-#: same rationale ``shared.temporal.worker._build_workflow_runner`` documents for
-#: every module on its own list.
-PROBE_PASSTHROUGH_MODULES = ("fastapi",)
-
-
 def probe_workflow_runner():
-    """Build the sandbox runner the probe worker uses.
+    """Build the sandbox runner the probe worker uses: production's, unmodified.
+
+    The probe is only evidence about production if it runs under production's
+    sandbox, so this returns exactly what
+    ``shared.temporal.worker._build_workflow_runner`` builds -- the runner every
+    real team worker is constructed with -- with NO probe-specific relaxation. A
+    probe sandboxed more loosely than production would miss what production
+    catches; one sandboxed more strictly would fail on configuration real
+    workflows never meet.
+
+    Getting here took a detour worth recording. The temporalio sandbox
+    re-imports a workflow's defining module, and Python imports that module's
+    PARENT PACKAGES first. The probe lives at
+    ``shared.hitl.tests._wait_probe_workflow``, so the sandbox executes
+    ``shared/hitl/__init__.py`` -- which used to reach ``fastapi`` through
+    ``validation``, dragging starlette/anyio/sniffio in and failing with
+    "Restriction state not present. Using subclasses of proxied objects is
+    unsupported." Note where that happens: BEFORE the probe module's body runs,
+    so the ``workflow.unsafe.imports_passed_through()`` block inside it could
+    never have covered it.
+
+    The fix was to stop ``shared.hitl`` importing a web framework at all
+    (``validation`` now imports ``HTTPException`` lazily) rather than to hand the
+    probe a passthrough exception. A passthrough would have had to name
+    ``fastapi`` -- naming ``shared.hitl`` would also pass through
+    ``shared.hitl.tests._wait_probe_workflow``, since passthrough matches by
+    dotted prefix, and the probe would have stopped being sandboxed at all.
+    Fixing the import graph avoids the choice: nothing is excluded here, so the
+    probe is sandboxed exactly as production is.
 
     Preconditions:
         - None.
     Postconditions:
-        - Returns a ``SandboxedWorkflowRunner`` carrying PRODUCTION's passthrough
-          configuration (``shared.temporal.worker._build_workflow_runner``, the
-          runner every real team worker is built with) plus
-          :data:`PROBE_PASSTHROUGH_MODULES`. Building on the production runner
-          rather than the SDK default is the point: a probe sandboxed more
-          strictly than production would fail on configuration real workflows
-          never meet, and one sandboxed more loosely would miss what production
-          catches.
-        - Still sandboxes the probe workflow module itself -- see
-          :data:`PROBE_PASSTHROUGH_MODULES` for why that requires passing
-          ``fastapi`` through rather than ``shared.hitl``.
+        - Returns production's ``SandboxedWorkflowRunner``. Adds no passthrough
+          module of its own; ``test_temporal_signal_replay`` pins that.
     """
-    from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
-
     from shared.temporal.worker import _build_workflow_runner
 
-    production = _build_workflow_runner()
-    return SandboxedWorkflowRunner(
-        restrictions=production.restrictions.with_passthrough_modules(*PROBE_PASSTHROUGH_MODULES)
-    )
+    return _build_workflow_runner()
 
 
 @contextlib.asynccontextmanager
