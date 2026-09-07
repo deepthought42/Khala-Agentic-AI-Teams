@@ -763,6 +763,19 @@ def test_warmup_only_finding_claims_selection_not_a_filled_order() -> None:
     assert "will open positions" not in detail
 
 
+def test_warmup_only_finding_quotes_no_paper_trade_prime_length() -> None:
+    # The paper warm-up default lives in PaperTradeConfig, another layer's
+    # config. A figure copied into author-facing text would go stale silently,
+    # so the wording stays conditional and names no bar count.
+    spec = _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+    )
+    detail = _starvation(spec)[0].details
+    assert "500" not in detail
+    assert "a prime long enough to warm the earlier rules" in detail
+
+
 def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:
     spec = _spec(
         Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
@@ -775,10 +788,6 @@ def test_warmup_only_finding_carries_the_custom_path_caveat() -> None:
 
 
 def test_warmup_only_finding_reads_never_fires_when_the_steady_window_is_empty() -> None:
-    from investment_team.strategy_lab.quality_gates.predicate_reachability import (
-        _RuleStarvation,
-    )
-
     verdict = _RuleStarvation(
         rule_index=1,
         side="long",

@@ -258,15 +258,17 @@ class _RuleStarvation:
     (``modes/paper_trade.py``), and those bars short-circuit before
     ``engine_entries.maybe_emit``. How much of the head start survives there
     is a property of the run, not of the spec: a prime long enough to warm the
-    earlier rules (``PaperTradeConfig.warmup_bars`` defaults to 500) leaves the
-    later rule shadowed on every executable bar and fully starved, while a
+    earlier rules (see ``PaperTradeConfig.warmup_bars`` for the default) leaves
+    the later rule shadowed on every executable bar and fully starved, while a
     shorter prime — the API permits ``warmup_bars=0``, and ``LiveStream._warmup``
     also skips priming when the provider cannot serve the strategy timeframe —
     keeps the earlier rules warming up into live bars, where the later rule can
     still be selected. The probe has no paper-trade context at synthesis time
     and does not guess at one; the ``"warmup_only"`` finding instead scopes its
     count to this backtest and states that dependency rather than declaring any
-    single paper outcome.
+    single paper outcome. It deliberately quotes no prime length: that default
+    lives in another layer's config and a figure copied into a finding an author
+    reads would go stale silently, so the wording stays conditional instead.
 
     Invariants: ``rule_index >= 1`` (rule 0 has nothing before it and can never
     be starved); ``0 <= independent_fires <= fires <= evaluated``;
@@ -329,8 +331,9 @@ class _RuleStarvation:
           * ``"warmup_only"`` — never independent in the steady-state window,
             but fires on at least one warmup-prefix bar where no earlier rule
             is satisfied. ``evaluate_entry_rules`` DOES select it there, so it
-            is neither starved (it contributes entries) nor plainly reachable
-            (it stops contributing the moment the earlier rules warm up).
+            is neither starved (it is still the rule selected there — subject
+            to the selection-vs-order caveat on this class) nor plainly
+            reachable (it stops being selected once the earlier rules warm up).
           * ``"dead"`` — never fires in the steady-state window, and never
             independently on the warmup prefix either. Already reported once,
             per rule, by :meth:`PredicateReachabilityProbe.to_gate_results`, so
@@ -877,10 +880,10 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         "artefact of the fetched window's left edge either way. How much of that "
                         "head start survives a paper run depends on the run's priming: paper "
                         "trading suppresses entries across its warm-up prefix, so a prime long "
-                        "enough to warm the earlier rules (the default is 500 bars) leaves this "
-                        "rule shadowed on every executable bar and fully starved, while a "
-                        "shorter or disabled prime carries part of the head start into live "
-                        "bars. Treat it as starved wherever it actually has to trade: fold its "
+                        "enough to warm the earlier rules leaves this rule shadowed on every "
+                        "executable bar and fully starved, while a shorter or disabled prime "
+                        "carries part of the head start into live bars. Treat it as starved "
+                        "wherever it actually has to trade: fold its "
                         "conditions into the earlier rule's all_of, list it BEFORE the broader "
                         "rule if it is the intended higher priority, or loosen it so it can fire "
                         "where the earlier rules don't."

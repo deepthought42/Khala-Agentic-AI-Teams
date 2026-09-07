@@ -269,13 +269,14 @@ def evaluate_entry_rules(
     distinct from "dead"):
         Fix a spec + fetched market-data window (the same data-dependent frame
         :class:`~..quality_gates.predicate_reachability.PredicateReachabilityProbe`
-        already evaluates against). For entry-rule index ``j``, let ``S_j`` be
-        the set of (symbol, bar) pairs where rule ``j``'s predicate tree
-        (``evaluate_tree(rule.when, view, i)``) evaluates to ``"satisfied"``.
+        already evaluates against). Throughout, ``i`` and ``j`` are entry-rule
+        indices and ``b`` is a (symbol, bar) pair. For rule index ``j``, let
+        ``S_j`` be the set of ``b`` at which rule ``j``'s predicate tree
+        (``evaluate_tree(rule.when, view, b)``) evaluates to ``"satisfied"``.
         Membership keys on ``"satisfied"`` and nothing else, because that is
-        the only status the loop below acts on: a rule still warming up at bar
-        ``i`` is simply not in ``S_i``, exactly as a rule whose predicate is
-        false there is not. This matters for the set relations that follow —
+        the only status the loop below acts on: a rule still warming up at
+        ``b`` is simply absent from its own set there, exactly as a rule whose
+        predicate is false is. This matters for the set relations that follow —
         the warmup prefix is not a hole in the analysis, it is a stretch of
         bars where the warming-up rules are absent from the union and the
         later rules can therefore win.
@@ -303,11 +304,12 @@ def evaluate_entry_rules(
         and this loop returns it there. (Selection is as far as this goes: the
         engine skips entry evaluation entirely while the symbol holds a
         position or a pending entry, and risk sizing can cap a matched entry to
-        zero — so "selected" does not promise an order.) That entry-eligibility is mode-specific: paper trading
-        primes from a prefix emitted with ``is_warmup=True``, which
-        short-circuits before the engine's entry dispatch, so a prime long
-        enough to warm the earlier rules starves the later one outright once it
-        has to trade live — while a shorter or disabled prime leaves those
+        zero — so "selected" does not promise an order.) That entry-eligibility
+        is mode-specific: paper trading primes from a prefix emitted with
+        ``is_warmup=True``, which short-circuits before the engine's entry
+        dispatch, so a prime long enough to warm the earlier rules starves the
+        later one outright once it has to trade live — while a shorter or
+        disabled prime leaves those
         rules warming up into live bars, where it can still be selected. The
         probe reports this case as its own lesser finding, worded to name that
         dependency, rather than folding it into either verdict.
