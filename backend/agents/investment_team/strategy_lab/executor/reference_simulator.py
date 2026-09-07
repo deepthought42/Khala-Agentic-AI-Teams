@@ -529,7 +529,23 @@ def _process_exit_bar(
             # resting phase produced no winner at all (see
             # _finalize_exit_price's own docstring on why this narrow case is
             # not retried against the other book).
-        elif tp_candidate is not None:
+        # The price guard below is deliberately checked BEFORE commit(), not
+        # after: a degenerate tp_candidate (non-finite, or <= 0 — reachable
+        # when a valid pct >= 1 target on the short side lands at or below
+        # zero and a garbage nonpositive bar low reaches it; see
+        # TakeProfitRule/TakeProfitLevel.pct's unbounded Field(gt=0)) must
+        # never reach pos.tp_book.commit at all. Committing it and discarding
+        # the result afterward would still corrupt the book's
+        # fills/cursor/remaining_qty bookkeeping, and — worse — the resulting
+        # price reaches ReferenceTrade.__post_init__'s exit_price > 0
+        # invariant and aborts the whole simulate() run over one bad bar,
+        # which the design doc's uniform nonpositive-exit-reference rule
+        # forbids: this candidate must be suppressed exactly as if the rule
+        # had not triggered this bar, leaving the book untouched so a later
+        # bar or another rule kind may still close the position.
+        elif tp_candidate is not None and (
+            tp_candidate.price > 0 and math.isfinite(tp_candidate.price)
+        ):
             fired = pos.tp_book.commit(tp_candidate)
             if fired is not None:
                 price = round(fired.raw_price, decimals_for(fired.terminal_price))
@@ -642,6 +658,12 @@ def simulate(
           silently ignoring the bracket or modelling only some of its legs.
         - ``entry_slippage_bps`` is finite and ``0 <= entry_slippage_bps <
           10_000``.
+        - When ``spec.target_symbols`` is non-empty, every symbol it names is
+          a key in ``bars`` — an empty ``bars`` mapping does not vacuously
+          satisfy this. Without this check a target symbol simply absent from
+          ``bars`` silently produces no trades for it, indistinguishable from
+          a strategy that legitimately never triggered; ``simulate`` raises
+          ``ValueError`` instead.
         - For every symbol key in ``bars``: the sequence is non-empty,
           strictly increasing by ``timestamp``, and every ``Bar`` in it has
           ``bar.symbol`` equal to that mapping key. Validated uniformly for
@@ -678,6 +700,12 @@ def simulate(
         raise ValueError(
             f"entry_slippage_bps must be finite and in [0, 10_000), got {entry_slippage_bps!r}"
         )
+    if spec.target_symbols:
+        missing = [s for s in spec.target_symbols if s not in bars]
+        if missing:
+            raise ValueError(
+                f"bars is missing required symbol(s) {missing!r} referenced by spec.target_symbols"
+            )
     for symbol, symbol_bars in bars.items():
         if len(symbol_bars) == 0:
             raise ValueError(f"bars[{symbol!r}] must be non-empty")

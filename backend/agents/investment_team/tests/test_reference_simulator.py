@@ -248,6 +248,25 @@ def test_signal_exit_with_a_nonpositive_fill_bar_open_does_not_fire():
     assert simulate(spec, {"AAA": bars}) == []
 
 
+def test_short_take_profit_with_a_nonpositive_target_does_not_crash_simulate():
+    """The same "Nonpositive exit references" rule applies to the take-profit
+    family: TakeProfitRule.pct has no upper bound, so a short's target
+    (``anchor * (1 - pct)``) can land at or below zero for ``pct >= 1``. A
+    degenerate bar whose low is nonpositive can then "reach" that target --
+    the guard must suppress just this candidate (position stays open, no
+    trade), not let a nonpositive price reach ReferenceTrade construction and
+    abort the whole run."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger bar: close > 100
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 (short anchor=100)
+        _bar(100, 100, -60, 100, d[3]),  # target=100*(1-1.5)=-50; low=-60 "reaches" it
+    ]
+    spec = _spec([TakeProfitRule(pct=1.5)], entry_side="short")
+    assert simulate(spec, {"AAA": bars}) == []
+
+
 # ---------------------------------------------------------------------------
 # Multi-rule-kind competition
 # ---------------------------------------------------------------------------
@@ -558,6 +577,22 @@ def test_simulate_rejects_a_bar_symbol_mismatched_with_the_mapping_key():
     bars = [_bar(99, 99, 99, 99, "2024-01-01T00:00:00", symbol="AAA")]
     with pytest.raises(ValueError, match="mapping key"):
         simulate(spec, {"ZZZ": bars})
+
+
+def test_simulate_rejects_a_target_symbol_missing_from_bars():
+    """Without this check a target symbol simply absent from ``bars`` (but
+    others present) silently produces no trades for it -- indistinguishable
+    from a strategy that legitimately never triggered."""
+    spec = _spec([StopLossRule(pct=0.05)], target_symbols=["AAA", "BBB"])
+    bars = {"AAA": [_bar(99, 99, 99, 99, "2024-01-01T00:00:00")]}
+    with pytest.raises(ValueError, match="missing"):
+        simulate(spec, bars)
+
+
+def test_simulate_rejects_target_symbols_against_an_empty_bars_mapping():
+    spec = _spec([StopLossRule(pct=0.05)], target_symbols=["AAA"])
+    with pytest.raises(ValueError, match="missing"):
+        simulate(spec, {})
 
 
 # ---------------------------------------------------------------------------
