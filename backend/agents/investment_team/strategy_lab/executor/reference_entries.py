@@ -154,12 +154,17 @@ def fill_entry_at(
           own ``(rule, rule_idx)`` return value, unpacked by the caller.
 
     Postconditions:
-        - Returns ``None`` when ``trigger_bar`` is the final bar of
-          ``symbol_bars`` (no next bar to fill against — the documented
-          final-bar rule) or when the fill bar's ``open`` is not a positive
-          finite number (``Bar`` does not itself validate OHLC
-          positivity/finiteness) — both cases mean "this trigger produces no
-          fill," not an error.
+        - Returns ``None`` when the TRIGGER bar's ``close`` is not a positive
+          finite number (design doc §5 "Entries"' nonpositive-trigger-close
+          gate — mirrors production's ``_compute_qty`` sizing a degenerate
+          trigger to zero so no position opens, a case ``evaluate_entry_rules``
+          itself cannot exclude since a predicate like ``close < 1`` fires
+          numerically true against a ``close`` of exactly ``0``); when
+          ``trigger_bar`` is the final bar of ``symbol_bars`` (no next bar to
+          fill against — the documented final-bar rule); or when the fill
+          bar's ``open`` is not a positive finite number (``Bar`` does not
+          itself validate OHLC positivity/finiteness) — all three cases mean
+          "this trigger produces no fill," not an error.
         - Otherwise returns a ``ReferenceEntryFill`` at
           ``entry_bar = trigger_bar + 1``, priced at that bar's ``open``,
           dated from that same bar's truncated ISO timestamp.
@@ -168,6 +173,9 @@ def fill_entry_at(
         - No side effects: does not mutate ``symbol_bars``.
         - Deterministic: identical inputs always produce an identical result.
     """
+    trigger_close = symbol_bars[trigger_bar].close
+    if not (trigger_close > 0 and math.isfinite(trigger_close)):
+        return None  # nonpositive/non-finite trigger-bar close gate
     entry_bar = trigger_bar + 1
     if entry_bar >= len(symbol_bars):
         return None  # final-bar rule: no next bar to fill against

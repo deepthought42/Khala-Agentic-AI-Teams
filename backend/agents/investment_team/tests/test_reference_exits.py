@@ -1563,6 +1563,46 @@ def test_commit_advances_remaining_qty_and_the_ladder_cursor():
     assert family.peek(bar) is None  # the rung is consumed; the cursor moved past it
 
 
+def test_peek_skips_an_invalid_same_family_candidate_and_returns_the_next_valid_one():
+    """A degenerate standalone target (``pct >= 1`` on the short side landing
+    at or below zero) must not make ``peek`` stop scanning outright -- a
+    DIFFERENT, valid candidate later in the same bar's intents (a different
+    standalone target, at a higher ``exit_rule_index``) still gets a chance to
+    win, mirroring ``RestingStopLoss.peek``'s own internal skip-and-continue
+    over its own rules."""
+    rules = [TakeProfitRule(pct=1.5), TakeProfitRule(pct=0.5)]
+    family = RestingTakeProfitFamily(side="short", symbol="AAA", anchor=100.0, rules=rules)
+    bar = _bar(100.0, 100.0, -60.0, 100.0)  # low reaches both: -50 (invalid) and 50 (valid)
+
+    candidate = family.peek(bar)
+
+    assert candidate is not None
+    assert (candidate.exit_rule_index, candidate.price) == (1, 50.0)
+
+
+def test_commit_refuses_a_terminal_close_that_rounds_to_zero_without_mutating_state():
+    """A standalone target's raw price can be positive and finite (passing
+    ``peek``'s own guard) yet still round away to zero at its own bucket --
+    e.g. ``round(0.00004, 4) == 0.0``. Since a fill already applied could
+    never be cleanly un-applied, this must be decided BEFORE any mutation:
+    ``remaining_qty``/``_fills`` must stay exactly as they were, so a later
+    bar (or a different rule kind entirely) still gets a chance to close the
+    position."""
+    rules = [TakeProfitRule(pct=0.6)]
+    family = RestingTakeProfitFamily(side="short", symbol="AAA", anchor=0.0001, rules=rules)
+    bar = _bar(0.0001, 0.0001, 0.00001, 0.0001)  # low reaches the 0.00004 target
+
+    candidate = family.peek(bar)
+    assert candidate is not None
+    assert candidate.price == pytest.approx(0.00004)
+
+    fired = family.commit(candidate)
+
+    assert fired is None
+    assert family.remaining_qty == 1.0  # untouched -- the commit never happened
+    assert family.peek(bar) == candidate  # nothing moved; same candidate available again
+
+
 def test_remaining_qty_starts_at_the_nominal_original_quantity():
     rules = [TakeProfitRule(pct=0.05)]
     family = RestingTakeProfitFamily(side="long", symbol="AAA", anchor=100.0, rules=rules)

@@ -284,6 +284,47 @@ def test_signal_only_spec_does_not_crash_on_an_entry_price_that_would_zero_the_a
     assert simulate(spec, {"AAA": bars}) == []
 
 
+def test_entry_price_is_rounded_to_its_own_production_bucket():
+    """Design doc §3: ``ReferenceTrade.entry_price``/``exit_price`` must be
+    rounded the same way production rounds ``entry_bid_price``/
+    ``exit_bid_price``, or a raw fill price with more decimal places than
+    either bucket allows shows as a spurious mismatch against production's
+    own rounded field for every single trade."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(100.12345, 100.12345, 100.12345, 100.12345, d[2]),  # entry fill @100.12345
+        _bar(100, 100, 90, 91, d[3]),  # through-bar stop
+    ]
+    spec = _spec([StopLossRule(pct=0.05, basis="entry_price")])
+    [trade] = simulate(spec, {"AAA": bars})
+    assert trade.entry_price == 100.12  # rounded to the 2dp bucket (>= 10), not 100.12345
+
+
+def test_a_degenerate_trigger_close_does_not_open_a_position_even_though_the_predicate_fires():
+    """Design doc §5 "Entries": a trigger bar whose close is <= 0 or
+    non-finite must not open a position, mirroring production's
+    ``_compute_qty`` sizing a degenerate trigger to zero -- even though a
+    predicate like ``close < 1`` still numerically fires true against a close
+    of exactly 0. A ``StopLossRule`` that would certainly close a WRONGLY
+    opened position by bar 2 makes this discriminating: with no gate, a
+    position opens at bar 1 and a stop_loss trade is emitted by bar 2; with
+    the gate, no position ever opens and nothing is emitted at all."""
+    d = _dates(4)
+    bars = [
+        _bar(50, 50, 0.0, 0.0, d[0]),  # trigger: close < 1 fires, but close == 0 is degenerate
+        _bar(100, 100, 100, 100, d[1]),  # would-be fill bar -- must NOT become an entry
+        _bar(100, 100, 40, 100, d[2]),  # would trip a 50% stop if a position had wrongly opened
+        _bar(100, 100, 100, 100, d[3]),
+    ]
+    spec = _spec(
+        [StopLossRule(pct=0.5, basis="entry_price")],
+        entry_rules=[EntryRule(side="long", when=Predicate(lhs="bar.close", op="<", rhs=1.0))],
+    )
+    assert simulate(spec, {"AAA": bars}) == []
+
+
 # ---------------------------------------------------------------------------
 # Multi-rule-kind competition
 # ---------------------------------------------------------------------------
@@ -355,6 +396,46 @@ def test_an_invalid_lower_index_stop_candidate_does_not_mask_a_valid_take_profit
     spec = _spec([StopLossRule(pct=0.90, basis="entry_price"), TakeProfitRule(pct=0.10)])
     [trade] = simulate(spec, {"AAA": bars})
     assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 1)
+
+
+def test_a_same_family_invalid_take_profit_does_not_mask_a_valid_one_at_a_higher_index():
+    """A degenerate take-profit candidate must not stop
+    ``RestingTakeProfitFamily`` from finding a DIFFERENT, valid candidate in
+    the SAME family at a higher ``exit_rule_index`` -- distinct from the
+    cross-book masking above, since there is no ``stop_loss`` rule here at
+    all; ``peek()`` itself must rescan its own intents rather than committing
+    to the first-by-index one regardless of usability."""
+    d = _dates(4)
+    bars = [
+        _bar(101, 101, 101, 101, d[0]),
+        _bar(99, 100, 98, 99, d[1]),  # trigger: close < 100
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 (short anchor=100)
+        _bar(100, 100, -60, 100, d[3]),  # low reaches both: -50 (invalid) and 50 (valid)
+    ]
+    spec = _spec(
+        [TakeProfitRule(pct=1.5), TakeProfitRule(pct=0.5)],
+        entry_rules=[EntryRule(side="short", when=Predicate(lhs="bar.close", op="<", rhs=100.0))],
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 1)
+
+
+def test_a_take_profit_target_that_rounds_to_zero_does_not_crash_simulate():
+    """Further evidence beyond the nonpositive-target fix above: a positive
+    raw target can still become unusable only after rounding -- e.g. a short
+    anchored at 0.0001 with ``pct=0.6`` produces a reachable target of
+    0.00004, which rounds to 0.0 at the 4dp bucket. The candidate must be
+    treated as not having fired at all, not reach ``ReferenceTrade``
+    construction and abort the whole run."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(0.0001, 0.0001, 0.0001, 0.0001, d[2]),  # entry fill @0.0001 (short anchor=0.0001)
+        _bar(0.0001, 0.0001, 0.00001, 0.0001, d[3]),  # low reaches the 0.00004 target
+    ]
+    spec = _spec([TakeProfitRule(pct=0.6)], entry_side="short")
+    assert simulate(spec, {"AAA": bars}) == []
 
 
 def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
@@ -737,6 +818,21 @@ def _trade(**overrides) -> ReferenceTrade:
 
 def test_valid_trade_constructs():
     assert _trade().exit_price == 105.0
+
+
+def test_trade_rejects_an_empty_symbol():
+    with pytest.raises(ValueError, match="symbol"):
+        _trade(symbol="")
+
+
+def test_trade_rejects_an_empty_entry_date():
+    with pytest.raises(ValueError, match="entry_date"):
+        _trade(entry_date="")
+
+
+def test_trade_rejects_an_empty_exit_date():
+    with pytest.raises(ValueError, match="exit_date"):
+        _trade(exit_date="")
 
 
 def test_trade_rejects_trade_num_below_one():

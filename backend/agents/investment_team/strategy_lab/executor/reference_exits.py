@@ -1156,10 +1156,14 @@ class RestingTakeProfitFamily:
     intent could otherwise "win" the walk and mask a lower-priority take-profit
     candidate this module must still see — this class filters the returned
     list down to ``take_profit``/``scaled_take_profit`` kinds and takes the
-    first (i.e. lowest ``exit_rule_index``) survivor, which is exactly the
-    SAME per-position (not per-rule, not per-ladder) firing budget as before:
-    a bar reachable by two different ladders' cursor rungs, or by a standalone
-    target and a rung, still only fires the lower-``exit_rule_index`` one.
+    first (i.e. lowest ``exit_rule_index``) USABLE survivor — one whose
+    resolved target is finite and positive, skipping a degenerate one (an
+    unbounded ``pct >= 1`` can land a short's target at or below zero) in
+    favor of the next candidate in the same list, per :meth:`peek`'s own
+    docstring — which is exactly the SAME per-position (not per-rule, not
+    per-ladder) firing budget as before: a bar reachable by two different
+    ladders' cursor rungs, or by a standalone target and a rung, still only
+    fires the lower-``exit_rule_index`` one AMONG THOSE USABLE.
 
     Unlike :class:`RestingStopLoss`, this object carries NO cross-bar price
     watermark — it passes a ``PositionState`` whose ``high_since_entry``/
@@ -1312,7 +1316,17 @@ class RestingTakeProfitFamily:
         :meth:`step` did (already closed; no take-profit-family intent fires
         this bar) — or the winning candidate, fully resolved (quantity and
         price) but not yet reflected in ``_fills``/``_remaining_qty``/any
-        ladder's ``next_rung``.
+        ladder's ``next_rung``. The returned candidate's ``price`` is always
+        finite and positive: an intent whose target resolves to <= 0 or
+        non-finite (reachable when an unbounded ``pct >= 1`` on the short
+        side lands at or below zero) is skipped in favor of the NEXT
+        take-profit-family intent in the same ``intents`` list — a different
+        standalone target or ladder rung at a higher ``exit_rule_index`` still
+        gets a chance to win this bar — exactly as if the degenerate intent's
+        trigger had not been met, mirroring :class:`RestingStopLoss`'s own
+        internal skip-and-continue over ITS rules. Only when every
+        take-profit-family intent this bar is degenerate does this return
+        ``None``.
         """
         if self._fills and self._remaining_qty <= self._original_qty * _FILL_QTY_REL_TOL:
             return None  # already fully closed on an earlier bar; see Invariants
@@ -1326,52 +1340,54 @@ class RestingTakeProfitFamily:
             first_only=False,
             cursor_map=cursor_map,
         )
-        winner = next(
-            (
-                intent
-                for intent in intents
-                if intent.rule_kind in ("take_profit", "scaled_take_profit")
-            ),
-            None,
-        )
-        if winner is None:
-            return None
+        for winner in (
+            intent
+            for intent in intents
+            if intent.rule_kind in ("take_profit", "scaled_take_profit")
+        ):
+            rule = self._rules[winner.rule_index]
+            ladder_rule_index: Optional[int] = None
+            if winner.rule_kind == "take_profit":
+                # A standalone rule is always a full close of whatever remains
+                # — the design doc's "every other exit rule kind is always a
+                # full-position close."
+                pct = rule.pct
+                qty = self._remaining_qty
+            else:
+                level = rule.levels[winner.level_index]
+                pct = level.pct
+                qty = min(winner.qty_fraction * self._original_qty, self._remaining_qty)
+                # Invariant this relies on: every intent evaluate_exit_rules_for_position
+                # classifies as "scaled_take_profit" has a matching cursor in
+                # self._ladder_by_index, since both derive from the SAME
+                # scaled_take_profit_rules(self._rules) filtering. Guarded
+                # explicitly (rather than left as a bare lookup raising an
+                # opaque KeyError) so a future change that breaks this
+                # invariant fails loudly, matching this module's
+                # Design-by-Contract style.
+                if winner.rule_index not in self._ladder_by_index:  # pragma: no cover - invariant
+                    raise AssertionError(
+                        f"scaled_take_profit intent for rule_index {winner.rule_index!r} "
+                        "has no matching ladder cursor"
+                    )
+                ladder_rule_index = winner.rule_index
 
-        rule = self._rules[winner.rule_index]
-        ladder_rule_index: Optional[int] = None
-        if winner.rule_kind == "take_profit":
-            # A standalone rule is always a full close of whatever remains —
-            # the design doc's "every other exit rule kind is always a
-            # full-position close."
-            pct = rule.pct
-            qty = self._remaining_qty
-        else:
-            level = rule.levels[winner.level_index]
-            pct = level.pct
-            qty = min(winner.qty_fraction * self._original_qty, self._remaining_qty)
-            # Invariant this relies on: every intent evaluate_exit_rules_for_position
-            # classifies as "scaled_take_profit" has a matching cursor in
-            # self._ladder_by_index, since both derive from the SAME
-            # scaled_take_profit_rules(self._rules) filtering. Guarded
-            # explicitly (rather than left as a bare lookup raising an opaque
-            # KeyError) so a future change that breaks this invariant fails
-            # loudly, matching this module's Design-by-Contract style.
-            if winner.rule_index not in self._ladder_by_index:  # pragma: no cover - invariant
-                raise AssertionError(
-                    f"scaled_take_profit intent for rule_index {winner.rule_index!r} "
-                    "has no matching ladder cursor"
-                )
-            ladder_rule_index = winner.rule_index
-
-        price = _take_profit_target(self._anchor, pct, self._side)
-        return _TakeProfitCandidate(
-            exit_rule_index=winner.rule_index,
-            exit_rule_kind=winner.rule_kind,
-            qty=qty,
-            price=price,
-            level_index=winner.level_index,
-            ladder_rule_index=ladder_rule_index,
-        )
+            price = _take_profit_target(self._anchor, pct, self._side)
+            if not (price > 0 and math.isfinite(price)):
+                # Degenerate target — does not fire on this bar, but a
+                # DIFFERENT family intent later in this same bar's list may
+                # still be valid; keep scanning rather than returning None
+                # outright.
+                continue
+            return _TakeProfitCandidate(
+                exit_rule_index=winner.rule_index,
+                exit_rule_kind=winner.rule_kind,
+                qty=qty,
+                price=price,
+                level_index=winner.level_index,
+                ladder_rule_index=ladder_rule_index,
+            )
+        return None
 
     def commit(self, candidate: _TakeProfitCandidate) -> Optional[_TakeProfitFireResult]:
         """Apply a candidate :meth:`peek` returned for the SAME bar.
@@ -1382,23 +1398,46 @@ class RestingTakeProfitFamily:
         carries no bar identity of its own to check this against — that
         discipline is the caller's, exactly as :meth:`step`'s own
         peek-then-commit composition below observes it).
-        Postconditions: same effect as the fall-through half of the old
+        Postconditions: when this candidate would be the position's FINAL
+        closing fill (its ``qty`` leaves ``_remaining_qty`` within
+        :data:`_FILL_QTY_REL_TOL` of zero) and the resulting quantity-weighted
+        price — rounded with the bucket ``candidate.price`` itself selects,
+        the same computation this method already returns as ``raw_price``/
+        ``terminal_price`` on success — would be ``<= 0``, returns ``None``
+        WITHOUT mutating ANY state: this candidate does not fire, exactly as
+        if its trigger had not been met. This is reachable even though
+        ``candidate.price`` already passed :meth:`peek`'s own raw
+        finite-positive check, since a tiny positive price can still round
+        away to zero (``round(0.00004, 4) == 0.0``) — and unlike a
+        not-yet-applied :meth:`peek` candidate, a fill already recorded below
+        could not be cleanly un-applied, so this must be decided BEFORE
+        mutating. Otherwise: same effect as the fall-through half of the old
         atomic :meth:`step` — ``_fills``/``_remaining_qty`` advance, the
         candidate's ladder cursor (if any) advances, and the position's final
         closing outcome is returned once ``_remaining_qty`` reaches
         :data:`_FILL_QTY_REL_TOL` of zero, else ``None`` (rung fired, position
         still open).
         """
+        prospective_remaining = self._remaining_qty - candidate.qty
+        is_terminal = prospective_remaining <= self._original_qty * _FILL_QTY_REL_TOL
+        if is_terminal:
+            prospective_fills = [*self._fills, (candidate.qty, candidate.price)]
+            total_qty = sum(q for q, _ in prospective_fills)
+            weighted_price = sum(q * p for q, p in prospective_fills) / total_qty
+            if not (round(weighted_price, decimals_for(candidate.price)) > 0):
+                # The blended, rounded closing price is unusable — treated as
+                # if this candidate's trigger had not been met, so NOTHING is
+                # mutated. A later bar may still close the position via this
+                # same rung (if still reachable) or a different rule kind.
+                return None
+
         self._fills.append((candidate.qty, candidate.price))
-        self._remaining_qty -= candidate.qty
+        self._remaining_qty = prospective_remaining
         if candidate.ladder_rule_index is not None:
             self._ladder_by_index[candidate.ladder_rule_index].next_rung += 1
 
-        if self._remaining_qty > self._original_qty * _FILL_QTY_REL_TOL:
+        if not is_terminal:
             return None  # rung fired, position still open — keep walking
-
-        total_qty = sum(q for q, _ in self._fills)
-        weighted_price = sum(q * p for q, p in self._fills) / total_qty
         return _TakeProfitFireResult(
             exit_rule_index=candidate.exit_rule_index,
             exit_rule_kind=candidate.exit_rule_kind,

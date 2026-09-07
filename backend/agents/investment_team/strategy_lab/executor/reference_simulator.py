@@ -487,8 +487,14 @@ def _finish_trade(
     (:func:`_finalize_exit_price`, or the take-profit family's own committed
     result); ``bar`` is ``symbol_bars[exit_bar]``.
     Postconditions: returns a ``_RawTrade`` combining ``pos.entry`` with the
-    given exit fields; ``qty`` is the nominal ``1.0`` (see this module's own
-    docstring on quantity scope).
+    given exit fields; ``entry_price`` is ``pos.entry.entry_price`` rounded to
+    its OWN production bucket (:func:`~.reference_exits.round_reference_price`)
+    — the raw, unrounded value stays reserved for the internal post-slippage
+    anchor :func:`_open_position` already computed once at position-open time
+    from ``fill.entry_price`` directly, never from this rounded output field
+    (design doc §5's "Anchor price is post-slippage" rule: the two roundings
+    must stay independent); ``qty`` is the nominal ``1.0`` (see this module's
+    own docstring on quantity scope).
     """
     return _RawTrade(
         exit_sort_key=bar.timestamp,
@@ -499,7 +505,7 @@ def _finish_trade(
         exit_bar=exit_bar,
         entry_date=pos.entry.entry_date,
         exit_date=bar.timestamp[:10],
-        entry_price=pos.entry.entry_price,
+        entry_price=round_reference_price(pos.entry.entry_price),
         exit_price=exit_price,
         qty=1.0,
         exit_rule_kind=exit_rule_kind,
@@ -534,44 +540,28 @@ def _process_exit_bar(
     resting_eligible = i >= pos.entry.entry_bar + 1
     if resting_eligible:
         stop_candidate = pos.stop_book.peek(bar) if pos.stop_book is not None else None
+        # No raw-price validity filter needed here for tp_candidate the way
+        # there is for stop_candidate below: RestingTakeProfitFamily.peek()
+        # already guarantees a returned candidate's raw price is finite and
+        # positive, skipping an invalid same-family intent (e.g. a lower-index
+        # TakeProfitRule with pct >= 1 landing at or below zero) and rescanning
+        # for a different, valid one at a higher exit_rule_index before ever
+        # returning — mirroring RestingStopLoss.peek()'s own internal
+        # skip-and-continue over its own rules. A candidate reaching here is
+        # therefore either None or already raw-valid.
         tp_candidate = pos.tp_book.peek(bar) if pos.tp_book is not None else None
-        if tp_candidate is not None and not (
-            tp_candidate.price > 0 and math.isfinite(tp_candidate.price)
-        ):
-            # A degenerate candidate (non-finite, or <= 0 — reachable when a
-            # valid pct >= 1 target on the short side lands at or below zero
-            # and a garbage nonpositive bar low reaches it; see
-            # TakeProfitRule/TakeProfitLevel.pct's unbounded Field(gt=0)) is
-            # discarded HERE, before it can enter the stop_wins priority
-            # comparison below — not merely before commit(). Filtering it
-            # only inside the tp branch (checked after stop_wins was already
-            # decided) let an invalid LOWER-index candidate still win that
-            # comparison by rule-index alone, masking a legitimate
-            # higher-index stop reachable on the very same bar and leaving
-            # the position open with no trade emitted. Discarding it here
-            # makes it invisible to this bar's resting phase entirely, so a
-            # valid stop candidate is free to win on its own merits, and
-            # commit() still never sees it — the book's
-            # fills/cursor/remaining_qty stay untouched and a later bar or
-            # another rule kind may still close the position, exactly as if
-            # the rule had not triggered this bar (the design doc's uniform
-            # nonpositive-exit-reference rule). Letting it reach
-            # ReferenceTrade construction instead would abort the whole
-            # simulate() run over one bad bar, which that rule forbids.
-            tp_candidate = None
-        # Symmetric with the tp_candidate filter above: a stop candidate's RAW
-        # price can be positive and finite (passing RestingStopLoss.peek's own
-        # guard) yet still round or blend away to <= 0 once _finalize_exit_price
-        # applies production's own rounding bucket and any prior take-profit
-        # rungs' blend — e.g. an entry price small enough that a deep stop's
-        # level survives peek's raw check but rounds to zero. Finalizing it
-        # HERE, before stop_wins, means an unusable stop is discarded before it
-        # can win that priority comparison by rule-index alone, exactly the
-        # same masking risk the tp_candidate filter above addresses for the
-        # reverse pairing — a lower-index stop that turns out unusable must not
-        # block a legitimate higher-index take-profit reachable on the same
-        # bar. The finalized price is reused directly below rather than
-        # recomputed, since _finalize_exit_price has no side effects to redo.
+        # A stop candidate's RAW price, unlike tp_candidate's, can be positive
+        # and finite (passing RestingStopLoss.peek's own guard) yet still round
+        # or blend away to <= 0 once _finalize_exit_price applies production's
+        # own rounding bucket and any prior take-profit rungs' blend — e.g. an
+        # entry price small enough that a deep stop's level survives peek's raw
+        # check but rounds to zero. Finalizing it HERE, before stop_wins, means
+        # an unusable stop is discarded before it can win that priority
+        # comparison by rule-index alone — a lower-index stop that turns out
+        # unusable must not block a legitimate higher-index take-profit
+        # reachable on the same bar. The finalized price is reused directly
+        # below rather than recomputed, since _finalize_exit_price has no side
+        # effects to redo.
         stop_price: Optional[float] = None
         if stop_candidate is not None:
             stop_price = _finalize_exit_price(pos, stop_candidate[1])
@@ -609,8 +599,15 @@ def _process_exit_bar(
                     fired.exit_rule_index,
                     fired.level_index,
                 )
-            # Rung fired but left the position open — fall through to check
-            # a queued/fresh signal exit on this same bar.
+            # None means either a rung fired but left the position open, or
+            # this candidate would have been the terminal close but its
+            # blended, rounded price would be <= 0 — a tiny positive raw price
+            # can still round away to zero even though it already passed
+            # peek()'s raw check (RestingTakeProfitFamily.commit's own guard,
+            # mirroring _finalize_exit_price's identical concern for stop/
+            # signal closes). Either way the position stays open and nothing
+            # was mutated in the invalid-price case; fall through to check a
+            # queued/fresh signal exit on this same bar.
 
     if pos.pending_signal is not None and pos.pending_signal[1] == i:
         rule_idx, _ = pos.pending_signal
