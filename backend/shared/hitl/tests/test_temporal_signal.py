@@ -9,9 +9,9 @@ for the sibling implementations this module was extracted from.
 
 **This is the canonical suite for the mixin's standalone behavioral
 contract.** ``software_engineering_team/tests/test_shared_infra_gap_coverage.py``
-mirrors these same cases (see that module's docstring) purely because it's
-the only one of the two CI actually collects today -- update THIS suite
-first when the mixin's contract changes, then mirror the change there.
+mirrors these same cases (see that module's docstring) because the two run in
+separate CI jobs and neither collection boundary sees the other -- update THIS
+suite first when the mixin's contract changes, then mirror the change there.
 """
 
 from __future__ import annotations
@@ -725,3 +725,60 @@ async def test_wait_for_answers_stays_parked_through_a_mismatched_token_signal(m
     _install_wait(monkeypatch, _FakeWaitCondition(_deliver))
 
     assert await wf.wait_for_answers("tok-1") == batch
+
+
+# --------------------------------------------------------------------------
+# _bounded_repr -- log-flood and hostile-repr defenses
+# --------------------------------------------------------------------------
+
+
+def test_bounded_repr_truncates_an_oversized_client_supplied_token(monkeypatch) -> None:
+    """Driven through the handler rather than the helper, because the flood this
+    bounds is a real one: a rejected signal logs its resume_token, the module
+    never bounds that token's length, and a sender able to deliver signals could
+    otherwise write megabytes into operator logs one rejection at a time."""
+    fake_logger = _FakeWorkflowLogger()
+    monkeypatch.setattr(temporal_signal_module.workflow, "in_workflow", lambda: True)
+    monkeypatch.setattr(temporal_signal_module.workflow, "logger", fake_logger)
+
+    wf = _Workflow()
+    wf._active_resume_token = "tok-1"
+    wf.submit_answers({"resume_token": "x" * 5000, "answers": [_answer("q1")]})
+
+    assert wf._submitted_answers is None
+    (_msg, args) = fake_logger.warnings[-1]
+    rendered = args[0]
+    assert rendered.endswith("...(truncated)")
+    assert len(rendered) < 200, f"a rejected token was logged at length {len(rendered)}"
+
+
+def test_bounded_repr_survives_a_value_whose_repr_raises() -> None:
+    """``_bounded_repr`` takes arbitrary signal-delivered data, and a payload can
+    carry an object whose ``__repr__`` raises. Called directly: the handler's
+    isinstance checks screen this out before logging, so the defense is only
+    reachable here -- and it has to hold anyway, since a diagnostic that raised
+    would break the signal handler's never-raise contract and strand the
+    workflow permanently on every replay."""
+
+    class _Hostile:
+        def __repr__(self) -> str:
+            raise RuntimeError("no repr for you")
+
+    assert temporal_signal_module._bounded_repr(_Hostile()) == "<unrepresentable>"
+
+
+def test_owned_state_attrs_drift_fails_construction_not_the_first_signal(monkeypatch) -> None:
+    """__init__'s self-check exists so that adding an owned attribute to the
+    tuple without a matching assignment fails loudly at construction. Simulated
+    by drifting the tuple, since the real drift is a future edit: without the
+    check, the composition guard would silently stop covering the new attribute
+    and the failure would surface as an AttributeError inside a signal handler
+    -- the permanent-strand failure mode this module exists to prevent."""
+    monkeypatch.setattr(
+        temporal_signal_module,
+        "_OWNED_STATE_ATTRS",
+        ("_active_resume_token", "_submitted_answers", "_buffered_signals", "_added_later"),
+    )
+
+    with pytest.raises(RuntimeError, match="no longer matches"):
+        _Workflow()

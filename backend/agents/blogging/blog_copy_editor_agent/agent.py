@@ -62,18 +62,39 @@ class BlogCopyEditorAgent(_BlogAgentBase):
         brand_spec_content: str = "",
     ) -> None:
         """
+        Build the editor, capturing its brand/style guidance as one cacheable
+        system-content segment.
+
+        Callers load writing style and brand spec files before instantiation and pass full contents here.
+
         Preconditions:
             - llm_client is not None.
-        Callers load writing style and brand spec files before instantiation and pass full contents here.
+            - ``writing_style_guide_content`` / ``brand_spec_content`` are the
+              full guideline texts (or ``None``/blank when unconfigured), not
+              paths — this constructor does no file I/O.
+        Postconditions:
+            - ``self._system_prompt_content`` is ``None`` when both texts are
+              blank or whitespace-only; otherwise a one-element
+              ``[CacheBreakpoint(...)]`` carrying the ``--- BRAND SPEC ---`` /
+              ``--- WRITING STYLE GUIDE ---`` headed text for whichever
+              text(s) are non-blank, brand first.
+            - No LLM call and no file I/O occur; the arguments are not mutated.
+        Invariants:
+            - The segment list never holds more than one ``CacheBreakpoint``,
+              so the wire payload can carry at most one ``cache_control``
+              marker.
+            - The guideline text travels to the model only via the Strands
+              ``Agent``'s ``system_prompt`` (see :meth:`_invoke_editor_llm`);
+              no code path embeds it in a user turn. Keeping the prefix in the
+              system slot is what makes it cacheable rather than re-billed on
+              every copy-edit iteration.
+            - ``self._system_prompt_content is not None`` is the single source
+              of truth for "guidance is configured"; callers derive that
+              predicate from it rather than tracking it separately.
         """
         super().__init__(llm_client)
         writing = (writing_style_guide_content or "").strip()
         brand = (brand_spec_content or "").strip()
-        # Cacheable system-content segment carrying the (headed) brand spec and
-        # writing style guide, or None when both are blank. Delivered via
-        # run_json_gate's system_prompt (see _invoke_editor_llm) rather than
-        # embedded as plain text in the user prompt, so a stable prefix isn't
-        # re-billed on every turn.
         self._system_prompt_content = build_headed_blogging_system_prompt_content(brand, writing)
 
     def _write_feedback_to_path(self, output: CopyEditorOutput, path: Union[str, Path]) -> bool:
