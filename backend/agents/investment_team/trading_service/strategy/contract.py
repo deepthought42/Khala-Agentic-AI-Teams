@@ -138,6 +138,13 @@ class StopAttachment(BaseModel):
     price) is used because the stop level itself may trail/ratchet, so the limit
     is re-derived from the live stop. ``trail_offset`` and ``limit_offset`` are
     mutually exclusive — a ratcheting stop-limit child is not supported.
+
+    Invariant: the materialized child's stop and limit prices are always derived
+    from the SAME anchor. For a leg that re-anchors to the entry's actual fill
+    (``entry_price_pct`` set) that anchor is the fill price, and
+    ``entry_price_limit_offset_pct`` must be set too so the limit follows the
+    stop; for every other leg it is the emission-time ``ref_price`` already
+    baked into ``stop_price``/``limit_offset``.
     """
 
     stop_price: float
@@ -158,7 +165,7 @@ class StopAttachment(BaseModel):
     # whose trigger geometry is *also* independently recomputable from the
     # real fill price by another mechanism (e.g. the bar-close stop-loss
     # evaluator's ``rule_compiler.stop_loss_level``, which the
-    # entry_price/market resting-stop-loss migration excludes from
+    # entry_price resting-stop-loss migration excludes from
     # evaluating this same rule while this resting order is selected for it
     # — see ``trading_service.service._resting_stop_loss_enabled``) — even
     # though the two mechanisms never act on the same trigger at once, they
@@ -168,6 +175,29 @@ class StopAttachment(BaseModel):
     # Precondition: 0 < entry_price_pct < 1.0 (same bound as ExitLegSpec.pct /
     # _is_resting_stop_loss); enforced in OrderRequest.validate_prices.
     entry_price_pct: Optional[float] = None
+    # The limit-side companion to ``entry_price_pct``, for a STOP_LIMIT leg whose
+    # stop re-anchors: when set, materialization derives the limit offset from the
+    # RE-ANCHORED stop (``resolved_stop_price * entry_price_limit_offset_pct``)
+    # instead of using the ``limit_offset`` preview resolved off the signal bar's
+    # close. Without it the two prices would end up anchored to different
+    # reference prices whenever the entry gaps: ``stop_price`` would follow the
+    # real fill while ``limit_offset`` — an ABSOLUTE distance computed as
+    # ``preview_stop * limit_offset_pct`` in ``resolve_exit_leg_attachments`` —
+    # would stay pinned to the pre-gap preview, silently widening or narrowing
+    # the stop-to-limit gap relative to what the spec asked for.
+    # A dedicated fraction (rather than reusing ``limit_offset_kind="bps"``,
+    # which would also re-anchor via ``apply_bps_offset``) keeps the value exact:
+    # ``(pct * BPS_DIVISOR) / BPS_DIVISOR`` is not an identity for every float64,
+    # and this leg's whole reason for re-anchoring is that its prices must agree
+    # EXACTLY with the bar-close evaluator's, which a 1-ULP drift would break at
+    # a boundary-equality fill.
+    # Preconditions (enforced in OrderRequest.validate_prices):
+    # 0 < entry_price_limit_offset_pct < 1.0 (same bound as
+    # ExitLegSpec.limit_offset_pct / StopLossRule.limit_offset_pct), and it is
+    # set only alongside BOTH ``limit_offset`` (this is a STOP_LIMIT leg) and
+    # ``entry_price_pct`` (its stop actually re-anchors). Unused (``None``) by
+    # every other producer, bracket legs included.
+    entry_price_limit_offset_pct: Optional[float] = None
     # When set, the fill-simulator materializer (``_materialize_attached_exit_children``)
     # uses this verbatim as the materialized child's ``reason`` instead of deriving
     # the generic ``engine_exit:exit_leg_{idx}`` label — same override-else-default
@@ -342,9 +372,11 @@ class OrderRequest(BaseModel):
     # ``attached_stop_loss=``/``attached_take_profit=`` are unaffected.
     # Populated in production by ``_EngineEntryDispatcher`` (in
     # ``trading_service/service.py``) for a resting-eligible ``StopLossRule``
-    # (``basis="entry_price"``, ``style="market"``, ``0 < pct < 1.0`` — the
+    # (``basis="entry_price"``, either ``style``, ``0 < pct < 1.0`` — the
     # exact predicate is the module-level ``_is_resting_stop_loss``, not a
-    # method of the dispatcher) when the run's feature check
+    # method of the dispatcher; a ``style="limit"`` rule arrives here as a
+    # STOP_LIMIT leg, i.e. a ``StopAttachment`` carrying ``limit_offset``)
+    # when the run's feature check
     # (``_resting_stop_loss_enabled``, off by default) selects this
     # mechanism; other rule kinds/bases are not yet migrated onto this path
     # and remain bar-close-only regardless. When this mechanism IS selected
@@ -431,6 +463,32 @@ class OrderRequest(BaseModel):
                     f"{label}.entry_price_pct must satisfy 0 < entry_price_pct < 1.0, "
                     f"got {sl.entry_price_pct!r}"
                 )
+            if sl.entry_price_limit_offset_pct is not None:
+                if not (0.0 < sl.entry_price_limit_offset_pct < 1.0):
+                    raise ValueError(
+                        f"{label}.entry_price_limit_offset_pct must satisfy "
+                        "0 < entry_price_limit_offset_pct < 1.0, got "
+                        f"{sl.entry_price_limit_offset_pct!r}"
+                    )
+                # Both companions are required, and for different reasons: without
+                # ``limit_offset`` this is not a STOP_LIMIT leg at all, so
+                # materialization would never consult the fraction (a silently
+                # ignored field); without ``entry_price_pct`` the stop does NOT
+                # re-anchor, so re-deriving the limit off it would anchor the two
+                # prices differently — the exact inconsistency this field exists to
+                # prevent. Rejecting both at submission keeps "the two prices share
+                # one anchor" a structural guarantee rather than a caller
+                # convention.
+                if sl.limit_offset is None:
+                    raise ValueError(
+                        f"{label}.entry_price_limit_offset_pct requires limit_offset "
+                        "(it re-derives the limit offset of a STOP_LIMIT leg)"
+                    )
+                if sl.entry_price_pct is None:
+                    raise ValueError(
+                        f"{label}.entry_price_limit_offset_pct requires entry_price_pct "
+                        "(the limit re-anchors only because the stop it sits off does)"
+                    )
         # ``parent_order_id`` / ``oco_group_id`` are engine-internal: the
         # bracket materializer in ``FillSimulator`` calls
         # ``OrderBook.submit_attached`` which clones the request with these

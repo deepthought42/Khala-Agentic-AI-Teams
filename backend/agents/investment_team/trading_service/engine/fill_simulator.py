@@ -1702,8 +1702,16 @@ class FillSimulator:
         ``req.side``, never from ``child_side``.
         Postconditions: exactly one resting STOP/STOP_LIMIT/TRAILING_STOP
         child is submitted to the order book, tagged with ``oco_group_id``
-        and ``parent_order_id=po.order_id``. When ``events`` is provided and
-        ``sl.entry_price_pct`` is set (the resting entry_price/market
+        and ``parent_order_id=po.order_id``.
+        Invariant: the child's ``stop_price`` and (for a STOP_LIMIT)
+        ``limit_price`` are always derived from one anchor — the parent's
+        actual fill price when ``sl.entry_price_pct`` is set, the
+        emission-time preview otherwise. ``sl.entry_price_limit_offset_pct``
+        is what carries that anchor through to the limit side; validation
+        (``OrderRequest.validate_prices``) requires it whenever a re-anchoring
+        leg is also a STOP_LIMIT, so the two prices cannot diverge.
+        When ``events`` is provided and
+        ``sl.entry_price_pct`` is set (the resting entry_price
         stop-loss migration's exclusive marker — see ``StopAttachment``),
         an ``"engine_exit_attached"`` diagnostic event is appended so the
         firing-count telemetry credits this resting leg at materialization
@@ -1735,7 +1743,22 @@ class FillSimulator:
         is_limit = sl.limit_offset is not None
         sl_limit_price = None
         if is_limit:
-            if sl.limit_offset_kind == "abs":
+            if sl.entry_price_limit_offset_pct is not None:
+                # This leg's stop just re-anchored to the real fill price above, so
+                # its limit must re-anchor off the SAME stop — otherwise the
+                # ``limit_offset`` preview (an absolute distance
+                # ``preview_stop * limit_offset_pct``, computed in
+                # ``resolve_exit_leg_attachments`` off the signal bar's close) would
+                # keep the pre-gap anchor while ``resolved_stop_price`` moved,
+                # silently changing the stop-to-limit gap the spec asked for.
+                # Deriving off ``resolved_stop_price`` (not ``sl.stop_price``) is
+                # what ties the two together, and it holds the invariant on the
+                # defensive ``entry_fill_price is None`` path too: there
+                # ``resolved_stop_price`` falls back to the preview stop, so this
+                # reproduces the preview ``limit_offset`` exactly rather than
+                # mixing anchors.
+                limit_off = resolved_stop_price * sl.entry_price_limit_offset_pct
+            elif sl.limit_offset_kind == "abs":
                 limit_off = sl.limit_offset
             else:  # "bps"
                 limit_off = apply_bps_offset(resolved_stop_price, sl.limit_offset)

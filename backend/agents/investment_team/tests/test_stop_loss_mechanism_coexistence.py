@@ -1,7 +1,8 @@
-"""Coexistence tests for the two entry_price/market stop-loss mechanisms:
+"""Coexistence tests for the two entry_price stop-loss mechanisms:
 the legacy bar-close evaluator (``_EngineExitDispatcher`` /
-``rule_compiler.stop_loss_level``) and the resting ``STOP`` order the
-migration in ``test_resting_stop_loss_attachment.py`` covers directly.
+``rule_compiler.stop_loss_level``) and the entry-fill resting order the
+migration in ``test_resting_stop_loss_attachment.py`` covers directly (a
+``STOP`` for ``style="market"``, a ``STOP_LIMIT`` for ``style="limit"``).
 
 Covers:
 
@@ -13,6 +14,13 @@ Covers:
 - ``rule_compiler``'s ``exclude_rule_index`` chokepoint: a rule ceded to the
   resting mechanism is skipped by the bar-close evaluator outright, the same
   way an ``OcoBracketRule`` always is.
+- ``_EngineExitDispatcher._has_limit_stop_rule``: the SECOND side of the
+  mutual exclusion, which matters only for the limit style. That dispatcher
+  tracks its own resting STOP_LIMIT (``_scan_pending_for_gate``'s
+  ``resting_limit_stop_id``) and cancels it when another rule fires; a ceded
+  rule must therefore be invisible to that bookkeeping, or the dispatcher
+  would cancel the entry-attached protective order out from under a live
+  position.
 - ``_EngineEntryDispatcher.resting_stop_loss_enabled`` /
   ``_EngineExitDispatcher.exclude_rule_index``: wired together exactly as
   ``TradingService.run`` wires them, proving that across both settings of
@@ -110,9 +118,20 @@ def test_first_resting_stop_loss_index_none_when_no_eligible_rule() -> None:
         TakeProfitRule(pct=0.10),
         StopLossRule(pct=0.05, basis="trailing_high"),  # wrong basis
         StopLossRule(pct=1.0, basis="entry_price"),  # short-safety auto-stop shape
-        StopLossRule(pct=0.05, basis="entry_price", style="limit", limit_offset_pct=0.01),
     ]
     assert _first_resting_stop_loss_index(rules) is None
+
+
+def test_first_resting_stop_loss_index_finds_a_limit_style_rule() -> None:
+    """Both execution styles are resting-eligible, so a limit-style stop is
+    claimed by the same index scan the market style goes through — the ``basis``
+    and ``pct`` bound are what exclude a rule, not its style."""
+    rules = [
+        TakeProfitRule(pct=0.10),
+        StopLossRule(pct=0.05, basis="trailing_high"),  # wrong basis
+        StopLossRule(pct=0.05, basis="entry_price", style="limit", limit_offset_pct=0.01),
+    ]
+    assert _first_resting_stop_loss_index(rules) == 2
 
 
 def test_first_resting_stop_loss_index_none_for_empty_rules() -> None:
@@ -423,3 +442,61 @@ def test_resting_mechanism_alone_closes_the_position_exactly_once() -> None:
         result=result,
     )
     assert result.execution_diagnostics.exit_rule_firings.get("stop_loss") is None
+
+
+# ---------------------------------------------------------------------------
+# The limit style's second exclusion: the exit dispatcher's own
+# resting-STOP_LIMIT bookkeeping must not claim a ceded rule.
+# ---------------------------------------------------------------------------
+
+
+def _limit_stop_rule(pct: float = 0.05, limit_offset_pct: float = 0.01) -> StopLossRule:
+    return StopLossRule(
+        pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
+    )
+
+
+def test_exit_dispatcher_cedes_limit_stop_bookkeeping_for_the_ceded_rule() -> None:
+    """A limit-style rule handed to the resting mechanism is excluded from
+    ``_has_limit_stop_rule``, so ``_scan_pending_for_gate`` never mistakes the
+    entry-attached STOP_LIMIT for one this dispatcher emitted. Without this, the
+    first time any other rule fired, ``maybe_emit`` would CANCEL the position's
+    protective order while its replacement close was still only queued."""
+    rules = [_limit_stop_rule(), TakeProfitRule(pct=0.20)]
+    exits = _EngineExitDispatcher(exit_rules=rules, exclude_rule_index=0)
+    assert exits._has_limit_stop_rule is False
+
+
+def test_exit_dispatcher_keeps_limit_stop_bookkeeping_when_nothing_is_ceded() -> None:
+    """With the feature check off (``exclude_rule_index=None``) the dispatcher
+    owns the limit-style stop exactly as before this migration — the resting
+    STOP_LIMIT it emits at trigger time is still its own to track and cancel."""
+    exits = _EngineExitDispatcher(exit_rules=[_limit_stop_rule()], exclude_rule_index=None)
+    assert exits._has_limit_stop_rule is True
+
+
+def test_exit_dispatcher_keeps_limit_stop_bookkeeping_for_an_unceded_limit_rule() -> None:
+    """Excluding an index only removes THAT rule from the scan: a market-style
+    stop ceded at index 0 leaves a separate limit-style stop at index 1 fully
+    owned by the bar-close dispatcher."""
+    rules = [StopLossRule(pct=0.05, basis="entry_price"), _limit_stop_rule()]
+    exits = _EngineExitDispatcher(exit_rules=rules, exclude_rule_index=0)
+    assert exits._has_limit_stop_rule is True
+
+
+@pytest.mark.parametrize("resting_enabled", [True, False])
+def test_limit_style_rule_is_claimed_by_exactly_one_mechanism(resting_enabled: bool) -> None:
+    """The mutual-exclusion contract, for the limit style, across both settings
+    of the feature check: exactly one mechanism claims the rule. When the
+    resting mechanism has it, the bar-close dispatcher neither evaluates it
+    (``exclude_rule_index``) nor tracks its order (``_has_limit_stop_rule``)."""
+    rules = [_limit_stop_rule()]
+    entries, exits = _wire_dispatchers(rules, resting_enabled=resting_enabled)
+
+    resting_claims = entries._resting_stop_loss is not None
+    bar_close_claims = exits.exclude_rule_index != 0
+    assert resting_claims is resting_enabled
+    assert bar_close_claims is not resting_enabled
+    # The order-book-side bookkeeping follows the same claim, never diverging
+    # from it — a claimed rule's STOP_LIMIT is owned by the OCO lifecycle.
+    assert exits._has_limit_stop_rule is not resting_enabled

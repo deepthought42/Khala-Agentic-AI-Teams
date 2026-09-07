@@ -1,5 +1,6 @@
-"""Tests for migrating ``StopLossRule(basis="entry_price", style="market")`` to a
-resting ``STOP`` order attached at entry-fill.
+"""Tests for migrating ``StopLossRule(basis="entry_price")`` to a resting
+protective order attached at entry-fill — a ``STOP`` for ``style="market"``,
+a ``STOP_LIMIT`` for ``style="limit"``.
 
 Exercises that resting-order mechanism directly and so opts into it
 explicitly (via ``_EngineEntryDispatcher(resting_stop_loss_enabled=True, ...)``
@@ -18,6 +19,11 @@ Covers:
   translation into the generalized exit-leg attachment plumbing, and that its
   price math matches ``rule_compiler.stop_loss_level`` (the bar-close evaluator's
   own formula) exactly.
+- The limit style specifically: it resolves to the same leg shape a limit-style
+  BRACKET stop leg does (verified by comparing resolved attachments, not by
+  restating the arithmetic), and both of its prices re-anchor to the entry's
+  actual fill price together — the stop via ``entry_price_pct``, the limit via
+  ``entry_price_limit_offset_pct``.
 - ``_EngineEntryDispatcher``: ``maybe_emit`` attaches the resolved ``StopAttachment``
   via ``attached_exits`` (not the fixed ``attached_stop_loss`` bracket field), and
   omits it for an ineligible rule.
@@ -105,9 +111,27 @@ def test_trailing_basis_is_not_eligible(basis: str) -> None:
     assert _is_resting_stop_loss(StopLossRule(pct=0.03, basis=basis)) is False
 
 
-def test_limit_style_is_not_eligible() -> None:
-    """``style="limit"`` is out of scope for this migration (future issue)."""
+def test_limit_style_is_eligible() -> None:
+    """``style="limit"`` rests as a STOP_LIMIT rather than a STOP, but is
+    resting-eligible on the same terms — the predicate gates on ``basis`` and the
+    ``pct`` bound, not on execution style."""
     rule = StopLossRule(pct=0.03, basis="entry_price", style="limit", limit_offset_pct=0.01)
+    assert _is_resting_stop_loss(rule) is True
+
+
+def test_limit_style_with_trailing_basis_is_not_eligible() -> None:
+    """A limit-style stop cannot carry a trailing basis at all (the DSL rejects
+    the combination outright), so the predicate can never see one — pinned here
+    via ``model_construct`` to show the ``basis`` gate, not the style gate, is
+    what would exclude it if one ever reached the predicate."""
+    rule = StopLossRule.model_construct(
+        kind="stop_loss",
+        pct=0.03,
+        basis="trailing_high",
+        style="limit",
+        limit_offset_pct=0.01,
+        note="",
+    )
     assert _is_resting_stop_loss(rule) is False
 
 
@@ -413,10 +437,11 @@ def test_dispatcher_attaches_resting_stop_loss_short() -> None:
 
 
 def test_dispatcher_omits_attachment_for_ineligible_rule() -> None:
-    """A ``style="limit"`` rule (out of scope for this migration) is left alone —
-    no resting attachment, so it remains purely bar-close evaluated."""
-    rule = StopLossRule(pct=0.03, basis="entry_price", style="limit", limit_offset_pct=0.01)
-    req = _emit([rule], side="long", close=100.0)
+    """A trailing-basis rule (out of scope for this migration) is left alone —
+    no resting attachment, so it remains purely bar-close evaluated. Both
+    execution styles are now in scope, so the basis is what makes a rule
+    ineligible here."""
+    req = _emit([StopLossRule(pct=0.03, basis="trailing_high")], side="long", close=100.0)
     assert req.attached_exits == []
 
 
@@ -931,3 +956,225 @@ def test_gap_through_resting_only_close_does_not_trip_conformance_gate_false_cri
     )
     fails = [r for r in results if not r.passed]
     assert fails == [], [r.details for r in fails]
+
+
+# ---------------------------------------------------------------------------
+# style="limit": resolves to a STOP_LIMIT leg, priced like a bracket stop leg
+# ---------------------------------------------------------------------------
+
+
+def _limit_stop_rule(pct: float = 0.03, limit_offset_pct: float = 0.01) -> StopLossRule:
+    return StopLossRule(
+        pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
+    )
+
+
+def test_limit_style_leg_spec_translation_matches_bracket_shape() -> None:
+    """A limit-style rule translates to the same STOP_LIMIT leg shape
+    ``_bracket_to_leg_specs`` builds for a limit-style bracket stop leg — so
+    ``resolve_exit_leg_attachments`` runs identical price math for both."""
+    [leg] = _stop_loss_rule_to_leg_specs(_limit_stop_rule())
+    assert leg == ExitLegSpec(kind=OrderType.STOP_LIMIT, pct=0.03, limit_offset_pct=0.01)
+
+
+@pytest.mark.parametrize("side", [OrderSide.LONG, OrderSide.SHORT])
+def test_limit_style_resolved_prices_match_bracket_stop_leg(side: OrderSide) -> None:
+    """Acceptance criterion: both prices are resolved through the same logic the
+    bracket already uses, rather than re-derived. Verified by COMPARISON against
+    an equivalent bracket stop leg — restating the arithmetic here would only
+    prove this test agrees with itself."""
+    rule = _limit_stop_rule(pct=0.03, limit_offset_pct=0.01)
+    bracket = OcoBracketRule(
+        stop_loss=BracketStopLeg(pct=0.03, style="limit", limit_offset_pct=0.01),
+        take_profit=BracketTakeProfitLeg(pct=0.50),
+    )
+    resting = resolve_resting_stop_loss_attachment(rule, side, 100.0)
+    bracket_stop, _ = resolve_bracket_attachments(bracket, side, 100.0)
+
+    assert resting.stop_price == pytest.approx(bracket_stop.stop_price)
+    assert resting.limit_offset == pytest.approx(bracket_stop.limit_offset)
+    assert resting.limit_offset_kind == bracket_stop.limit_offset_kind
+
+
+def test_limit_style_attachment_carries_limit_offset_reanchor_fraction() -> None:
+    """``entry_price_limit_offset_pct`` mirrors ``entry_price_pct`` for the limit
+    side, so materialization can re-derive the offset off the RE-ANCHORED stop
+    instead of the signal-close-anchored ``limit_offset`` preview."""
+    attachment = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    assert attachment.entry_price_pct == pytest.approx(0.03)
+    assert attachment.entry_price_limit_offset_pct == pytest.approx(0.01)
+    assert attachment.limit_offset is not None
+    assert attachment.trail_offset is None
+
+
+def test_market_style_attachment_has_no_limit_offset_reanchor_fraction() -> None:
+    """The market style never sets the limit-side fraction — it has no limit at
+    all, and ``validate_prices`` rejects the fraction without a ``limit_offset``."""
+    attachment = resolve_resting_stop_loss_attachment(
+        StopLossRule(pct=0.03, basis="entry_price"), OrderSide.LONG, 100.0
+    )
+    assert attachment.entry_price_limit_offset_pct is None
+
+
+def test_limit_style_attachment_preserves_stop_loss_reason() -> None:
+    """Acceptance criterion: ``engine_exit:stop_loss`` attribution survives the
+    rule-agnostic ``attached_exits`` plumbing for the limit style too — several
+    quality gates match that literal exactly."""
+    attachment = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    assert attachment.reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+
+
+def test_dispatcher_attaches_limit_style_stop_as_stop_limit_leg() -> None:
+    """End of the wiring: a spec whose sole exit is a limit-style stop gets a
+    STOP_LIMIT-shaped attachment on ``attached_exits``, not the fixed bracket
+    field."""
+    req = _emit([_limit_stop_rule()], side="long", close=100.0)
+    assert req.attached_stop_loss is None
+    [leg] = req.attached_exits
+    assert isinstance(leg, StopAttachment)
+    assert leg.limit_offset is not None
+    assert leg.entry_price_limit_offset_pct == pytest.approx(0.01)
+
+
+# ---------------------------------------------------------------------------
+# entry_price_limit_offset_pct validation (OrderRequest.validate_prices)
+# ---------------------------------------------------------------------------
+
+
+def _order_with_leg(leg: StopAttachment) -> OrderRequest:
+    return OrderRequest(
+        client_order_id="co-1",
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=10.0,
+        order_type=OrderType.MARKET,
+        tif=TimeInForce.DAY,
+        attached_exits=[leg],
+    )
+
+
+@pytest.mark.parametrize("bad_pct", [0.0, 1.0, -0.1, 1.5])
+def test_validate_prices_rejects_out_of_range_limit_offset_reanchor(bad_pct: float) -> None:
+    """The limit-side fraction shares ``limit_offset_pct``'s strict ``(0, 1)``
+    bound; outside it the derived limit would be non-positive or on the wrong
+    side of the stop, so it must fail loudly at submission."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_limit_offset_pct = bad_pct
+    with pytest.raises(ValueError, match="entry_price_limit_offset_pct must satisfy"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_rejects_limit_offset_reanchor_without_limit_offset() -> None:
+    """Without ``limit_offset`` the leg is not a STOP_LIMIT at all, so the
+    fraction would be silently ignored at materialization — reject it instead."""
+    leg = resolve_resting_stop_loss_attachment(
+        StopLossRule(pct=0.03, basis="entry_price"), OrderSide.LONG, 100.0
+    )
+    leg.entry_price_limit_offset_pct = 0.01
+    with pytest.raises(ValueError, match="requires limit_offset"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_rejects_limit_offset_reanchor_without_entry_price_pct() -> None:
+    """Without ``entry_price_pct`` the STOP does not re-anchor, so re-deriving the
+    limit off it would anchor the leg's two prices differently — the exact
+    inconsistency the field exists to prevent."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_pct = None
+    with pytest.raises(ValueError, match="requires entry_price_pct"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_accepts_the_resolved_limit_style_attachment() -> None:
+    """The shape the resolver actually produces passes validation unchanged."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    _order_with_leg(leg).validate_prices()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the limit-style resting STOP_LIMIT
+# ---------------------------------------------------------------------------
+
+
+def test_end_to_end_limit_style_materializes_stop_limit_after_entry_fill() -> None:
+    """Acceptance criterion: the limit-style rule rests as a ``STOP_LIMIT``,
+    attached only once the entry has filled, with its limit on the protective
+    side of the stop (below it, for a sell-stop-limit closing a long)."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    assert order_book.children_of(parent.order_id) == []
+
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.stop_price == pytest.approx(95.0)
+    # 95 * (1 - 0.01): the limit sits below the stop for a long-closing sell.
+    assert child.request.limit_price == pytest.approx(94.05)
+
+
+def test_end_to_end_limit_style_reanchors_both_prices_to_actual_fill_on_gap() -> None:
+    """The bug this variant is the first to expose: on a gap, the stop re-anchors
+    to the entry's real fill price but the ``limit_offset`` preview — an ABSOLUTE
+    distance computed off the SIGNAL bar's close — does not. Without
+    ``entry_price_limit_offset_pct`` the child's two prices would end up anchored
+    to different reference prices, silently changing the stop-to-limit gap the
+    spec asked for. Signal close 100 (preview stop 95, preview offset 0.95); the
+    entry gaps down and fills at 90, so the child must sit at stop 85.5 with the
+    offset re-derived off THAT stop (0.855), i.e. limit 84.645 — not 85.5 - 0.95
+    = 84.55, which the stale preview offset would have produced."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    [preview] = req.attached_exits
+    assert preview.stop_price == pytest.approx(95.0)
+    assert preview.limit_offset == pytest.approx(0.95)  # anchored to the signal close
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=90.0))
+    assert portfolio.positions["AAA"].entry_price == pytest.approx(90.0)
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.stop_price == pytest.approx(85.5)
+    assert child.request.limit_price == pytest.approx(84.645)
+    # The invariant, stated directly: one anchor for both prices.
+    assert child.request.limit_price == pytest.approx(child.request.stop_price * (1 - 0.01))
+
+
+def test_end_to_end_limit_style_short_side_places_limit_above_the_stop() -> None:
+    """Short mirror: a buy-stop-limit closing a short sits ABOVE the stop, and
+    both prices re-anchor together on the short's own gap direction."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="short", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=110.0))
+    assert portfolio.positions["AAA"].side == OrderSide.SHORT
+    assert portfolio.positions["AAA"].entry_price == pytest.approx(110.0)
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.side == OrderSide.LONG  # buy to close the short
+    assert child.request.stop_price == pytest.approx(115.5)  # 110 * 1.05
+    assert child.request.limit_price == pytest.approx(116.655)  # 115.5 * 1.01
+    assert child.request.limit_price > child.request.stop_price
+
+
+def test_end_to_end_limit_style_fill_carries_engine_exit_stop_loss_reason() -> None:
+    """Acceptance criterion: a limit-style resting fill is attributed
+    ``engine_exit:stop_loss``, same as the market style's — the quality gates
+    match that literal exactly."""
+    sim, order_book, _ = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.02)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    # Stop 95, limit 93.1: a bar that trades down through both fills at the limit.
+    outcome = sim.process_bar(_bar("2024-01-03", open_price=97.0, high=98.0, low=92.0, close=93.0))
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"

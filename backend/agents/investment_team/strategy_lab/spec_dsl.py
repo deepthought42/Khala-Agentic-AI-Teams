@@ -308,30 +308,40 @@ class StopLossRule(_SpecNode):
     basis: Literal["entry_price", "trailing_high", "trailing_low"] = "entry_price"
     # Execution style for the structured close the engine emits when this rule
     # fires. ``"market"`` (default) emits a guaranteed next-bar-open market close
-    # via the bar-by-bar evaluator. For an engine-dispatched entry (not the
-    # custom-code path) with a resting-eligible level (``style="market"``,
-    # ``basis="entry_price"``, ``0 < pct < 1.0`` — the exact predicate is
+    # via the bar-by-bar evaluator. ``"limit"`` emits a *resting* STOP_LIMIT at
+    # the rule's price floor/ceiling with the limit placed ``limit_offset_pct``
+    # away on the protective side; it may **not** fill on a gap-through (the
+    # position stays open), which is the defining, intended trade-off of a
+    # stop-limit. ``"market"`` keeps the structured-exit "guaranteed close"
+    # invariant; ``"limit"`` relaxes it.
+    #
+    # For an engine-dispatched entry (not the custom-code path) with a
+    # resting-eligible level (``basis="entry_price"``, ``0 < pct < 1.0``, either
+    # style — the exact predicate is
     # ``trading_service.service._is_resting_stop_loss``; the stable entry
     # point a caller resolves it through is
     # ``trading_service.service.resolve_resting_stop_loss_attachment``),
-    # ``_EngineEntryDispatcher`` can INSTEAD attach a resting STOP order at
-    # entry-fill that closes the position intrabar, when the run's feature
+    # ``_EngineEntryDispatcher`` can INSTEAD attach the protective order at
+    # ENTRY-FILL — a resting STOP for ``"market"``, a resting STOP_LIMIT for
+    # ``"limit"`` — closing the position intrabar, when the run's feature
     # check (``trading_service.service._resting_stop_loss_enabled``, off by
-    # default) selects that mechanism. That resting order's level is
+    # default) selects that mechanism. For ``"limit"`` this changes only the
+    # placement time, not the order type: the bar-by-bar path also ends in a
+    # resting STOP_LIMIT, but only after a bar CLOSES beyond the level, so the
+    # entry-fill attachment is what lets the stop act on the level intrabar.
+    # The gap-through non-fill above applies identically on both paths.
+    # That resting order's prices are
     # re-anchored to the entry's actual fill price at materialization (not
-    # the signal-bar-close preview it was first resolved from — see
-    # ``StopAttachment.entry_price_pct``), so it always agrees with this
-    # bar-by-bar evaluator's own (also fill-anchored) level. The two
+    # the signal-bar-close preview they were first resolved from — see
+    # ``StopAttachment.entry_price_pct`` and, for the limit side of a
+    # ``"limit"``-style stop, ``entry_price_limit_offset_pct``, which keeps
+    # both prices on that one anchor), so they always agree with this
+    # bar-by-bar evaluator's own (also fill-anchored) levels. The two
     # mechanisms are mutually exclusive by construction, not merely in
     # agreement: when the resting order is selected for this rule, the
     # bar-by-bar evaluator excludes that same rule from its own evaluation
     # (``rule_compiler._filtered_intent_for_rule``'s ``exclude_rule_index``),
     # so exactly one of the two ever acts on a given trigger — never both.
-    # ``"limit"`` emits a *resting* STOP_LIMIT at the rule's price floor/ceiling
-    # with the limit placed ``limit_offset_pct`` away on the protective side; it
-    # may **not** fill on a gap-through (the position stays open), which is the
-    # defining, intended trade-off of a stop-limit. ``"market"`` keeps the
-    # structured-exit "guaranteed close" invariant; ``"limit"`` relaxes it.
     style: Literal["market", "limit"] = "market"
     # Limit offset as a fraction of the stop level, consulted only when
     # ``style == "limit"``. The limit sits below the stop for a long position
