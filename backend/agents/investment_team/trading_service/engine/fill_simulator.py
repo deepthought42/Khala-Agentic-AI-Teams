@@ -130,6 +130,11 @@ class FillSimulator:
     ) -> None:
         self.portfolio = portfolio
         self.order_book = order_book
+        #: Stop-loss fallbacks superseded by an attachment materialized during the
+        #: CURRENT ``process_bar``, retired only once that bar's fill loop is done
+        #: — see ``_retire_superseded_stop_loss_fallbacks`` for why the delay is
+        #: load-bearing. Each entry is the argument tuple for one retirement call.
+        self._deferred_stop_loss_retirements: List[Tuple[str, OrderSide, str]] = []
         self.risk = risk_filter
         self.config = config
         # Engine-side exit-attribution reconciliation. ``None`` (default)
@@ -562,6 +567,11 @@ class FillSimulator:
                                 reason=po.request.reason,
                             )
                         )
+
+        # Retire superseded stop-loss fallbacks only now, after every order in
+        # this bar's snapshot has had its fill opportunity — including any
+        # fallback an attachment materialized above supersedes.
+        self._drain_deferred_stop_loss_retirements()
 
         return FillOutcome(
             entry_fills=entry_fills,
@@ -1813,9 +1823,11 @@ class FillSimulator:
         )
         sl_child.working_against_entry_order_id = po.order_id
         if sl.entry_price_pct is not None:
-            self._retire_superseded_stop_loss_fallbacks(
-                symbol=req.symbol, child_side=child_side, keep_order_id=sl_child.order_id
-            )
+            # DEFERRED, not immediate — see the helper's docstring: cancelling
+            # inside ``process_bar``'s fill loop would rob the fallback of this
+            # bar's fill opportunity, and the replacement submitted here cannot
+            # fill until the next bar.
+            self._deferred_stop_loss_retirements.append((req.symbol, child_side, sl_child.order_id))
         if events is not None and sl.entry_price_pct is not None:
             events.append(
                 FillDiagnosticEvent(
@@ -1845,10 +1857,47 @@ class FillSimulator:
                 else entry_fill_price + offset
             )
 
+    def _drain_deferred_stop_loss_retirements(self) -> None:
+        """Run the stop-loss fallback retirements queued during this bar.
+
+        Deferring them to here — after ``process_bar``'s fill loop — is
+        load-bearing, not tidiness. That loop iterates a snapshot but skips any
+        order no longer in the book (``if po.order_id not in self.order_book``),
+        so cancelling a fallback mid-loop destroys its fill opportunity for the
+        CURRENT bar. The replacement child cannot take over on that bar either:
+        it is absent from the snapshot, and the engine-internal same-bar guard
+        (``working_against_entry_order_id`` set with ``submitted_at`` not
+        strictly earlier) skips it until the next one. So an immediate cancel on
+        a bar that crossed the fallback's stop AND limit would leave the position
+        open through a stop it had already triggered.
+
+        Running here instead, the fallback keeps its turn: if the bar filled it,
+        the position is closed and the queue entry finds nothing left to cancel;
+        if it did not fill, it is retired and the correctly-anchored attachment
+        takes over from the next bar.
+
+        Preconditions: called once per ``process_bar``, after the fill loop.
+        Postconditions: the queue is empty; every queued retirement has been
+        applied against the CURRENT book state.
+        """
+        if not self._deferred_stop_loss_retirements:
+            return
+        queued = self._deferred_stop_loss_retirements
+        # Cleared before running so a queue entry can never be applied twice, and
+        # so an unexpected raise cannot strand stale entries into the next bar.
+        self._deferred_stop_loss_retirements = []
+        for symbol, child_side, keep_order_id in queued:
+            self._retire_superseded_stop_loss_fallbacks(
+                symbol=symbol, child_side=child_side, keep_order_id=keep_order_id
+            )
+
     def _retire_superseded_stop_loss_fallbacks(
         self, *, symbol: str, child_side: OrderSide, keep_order_id: str
     ) -> None:
         """Cancel any dispatcher-emitted stop-loss order this attachment replaces.
+
+        MUST run only after the current bar's fill loop has finished — see
+        :meth:`_drain_deferred_stop_loss_retirements`, which is the only caller.
 
         The window this closes: while an entry is only PARTIALLY filled it has no
         attached protection yet (materialization waits for the terminal slice so
@@ -1865,8 +1914,9 @@ class FillSimulator:
 
         This leg is the authoritative one — correctly anchored on the cumulative
         fill and sized to ``pos.original_qty`` — so the fallback is retired rather
-        than reused. Ordering matters: the caller runs this AFTER submitting the
-        child, so the position is never momentarily unprotected.
+        than reused. The position is never momentarily unprotected: the child is
+        submitted before this runs, and the fallback keeps working until the end
+        of the bar.
 
         The predicate targets the fallback exactly: a dispatcher emission has no
         ``parent_order_id`` (``OrderBook.submit`` rejects one), whereas every
@@ -1881,6 +1931,9 @@ class FillSimulator:
         where the entry filled in one slice and no fallback was ever emitted.
         """
         for other in self.order_book.pending_for_symbol(symbol):
+            # Re-read the book rather than trusting a snapshot: the fallback may
+            # have filled during the bar that materialized the replacement, in
+            # which case it is already gone and there is nothing to retire.
             other_req = other.request
             if other.order_id == keep_order_id:
                 continue

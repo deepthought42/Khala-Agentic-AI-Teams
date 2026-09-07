@@ -1291,3 +1291,54 @@ def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
     sim.process_bar(_bar("2024-01-02", open_price=100.0))
     assert "AAA" in portfolio.positions
     assert any(po.order_id == other.order_id for po in order_book.pending_for_symbol("AAA"))
+
+
+def test_fallback_still_fills_on_the_bar_its_replacement_materializes() -> None:
+    """The retirement is deferred to the END of the bar, and that timing is
+    load-bearing.
+
+    ``process_bar`` iterates a snapshot but skips any order no longer in the book,
+    so cancelling the fallback mid-loop destroys its fill opportunity for the
+    current bar — and the replacement child cannot cover that bar either (absent
+    from the snapshot, and skipped by the engine-internal same-bar guard). On a
+    bar that both completes the entry AND crosses the fallback's stop and limit,
+    an immediate cancel would leave the position open through a stop it had
+    already triggered.
+
+    Here the fallback rests at stop 99 / limit 98, and the bar that fills the
+    entry trades down to 97 — so the fallback is marketable on exactly that bar.
+    It must fill and close the position rather than be cancelled unfilled.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    order_book.submit(
+        OrderRequest(
+            client_order_id="e1",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            # Sized off the entry request so this is a FULL-position close, as a
+            # real bar-close fallback is. ``_fill_exit`` clips to the live qty,
+            # so matching the entry exactly is both sufficient and safe.
+            qty=req.qty,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=99.0,
+            limit_price=98.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # This bar opens at 100 (entry fills, attachment materializes) and trades
+    # down through 99 to 97, making the fallback marketable on this same bar.
+    outcome = sim.process_bar(
+        _bar("2024-01-02", open_price=100.0, high=100.5, low=97.0, close=97.5)
+    )
+
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert "AAA" not in portfolio.positions
