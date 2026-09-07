@@ -558,7 +558,7 @@ def test_starvation_finding_leads_with_evidence_and_names_remedies() -> None:
     # message.
     spec = _spec(_BROAD, extra_entries=[_entry(_NARROW)])
     detail = _starvation(spec)[0].details
-    assert "fires on 149/300 post-warmup bar(s)" in detail  # the evidence
+    assert "fires 149 time(s) over 300 judged post-warmup bar(s)" in detail  # the evidence
     assert "entry[0] covers 149" in detail  # who shadows it, and by how much
     assert "folding its conditions" in detail  # remedy 1: fold
     assert "listing it BEFORE the broader rule" in detail  # remedy 2: reorder
@@ -617,7 +617,7 @@ def test_rarely_firing_rule_below_the_evidence_floor_abstains_with_info() -> Non
     assert r.severity == "info"
     assert r.passed is True
     assert r.rule_id == "entry[1]"
-    assert "fires on 4/300" in r.details
+    assert "fires 4 time(s) over 300 judged post-warmup bar(s)" in r.details
     assert "rarely-firing" in r.details
     assert "structurally starved" not in r.details
 
@@ -632,7 +632,7 @@ def test_evidence_floor_boundary_four_versus_five_covered_fires() -> None:
 
     at = _starvation(five)
     assert [r.severity for r in at] == ["critical"]
-    assert "fires on 5/300" in at[0].details
+    assert "fires 5 time(s) over 300 judged post-warmup bar(s)" in at[0].details
 
 
 def test_a_single_independent_fire_makes_a_rare_rule_reachable() -> None:
@@ -878,6 +878,47 @@ def test_starvation_verdict_keeps_warmup_prefix_fires_out_of_the_steady_state_wi
     assert (v.fires, v.independent_fires) == (20, 0)
     assert v.warmup_independent_fires == 10
     assert v.verdict == "warmup_only"
+
+
+def test_prefix_fires_covered_by_a_satisfied_earlier_rule_still_count_as_starvation() -> None:
+    # entry[0] warms over the prefix and never fires; entry[1] is satisfied
+    # across bars 5-14; entry[2] fires on exactly those bars and never again.
+    # Every fire entry[2] has is shadowed by entry[1] — a warming rule cannot
+    # win a bar, but a satisfied one does — so this is starvation, not death.
+    # Discarding the prefix bar because *some* earlier rule was warming used to
+    # leave fires == 0 and read the rule as dead, emitting nothing at all while
+    # probe() separately reported it as firing.
+    later = _pattern(60, range(5, 15))
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    coverer = _pattern(60, range(5, 15))
+    v = _verdict(later, warming, coverer)
+    assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (0, 0, 0)
+    assert v.warmup_covered_fires == 10
+    assert v.covered_fires == 10
+    assert v.coverage == ((1, 10),)
+    assert v.dominant_index == 1
+    assert v.verdict == "starved"
+
+
+def test_covered_prefix_fires_count_toward_the_evidence_floor() -> None:
+    # Four covered fires is below the floor even when they are prefix fires;
+    # five reaches it. The floor counts covered fires wherever they land.
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    four = _verdict(_pattern(60, range(5, 9)), warming, _pattern(60, range(5, 9)))
+    assert (four.warmup_covered_fires, four.covered_fires) == (4, 4)
+    assert four.verdict == "abstained_thin"
+    five = _verdict(_pattern(60, range(5, 10)), warming, _pattern(60, range(5, 10)))
+    assert (five.warmup_covered_fires, five.covered_fires) == (5, 5)
+    assert five.verdict == "starved"
+
+
+def test_a_rule_with_no_fire_anywhere_is_still_dead() -> None:
+    # covered_fires gates "dead" now, so pin that a genuinely never-firing rule
+    # still reaches it and starvation reporting still stays silent.
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    v = _verdict(["miss"] * 60, warming, _pattern(60, range(5, 15)))
+    assert (v.fires, v.warmup_covered_fires, v.covered_fires) == (0, 0, 0)
+    assert v.verdict == "dead"
 
 
 def test_warmup_prefix_fires_are_not_independent_when_another_earlier_rule_covers_them() -> None:

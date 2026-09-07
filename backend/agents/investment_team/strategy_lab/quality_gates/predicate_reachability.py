@@ -285,6 +285,7 @@ class _RuleStarvation:
     coverage: tuple[tuple[int, int], ...]
     legs: tuple[_PairLegCooccurrence, ...]
     warmup_independent_fires: int = 0
+    warmup_covered_fires: int = 0
 
     def __post_init__(self) -> None:
         """Enforce the counting and ordering invariants at construction time."""
@@ -293,6 +294,7 @@ class _RuleStarvation:
             "independent_fires <= fires <= evaluated must hold"
         )
         assert self.warmup_independent_fires >= 0, "warmup_independent_fires must be >= 0"
+        assert self.warmup_covered_fires >= 0, "warmup_covered_fires must be >= 0"
         assert all(count > 0 for _, count in self.coverage), (
             "coverage must hold only earlier rules that covered at least one fire"
         )
@@ -334,11 +336,15 @@ class _RuleStarvation:
             is neither starved (it is still the rule selected there — subject
             to the selection-vs-order caveat on this class) nor plainly
             reachable (it stops being selected once the earlier rules warm up).
-          * ``"dead"`` — never fires in the steady-state window, and never
-            independently on the warmup prefix either. Already reported once,
-            per rule, by :meth:`PredicateReachabilityProbe.to_gate_results`, so
-            starvation reporting deliberately stays silent about it rather than
-            double-reporting the same rule under two finding kinds.
+          * ``"dead"`` — :attr:`covered_fires` is zero, so with the two rungs
+            above ruled out the rule has no fire of any kind. Already reported
+            once, per rule, by
+            :meth:`PredicateReachabilityProbe.to_gate_results`, so starvation
+            reporting deliberately stays silent about it rather than
+            double-reporting the same rule under two finding kinds. The test
+            is :attr:`covered_fires` rather than :attr:`fires` so a rule whose
+            every fire sits on the warmup prefix, shadowed there by a satisfied
+            earlier rule, is not called dead while ``probe`` reports it firing.
           * ``"abstained_thin"`` — fires, none of them independent, but fewer
             than ``_MIN_STARVATION_FIRES`` of them: too few observations to
             separate structural starvation from a merely rarely-firing rule.
@@ -360,11 +366,33 @@ class _RuleStarvation:
             return "reachable"
         if self.warmup_independent_fires > 0:
             return "warmup_only"
-        if self.fires == 0:
+        if self.covered_fires == 0:
             return "dead"
-        if self.fires < _MIN_STARVATION_FIRES:
+        if self.covered_fires < _MIN_STARVATION_FIRES:
             return "abstained_thin"
         return "starved"
+
+    @property
+    def covered_fires(self) -> int:
+        """Every fire of this rule that an earlier rule shadows.
+
+        Postconditions: ``fires + warmup_covered_fires`` — the steady-state
+        covered fires plus the warmup-prefix ones. Reached only where
+        :attr:`independent_fires` and :attr:`warmup_independent_fires` are both
+        zero (the rungs above claim the rule otherwise), so on the starvation
+        rungs every fire the rule has is counted here and none is independent.
+
+        Prefix fires belong in this total because a warming earlier rule cannot
+        win its bar but a *satisfied* one still does: on a prefix bar where some
+        earlier rule is satisfied, ``evaluate_entry_rules`` returns that rule,
+        exactly as it would once every rule is warm. Such a fire is permanent
+        shadowing evidence, not the transient head start
+        :attr:`warmup_independent_fires` records — and counting it is what keeps
+        a rule whose every fire sits in the prefix from reading as ``"dead"``
+        while :meth:`PredicateReachabilityProbe.probe` concurrently reports it
+        as firing.
+        """
+        return self.fires + self.warmup_covered_fires
 
 
 def _sweep(node: Any, views: List[PandasHistoryView]) -> tuple[int, int]:
@@ -503,13 +531,20 @@ def _starvation_verdicts(
         fires = 0
         independent_fires = 0
         warmup_independent_fires = 0
+        warmup_covered_fires = 0
         covered: Dict[int, int] = {}
         for k, status in enumerate(statuses[j]):
             if status == "warmup":
                 continue
             if any_earlier_warmup[k]:
-                if status == "satisfied" and not earlier_hits[k]:
-                    warmup_independent_fires += 1
+                if status == "satisfied":
+                    hits = earlier_hits[k]
+                    if hits:
+                        warmup_covered_fires += 1
+                        for index in hits:
+                            covered[index] = covered.get(index, 0) + 1
+                    else:
+                        warmup_independent_fires += 1
                 continue
             evaluated += 1
             if status != "satisfied":
@@ -532,6 +567,7 @@ def _starvation_verdicts(
                 coverage=tuple(sorted(covered.items(), key=lambda kv: (-kv[1], kv[0]))),
                 legs=(),
                 warmup_independent_fires=warmup_independent_fires,
+                warmup_covered_fires=warmup_covered_fires,
             )
         )
     return out
@@ -850,12 +886,12 @@ class PredicateReachabilityProbe(GateResultsMixin):
                 elif kind == "abstained_thin":
                     results.append(
                         self._info(
-                            f"Entry rule {rule_id} (side={v.side}) fires on {v.fires}/"
-                            f"{v.evaluated} post-warmup bar(s), all of them also covered by an "
-                            f"earlier rule ({_coverage_text(v.coverage)}) — fewer than "
-                            f"{_MIN_STARVATION_FIRES} covered fires is too few to separate "
-                            "structural starvation from a merely rarely-firing rule, so it is "
-                            "not reported as starved.",
+                            f"Entry rule {rule_id} (side={v.side}) fires {v.covered_fires} "
+                            f"time(s) over {v.evaluated} judged post-warmup bar(s), all of them "
+                            f"also covered by an earlier rule ({_coverage_text(v.coverage)}) — "
+                            f"fewer than {_MIN_STARVATION_FIRES} covered fires is too few to "
+                            "separate structural starvation from a merely rarely-firing rule, "
+                            "so it is not reported as starved.",
                             rule_id=rule_id,
                         )
                     )
@@ -897,8 +933,8 @@ class PredicateReachabilityProbe(GateResultsMixin):
                 elif kind == "starved":
                     detail = (
                         f"Entry rule {rule_id} (side={v.side}) is structurally starved: it fires "
-                        f"on {v.fires}/{v.evaluated} post-warmup bar(s), and an earlier, "
-                        f"higher-priority rule fires on every one of them "
+                        f"{v.covered_fires} time(s) over {v.evaluated} judged post-warmup "
+                        f"bar(s), and an earlier, higher-priority rule fires on every one of them "
                         f"({_coverage_text(v.coverage)}) — under first-match-wins priority "
                         f"{rule_id} is never the rule selected, so it contributes no entries as "
                         "ordered. Resolve by folding its conditions into the earlier rule's "
