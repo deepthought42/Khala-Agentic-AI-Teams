@@ -158,6 +158,7 @@ one row per group, nothing unbounded materialized:
 SELECT agent_key, phase,
        GROUPING(agent_key) AS g_agent, GROUPING(phase) AS g_phase,
        COUNT(*)                                   AS call_count,
+       COUNT(*)                                   AS latency_ms_sample_count,
        SUM(cost_usd::numeric)                     AS total_cost_usd,
        SUM(input_tokens)                          AS total_input_tokens,
        SUM(output_tokens)                         AS total_output_tokens,
@@ -424,7 +425,7 @@ New tests:
 |---|---|---|
 | Populated window | patch the §4.1 aggregating read to return groups across two agent keys and two phases | all three views' keys, plus spot-checked `total_cost_usd`, `call_count`, `cache_read_ratio` |
 | Empty window | patch it to return no groups | all three dicts are `{}`, `window_days` echoes the request, 200 |
-| Postgres unset | no patching (the pytest env has no `POSTGRES_HOST`) | 200 with an empty rollup — the real code path, not a stub |
+| Postgres unset | `monkeypatch.delenv("POSTGRES_HOST", raising=False)` — **do not** rely on the ambient env being unset; a developer or another CI job with it exported would silently exercise a live database instead of the guard | 200 with an empty rollup — the real code path, not a stub |
 | Rollup fails, DORA survives | sentinel `DoraMetrics` + rollup read raises | the sentinel's non-zero values survive verbatim; `agent_rollup` is the empty literal |
 | DORA fails, rollup survives | `compute_dora` raises + rollup read returns groups | DORA half is the zeroed literal; `agent_rollup` is non-empty |
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
@@ -448,22 +449,50 @@ integration-marked tests unless `-m integration` is passed, so today the file ru
 than leaving it in the unit suite: a guard that cannot fail is worse than no guard,
 because it reads as coverage.
 
-So `.github/workflows/ci.yml` joins this story's file list: add
-`agents/software_engineering_team/tests/test_observability_stores_pg.py` to the
-live-Postgres job's `-m integration` invocation. Confirm it by making the parity
-test fail deliberately once and watching CI go red — a wiring change that is
-never observed failing is not verified.
+So `.github/workflows/ci.yml` joins this story's file list, and **two edits are
+required, not one** — adding the file to the invocation alone still leaves the
+guard dormant:
+
+1. **Add the path to the invocation**:
+   `agents/software_engineering_team/tests/test_observability_stores_pg.py` on the
+   live-Postgres job's `-m integration` line.
+2. **Make the job trigger for SE changes.** `test-integration` is gated on
+   `needs.changes.outputs.needs_integration == 'true'` (line 1258), and that flag
+   is computed as `needs_integration = fan_out_full or shared_backend`
+   (line 556). An ordinary `software_engineering_team/**` change sets neither, so
+   the job does not run at all — meaning the implementing PR itself, and every
+   later change to this SQL, would skip the only test that exercises it. The SE
+   change flag must be OR-ed into that expression.
+
+Confirm both by making the parity test fail deliberately once, on an SE-only diff,
+and watching CI go red. A wiring change never observed failing is not verified —
+and this is the second time this plan has specified a partial fix here, the first
+being an invocation that ran a file the job never selected.
 
 "Agree" is not "equal in every field" — per §3.5, assert **equality** for
-`call_count`, the token sums, and both percentiles. `total_cost_usd` needs care,
+`call_count`, **`latency_ms_sample_count`**, the token sums, and both percentiles.
+The sample count is easy to drop: it is not a natural SQL aggregate name, so an
+adapter that maps only the columns it sees leaves it at its dataclass default `0`
+while the percentiles beside it are real. `latency_ms` is `NOT NULL`, so every row
+in a group contributes a sample and the count equals `call_count` — the SQL names
+it explicitly (§3.5) and the test asserts it rather than trusting the mapping. `total_cost_usd` needs care,
 and the obvious formulation is wrong:
 
-**Compare the *unrounded* sums within `1e-9`; allow the *reported* 6-decimal
-values to differ by one unit in the last place (`1e-6`).** A `1e-9` bound applied
-to the rounded figures fails on precisely the case the tolerance exists to permit
-— when the two domains land on opposite sides of a 6-decimal boundary, the rounded
-values differ by a full `1e-6`, a thousand times the bound. Worked counterexample,
-reproduced locally: one million stored costs of `0.0072073768275` give
+**Compare the exposed values with a one-last-place tolerance (`1e-6`).** Neither
+side exposes an unrounded sum to compare: `compute_from_traces` rounds internally
+(`total_cost_usd=round(math.fsum(costs), 6)`, `agent_rollup.py:193`) and the §4.1
+reader returns already-shaped `CallRollup` dicts, also rounded. An earlier draft
+asked for a `1e-9` bound on the pre-rounding values, which is not implementable
+without adding a raw-sum test seam to a pure function that has no other reason to
+grow one — not worth it for a bound nothing consumes.
+
+So: assert `abs(a.total_cost_usd - b.total_cost_usd) <= 1e-6`, one unit in the last
+reported decimal place. That is the correct bound for the values that actually
+exist, and `1e-9` on those same rounded values would fail on precisely the case the
+tolerance exists to permit — when the two domains land on opposite sides of a
+6-decimal boundary the rounded values differ by a full `1e-6`, a thousand times the
+bound. Worked counterexample, reproduced locally: one million stored costs of
+`0.0072073768275` give
 
 ```
 math.fsum        -> 7207.376827499999  -> rounds to 7207.376827
@@ -588,9 +617,10 @@ through the alias untouched) holds.
 
 Also verify by hand, once, against a populated database: the §4.1 aggregating
 read and `compute_from_traces` over the same window must agree field-for-field —
-**except `total_cost_usd`, which is compared within `1e-9`** per §3.5, since the
-pure function is canonical for it and the SQL path only approximates it. A
-last-decimal difference there is expected, not a failed check. That is the claim
+**except `total_cost_usd`, which is compared within `1e-6`** per §3.5: one unit in
+the last reported decimal place, the only bound the exposed (already-rounded)
+values can support. A last-decimal difference there is expected, not a failed
+check. That is the claim
 §3.5 rests on, and it is cheap to confirm directly.
 
 ## 6. Risks
@@ -602,6 +632,7 @@ last-decimal difference there is expected, not a failed check. That is the claim
 | An HTTP-reachable unbounded scan over the retention window | §3.5: aggregate in SQL via `GROUPING SETS` + ordered-set aggregates; one row per group, never the raw rows. This was the plan's original mistake, corrected |
 | Aggregating bounds transfer but **not** the database scan | Acknowledged in §3.5, not papered over: a `statement_timeout` turns the common pathology into "degrade to empty". The same unbounded-window aggregate (`fetch_cost_since`) already serves this route today. Poll-collapsing and a summary table are both escalations, gated on a measured p95 rather than speculation |
 | `statement_timeout` is not a complete bound | Stated in §3.5 rather than left implicit: a wedged TCP path cannot be cancelled server-side, and a sync handler holds its threadpool worker regardless. `probe_cursor`'s own docstring names this residual and points at `bounded_probe`; closing it requires converting the route to `async def`, so it travels with the deferred poll-collapsing work rather than being bolted on |
+| A partial fix that reads as a complete one | This plan has now twice specified CI wiring that would not have run the test it protects — first an invocation missing its marker, then an invocation on a job that SE changes never trigger. Both looked done. §4.3 now requires *observing* the parity test fail on an SE-only diff before the wiring counts as verified |
 | A speculative mitigation growing its own defect surface | The poll-collapsing cache produced four correct review findings (no per-entry TTL in `shared.cache`; single-flight needed; unbounded key growth on an unauthenticated route; process-global state leaking between tests) before any of it was written. It is deferred behind the measurement gate, with those four findings recorded as its requirements list if it is ever built |
 | A mitigation assumed to exist in shared infrastructure that does not | This plan made that mistake three times — `shared.cache` per-entry TTL, percentiles-in-SQL, and the parity suite's CI wiring were each asserted from plausibility rather than read. Every infrastructure claim in §3.5 and §4.1 now cites what was verified in the module or workflow. Treat an unverified claim about existing code as a defect, not a detail |
 | SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-9` |
