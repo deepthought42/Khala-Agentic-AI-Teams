@@ -80,6 +80,7 @@ from .data_stream.protocol import BarEvent, EndOfStreamEvent, StreamEvent
 from .engine.execution_model import build_execution_model
 from .engine.fill_simulator import (
     ENGINE_EXIT_REASON_PREFIX,
+    ENGINE_EXIT_REASON_STOP_LOSS,
     FillOutcome,
     FillSimulator,
     FillSimulatorConfig,
@@ -136,7 +137,6 @@ _MAX_ORDER_EVENTS = 20
 #: quality gates match it byte-exactly. Referencing this one constant from all
 #: three same-module sites means an edit to the suffix can't desynchronize one
 #: from another.
-ENGINE_EXIT_REASON_STOP_LOSS = f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
 
 
 def _engine_exit_kind(reason: str) -> str:

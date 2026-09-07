@@ -56,6 +56,13 @@ logger = logging.getLogger(__name__)
 #: here — the lowest layer that needs it — to stay a single source of truth.
 ENGINE_EXIT_REASON_PREFIX = "engine_exit:"
 
+#: The stop-loss reason literal, derived from the prefix above. Lives here (not
+#: only in ``trading_service.service``) because this layer now needs it too: the
+#: resting stop-loss migration's attached leg carries it, and materialization
+#: uses it to recognise and retire a dispatcher-emitted fallback it supersedes.
+#: ``service`` re-exports this so the literal has exactly one definition.
+ENGINE_EXIT_REASON_STOP_LOSS = f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+
 #: Callback that reconciles exit attribution for a *strategy-initiated* close.
 #: Given the closing position's facts and the realized return, it returns an
 #: ``engine_exit:<kind>`` label when a structured exit rule fired within bounds
@@ -1805,6 +1812,10 @@ class FillSimulator:
             oco_group_id=oco_group_id,
         )
         sl_child.working_against_entry_order_id = po.order_id
+        if sl.entry_price_pct is not None:
+            self._retire_superseded_stop_loss_fallbacks(
+                symbol=req.symbol, child_side=child_side, keep_order_id=sl_child.order_id
+            )
         if events is not None and sl.entry_price_pct is not None:
             events.append(
                 FillDiagnosticEvent(
@@ -1833,6 +1844,53 @@ class FillSimulator:
                 if req.side == OrderSide.LONG
                 else entry_fill_price + offset
             )
+
+    def _retire_superseded_stop_loss_fallbacks(
+        self, *, symbol: str, child_side: OrderSide, keep_order_id: str
+    ) -> None:
+        """Cancel any dispatcher-emitted stop-loss order this attachment replaces.
+
+        The window this closes: while an entry is only PARTIALLY filled it has no
+        attached protection yet (materialization waits for the terminal slice so
+        the children size to the cumulative position), so the bar-close evaluator
+        stays live for the rule and may emit its own resting close if the level is
+        breached. A ``style="limit"`` close deliberately does NOT cancel entry
+        continuations — it may gap through unfilled, so stripping the scale-in
+        would be wrong — meaning the entry can go on to complete and materialize
+        the attached leg alongside that fallback. Two full-position protective
+        orders would then rest at DIFFERENT anchors (the fallback on the partial
+        position's entry price, this leg on the cumulative fill price), and
+        ``_scan_pending_for_gate`` records only one id, so a replacement close
+        would cancel one while the other could still fill first and pre-empt it.
+
+        This leg is the authoritative one — correctly anchored on the cumulative
+        fill and sized to ``pos.original_qty`` — so the fallback is retired rather
+        than reused. Ordering matters: the caller runs this AFTER submitting the
+        child, so the position is never momentarily unprotected.
+
+        The predicate targets the fallback exactly: a dispatcher emission has no
+        ``parent_order_id`` (``OrderBook.submit`` rejects one), whereas every
+        attached child has one — so no sibling leg, bracket child, or this leg
+        itself can be caught by it.
+
+        Preconditions: called only for the resting stop-loss migration's own leg
+        (``sl.entry_price_pct`` set); ``keep_order_id`` is the child just
+        submitted; ``child_side`` is the position-closing side.
+        Postconditions: every pending same-symbol, same-side, parentless
+        ``engine_exit:stop_loss`` order is cancelled. No-op in the common case
+        where the entry filled in one slice and no fallback was ever emitted.
+        """
+        for other in self.order_book.pending_for_symbol(symbol):
+            other_req = other.request
+            if other.order_id == keep_order_id:
+                continue
+            if other_req.side != child_side:
+                continue
+            if other_req.parent_order_id is not None:
+                continue
+            if (other_req.reason or "") != ENGINE_EXIT_REASON_STOP_LOSS:
+                continue
+            self.order_book.cancel(other.order_id)
 
     def _materialize_limit_child(
         self,

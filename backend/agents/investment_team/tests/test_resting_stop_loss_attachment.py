@@ -1210,3 +1210,84 @@ def test_validate_prices_accepts_a_bracket_style_stop_limit_leg() -> None:
     leg) is unaffected by that requirement — its absolute ``limit_offset`` is
     already on the same anchor as its ``stop_price``."""
     _order_with_leg(StopAttachment(stop_price=95.0, limit_offset=0.95)).validate_prices()
+
+
+def test_attachment_retires_a_dispatcher_emitted_stop_loss_fallback() -> None:
+    """The partial-fill handoff: while an entry is only partially filled it has no
+    attached protection yet, so the bar-close evaluator stays live and may emit
+    its own resting stop-loss close. A ``style="limit"`` close deliberately does
+    not cancel entry continuations, so the entry can complete and materialize the
+    attached leg alongside that fallback — two full-position protective orders at
+    DIFFERENT anchors, of which ``_scan_pending_for_gate`` records only one, so a
+    replacement close would cancel one and the other could still pre-empt it.
+
+    The attached leg is authoritative (anchored on the cumulative fill), so
+    materializing it retires the fallback.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # Stand in for the bar-close evaluator's fallback: a dispatcher-emitted
+    # (parentless) resting STOP_LIMIT carrying the same stop-loss attribution.
+    fallback = order_book.submit(
+        OrderRequest(
+            client_order_id="e1",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=100.0,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=94.0,  # a different anchor from the attached leg's
+            limit_price=93.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    assert any(po.order_id == fallback.order_id for po in order_book.pending_for_symbol("AAA"))
+
+    # Entry fills -> the attached leg materializes and supersedes the fallback.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.stop_price == pytest.approx(95.0)  # cumulative-fill anchored
+
+    # Exactly one protective stop-loss order remains, and it is the attached one.
+    stop_loss_orders = [
+        po
+        for po in order_book.pending_for_symbol("AAA")
+        if (po.request.reason or "") == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    ]
+    assert [po.order_id for po in stop_loss_orders] == [child.order_id]
+
+
+def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
+    """The retirement predicate targets the fallback exactly — a different
+    engine exit (here a take-profit) resting on the same position is untouched,
+    so this cannot strip protection or targets it does not own."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    other = order_book.submit(
+        OrderRequest(
+            client_order_id="e2",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=100.0,
+            order_type=OrderType.LIMIT,
+            limit_price=120.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    assert any(po.order_id == other.order_id for po in order_book.pending_for_symbol("AAA"))
