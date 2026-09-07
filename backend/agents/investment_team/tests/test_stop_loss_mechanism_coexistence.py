@@ -14,13 +14,14 @@ Covers:
 - ``rule_compiler``'s ``exclude_rule_index`` chokepoint: a rule ceded to the
   resting mechanism is skipped by the bar-close evaluator outright, the same
   way an ``OcoBracketRule`` always is.
-- ``_EngineExitDispatcher._has_limit_stop_rule``: the SECOND side of the
-  mutual exclusion, which matters only for the limit style. That dispatcher
-  tracks its own resting STOP_LIMIT (``_scan_pending_for_gate``'s
-  ``resting_limit_stop_id``) and cancels it when another rule fires; a ceded
-  rule must therefore be invisible to that bookkeeping, or the dispatcher
-  would cancel the entry-attached protective order out from under a live
-  position.
+- ``_EngineExitDispatcher._scan_pending_for_gate``'s latch discrimination,
+  which matters only for the limit style. That dispatcher tracks a resting
+  STOP_LIMIT (``resting_limit_stop_id``) and cancels it when it emits a
+  replacement close. An ENTRY-ATTACHED child must be invisible to that
+  bookkeeping while UN-ARMED — cancelling it would strip a live position of
+  its protection while the replacement is still only queued — but visible
+  once LATCHED, where it is a competing close that would otherwise fill at
+  its stale limit ahead of the replacement on a recovery bar.
 - ``_EngineEntryDispatcher.resting_stop_loss_enabled`` /
   ``_EngineExitDispatcher.exclude_rule_index``: wired together exactly as
   ``TradingService.run`` wires them, proving that across both settings of
@@ -59,7 +60,7 @@ from investment_team.strategy_lab.spec_dsl import (
 )
 from investment_team.trading_service.engine.execution_model import RealisticExecutionModel
 from investment_team.trading_service.engine.fill_simulator import FillSimulator, FillSimulatorConfig
-from investment_team.trading_service.engine.order_book import OrderBook
+from investment_team.trading_service.engine.order_book import OrderBook, PendingOrder
 from investment_team.trading_service.engine.portfolio import Portfolio, Position
 from investment_team.trading_service.service import (
     _STOP_LOSS_RESTING_ORDER_ENV,
@@ -71,7 +72,12 @@ from investment_team.trading_service.service import (
     _resting_stop_loss_enabled,
     _TrackedPosition,
 )
-from investment_team.trading_service.strategy.contract import Bar, OrderRequest, OrderSide
+from investment_team.trading_service.strategy.contract import (
+    Bar,
+    OrderRequest,
+    OrderSide,
+    OrderType,
+)
 
 # ---------------------------------------------------------------------------
 # _resting_stop_loss_enabled: the run feature check and its documented default
@@ -456,34 +462,6 @@ def _limit_stop_rule(pct: float = 0.05, limit_offset_pct: float = 0.01) -> StopL
     )
 
 
-def test_exit_dispatcher_cedes_limit_stop_bookkeeping_for_the_ceded_rule() -> None:
-    """A limit-style rule handed to the resting mechanism is excluded from
-    ``_has_limit_stop_rule``, so ``_scan_pending_for_gate`` never mistakes the
-    entry-attached STOP_LIMIT for one this dispatcher emitted. Without this, the
-    first time any other rule fired, ``maybe_emit`` would CANCEL the position's
-    protective order while its replacement close was still only queued."""
-    rules = [_limit_stop_rule(), TakeProfitRule(pct=0.20)]
-    exits = _EngineExitDispatcher(exit_rules=rules, exclude_rule_index=0)
-    assert exits._has_limit_stop_rule is False
-
-
-def test_exit_dispatcher_keeps_limit_stop_bookkeeping_when_nothing_is_ceded() -> None:
-    """With the feature check off (``exclude_rule_index=None``) the dispatcher
-    owns the limit-style stop exactly as before this migration — the resting
-    STOP_LIMIT it emits at trigger time is still its own to track and cancel."""
-    exits = _EngineExitDispatcher(exit_rules=[_limit_stop_rule()], exclude_rule_index=None)
-    assert exits._has_limit_stop_rule is True
-
-
-def test_exit_dispatcher_keeps_limit_stop_bookkeeping_for_an_unceded_limit_rule() -> None:
-    """Excluding an index only removes THAT rule from the scan: a market-style
-    stop ceded at index 0 leaves a separate limit-style stop at index 1 fully
-    owned by the bar-close dispatcher."""
-    rules = [StopLossRule(pct=0.05, basis="entry_price"), _limit_stop_rule()]
-    exits = _EngineExitDispatcher(exit_rules=rules, exclude_rule_index=0)
-    assert exits._has_limit_stop_rule is True
-
-
 @pytest.mark.parametrize("resting_enabled", [True, False])
 def test_limit_style_rule_is_claimed_by_exactly_one_mechanism(resting_enabled: bool) -> None:
     """The mutual-exclusion contract, for the limit style, across both settings
@@ -497,6 +475,89 @@ def test_limit_style_rule_is_claimed_by_exactly_one_mechanism(resting_enabled: b
     bar_close_claims = exits.exclude_rule_index != 0
     assert resting_claims is resting_enabled
     assert bar_close_claims is not resting_enabled
-    # The order-book-side bookkeeping follows the same claim, never diverging
-    # from it — a claimed rule's STOP_LIMIT is owned by the OCO lifecycle.
-    assert exits._has_limit_stop_rule is not resting_enabled
+    # ``_has_limit_stop_rule`` is spec shape, not ownership: it stays True in
+    # both settings so the per-bar scan still runs. Which ORDER that scan
+    # reports is where ownership is decided — see the latch tests below.
+
+
+# ---------------------------------------------------------------------------
+# The entry-attached STOP_LIMIT's two states, as _scan_pending_for_gate sees
+# them: un-armed protection (not ours to cancel) vs latched competing close.
+# ---------------------------------------------------------------------------
+
+
+def _scan_with_child(*, armed: bool, parent_order_id: str | None) -> str | None:
+    """Run ``_scan_pending_for_gate`` over one opposite-side engine STOP_LIMIT
+    and return the ``resting_limit_stop_id`` it reports.
+
+    ``parent_order_id`` set marks an entry-attached child (only
+    ``OrderBook.submit_attached`` can set it); ``None`` is the dispatcher's own
+    trigger-time emission.
+    """
+    exits = _EngineExitDispatcher(exit_rules=[_limit_stop_rule()], exclude_rule_index=0)
+    req = OrderRequest(
+        client_order_id="sl-1",
+        symbol="AAA",
+        side=OrderSide.SHORT,  # opposite the long position below
+        qty=10.0,
+        order_type=OrderType.STOP_LIMIT,
+        stop_price=95.0,
+        limit_price=94.05,
+        reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+    )
+    po = PendingOrder(
+        order_id="po-1",
+        request=req.model_copy(update={"parent_order_id": parent_order_id}),
+        submitted_at="2024-01-02",
+        submitted_equity=1_000_000.0,
+    )
+    po.stop_limit_armed = armed
+    tracked = _TrackedPosition(
+        side=OrderSide.LONG,
+        entry_price=100.0,
+        entry_order_id="entry-1",
+        just_opened=False,
+        high_since_entry=100.0,
+        low_since_entry=100.0,
+    )
+    pos = Position(
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=10.0,
+        entry_price=100.0,
+        entry_bid_price=100.0,
+        entry_timestamp="2024-01-01",
+        entry_order_id="entry-1",
+        entry_client_order_id="c-entry-1",
+        original_qty=10.0,
+        entry_order_type="market",
+    )
+    scan = exits._scan_pending_for_gate(tracked, pos, [po])
+    assert scan is not None
+    return scan[0]
+
+
+def test_unarmed_entry_attached_stop_limit_is_not_reported_for_cancellation() -> None:
+    """An entry-attached child whose stop has never been breached is the
+    position's standing protection, not a competing close. Reporting it would
+    make ``maybe_emit`` cancel it the first time any other rule fires, leaving
+    the position unprotected while the replacement close is still only queued."""
+    assert _scan_with_child(armed=False, parent_order_id="entry-1") is None
+
+
+def test_latched_entry_attached_stop_limit_is_reported_for_cancellation() -> None:
+    """Once LATCHED the child is a resting LIMIT that no longer needs the stop
+    re-crossed, and it precedes any replacement close in submission order — so
+    on a recovery bar it would fill at its stale limit and the intended close
+    would be dropped by the stale-continuation guard. That is the race
+    ``maybe_emit``'s cancel exists to prevent, so it must be reported."""
+    assert _scan_with_child(armed=True, parent_order_id="entry-1") == "po-1"
+
+
+@pytest.mark.parametrize("armed", [True, False])
+def test_dispatcher_emitted_stop_limit_is_always_reported(armed: bool) -> None:
+    """A stop-limit with no parent is the dispatcher's own trigger-time
+    emission: it exists only because the bar-close evaluator already detected
+    the breach, so it is post-trigger by construction and stays tracked from the
+    moment it rests — unchanged by this migration, in either latch state."""
+    assert _scan_with_child(armed=armed, parent_order_id=None) == "po-1"

@@ -577,11 +577,13 @@ class _EngineExitDispatcher:
       market-style rule, a resting ``STOP_LIMIT`` for a limit-style one — see
       ``_EngineEntryDispatcher.resting_stop_loss_enabled``);
       ``None`` (the default) evaluates every rule as today. Enforces mutual
-      exclusion between the two mechanisms on BOTH sides — the ceded rule is
-      dropped before evaluation (see
-      ``rule_compiler._filtered_intent_for_rule``), and it is also excluded
-      from ``_has_limit_stop_rule``, so this dispatcher's resting-stop-limit
-      bookkeeping never claims an order the entry-fill mechanism owns.
+      exclusion between the two mechanisms: the ceded rule is dropped before
+      evaluation (see ``rule_compiler._filtered_intent_for_rule``), so a bar
+      can never see both a resting-stop fill and a bar-close exit for it.
+      The ceded rule's ENTRY-ATTACHED order is separately kept out of this
+      dispatcher's resting-stop-limit bookkeeping until it latches — see
+      :meth:`_scan_pending_for_gate` for why an un-armed protective child is
+      not this dispatcher's to cancel.
 
     Empty ``exit_rules`` makes :meth:`maybe_emit` a no-op.
 
@@ -993,7 +995,13 @@ class _EngineExitDispatcher:
         scaled_partial_in_flight)``:
           * ``resting_limit_stop_id`` — the ``order_id`` of an already-resting
             limit-style STOP_LIMIT (or ``None``; a non-``None`` id means the chosen
-            intent must exclude that stop rule);
+            intent must exclude that stop rule, and that ``maybe_emit`` cancels
+            the order when it emits a replacement close). An ENTRY-ATTACHED
+            child (``parent_order_id`` set) is reported only once it has
+            LATCHED (``stop_limit_armed``): before that it is the position's
+            standing protection rather than a competing close, and cancelling
+            it would leave the position unprotected — see the per-order check
+            below for the full rationale;
           * ``entry_continuation_in_flight`` — ``True`` iff a scaled-take-profit
             spec has the position's own same-side, partially-filled entry
             continuation still resting (so the scaled deferral can read it without a
@@ -1050,6 +1058,39 @@ class _EngineExitDispatcher:
                 # In-flight guaranteed FULL close — stand the whole bar down.
                 return None
             if track_resting and po_req.order_type == OrderType.STOP_LIMIT:
+                # An ENTRY-ATTACHED stop-limit (``parent_order_id`` set — only
+                # ``OrderBook.submit_attached`` can set it, and ``submit`` rejects
+                # it outright, so this is structural) counts here only once it has
+                # LATCHED. The two states are genuinely different orders to this
+                # dispatcher:
+                #
+                # * Un-armed — the stop level has never been breached, so the child
+                #   is the position's standing protection, placed proactively at
+                #   entry-fill by the resting-stop mechanism. Reporting it would
+                #   make ``maybe_emit`` cancel it the first time any other rule
+                #   fires, stripping that protection while the replacement close is
+                #   still only queued and leaving a participation-capped residual
+                #   naked until the rule next triggers. Its lifecycle belongs to the
+                #   fill simulator: it sits in the entry's OCO group and is bound to
+                #   the position, so an OCO sibling fill or the stale-continuation
+                #   guard retires it.
+                # * Latched (``stop_limit_armed``) — the stop HAS been breached and
+                #   the order is now a resting LIMIT that no longer needs the stop
+                #   re-crossed (see ``FillSimulator.process_bar``'s latch). It is a
+                #   live competing close, and it precedes any replacement close in
+                #   submission order, so on a recovery bar it would fill at its
+                #   stale limit and the intended close would be dropped by the
+                #   stale-continuation guard — exactly the race ``maybe_emit``'s
+                #   cancel exists to prevent. Cancelling it there is also strictly
+                #   safer than leaving it: the replacement is a GUARANTEED market
+                #   close, whereas this latched limit already failed to fill once.
+                #
+                # A dispatcher-emitted stop-limit (no parent) is unaffected: it only
+                # exists because the bar-close evaluator already detected the
+                # breach, so it is post-trigger by construction and stays tracked
+                # from the moment it rests, exactly as before this migration.
+                if po_req.parent_order_id is not None and not po.stop_limit_armed:
+                    continue
                 resting_limit_stop_id = po.order_id
         return resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight
 
@@ -1130,42 +1171,14 @@ class _EngineExitDispatcher:
 
     @cached_property
     def _has_limit_stop_rule(self) -> bool:
-        """Whether this dispatcher still OWNS a ``style="limit"`` stop-loss rule.
-        Lets the per-bar dispatch skip the resting-order re-ranking for the common
+        """Whether the spec contains a ``style="limit"`` stop-loss rule. Lets the
+        per-bar dispatch skip the resting-order re-ranking for the common
         market-only specs.
 
-        The rule at ``exclude_rule_index`` is deliberately not counted: that rule
-        has been ceded to the entry-fill resting-order mechanism, which owns its
-        STOP_LIMIT's whole lifecycle (submitted into the entry's OCO group and
-        bound to the position, so an OCO sibling fill or the stale-continuation
-        guard retires it). Counting it would make ``_scan_pending_for_gate`` treat
-        that entry-attached child as this dispatcher's own in-flight stop and
-        ``maybe_emit`` would then CANCEL it the first time any other rule fires —
-        stripping the position of its protective order while the replacement close
-        is still only queued, and leaving a participation-capped residual naked
-        until the rule next triggers. The cancel exists for a stop-limit this
-        dispatcher itself emitted *after* the stop level was breached (already
-        latched, hence racing the replacement close on a recovery bar); an
-        entry-attached child sits un-armed until the level is actually breached,
-        and if it does fill first that is a genuine stop-out with correct
-        ``engine_exit:stop_loss`` attribution, with the redundant close dropped by
-        the stale-continuation guard. So ownership is exclusive on both sides:
-        when the resting mechanism holds the rule the fill simulator's OCO
-        lifecycle governs it, otherwise this gate does — never both.
-
-        Postconditions: ``True`` iff some exit rule other than the one at
-        ``exclude_rule_index`` is a limit-style stop-loss. Because a spec has at
-        most one limit-style stop (enforced by ``StrategySpec``), excluding that
-        index yields ``False`` whenever the ceded rule is the limit-style one, and
-        leaves the result unchanged otherwise.
-        Cached: ``exit_rules`` and ``exclude_rule_index`` are both fixed for the
-        run.
+        Postconditions: ``True`` iff any exit rule is a limit-style stop-loss.
+        Cached: ``exit_rules`` is immutable across the run.
         """
-        return any(
-            is_limit_stop_rule(r)
-            for i, r in enumerate(self.exit_rules)
-            if i != self.exclude_rule_index
-        )
+        return any(is_limit_stop_rule(r) for r in self.exit_rules)
 
     @cached_property
     def _has_scaled_take_profit_rule(self) -> bool:
@@ -1979,11 +1992,12 @@ def _resting_stop_loss_enabled() -> bool:
     affects") and its call sites — ``_EngineEntryDispatcher.__post_init__``
     attaches the resting order only when this returns ``True``, and
     ``TradingService.run`` excludes that same rule index from
-    ``_EngineExitDispatcher``'s bar-close evaluation (and, through
-    ``exclude_rule_index``, from its ``_has_limit_stop_rule`` bookkeeping)
-    only when this returns ``True`` — so a bar can never see both a
-    resting-stop fill and a bar-close exit for the same rule, and the
-    dispatcher never cancels an order the entry-fill mechanism owns.
+    ``_EngineExitDispatcher``'s bar-close evaluation only when this returns
+    ``True`` — so a bar can never see both a resting-stop fill and a
+    bar-close exit for the same rule. The entry-attached order itself stays
+    out of that dispatcher's cancel bookkeeping until it latches (see
+    ``_EngineExitDispatcher._scan_pending_for_gate``), so an un-armed
+    protective child is never cancelled out from under a live position.
     """
     return os.environ.get(_STOP_LOSS_RESTING_ORDER_ENV, "false").strip().lower() in {
         "true",
