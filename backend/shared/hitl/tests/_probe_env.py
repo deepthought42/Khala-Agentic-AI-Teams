@@ -27,6 +27,63 @@ from shared.hitl.tests._wait_probe_workflow import WAIT_PROBE_TASK_QUEUE, HitlWa
 ANSWERS: List[Dict[str, Any]] = [{"question_id": "q1", "selected_option_id": "yes", "other_text": None}]
 
 
+#: Modules the probe's sandbox must resolve from the host rather than re-import.
+#:
+#: The temporalio sandbox re-imports the workflow's defining module, and Python
+#: imports a module's PARENT PACKAGES first. The probe lives at
+#: ``shared.hitl.tests._wait_probe_workflow``, so the sandbox executes
+#: ``shared/hitl/__init__.py``, which imports ``validation``, which imports
+#: ``fastapi`` at module scope. That drags starlette/anyio/sniffio into the
+#: sandbox, where a class subclassing a restriction-proxied object fails with
+#: "Restriction state not present. Using subclasses of proxied objects is
+#: unsupported."
+#:
+#: Note where this happens: BEFORE the probe module's own body runs, so the
+#: ``workflow.unsafe.imports_passed_through()`` block inside it cannot cover it.
+#: A parent package's imports are simply not in scope for that guard. The real
+#: production workflow composing this mixin (``PlanningWorkflow``) is unaffected
+#: because it lives under ``planning_team``, reaching ``shared.hitl`` only from
+#: inside its passthrough block -- this is a consequence of the PROBE's location,
+#: not a defect in the mixin.
+#:
+#: Passing ``fastapi`` through (rather than ``shared.hitl``) is deliberate:
+#: passthrough matches by dotted prefix, so ``shared.hitl`` would also pass
+#: through ``shared.hitl.tests._wait_probe_workflow`` itself and the probe would
+#: stop being sandboxed at all -- gutting the very check this worker exists to
+#: run. ``fastapi`` is never touched by a workflow ``run()`` body, which is the
+#: same rationale ``shared.temporal.worker._build_workflow_runner`` documents for
+#: every module on its own list.
+PROBE_PASSTHROUGH_MODULES = ("fastapi",)
+
+
+def probe_workflow_runner():
+    """Build the sandbox runner the probe worker uses.
+
+    Preconditions:
+        - None.
+    Postconditions:
+        - Returns a ``SandboxedWorkflowRunner`` carrying PRODUCTION's passthrough
+          configuration (``shared.temporal.worker._build_workflow_runner``, the
+          runner every real team worker is built with) plus
+          :data:`PROBE_PASSTHROUGH_MODULES`. Building on the production runner
+          rather than the SDK default is the point: a probe sandboxed more
+          strictly than production would fail on configuration real workflows
+          never meet, and one sandboxed more loosely would miss what production
+          catches.
+        - Still sandboxes the probe workflow module itself -- see
+          :data:`PROBE_PASSTHROUGH_MODULES` for why that requires passing
+          ``fastapi`` through rather than ``shared.hitl``.
+    """
+    from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
+
+    from shared.temporal.worker import _build_workflow_runner
+
+    production = _build_workflow_runner()
+    return SandboxedWorkflowRunner(
+        restrictions=production.restrictions.with_passthrough_modules(*PROBE_PASSTHROUGH_MODULES)
+    )
+
+
 @contextlib.asynccontextmanager
 async def probe_worker(env):
     """Run a probe worker against an already-started ``env``.
@@ -44,6 +101,9 @@ async def probe_worker(env):
           the restart test a replay test and not merely a reconnect test -- and
           it means every ``parked_state`` query is answered from a fresh replay
           too, so a query result is itself evidence the pause rebuilds.
+        - Runs under :func:`probe_workflow_runner`, so the workflow is validated
+          against production's sandbox configuration rather than the SDK default
+          the repo never uses.
     """
     from temporalio.worker import Worker
 
@@ -51,6 +111,7 @@ async def probe_worker(env):
         env.client,
         task_queue=WAIT_PROBE_TASK_QUEUE,
         workflows=[HitlWaitProbeWorkflow],
+        workflow_runner=probe_workflow_runner(),
         max_cached_workflows=0,
     ) as worker:
         yield worker

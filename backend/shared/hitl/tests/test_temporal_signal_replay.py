@@ -157,3 +157,54 @@ def test_parked_state_reports_the_pause_without_leaking_the_answers() -> None:
     assert all(isinstance(value, (str, bool, type(None))) for value in state.values()), (
         f"parked_state grew a structured field that could carry answer content: {state}"
     )
+
+
+def test_the_probe_runner_keeps_fastapi_out_of_the_sandbox_but_not_the_probe() -> None:
+    """Not integration-marked deliberately: this pins the configuration that
+    makes every WorkflowEnvironment test in this package runnable at all, and
+    it must fail where those tests only skip.
+
+    The probe lives under ``shared.hitl``, so the sandbox imports
+    ``shared/hitl/__init__.py`` as a parent package before the probe module's own
+    body -- and that reaches ``fastapi`` via ``validation``, past the point any
+    ``imports_passed_through()`` block inside the probe could help. Passing
+    ``fastapi`` through fixes it; passing ``shared.hitl`` through would too, and
+    would also unsandbox the probe workflow itself, since passthrough matches by
+    dotted prefix. Both halves are asserted, because only checking the first
+    would let that silent downgrade through."""
+    from shared.hitl.tests._probe_env import PROBE_PASSTHROUGH_MODULES, probe_workflow_runner
+
+    passthrough = probe_workflow_runner().restrictions.passthrough_modules
+
+    assert "fastapi" in passthrough, (
+        "fastapi must resolve from the host: the sandbox's re-import of it drags in "
+        "starlette/anyio/sniffio, which fails with 'Restriction state not present'"
+    )
+    for module in ("shared.hitl", "shared.hitl.tests", "shared"):
+        assert module not in passthrough, (
+            f"{module!r} is a dotted prefix of the probe workflow's own module, so passing it through "
+            "would stop sandboxing the probe -- the exact check this worker exists to run"
+        )
+    assert PROBE_PASSTHROUGH_MODULES == ("fastapi",), (
+        "the probe's extra passthrough list grew; each entry is a hole in the sandbox and needs "
+        "the same justification fastapi carries in _probe_env"
+    )
+
+
+def test_the_probe_runner_inherits_productions_sandbox_configuration() -> None:
+    """The probe is only evidence about production if it runs under production's
+    sandbox. Pins that it builds on ``_build_workflow_runner`` rather than the SDK
+    default: a probe sandboxed more strictly than production would fail on
+    configuration real workflows never meet, and one sandboxed more loosely would
+    miss what production catches."""
+    from shared.hitl.tests._probe_env import probe_workflow_runner
+    from shared.temporal.worker import _build_workflow_runner
+
+    production = set(_build_workflow_runner().restrictions.passthrough_modules)
+    probe = set(probe_workflow_runner().restrictions.passthrough_modules)
+
+    assert production, "production's passthrough list is empty; this comparison would be vacuous"
+    assert production <= probe, f"the probe dropped production passthrough modules: {sorted(production - probe)}"
+    assert probe - production == {"fastapi"}, (
+        f"the probe diverges from production by more than the documented fastapi entry: {sorted(probe - production)}"
+    )
