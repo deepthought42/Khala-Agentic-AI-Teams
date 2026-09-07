@@ -68,8 +68,7 @@ def run_draft_stage(
           before the field existed. It is ``None`` in Temporal mode today —
           ``PlanningStageResult`` does not carry it and neither
           ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so
-          suppression is thread-mode-only until that plumbing lands, the same
-          divergence ``selected_title`` currently has.
+          suppression is thread-mode-only until that plumbing lands.
         - The human-in-the-loop steps (story-placeholder filling and the interactive
           draft-review loop with uncertainty questions / author feedback / guideline
           updates) require a job store: they run only when BOTH ``ctx.job_id`` and
