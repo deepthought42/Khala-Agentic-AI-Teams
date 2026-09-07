@@ -11,7 +11,7 @@ new file mode 100644
 +
 +from cryptography.fernet import Fernet
 +
-+_FALLBACK_KEY = "cGxhY2Vob2xkZXJfZGV2ZWxvcG1lbnRfa2V5X25vdF9yZWFsPQ=="
++_FALLBACK_KEY = "cGxhY2Vob2xkZXItbm90LWEtcmVhbC1rZXktMzJieXQ="
 +
 +
 +def _cipher() -> Fernet:

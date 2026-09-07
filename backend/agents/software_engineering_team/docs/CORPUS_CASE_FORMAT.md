@@ -317,6 +317,11 @@ language: python
 stack: fastapi
 gates: [code_review]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: code_review
@@ -358,6 +363,11 @@ language: python
 stack: fastapi
 gates: [code_review, security, qa]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: code_review
