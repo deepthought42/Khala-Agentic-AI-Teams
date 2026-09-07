@@ -12,6 +12,7 @@ cross-symbol emission order.
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -158,7 +159,6 @@ def test_stop_loss_short_side_through_bar():
     ]
     spec = _spec(
         [StopLossRule(pct=0.05, basis="entry_price")],
-        entry_side="short",
         entry_rules=[EntryRule(side="short", when=Predicate(lhs="bar.close", op="<", rhs=100.0))],
     )
     [trade] = simulate(spec, {"AAA": bars})
@@ -331,7 +331,6 @@ def test_an_invalid_lower_index_take_profit_candidate_does_not_mask_a_valid_stop
     ]
     spec = _spec(
         [TakeProfitRule(pct=1.5), StopLossRule(pct=0.05, basis="entry_price")],
-        entry_side="short",
         entry_rules=[EntryRule(side="short", when=Predicate(lhs="bar.close", op="<", rhs=100.0))],
     )
     [trade] = simulate(spec, {"AAA": bars})
@@ -366,7 +365,8 @@ def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
         _bar(99, 99, 99, 99, d[0]),
         _bar(101, 102, 100, 101, d[1]),
         _bar(101, 101, 101, 101, d[2]),  # entry fill @101
-        _bar(101, 101, 101, 50, d[3]),  # signal trigger (close<100), queued for next bar
+        _bar(101, 101, 99, 99, d[3]),  # signal trigger (close<100), queued for next bar;
+        # low(99) stays above the 95.95 stop
         _bar(101, 101, 94, 95, d[4]),  # fill bar: ALSO reaches the 95.95 stop -> stop wins
     ]
     spec = _spec(
@@ -460,6 +460,9 @@ def test_a_partial_rung_does_not_retire_a_resting_limit_stop():
 
 
 def test_ladder_rungs_then_stop_loss_closes_the_remainder_with_a_blended_price():
+    """A ladder's earlier rungs contribute to exit_price (qty-weighted) even
+    when a stop_loss performs the final close; level_index stays None since
+    the final closing event was the stop, not a rung."""
     d = _dates(5)
     rung_target = 101 * 1.05
     stop_level = 101 * 0.95
@@ -480,6 +483,10 @@ def test_ladder_rungs_then_stop_loss_closes_the_remainder_with_a_blended_price()
 
 
 def test_ladder_rungs_then_signal_exit_closes_the_remainder_with_a_blended_price():
+    """Same rule as the stop_loss variant above, with a signal_exit performing
+    the final close instead: the blend and the None level_index hold either
+    way, since aggregation depends only on which rung fired, not which kind
+    closed the remainder."""
     d = _dates(6)
     rung_target = 100 * 1.05
     bars = [
@@ -507,6 +514,9 @@ def test_ladder_rungs_then_signal_exit_closes_the_remainder_with_a_blended_price
 
 
 def test_position_open_at_the_end_of_series_emits_no_trade():
+    """A position still open when its bars run out produces no ReferenceTrade
+    at all -- mirroring production's open-position reporting rather than a
+    synthetic force-close."""
     d = _dates(4)
     bars = [
         _bar(99, 99, 99, 99, d[0]),
@@ -519,6 +529,9 @@ def test_position_open_at_the_end_of_series_emits_no_trade():
 
 
 def test_a_partially_reduced_ladder_still_open_at_end_of_series_emits_no_trade():
+    """Same end-of-series rule, for the harder case: a position holding only
+    a partially-reduced ladder remainder still produces no ReferenceTrade --
+    a fired rung does not count as a close."""
     d = _dates(4)
     target = 101 * 1.05
     bars = [
@@ -643,6 +656,18 @@ def test_simulate_rejects_out_of_range_or_nonfinite_slippage(bps):
         simulate(
             spec, {"AAA": [_bar(99, 99, 99, 99, "2024-01-01T00:00:00")]}, entry_slippage_bps=bps
         )
+
+
+def test_simulate_accepts_slippage_just_under_the_upper_bound():
+    """Pins the ``[0, 10_000)`` contract from the acceptance side too, not
+    just the rejection side above -- a tightened valid range would silently
+    pass a rejection-only test suite."""
+    spec = _spec([StopLossRule(pct=0.05)])
+    simulate(
+        spec,
+        {"AAA": [_bar(99, 99, 99, 99, "2024-01-01T00:00:00")]},
+        entry_slippage_bps=9_999.0,
+    )  # must not raise
 
 
 def test_simulate_rejects_empty_bars_for_a_symbol():
@@ -818,6 +843,12 @@ def test_simulate_is_deterministic():
 
 
 def test_simulate_does_not_mutate_spec_or_bars():
+    """Deep copies, not ``list(...)`` shallow copies: a shallow copy shares
+    the same bar/rule objects with the original, so it can't detect an
+    in-place mutation of one of them -- only that the list's own identity of
+    elements didn't change. Compares the whole ``spec``, not just
+    ``exit_rules``, so a mutation of any other field (``target_symbols``,
+    etc.) is caught too."""
     d = _dates(4)
     bars = [
         _bar(99, 99, 99, 99, d[0]),
@@ -826,11 +857,11 @@ def test_simulate_does_not_mutate_spec_or_bars():
         _bar(101, 101, 94, 95, d[3]),
     ]
     spec = _spec([StopLossRule(pct=0.05, basis="entry_price")])
-    bars_before = list(bars)
-    exit_rules_before = list(spec.exit_rules)
+    bars_before = copy.deepcopy(bars)
+    spec_before = copy.deepcopy(spec)
     simulate(spec, {"AAA": bars})
     assert bars == bars_before
-    assert spec.exit_rules == exit_rules_before
+    assert spec == spec_before
 
 
 def test_module_imports_no_forbidden_engine_module():

@@ -134,7 +134,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Literal, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    List,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    get_args,
+)
 
 from ...models import StrategySpec
 from ..spec_dsl import ExitRule, OcoBracketRule
@@ -173,16 +183,11 @@ ExitRuleKind = Literal[
     "bracket_stop_loss",
     "bracket_take_profit",
 ]
-_EXIT_RULE_KINDS = frozenset(
-    (
-        "stop_loss",
-        "take_profit",
-        "scaled_take_profit",
-        "signal_exit",
-        "bracket_stop_loss",
-        "bracket_take_profit",
-    )
-)
+# Derived from the Literal itself, not re-listed, so the two can never drift:
+# adding a kind to ExitRuleKind without also updating a hand-maintained
+# frozenset would otherwise make __post_init__ reject a structurally valid
+# ReferenceTrade with a confusing ValueError.
+_EXIT_RULE_KINDS = frozenset(get_args(ExitRuleKind))
 
 
 @dataclass(frozen=True)
@@ -221,7 +226,8 @@ class ReferenceTrade:
         Preconditions: none beyond typing.
         Postconditions: raises ``ValueError`` when any of the following does
         not hold, otherwise the instance is structurally valid:
-        ``trade_num >= 1``; ``entry_bar >= 0``; ``entry_bar < exit_bar``
+        ``trade_num >= 1``; ``symbol``/``entry_date``/``exit_date`` are
+        non-empty strings; ``entry_bar >= 0``; ``entry_bar < exit_bar``
         (strict — no modeled exit kind can complete on ``entry_bar`` itself);
         ``entry_rule_index >= 0`` and ``exit_rule_index >= 0``; ``qty > 0``;
         ``entry_price``/``exit_price`` are positive finite numbers; ``side``
@@ -232,6 +238,12 @@ class ReferenceTrade:
         """
         if self.trade_num < 1:
             raise ValueError(f"trade_num must be >= 1, got {self.trade_num!r}")
+        if not self.symbol:
+            raise ValueError(f"symbol must be a non-empty string, got {self.symbol!r}")
+        if not self.entry_date:
+            raise ValueError(f"entry_date must be a non-empty string, got {self.entry_date!r}")
+        if not self.exit_date:
+            raise ValueError(f"exit_date must be a non-empty string, got {self.exit_date!r}")
         if self.entry_bar < 0:
             raise ValueError(f"entry_bar must be >= 0, got {self.entry_bar!r}")
         if self.exit_bar <= self.entry_bar:
@@ -575,6 +587,13 @@ def _process_exit_bar(
             tp_candidate is None or stop_candidate[0] < tp_candidate.exit_rule_index
         )
         if stop_wins:
+            # stop_wins implies _finalize_exit_price succeeded above (the
+            # only way stop_candidate survives to here is stop_price having
+            # been set), but a type checker cannot narrow Optional[float] to
+            # float across that reassignment — asserted explicitly rather
+            # than left implicit, matching this module's Design-by-Contract
+            # style.
+            assert stop_price is not None
             idx, _ = stop_candidate
             return _finish_trade(pos, i, bar, stop_price, "stop_loss", idx, None)
         elif tp_candidate is not None:

@@ -660,24 +660,46 @@ def _stop_book(pct=0.05, side="long", anchor=100.0, style="market", **rule_kwarg
 
 def test_step_equals_peek_then_advance():
     """Two freshly constructed, identical books: one driven by ``step``, the
-    other by ``peek`` then ``advance`` — both must land in the same state."""
-    bar = _bar(99.0, 99.0, 94.0, 96.0)  # breaches the 5% (100 -> 95) level
-    via_step = _stop_book()
-    via_split = _stop_book()
+    other by ``peek`` then ``advance`` — both must land in the same state.
+
+    Uses a TRAILING basis and checks a SECOND, later bar, not just the first
+    bar's return value: with the default entry-price basis the level is a
+    fixed constant that never reads the watermark, so ``via_split.advance``
+    silently failing to ratchet it would be invisible to any comparison of
+    return values alone. Here bar 1 raises the high-water mark from 100 to
+    110 without itself triggering; bar 2's own trigger then genuinely depends
+    on whether that ratchet actually happened (level 104.5 if it did, 95 if
+    ``advance`` were a no-op) -- a real discriminator, not just a structural
+    "both books agree" check."""
+    bar = _bar(101.0, 110.0, 100.0, 105.0)  # raises the watermark to 110; level=95, doesn't trigger
+    via_step = _stop_book(basis="trailing_high")
+    via_split = _stop_book(basis="trailing_high")
 
     step_result = via_step.step(bar)
     peek_result = via_split.peek(bar)
     via_split.advance(bar)
 
-    assert step_result == peek_result == (0, 95.0)
+    assert step_result == peek_result is None
+
+    next_bar = _bar(102.0, 103.0, 100.0, 101.0)  # level=110*0.95=104.5; low=100 breaches it
+    assert via_step.step(next_bar) == via_split.peek(next_bar) == (0, 102.0)
+    via_split.advance(next_bar)
 
 
 def test_peek_alone_does_not_ratchet_the_watermark():
     """Calling ``peek`` twice for the same bar, with no ``advance`` in
     between, must return the same result both times — the watermark check
-    inside ``peek`` reads state ``advance`` alone is responsible for moving."""
-    book = _stop_book(side="short", pct=0.05, anchor=100.0)  # entry_price basis
-    bar = _bar(101.0, 106.0, 99.0, 105.0)  # short stop at 105, touched by this bar's high
+    inside ``peek`` reads state ``advance`` alone is responsible for moving.
+
+    Uses a TRAILING basis deliberately, not the default entry-price one: an
+    entry-price level is a fixed constant that never reads the watermark at
+    all, so it can't tell a correct peek from one that secretly calls
+    ``advance``'s ratchet as a side effect. With a trailing basis, a peek
+    that wrongly ratchets after computing its own result would leave the
+    SECOND call reading a moved watermark (100 -> 99) and returning
+    ``(0, 103.95)`` instead of repeating ``(0, 105.0)``."""
+    book = _stop_book(side="short", pct=0.05, anchor=100.0, basis="trailing_low")
+    bar = _bar(101.0, 106.0, 99.0, 105.0)  # short stop at 100*1.05=105, touched by this bar's high
     first = book.peek(bar)
     second = book.peek(bar)
     assert first == second == (0, 105.0)
@@ -1523,6 +1545,12 @@ def test_peek_alone_does_not_apply_the_candidate():
 
 
 def test_commit_advances_remaining_qty_and_the_ladder_cursor():
+    """Both effects the name claims are asserted directly: remaining_qty
+    drops, AND the ladder's cursor moves past the fired rung -- proven by
+    peeking the SAME bar again and getting nothing, since this ladder's
+    single rung is the only candidate that bar could ever produce. Without
+    the cursor advance, that second peek would re-emit the already-fired
+    rung instead."""
     ladder = ScaledTakeProfitRule(levels=[TakeProfitLevel(pct=0.05, qty_fraction=0.5)])
     family = RestingTakeProfitFamily(side="long", symbol="AAA", anchor=100.0, rules=[ladder])
     bar = _bar(101.0, 106.0, 100.0, 105.0)
@@ -1532,6 +1560,7 @@ def test_commit_advances_remaining_qty_and_the_ladder_cursor():
 
     assert fired is None  # only half the position closed -- rung fired, not the position
     assert family.remaining_qty == 0.5
+    assert family.peek(bar) is None  # the rung is consumed; the cursor moved past it
 
 
 def test_remaining_qty_starts_at_the_nominal_original_quantity():
