@@ -4,8 +4,8 @@
   severity: critical
   polarity: must_find
   file_path: strands_research_agent/strands_integration.py
-  line: 17
-  line_end: 19
+  line: 22
+  line_end: 24
   description: >
     `create_research_agent` takes an `llm_client` argument and then
     immediately reassigns it to a hard-coded local Ollama client, so the

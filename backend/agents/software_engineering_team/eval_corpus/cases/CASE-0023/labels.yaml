@@ -4,8 +4,8 @@
   severity: critical
   polarity: must_find
   file_path: backend/unified_api/routes/integrations.py
-  line: 613
-  line_end: 616
+  line: 647
+  line_end: 650
   description: >
     Signature verification on the events endpoint runs only when a signing
     secret happens to be configured. With the secret unset the request is
@@ -18,8 +18,8 @@
   severity: critical
   polarity: must_find
   file_path: backend/unified_api/routes/integrations.py
-  line: 761
-  line_end: 762
+  line: 838
+  line_end: 839
   description: >
     The slash-command endpoint short-circuits the same way: with an empty
     signing secret the `and` never reaches the verification call and the
@@ -31,8 +31,8 @@
   severity: critical
   polarity: must_find
   file_path: backend/unified_api/routes/integrations.py
-  line: 790
-  line_end: 791
+  line: 881
+  line_end: 882
   description: >
     The interactive-payload endpoint repeats the same short-circuit, accepting
     unsigned payloads whenever the signing secret is unset.

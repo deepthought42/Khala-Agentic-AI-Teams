@@ -4,8 +4,8 @@
   severity: high
   polarity: must_find
   file_path: backend/agents/agent_provisioning_team/shared/environment_store.py
-  line: 365
-  line_end: 368
+  line: 369
+  line_end: 372
   description: >
     Every sibling method validates `agent_id` as a safe path component before
     using it. This one reads the value back out of stored JSON records and

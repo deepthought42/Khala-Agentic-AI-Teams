@@ -1,8 +1,7 @@
 diff --git a/backend/agents/software_engineering_team/linting_tool_agent/agent.py b/backend/agents/software_engineering_team/linting_tool_agent/agent.py
-index a69f1a4f..00c45b33 100644
 --- a/backend/agents/software_engineering_team/linting_tool_agent/agent.py
 +++ b/backend/agents/software_engineering_team/linting_tool_agent/agent.py
-@@ -114,10 +114,7 @@ class LintingToolAgent:
+@@ -114,10 +114,7 @@
                  continue
              if len(seen_files) >= MAX_AFFECTED_FILES:
                  break

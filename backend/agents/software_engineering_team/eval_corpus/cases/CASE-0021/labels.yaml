@@ -4,8 +4,8 @@
   severity: critical
   polarity: must_find
   file_path: user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts
-  line: 780
-  line_end: 780
+  line: 797
+  line_end: 797
   description: >
     Every other dynamic value in this SVG builder is wrapped in `escSvg()`;
     the trigger description is not. The result is rendered through

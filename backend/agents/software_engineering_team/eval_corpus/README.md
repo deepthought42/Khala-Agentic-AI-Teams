@@ -50,8 +50,16 @@ origin:
 ```
 
 For a real-sourced case, `diff.patch` is the **inverse** of that fix commit,
-reduced to its production files — the diff that introduces the defect rather
-than the one that removed it. Line numbers in the labels are the defect's
+reduced to exactly the change blocks its labels point at — the diff that
+introduces the labeled defect and nothing else.
+
+That reduction is not cosmetic. A fix commit usually repairs several things at
+once, and the matching rule assigns one finding per label and counts the rest
+against precision. A fixture carrying the whole reversed commit would therefore
+penalise a gate for correctly reporting a real defect the case never labeled.
+Each patch is rebuilt mechanically as a diff from the fixed file to the fixed
+file with only the labeled blocks reverted, and every label re-anchored in the
+result, so no fixture contains an unlabeled defect. Line numbers in the labels are the defect's
 position in the post-diff file, which for these cases is the state of the file
 at the fix commit's parent. Real cases are pinned to their origin commit and
 are not synchronized with a moving `main`.
@@ -213,6 +221,13 @@ here:
   These cases use true repository paths, so recall for those two gates will
   read pessimistically. That is a real property of the gates' output shape,
   not an artifact to be tuned away by shortening paths.
+- **`CASE-0033` is the one fixture that still carries more than its labeled
+  defect.** Its label is file-wide, because the defect *is* file-wide — a
+  component that opens twelve subscriptions and implements no teardown. There is
+  no single block to reduce it to, and a gate that reports each subscription
+  separately will produce findings the one-per-label rule leaves unmatched. The
+  case is honest about a systemic omission; its precision contribution is not
+  meaningful and should be read that way.
 - Fifteen cases are invented rather than drawn from history — a structurally
   weaker grade of evidence. Each states in its `origin.note` why no real
   example was available.

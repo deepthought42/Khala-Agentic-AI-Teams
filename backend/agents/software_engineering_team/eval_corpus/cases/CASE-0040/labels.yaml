@@ -4,8 +4,8 @@
   severity: medium
   polarity: must_find
   file_path: backend/agents/investment_team/api/main.py
-  line: 5069
-  line_end: 5071
+  line: 5083
+  line_end: 5085
   description: >
     Every exception from the dispatch call is reported to the client as a 503
     naming one specific cause. A programming error in the same block is

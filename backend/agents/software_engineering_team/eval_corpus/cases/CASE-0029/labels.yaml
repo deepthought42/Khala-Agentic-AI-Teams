@@ -4,8 +4,8 @@
   severity: high
   polarity: must_find
   file_path: backend/agents/investment_team/api/main.py
-  line: 1418
-  line_end: 1420
+  line: 1450
+  line_end: 1452
   description: >
     The cancellation check and the status write are two separate operations. A
     cancel landing between them is silently overwritten, leaving a cancelled

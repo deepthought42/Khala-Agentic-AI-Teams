@@ -1,8 +1,7 @@
 diff --git a/backend/agents/investment_team/api/main.py b/backend/agents/investment_team/api/main.py
-index d3e95956..0fde0268 100644
 --- a/backend/agents/investment_team/api/main.py
 +++ b/backend/agents/investment_team/api/main.py
-@@ -3775,7 +3775,6 @@ def _run_paper_trading_background(
+@@ -3775,7 +3775,6 @@
              if raw is not None:
                  session = PaperTradingSession.parse_persisted(raw)
                  session.status = PaperTradingStatus.FAILED

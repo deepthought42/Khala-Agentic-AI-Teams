@@ -1,8 +1,7 @@
 diff --git a/backend/agents/investment_team/strategy_lab/run_state.py b/backend/agents/investment_team/strategy_lab/run_state.py
-index 17d7f976..8006fc2c 100644
 --- a/backend/agents/investment_team/strategy_lab/run_state.py
 +++ b/backend/agents/investment_team/strategy_lab/run_state.py
-@@ -106,34 +106,14 @@ def normalize_persisted_job(
+@@ -106,34 +106,14 @@
  
  
  def load_run_from_job_service(run_id: str) -> Optional[Dict[str, Any]]:
@@ -44,47 +43,4 @@ index 17d7f976..8006fc2c 100644
 +        pass
      return None
  
- 
-@@ -150,13 +130,6 @@ def get_run_state(run_id: str) -> Optional[Dict[str, Any]]:
-         - Returns the in-memory state when present, otherwise the persisted state
-           from the job store, or ``None`` when neither exists. Does not mutate
-           ``active_runs``.
--
--    Raises:
--        - Whatever ``load_run_from_job_service`` raises when ``run_id`` is
--          absent from ``active_runs`` and the job-service lookup itself fails
--          (as opposed to genuinely finding no record) — see its docstring.
--          Not caught here so callers can fail closed rather than silently
--          treating a job-service outage as "no state."
-     """
-     with lock:
-         state = active_runs.get(run_id)
-@@ -182,12 +155,6 @@ def rehydrate_active_run_offset(run_id: str) -> int:
-         - Returns the number of contiguous completed cycles to pass as
-           ``start_cycle_offset`` (``0`` for a fresh or restarted run, or when no
-           durable state is found).
--
--    Raises:
--        - Whatever ``get_run_state`` raises when the job-service lookup
--          itself fails (as opposed to genuinely finding no record) — not
--          caught here, so a resume dispatched during a job-service outage
--          fails closed instead of silently restarting from offset 0.
-     """
-     state = get_run_state(run_id)
-     if state is not None:
-@@ -225,13 +192,8 @@ def get_resume_seed_counters(run_id: str) -> Dict[str, Any]:
-           (``update_job`` replaces the field's value wholesale, it does not
-           append). Read from ``get_run_state(run_id)``. A fresh/unknown run
-           (no persisted state) or a missing/malformed individual field
--          defaults to ``0``/``0``/``[]``/``0``/``[]`` respectively.
--
--    Raises:
--        - Whatever ``get_run_state`` raises when the job-service lookup
--          itself fails (as opposed to genuinely finding no record) — not
--          caught here, so a resume dispatched during a job-service outage
--          fails closed instead of silently seeding zero/empty counters.
-+          defaults to ``0``/``0``/``[]``/``0``/``[]`` respectively. Never
-+          raises.
-     """
-     state = get_run_state(run_id) or {}
  

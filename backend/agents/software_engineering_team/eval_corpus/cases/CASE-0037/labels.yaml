@@ -4,8 +4,8 @@
   severity: critical
   polarity: must_find
   file_path: backend/agents/agent_provisioning_team/shared/credential_store.py
-  line: 312
-  line_end: 312
+  line: 316
+  line_end: 316
   description: >
     `agent_id` reaches this method straight from an HTTP request and is
     interpolated into a filename with no validation, so a traversal sequence
