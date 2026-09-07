@@ -406,16 +406,23 @@ _CANONICAL_MODULE = Path(tp.__file__).resolve()
 _BLOGGING_ROOT = _CANONICAL_MODULE.parent.parent
 
 
-def _is_pure_delegation(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the body is an optional docstring plus a single ``return``.
+def _delegates_to_canonical(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the body is an optional docstring plus ``return <canonical>(...)``.
 
     Preconditions:
-        - ``node`` is a function definition node from a successfully parsed module.
+        - ``node`` is a function definition node from a successfully parsed
+          module, whose name is one of ``_GUARDED_NAMES``.
     Postconditions:
-        - Returns True only for a body that, once a leading docstring (or any
+        - Returns True only when the body, once a leading docstring (or any
           bare-constant expression statement) is discarded, is exactly one
-          ``Return`` statement. Returns False for every other shape, including
-          an empty body and a ``return`` preceded by any other statement.
+          ``Return`` whose value calls the shared helper this definition
+          shadows — ``helper(...)`` or ``module.helper(...)``, where ``helper``
+          is ``node.name`` with one leading underscore stripped.
+        - Returns False for every other shape: an empty body, a ``return`` of a
+          literal or bare name (``return []``, ``return exc``), and a ``return``
+          calling anything other than the canonical helper. Counting statements
+          alone is not enough — a one-line re-implementation is still a second
+          implementation, and would otherwise pass as a shim.
         - Does not evaluate or import the source it inspects.
     """
     body = [
@@ -423,7 +430,18 @@ def _is_pure_delegation(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         for stmt in node.body
         if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
     ]
-    return len(body) == 1 and isinstance(body[0], ast.Return)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return False
+    call = body[0].value
+    if not isinstance(call, ast.Call):
+        return False
+    if isinstance(call.func, ast.Name):
+        called = call.func.id
+    elif isinstance(call.func, ast.Attribute):
+        called = call.func.attr
+    else:
+        return False
+    return called == node.name.removeprefix("_")
 
 
 def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> None:
@@ -434,12 +452,14 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
     gone does not prove a fifth copy cannot appear and drift again — this does.
 
     Definitions are classified by *shape*, not by an allowlist of paths: a real
-    body must live in ``shared/text_parsing.py``, while a pure delegation (a
-    single ``return``) is allowed anywhere. That is what lets
-    ``BlogWriterAgent._format_feedback_item_line`` — deliberately kept as a
-    one-line shim so existing monkeypatch-based tests keep working — pass with
-    no exemption, and what lets a future shim of the same shape be added
-    without editing this test.
+    body must live in ``shared/text_parsing.py``, while a body that does
+    nothing but ``return`` a call to the canonical helper is allowed anywhere.
+    That is what lets ``BlogWriterAgent._format_feedback_item_line`` —
+    deliberately kept as a one-line shim so existing monkeypatch-based tests
+    keep working — pass with no exemption, and what lets a future shim of the
+    same shape be added without editing this test. Requiring the *call*, not
+    merely a single statement, is what stops a one-line re-implementation
+    (``return []``) from being waved through as a delegation.
 
     ``shared/json_retry.py``'s ``_unwrap_event_loop_exception`` is not matched
     (different name) and is out of scope: it returns ``None`` where
@@ -457,7 +477,7 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if node.name in _GUARDED_NAMES and not _is_pure_delegation(node):
+            if node.name in _GUARDED_NAMES and not _delegates_to_canonical(node):
                 offenders.append(
                     f"{path.relative_to(_BLOGGING_ROOT)}:{node.lineno} defines {node.name}"
                 )
@@ -467,7 +487,7 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
         + "\n  ".join(offenders)
         + "\n\nA second real body is how the nested-array salvage bug survived: a fix landed "
         "in one copy and not the others. Import the helper from "
-        "agents.blogging.shared.text_parsing instead, or — if a named attribute is needed as "
-        "a test patch point — make the definition a one-line delegation (a single `return`), "
-        "which this guard allows anywhere."
+        "agents.blogging.shared.text_parsing instead, or — if a named attribute is needed "
+        "as a test patch point — reduce the definition to a body that does nothing but "
+        "`return` a call to that helper, which this guard allows anywhere."
     )
