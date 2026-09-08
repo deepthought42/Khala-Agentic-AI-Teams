@@ -1,5 +1,5 @@
 case_id: CASE-0016
-title: Review-gated execution loop hand-inlined in each team orchestrator
+title: Inherited execution-phase helper reimplemented inline in the subclass
 language: python
 stack: fastapi
 gates: [code_review]

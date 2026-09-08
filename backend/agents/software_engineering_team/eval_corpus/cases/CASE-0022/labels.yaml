@@ -4,8 +4,8 @@
   severity: medium
   polarity: must_find
   file_path: app/api/routes/account.py
-  line: 33
-  line_end: 37
+  line: 36
+  line_end: 40
   description: >
     The session cookie above is issued `SameSite=None`, so a browser sends it
     on a cross-site POST. This endpoint mutates account state, authenticates

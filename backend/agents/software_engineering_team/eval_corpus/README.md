@@ -54,22 +54,19 @@ origin:
 
 What is specific to this corpus, rather than to the format:
 
-- **Four cases depart from the source the selection plan named**, and each
-  records why in its `note`. They split two ways. `CASE-0012` is still
-  real-sourced: only its origin commit changed, so the `note` sits on a
-  `sourcing: real` case. `CASE-0015`, `CASE-0020` and `CASE-0032` could not be
-  sourced from history at all — the planned commit does not invert to the
-  defect, or the defect it shows is contestable — so each is `sourcing:
-  invented` and its `note` records the commit it was modelled on. All four are
+- **Five cases depart from the source the selection plan named**, and each
+  records why in its `note`. They split two ways. `CASE-0012` and `CASE-0029`
+  are still real-sourced: only their origin commit changed, so the `note` sits
+  on a `sourcing: real` case. `CASE-0015`, `CASE-0020` and `CASE-0032` could
+  not be sourced from history at all — the planned commit does not invert to
+  the defect, or the defect it shows is contestable — so each is `sourcing:
+  invented` and its `note` records the commit it was modelled on. All five are
   listed under *Substitutions from the selection plan* below.
-- **Two cases keep the whole inverse** rather than a reduced subset, because
-  their defect has no coherent one. `CASE-0033`'s label is file-wide — a
-  component with twelve subscriptions and no teardown. `CASE-0029` replaced an
-  atomic compare-and-set with a check-then-write at four sites in one function,
-  with the import and docstring moving together, so reverting a subset leaves
-  the fixture calling a name the remaining sites need. Each is one design defect
-  repeated, which a gate reports once, so each keeps a single label; their
-  precision contribution is not meaningful and should be read that way.
+- **One case keeps the whole inverse** rather than a reduced subset, because
+  its defect has no coherent one. `CASE-0033`'s label is file-wide — a
+  component with twelve subscriptions and no teardown, which is one design
+  defect repeated, so it keeps a single label; its precision contribution is
+  not meaningful and should be read that way.
 - **One case reduces to a single line** rather than a whole block. `CASE-0035`'s
   block reverts four sibling constructor arguments to the same unsafe pattern,
   and labelling all four would score a gate that reports the pattern once — the
@@ -148,7 +145,7 @@ written to prevent.
 
 ### Substitutions from the selection plan
 
-Four of the plan's cited commits did not survive contact with their actual
+Five of the plan's cited commits did not survive contact with their actual
 diffs. Every substitution is recorded here rather than forced.
 
 - **`standards` (frontend), `CASE-0012`.** The plan cites `1308c1d` for a
@@ -180,6 +177,15 @@ diffs. Every substitution is recorded here rather than forced.
   boundary-clean and does not invert to the defect. `CASE-0015` is authored as
   an invented case modelled on the boundary `ae3ccf70` documents, and is
   marked `sourcing: invented` with that reason.
+- **`race-condition`, `CASE-0029`.** The plan cites `cb8aded` for a TOCTOU
+  between a cancellation check and a terminal status write. That commit's fix
+  replaces one atomic helper with a compare-and-set used at four call sites in
+  a single function and deletes a status sentinel that unchanged callers
+  elsewhere still import, so no subset of it reduces to one coherent defect and
+  the whole inverse leaves the fixture unimportable. The plan's own backup
+  commit `0523b9c` fixes the same race in the same function with a single
+  guard, and `CASE-0029` is sourced from it; the case stays `sourcing: real`
+  with the substitution recorded in its `note`.
 
 No path was genericized for sensitivity: real-sourced cases use their true
 repository-relative paths throughout, and no fixture embeds a credential,
@@ -203,7 +209,7 @@ not a secret.
 | CASE-0013 | Factory overwrites its own injected llm_client | `integration` | code_review | real | e325ad8 | backend |
 | CASE-0014 | Teardown success spec passes without exercising the subscribe path | `testing` | code_review | real | 0175839 | frontend |
 | CASE-0015 | Team-agnostic platform test imports a domain team package | `architecture` | code_review | invented | — | backend |
-| CASE-0016 | Review-gated execution loop hand-inlined in each team orchestrator | `refactor` | code_review | real | 51810fd5 | backend |
+| CASE-0016 | Inherited execution-phase helper reimplemented inline in the subclass | `refactor` | code_review | real | 51810fd5 | backend |
 | CASE-0017 | Dead empty-string default under a correct `or` fallback | `maintainability` | code_review | real | 66bc52d5 | backend |
 | CASE-0018 | Crash handler leaves the dedicated error field unset | `side-effects`, `inconsistent-state` | code_review, qa | real | c8cbbb7 | backend |
 | CASE-0019 | Docstring documents a precondition the function never enforces | `documentation` | code_review | real | c0db42b | backend |
@@ -216,7 +222,7 @@ not a secret.
 | CASE-0026 | Cached payload deserialized with pickle | `insecure-deserialization` | security | invented | — | backend |
 | CASE-0027 | User-configured URL fetched with no destination restriction | `ssrf` | security | invented | — | backend |
 | CASE-0028 | Progress counter can grow past the next phase's fixed value | `off-by-one` | qa | real | 70f16f7 | backend |
-| CASE-0029 | Cancellation check and status write are not atomic | `race-condition` | qa | real | cb8aded | backend |
+| CASE-0029 | Cancellation re-check missing before the terminal status write | `race-condition` | qa | real | 0523b9c | backend |
 | CASE-0030 | Lock released between session enumeration and write-back | `race-condition` | qa | real | f5eb3e9 | backend |
 | CASE-0031 | Read-then-delete is not atomic, so pop can return stale data | `race-condition` | qa | real | 56c2fcd | backend |
 | CASE-0032 | Window listener registered on init and never removed | `resource-leak` | qa | invented | — | frontend |
@@ -224,7 +230,7 @@ not a secret.
 | CASE-0034 | OHLC values coerced with float() without a null guard | `null-deref` | qa | real | c0e71da | backend |
 | CASE-0035 | Explicit null field stringified into the literal "None" | `null-deref` | qa | real | fd3b9a0 | backend |
 | CASE-0036 | Identifier from an external API truncated by JS number precision | `integer-overflow` | qa | invented | — | frontend |
-| CASE-0037 | Externally supplied agent id used directly as a path component | `unvalidated-input` | qa | real | 3a31cee | backend |
+| CASE-0037 | Credential store builds its file path from an unvalidated identifier | `unvalidated-input` | qa | real | 3a31cee | backend |
 | CASE-0038 | One store method skips the path validation its siblings apply | `unvalidated-input` | qa | real | 0436308 | backend |
 | CASE-0039 | Catch-all except returns None, erasing the difference from not-found | `missing-error-handling` | qa | real | 4f1b84e | backend |
 | CASE-0040 | Catch-all reported as a specific, unrelated failure | `missing-error-handling` | qa | real | 87a02c2 | backend |
@@ -252,17 +258,14 @@ here:
   These cases use true repository paths, so recall for those two gates will
   read pessimistically. That is a real property of the gates' output shape,
   not an artifact to be tuned away by shortening paths.
-- **Two fixtures carry the whole inverse commit rather than a reduced subset,
-  because their defect does not live in one block.** `CASE-0033`'s label is
+- **One fixture carries the whole inverse commit rather than a reduced subset,
+  because its defect does not live in one block.** `CASE-0033`'s label is
   file-wide, since the defect *is* file-wide — a component that opens twelve
-  subscriptions and implements no teardown. `CASE-0029` replaced an atomic
-  compare-and-set with a check-then-write at four call sites in one function,
-  and the import, the docstring and every site move together; reverting a
-  subset leaves the fixture calling a name the remaining sites still need.
-  Both are one design defect repeated, which a gate reports once, so each
-  keeps a single label — but a gate that reports each site separately will
-  produce findings the one-per-label rule leaves unmatched. Their precision
-  contribution is not meaningful and should be read that way.
+  subscriptions and implements no teardown. That is one design defect
+  repeated, which a gate reports once, so it keeps a single label — but a gate
+  that reports each subscription separately will produce findings the
+  one-per-label rule leaves unmatched. Its precision contribution is not
+  meaningful and should be read that way.
 - Fifteen cases are invented rather than drawn from history — a structurally
   weaker grade of evidence. Each states in its `origin.note` why no real
   example was available.

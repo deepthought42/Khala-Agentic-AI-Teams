@@ -1,5 +1,5 @@
 case_id: CASE-0037
-title: Externally supplied agent id used directly as a path component
+title: Credential store builds its file path from an unvalidated identifier
 language: python
 stack: fastapi
 gates: [qa]

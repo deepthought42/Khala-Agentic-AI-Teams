@@ -1,7 +1,15 @@
 diff --git a/backend/agents/job_matching_team/agents/ranker.py b/backend/agents/job_matching_team/agents/ranker.py
 --- a/backend/agents/job_matching_team/agents/ranker.py
 +++ b/backend/agents/job_matching_team/agents/ranker.py
-@@ -132,7 +132,7 @@
+@@ -3,7 +3,6 @@
+ from __future__ import annotations
+ 
+ import logging
+-import re
+ from typing import List, Optional
+ 
+ from llm_service import complete_json_via_reasoning
+@@ -132,7 +131,7 @@
          reasons: List[str] = []
          company_l = posting.company.lower()
          for excluded in profile.excluded_companies:
