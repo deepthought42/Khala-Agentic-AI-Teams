@@ -53,10 +53,9 @@ def run_draft_stage(
     Preconditions:
         - The planning stage populated ``ctx.plan``/``ctx.planning_phase_result``/
           ``ctx.elicited_stories_text``/``ctx.selected_title`` (the last is
-          ``None`` when planning skipped title selection, e.g. no job store, or
-          — in Temporal mode today — because it does not yet cross the activity
-          boundary; see ``PipelineContext``'s invariants). At ``None`` the writer
-          is free to choose its own title.
+          ``None`` when planning skipped title selection, e.g. no job store; see
+          ``PipelineContext``'s invariants). At ``None`` the writer is free to
+          choose its own title.
         - ``ctx.covered_sections`` is the set of plan section titles that already
           received an author story during planning, or ``None``. This stage sorts it
           into the list the writer takes and threads it into every writer call that
@@ -67,10 +66,11 @@ def run_draft_stage(
           round that omitted it would drop the suppression block and could reintroduce
           an ``[Author: ...]`` placeholder for a section whose story is sitting in the
           same prompt. Empty or ``None`` is the documented no-op: the writer's prompts
-          are then exactly what they were before the field existed. It is ``None`` in Temporal mode today —
-          ``PlanningStageResult`` does not carry it and neither
+          are then exactly what they were before the field existed. It is ``None`` in
+          Temporal mode today — ``PlanningStageResult`` does not carry it and neither
           ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so
-          suppression is thread-mode-only until that plumbing lands.
+          suppression is thread-mode-only until that plumbing lands, unlike
+          ``selected_title`` above, whose own plumbing has since landed.
         - The human-in-the-loop steps (story-placeholder filling and the interactive
           draft-review loop with uncertainty questions / author feedback / guideline
           updates) require a job store: they run only when BOTH ``ctx.job_id`` and

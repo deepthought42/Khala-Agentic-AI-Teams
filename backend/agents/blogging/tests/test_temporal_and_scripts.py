@@ -405,6 +405,7 @@ def _fake_ctx(tmp_path):
         planning_phase_result=None,
         plan=None,
         elicited_stories_text=None,
+        selected_title=None,
         draft_result=None,
         status="PASS",
     )
@@ -439,6 +440,7 @@ def test_plan_stage_activity_returns_planning_dto(monkeypatch, tmp_path) -> None
     def fake_planning(c):
         c.planning_phase_result = _Dumpable({"content_plan": {"x": 1}})
         c.elicited_stories_text = "story"
+        c.selected_title = "Chosen Title"
         return None
 
     monkeypatch.setattr(_blog_writing_process_v2_module(), "run_planning_stage", fake_planning)
@@ -447,6 +449,7 @@ def test_plan_stage_activity_returns_planning_dto(monkeypatch, tmp_path) -> None
     assert out["status"] == "PASS"
     assert out["planning_phase_result"] == {"content_plan": {"x": 1}}
     assert out["elicited_stories_text"] == "story"
+    assert out["selected_title"] == "Chosen Title"
 
 
 def test_plan_stage_activity_abort_returns_fail(monkeypatch, tmp_path) -> None:
@@ -531,11 +534,17 @@ def test_draft_stage_activity_returns_draft_dto(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(_blog_writing_process_v2_module(), "run_draft_stage", fake_draft)
 
-    planning = {"planning_phase_result": {"content_plan": {}}, "status": "PASS"}
+    planning = {
+        "planning_phase_result": {"content_plan": {}},
+        "selected_title": "Chosen Title",
+        "status": "PASS",
+    }
     out = acts.draft_stage_activity("j1", {"brief": "x"}, planning)
     assert out["status"] == "PASS"
     assert out["draft"] == {"draft": "hello"}
     assert out["elicited_stories_text"] == "s2"
+    # Re-seeded from the planning DTO, exactly as elicited_stories_text is.
+    assert ctx.selected_title == "Chosen Title"
 
 
 def test_gates_stage_activity_returns_gates_dto(monkeypatch, tmp_path) -> None:
@@ -557,11 +566,52 @@ def test_gates_stage_activity_returns_gates_dto(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(_blog_writing_process_v2_module(), "run_gates_stage", fake_gates)
 
-    planning = {"planning_phase_result": {"content_plan": {}}}
-    draft = {"draft": {"draft": "d"}, "status": "PASS"}
+    planning = {"planning_phase_result": {"content_plan": {}}, "selected_title": "From Planning"}
+    # A stray title on the draft DTO must be ignored: the title is chosen once in
+    # planning, so DraftStageResult deliberately does not carry it.
+    draft = {"draft": {"draft": "d"}, "selected_title": "From Draft", "status": "PASS"}
     out = acts.gates_stage_activity("j1", {"brief": "x"}, planning, draft)
     assert out["status"] == "NEEDS_HUMAN_REVIEW"
     assert out["draft"] == {"draft": "final"}
+    assert ctx.selected_title == "From Planning"
+
+
+def test_stage_activities_tolerate_planning_dto_without_selected_title(
+    monkeypatch, tmp_path
+) -> None:
+    """A planning DTO from a history predating selected_title still deserializes.
+
+    Both downstream activities read the field with ``.get``, so an in-flight
+    workflow whose planning result carries no such key rebuilds its context with
+    the ``None`` default rather than raising ``KeyError``.
+    """
+    import importlib
+
+    acts, ctx = _patch_context(monkeypatch, tmp_path)
+    cp = importlib.import_module("agents.blogging.shared.content_plan")
+    wm = importlib.import_module("agents.blogging.blog_writer_agent.models")
+    monkeypatch.setattr(
+        cp.PlanningPhaseResult, "model_validate", classmethod(lambda cls, d: _Dumpable(d))
+    )
+    monkeypatch.setattr(wm.WriterOutput, "model_validate", classmethod(lambda cls, d: _Dumpable(d)))
+
+    def fake_stage(c):
+        c.draft_result = _Dumpable({})
+        return None
+
+    v2 = _blog_writing_process_v2_module()
+    monkeypatch.setattr(v2, "run_draft_stage", fake_stage)
+    monkeypatch.setattr(v2, "run_gates_stage", fake_stage)
+
+    legacy_planning = {"planning_phase_result": {"content_plan": {}}, "status": "PASS"}
+
+    ctx.selected_title = "stale"
+    acts.draft_stage_activity("j1", {"brief": "x"}, legacy_planning)
+    assert ctx.selected_title is None
+
+    ctx.selected_title = "stale"
+    acts.gates_stage_activity("j1", {"brief": "x"}, legacy_planning, {"draft": {"draft": "d"}})
+    assert ctx.selected_title is None
 
 
 def test_finalize_job_activity_delegates(monkeypatch, tmp_path) -> None:
