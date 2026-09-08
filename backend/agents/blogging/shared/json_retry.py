@@ -33,13 +33,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, U
 from strands import Agent
 from strands.types.exceptions import EventLoopException
 
-from llm_service import (
-    LLMJsonParseError,
-    LLMRateLimitError,
-    LLMTemporaryError,
-    SystemContentSegment,
-)
+from llm_service import LLMJsonParseError, LLMRateLimitError, LLMTemporaryError
 from llm_service.util import extract_json_from_response
+
+from .system_prompt_assembly import SystemContentSegment
 
 AgentInvoker = Callable[[str], Any]
 """A callable that runs a single LLM turn, e.g. a ``strands.Agent`` instance: ``agent(prompt) -> result``."""
