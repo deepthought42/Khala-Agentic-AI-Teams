@@ -7,8 +7,12 @@ are covered: ``StopLossRule`` across all four variants (``entry_price`` /
 trailing bases x ``market`` / ``limit`` styles), the take-profit family —
 standalone ``TakeProfitRule`` and laddered ``ScaledTakeProfitRule`` — and
 ``SignalExitRule``. The combined simulator that lets every kind compete on the
-same bar is a later step; each kind is still replayed here as if the others'
-rules did not exist.
+same bar lives in the sibling :mod:`reference_simulator` module, which drives
+the ``peek``/``commit``/``advance`` split on :class:`RestingStopLoss` and
+:class:`RestingTakeProfitFamily` below directly; the whole-spec ``replay_*``
+functions in THIS module still model each kind as if the others' rules did not
+exist, one per-kind resolver at a time, and remain in place for their own
+per-kind test coverage and for a caller that only needs one kind in isolation.
 
 Three of the four are RESTING-ORDER kinds; ``SignalExitRule`` is not
 ------------------------------------------------------------------
@@ -30,7 +34,7 @@ Reuse mandate. A ``PositionState`` whose ``high_since_entry``/
 ``low_since_entry`` are held FIXED at the post-slippage anchor (never
 extended bar-over-bar) makes that shared evaluator's watermark-based
 ladder-rung test provably equivalent to a current-bar-only test for these
-fixed targets — see :class:`_RestingTakeProfitFamily`'s docstring for the
+fixed targets — see :class:`RestingTakeProfitFamily`'s docstring for the
 proof — so reusing it does not reintroduce the fabricated-fill risk a naive
 pass-through of the live evaluator's own extended watermark would. What this
 module adds — and what the shared evaluator does not cover — is resting-order
@@ -59,33 +63,41 @@ transitively — ``trading_service/service.py`` or
 The fill semantics those modules implement are mirrored at the semantic level,
 as new pure code.
 
-Scope limits deliberately left to later steps
----------------------------------------------
+Scope limits of THIS module's own whole-spec ``replay_*`` functions
+--------------------------------------------------------------------
+(:mod:`reference_simulator`'s combined driver lifts every limit below by
+constructing :class:`RestingStopLoss`/:class:`RestingTakeProfitFamily` itself
+and interleaving them with its own signal-exit and entry-re-evaluation logic
+bar by bar — these limits describe only ``replay_stop_loss_exits``/
+``replay_take_profit_family_exits``/``replay_signal_exits`` and the
+``resolve_*`` functions they wrap, not the module's classes, which the
+combined driver drives directly.)
+
 * ``replay_entry_rules`` opens at most one position per symbol and never
-  re-enters, so this returns at most one exit per symbol. Re-entry after a
-  stop or take-profit closes a position needs the combined driver that
-  resolves exits before entries on each bar.
+  re-enters, so each ``replay_*`` function here returns at most one exit per
+  symbol.
 * No quantity/sizing, capital ledger, or risk-limit admission gates; no
   cross-symbol merged ``(timestamp, symbol)`` timeline; no competition between
   the two families this module DOES cover and the ones it does not
   (``StopLossRule`` vs. the take-profit family vs. ``SignalExitRule``) — each
-  of the three replays over the same spec is modeled as if the other kinds'
-  rules did not exist, so any of them may fire on a bar where the full
-  simulator would not have had a position left to close. In particular the
-  design doc's FIFO precedence rule — a resting order materialized at entry
-  beats a ``signal_exit`` close queued on the same bar — has no expression
-  here, because no single walk in this module ever sees both.
+  of the three ``replay_*`` functions here models the same spec as if the
+  other kinds' rules did not exist, so any of them may fire on a bar where a
+  combined simulator would not have had a position left to close. In
+  particular the design doc's FIFO precedence rule — a resting order
+  materialized at entry beats a ``signal_exit`` close queued on the same bar —
+  has no expression in any of these three functions, because no single walk
+  among them ever sees both.
 * The take-profit family models no true multi-bar entry continuation: this
   simulator's entries always fill instantaneously in one shot
   (:func:`~.reference_entries.replay_entry_rules`), so the live engine's
   ``entry_continuation_in_flight`` deferral is vacuously always satisfied
   here. Both it and the engine's per-rung ``scaled_partial_in_flight``
   deferral collapse to the same structural fact in this module: the bar walk
-  starts at ``entry_bar + 1`` and calls ``_RestingTakeProfitFamily.step``
+  starts at ``entry_bar + 1`` and calls ``RestingTakeProfitFamily.step``
   exactly once per bar, strictly in order, so no candidate — first or
   ladder-advanced — is ever examined before the bar after it can legally
   fire. No separate "eligible bar" state is needed to enforce that; see
-  ``_LadderCursor``'s and ``_RestingTakeProfitFamily``'s own docstrings.
+  ``_LadderCursor``'s and ``RestingTakeProfitFamily``'s own docstrings.
 * ``ReferenceStopLossExit``/``ReferenceTakeProfitExit``/``ReferenceSignalExit``
   are correspondingly narrower than the design doc's ``ReferenceTrade``,
   exactly as ``ReferenceEntryFill`` is on the entry side: their fields match
@@ -98,7 +110,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Literal, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    FrozenSet,
+    List,
+    Literal,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from ...models import StrategySpec
 from ..spec_dsl import (
@@ -221,7 +244,7 @@ class ReferenceTakeProfitExit:
 
     A single record type serves BOTH ``TakeProfitRule`` and
     ``ScaledTakeProfitRule`` closes, unlike the separate ``ReferenceStopLossExit``:
-    a combined resolver (see :class:`_RestingTakeProfitFamily`) races a spec's
+    a combined resolver (see :class:`RestingTakeProfitFamily`) races a spec's
     standalone targets and ladder rungs against each other bar by bar, so it
     must already return one unified outcome type — two record classes would
     just need an artificial union wrapping them for no benefit. Every field
@@ -369,16 +392,22 @@ class ReferenceSignalExit:
             raise ValueError(f"exit_rule_kind must be 'signal_exit', got {self.exit_rule_kind!r}")
 
 
-def _decimals_for(reference_price: float) -> int:
+def decimals_for(reference_price: float) -> int:
     """Production's price-rounding bucket: 4 decimals below $10, else 2.
 
-    Preconditions: ``reference_price`` is finite.
+    Preconditions: ``reference_price`` is finite — enforced, since this
+    module's other helpers now call this from outside this module too (the
+    combined simulator in ``reference_simulator.py``), so the precondition is
+    a cross-module contract this function must not leave to caller
+    discipline alone.
     Postconditions: returns ``4`` when ``reference_price < 10``, else ``2``.
     """
+    if not math.isfinite(reference_price):
+        raise ValueError(f"reference_price must be finite, got {reference_price!r}")
     return 4 if reference_price < 10 else 2
 
 
-def _round_price(price: float) -> float:
+def round_reference_price(price: float) -> float:
     """Round a reference price the way production rounds its bid fields.
 
     Production stores ``entry_bid_price``/``exit_bid_price`` rounded to 4
@@ -387,15 +416,19 @@ def _round_price(price: float) -> float:
     this would show every single trade as a spurious mismatch against
     production's own rounded field.
 
-    Preconditions: ``price`` is finite (callers apply the finite-and-positive
-    guard first).
+    Preconditions: ``price`` is a positive finite number — enforced, since
+    this is now a cross-module helper (called by ``reference_simulator.py``
+    as well as this module's own resolvers), not merely a private one whose
+    every caller is visible in this file.
     Postconditions: returns ``price`` rounded to the bucket ``price`` itself
     selects. Callers whose bucket is set by a DIFFERENT price than the one
     being rounded — the post-slippage anchor, whose bucket comes from the raw
     pre-slippage open — must not use this helper; see
     :func:`entry_price_basis`.
     """
-    return round(price, _decimals_for(price))
+    if not (price > 0 and math.isfinite(price)):
+        raise ValueError(f"price must be a positive finite number, got {price!r}")
+    return round(price, decimals_for(price))
 
 
 def entry_price_basis(
@@ -452,7 +485,7 @@ def entry_price_basis(
     # price it is about to slip) does. Deriving the bucket from the product
     # instead would round 9.99995 @ 2bps to 10.00 rather than 10.0019 — enough
     # to shift every level hanging off this anchor.
-    anchor = round(raw_open * multiplier, _decimals_for(raw_open))
+    anchor = round(raw_open * multiplier, decimals_for(raw_open))
     # A sub-bucket price rounds to zero even though it passed every guard
     # above. Returning it would be silent and expensive: every stop level hangs
     # off this anchor, so a zero anchor drives each of them to zero, the
@@ -464,7 +497,7 @@ def entry_price_basis(
         raise ValueError(
             f"post-slippage anchor rounded to a non-positive value ({anchor!r}); "
             f"raw_open={raw_open!r} is below the resolution of its price bucket "
-            f"({_decimals_for(raw_open)} decimals)"
+            f"({decimals_for(raw_open)} decimals)"
         )
     return anchor
 
@@ -579,7 +612,7 @@ def scaled_take_profit_rules(
     return [(idx, rule) for idx, rule in enumerate(rules) if isinstance(rule, ScaledTakeProfitRule)]
 
 
-class _RestingStopLoss:
+class RestingStopLoss:
     """One modeled resting stop order for one open position.
 
     Owns the two pieces of per-position state the shared, stateless
@@ -587,10 +620,14 @@ class _RestingStopLoss:
     watermark and the PER-RULE stop-limit arm/latch state (``_armed`` latches
     each limit-style rule's index independently, since ``_rules`` may hold
     several limit-style stops competing on one position). Kept as an object
-    rather than
-    loop locals because the later combined simulator must interleave this with
-    take-profit and signal-exit candidates bar by bar, asking each "would you
-    fill on this bar?" — which is exactly :meth:`step`.
+    rather than loop locals because the combined multi-kind simulator
+    (``reference_simulator.py``) interleaves this with take-profit and
+    signal-exit candidates bar by bar, asking each "would you fill on this
+    bar?" via :meth:`peek` before committing to a winner and ratcheting the
+    watermark via the separate :meth:`advance` — see both methods' own
+    docstrings for why the trigger check and the watermark ratchet are split.
+    :meth:`step` remains the single-book composition of the two for a caller
+    that does not need to interleave this book with a competing kind.
 
     Invariants:
       * ``_high_water >= entry_price_basis`` and ``_low_water <=
@@ -599,6 +636,11 @@ class _RestingStopLoss:
       * ``_armed`` is monotonic: once a limit-style stop's level is breached it
         never disarms, so a gap-through that left it unfilled still fills on a
         later bar whose range reaches the limit, without re-crossing the stop.
+      * ``_retired`` is monotonic between a :meth:`retire_limit_style_rules`/
+        :meth:`restore_limit_style_rules` pair: an index in ``_retired`` is
+        skipped before any candidate evaluation (no ``_armed`` side effect)
+        until :meth:`restore_limit_style_rules` removes it, at which point it
+        resumes with its ``_armed`` latch exactly as it was left.
     """
 
     def __init__(
@@ -630,6 +672,8 @@ class _RestingStopLoss:
         self._high_water = anchor
         self._low_water = anchor
         self._armed: Set[int] = set()
+        self._retired: Set[int] = set()
+        self._last_advanced_timestamp: Optional[str] = None
 
     def _position(self) -> PositionState:
         """Snapshot the position as the shared evaluator expects to see it.
@@ -707,7 +751,7 @@ class _RestingStopLoss:
         if rule.style == "limit":
             limit_price = stop_limit_prices(rule, position).limit_price
             if idx not in self._armed:
-                if not stop_loss_triggers(rule, position, _snapshot(bar)):
+                if not stop_loss_triggers(rule, position, bar_snapshot(bar)):
                     return None
                 self._armed.add(idx)
             # Armed (this bar or an earlier one): only the limit stage decides
@@ -716,9 +760,191 @@ class _RestingStopLoss:
                 return None
             # A stop-limit fills AT its limit, never gap-adjusted worse.
             return limit_price
-        if not stop_loss_triggers(rule, position, _snapshot(bar)):
+        if not stop_loss_triggers(rule, position, bar_snapshot(bar)):
             return None
         return self._market_fill_price(stop_loss_level(rule, position), bar)
+
+    def peek(
+        self, bar: "Bar", *, skip: FrozenSet[int] = frozenset()
+    ) -> Optional[Tuple[int, float]]:
+        """Resolve ``bar``'s winning stop candidate WITHOUT ratcheting the watermark.
+
+        The trigger-decision half of what a single :meth:`step` call used to do
+        atomically, split out so a caller racing this stop book against a
+        competing exit kind on the same bar (the combined multi-kind simulator
+        this module's docstring anticipates) can compare candidates before
+        either commits to a winner. The watermark ratchet is NOT part of this
+        method — it must still happen exactly once per bar regardless of which
+        kind (if any) wins the bar, which is why it lives in the separate
+        :meth:`advance` instead.
+
+        ``skip`` lets a caller that already tried this bar's winning index and
+        found it unusable for a reason THIS class cannot see itself — a raw
+        price that rounds (or blends with a foreign take-profit book) to <= 0,
+        which only :func:`~.reference_simulator._finalize_exit_price` can
+        determine — ask for the NEXT reachable candidate instead, without
+        this class needing any knowledge of that external rounding/blending
+        concern. Empty by default so every other caller is unaffected.
+
+        Preconditions: same as :meth:`step` — ``bar`` is strictly later than
+        the position's entry bar, and this is called at most once per bar
+        before :meth:`advance` is called for that same bar (though it may be
+        called MULTIPLE times for that same bar with a growing ``skip``, to
+        retry past a candidate a caller has already rejected). ENFORCED:
+        ``bar.timestamp`` must not be earlier than the last bar
+        :meth:`advance` ratcheted the watermark with — violating this would
+        silently evaluate a trigger decision against a watermark extended
+        past this bar's own extremes. Equal timestamps are allowed (a bar not
+        yet advanced, or two same-timestamp fixture bars in a unit test that
+        never calls :meth:`advance` between them), since only a genuine
+        step BACKWARD in time is the dangerous case this guards against.
+        Postconditions: returns ``(exit_rule_index, unrounded_fill_price)`` for
+        the winning rule NOT in ``skip``, or ``None`` when no such rule fills
+        on this bar — the SAME tie-break as :meth:`step` (ascending spec
+        index) among the candidates not skipped. May still latch a
+        limit-style rule's index into ``_armed`` as a side effect: arming is
+        a fact about this bar's own price action, independent of whether this
+        candidate goes on to win the bar against a competing kind, so it is not
+        deferred to :meth:`advance` or to a caller's later commit decision —
+        idempotent to call again for an already-armed index.
+        Calling this twice for the same bar and ``skip`` with no intervening
+        state change returns the same result both times.
+        """
+        self._check_not_before_last_advanced(bar)
+        winner: Optional[Tuple[int, float]] = None
+        for idx, rule in self._rules:
+            if idx in self._retired or idx in skip:
+                # Skipped before _candidate_price is even called: a retired
+                # rule takes no part in this bar's evaluation at all — no
+                # arm-state side effect — so a later restore_limit_style_rules
+                # resumes it exactly where it left off, per that method's own
+                # docstring. A rule in ``skip`` was already tried by THIS
+                # caller for THIS bar and found unusable, but it was not
+                # retired (a later, independent call with a fresh ``skip``
+                # must still see it).
+                continue
+            price = self._candidate_price(idx, rule, bar)
+            if price is None:
+                continue
+            if not (price > 0 and math.isfinite(price)):
+                # A degenerate bar suppresses this one candidate fill rather
+                # than aborting the run or emitting an invalid record; a
+                # lower-priority rule may still fill on this bar, and this rule
+                # may fill on a later one.
+                continue
+            winner = (idx, price)
+            break
+        return winner
+
+    def advance(self, bar: "Bar") -> None:
+        """Ratchet the watermark with ``bar``'s extremes.
+
+        Split out of :meth:`step` so a caller evaluating several competing exit
+        kinds on one bar can advance this book's watermark EXACTLY ONCE per
+        bar regardless of which kind (if any) wins it — the watermark must
+        move the same way whether this book's own candidate is the bar's
+        winner, loses to a competing kind, or nothing fires at all, mirroring
+        :meth:`step`'s original "extended either way" postcondition.
+
+        Preconditions: ``bar`` is the same bar :meth:`peek` was (or would have
+        been) called for; called exactly once per bar, after :meth:`peek`.
+        ENFORCED: ``bar.timestamp`` must not be earlier than the last bar
+        this method itself already advanced past — see :meth:`peek`'s own
+        docstring for why equal timestamps are tolerated rather than
+        rejected.
+        Postconditions: delegates to :meth:`_extend_watermarks` — same
+        watermark evolution as :meth:`step`'s trailing side effect. Records
+        ``bar.timestamp`` as the new floor for this check and :meth:`peek`'s
+        own.
+        """
+        self._check_not_before_last_advanced(bar)
+        self._extend_watermarks(bar)
+        self._last_advanced_timestamp = bar.timestamp
+
+    def _check_not_before_last_advanced(self, bar: "Bar") -> None:
+        """Reject a bar earlier than the last one :meth:`advance` ratcheted with.
+
+        Preconditions: none. Postconditions: raises ``ValueError`` when
+        ``self._last_advanced_timestamp`` is not ``None`` and
+        ``bar.timestamp`` sorts strictly before it; otherwise returns
+        normally. A caller that has never called :meth:`advance` on this
+        object faces no constraint yet — every bar is "not before" an
+        unset floor.
+        """
+        if (
+            self._last_advanced_timestamp is not None
+            and bar.timestamp < self._last_advanced_timestamp
+        ):
+            raise ValueError(
+                f"bar.timestamp {bar.timestamp!r} is earlier than the last advanced bar "
+                f"{self._last_advanced_timestamp!r} — peek()/advance() must be called in "
+                "non-decreasing bar order"
+            )
+
+    def retire_limit_style_rules(self) -> None:
+        """Exclude every ``style="limit"`` rule from candidates until restored.
+
+        Mirrors production's ``_retire_orders_against_closed_position``: once a
+        DIFFERENT rule's whole-position close is CHOSEN for this position —
+        concretely, once the combined simulator queues a ``signal_exit`` close
+        for a later bar — a resting ``style="limit"`` stop must not get a
+        further chance to win via FIFO on that later bar, even when its own
+        level is technically reachable there. Production excludes a resting
+        limit-style stop from further exit evaluation the moment a competing
+        close is decided, before that other close even reaches its own fill
+        bar — this method is that exclusion. A ``style="market"`` stop is
+        UNAFFECTED: only the resting-limit kind is retired this way; the
+        market-style stop keeps competing normally on every later bar. See the
+        combined simulator module for the one call site and the full argument
+        (design doc's "Per-bar evaluation order" section).
+
+        NOT permanent, despite mirroring a production method whose own close
+        is never undone: production's competing close, once decided, always
+        reaches a genuine fill (real bars are never degenerate), so it never
+        needs reversing. This reference module's own uniform
+        nonpositive-exit-reference rule can still make the queued close that
+        triggered this retirement turn out unusable when it reaches its own
+        fill bar — and that rule requires treating such a firing as if it had
+        never happened at all, retirement included. See
+        :meth:`restore_limit_style_rules`, the one call site's own reversal.
+
+        Preconditions: none — idempotent, and harmless when no limit-style rule
+        is present.
+        Postconditions: every rule in ``self._rules`` with ``rule.style ==
+        "limit"`` is added to the retired set; a later :meth:`peek` skips it
+        entirely (no arm-state side effect) until :meth:`restore_limit_style_rules`
+        is called. Watermark state and any other rule's arm state are
+        unaffected. ``self._rules`` itself is never mutated — retirement is
+        tracked separately so it can be reversed without reconstructing the
+        rule list.
+        """
+        self._retired.update(idx for idx, rule in self._rules if rule.style == "limit")
+
+    def restore_limit_style_rules(self) -> None:
+        """Undo :meth:`retire_limit_style_rules`: resume evaluating every
+        ``style="limit"`` rule normally, from the next :meth:`peek` onward.
+
+        The one call site (the combined simulator) calls this when a queued
+        ``signal_exit`` close it had already retired the limit-style stops
+        for turns out to have an unusable fill (a nonpositive/non-finite/
+        zero-rounding fill-bar open) — the design doc's uniform
+        nonpositive-exit-reference rule requires treating that firing as if
+        it had never been met, and the retirement was solely a side effect of
+        that firing having been chosen. A bar that elapsed WHILE a rule was
+        retired is not retried retroactively — retirement's effect on that
+        bar's own resting-phase outcome already happened and stands; this only
+        resumes evaluation for bars from this point forward.
+
+        Preconditions: none — idempotent, and harmless when nothing is
+        currently retired.
+        Postconditions: every previously-retired rule's index is removed from
+        the retired set; the next :meth:`peek` evaluates it exactly as if it
+        had never been retired, picking its arm state back up unchanged from
+        wherever it stood at retirement (no bar's trigger check happened for
+        it while retired, so there is nothing to reconcile). Watermark state
+        and every other rule's own state are unaffected.
+        """
+        self._retired.clear()
 
     def step(self, bar: "Bar") -> Optional[Tuple[int, float]]:
         """Evaluate ``bar``, then ratchet the watermark.
@@ -734,6 +960,10 @@ class _RestingStopLoss:
         ``stop_loss_triggers`` geometry usable unmodified. Do not "fix" this
         toward the fill simulator without re-reading that section.)
 
+        Now a thin composition of :meth:`peek` then :meth:`advance` — kept as
+        one call for every existing caller that does not need to interleave
+        this book with a competing exit kind on the same bar.
+
         Preconditions: ``bar`` is strictly later than the position's entry bar —
         a resting order is not eligible on its own materialization bar. Callers
         enforce this by starting the walk at ``entry_bar + 1``.
@@ -744,24 +974,12 @@ class _RestingStopLoss:
         extended with ``bar`` either way, so a caller that stops on a fill and
         one that continues see the same state evolution.
         """
-        winner: Optional[Tuple[int, float]] = None
-        for idx, rule in self._rules:
-            price = self._candidate_price(idx, rule, bar)
-            if price is None:
-                continue
-            if not (price > 0 and math.isfinite(price)):
-                # A degenerate bar suppresses this one candidate fill rather
-                # than aborting the run or emitting an invalid record; a
-                # lower-priority rule may still fill on this bar, and this rule
-                # may fill on a later one.
-                continue
-            winner = (idx, price)
-            break
-        self._extend_watermarks(bar)
+        winner = self.peek(bar)
+        self.advance(bar)
         return winner
 
 
-def _snapshot(bar: "Bar") -> BarSnapshot:
+def bar_snapshot(bar: "Bar") -> BarSnapshot:
     """Adapt a ``Bar`` to the evaluator's minimal ``BarSnapshot``.
 
     Preconditions: ``bar`` exposes ``high``/``low``/``close``.
@@ -813,7 +1031,7 @@ def resolve_stop_loss_exit(
     if not candidates:
         return None
     anchor = entry_price_basis(symbol_bars[entry.entry_bar].open, entry.side, entry_slippage_bps)
-    order = _RestingStopLoss(side=entry.side, symbol=entry.symbol, anchor=anchor, rules=candidates)
+    order = RestingStopLoss(side=entry.side, symbol=entry.symbol, anchor=anchor, rules=candidates)
     for exit_bar in range(entry.entry_bar + 1, len(symbol_bars)):
         bar = symbol_bars[exit_bar]
         fired = order.step(bar)
@@ -827,7 +1045,7 @@ def resolve_stop_loss_exit(
             # ``Bar.timestamp`` is ISO-8601, so its first 10 characters are the
             # date — production truncates ``bar.timestamp[:10]`` identically.
             exit_date=bar.timestamp[:10],
-            exit_price=_round_price(raw_price),
+            exit_price=round_reference_price(raw_price),
             exit_rule_kind="stop_loss",
             exit_rule_index=rule_index,
         )
@@ -904,7 +1122,7 @@ def _take_profit_target(anchor: float, pct: float, side: Literal["long", "short"
     of labor. This is that one remaining piece: a two-line, self-contained
     formula with no drift risk against the shared evaluator, since it uses the
     exact same ``entry_price`` field the evaluator's own trigger check reads
-    (see :class:`_RestingTakeProfitFamily`'s docstring).
+    (see :class:`RestingTakeProfitFamily`'s docstring).
 
     Preconditions: ``anchor`` is the position's post-slippage
     :func:`entry_price_basis`; ``pct`` is the rule's/rung's positive profit
@@ -924,7 +1142,7 @@ class _LadderCursor:
 
     Mutable, unlike the frozen records elsewhere in this module: this is pure
     internal bookkeeping advanced bar-by-bar by
-    :class:`_RestingTakeProfitFamily` and never exposed to a caller. Mirrors
+    :class:`RestingTakeProfitFamily` and never exposed to a caller. Mirrors
     the live engine's ``_ScaledLadderCursor`` (keyed the same way — per
     ``rule_index`` — but scoped to one position, since this module walks one
     position at a time rather than a whole per-strategy dispatcher).
@@ -932,7 +1150,7 @@ class _LadderCursor:
     Carries no explicit "next eligible bar" field for the engine's
     ``scaled_partial_in_flight`` materialization-bar deferral — a newly-armed
     rung is not eligible on the same bar an earlier rung just fired, but
-    :meth:`_RestingTakeProfitFamily.step` already guarantees that structurally
+    :meth:`RestingTakeProfitFamily.step` already guarantees that structurally
     without extra state: it builds one bar's candidate list from the cursor
     BEFORE advancing it, and its only caller (:func:`resolve_take_profit_family_exit`)
     walks bars strictly sequentially, one ``step`` call per bar. So the
@@ -948,7 +1166,7 @@ class _LadderCursor:
     next_rung: int
 
 
-class _TakeProfitFireResult(NamedTuple):
+class TakeProfitFireResult(NamedTuple):
     """The winning candidate's outcome once its fill fully closes the position.
 
     ``raw_price`` is the qty-weighted average across every partial fill plus
@@ -978,7 +1196,34 @@ class _TakeProfitFireResult(NamedTuple):
     level_index: Optional[int]
 
 
-class _RestingTakeProfitFamily:
+class TakeProfitCandidate(NamedTuple):
+    """A take-profit-family candidate :meth:`RestingTakeProfitFamily.peek`
+    resolved but has not yet applied.
+
+    The trigger-decision half of what a single :meth:`RestingTakeProfitFamily.step`
+    call used to do atomically, split out so a caller racing this family
+    against a competing exit kind on the same bar (the combined multi-kind
+    simulator) can compare this candidate against the other kind's before
+    committing either — nothing here has touched ``_fills``/``_remaining_qty``/
+    any ladder's ``next_rung`` yet; :meth:`RestingTakeProfitFamily.commit` is
+    what applies it.
+
+    ``ladder_rule_index`` is the ``exit_rule_index`` of the
+    ``ScaledTakeProfitRule`` whose cursor must advance on commit — ``None`` for
+    a standalone ``take_profit`` win, the same "absent rather than
+    present-and-meaningless" convention ``level_index`` already uses elsewhere
+    in this module.
+    """
+
+    exit_rule_index: int
+    exit_rule_kind: Literal["take_profit", "scaled_take_profit"]
+    qty: float
+    price: float
+    level_index: Optional[int]
+    ladder_rule_index: Optional[int]
+
+
+class RestingTakeProfitFamily:
     """One modeled take-profit-family resting-order book for one open position.
 
     Owns every standalone ``TakeProfitRule`` and every ``ScaledTakeProfitRule``
@@ -991,12 +1236,16 @@ class _RestingTakeProfitFamily:
     intent could otherwise "win" the walk and mask a lower-priority take-profit
     candidate this module must still see — this class filters the returned
     list down to ``take_profit``/``scaled_take_profit`` kinds and takes the
-    first (i.e. lowest ``exit_rule_index``) survivor, which is exactly the
-    SAME per-position (not per-rule, not per-ladder) firing budget as before:
-    a bar reachable by two different ladders' cursor rungs, or by a standalone
-    target and a rung, still only fires the lower-``exit_rule_index`` one.
+    first (i.e. lowest ``exit_rule_index``) USABLE survivor — one whose
+    resolved target is finite and positive, skipping a degenerate one (an
+    unbounded ``pct >= 1`` can land a short's target at or below zero) in
+    favor of the next candidate in the same list, per :meth:`peek`'s own
+    docstring — which is exactly the SAME per-position (not per-rule, not
+    per-ladder) firing budget as before: a bar reachable by two different
+    ladders' cursor rungs, or by a standalone target and a rung, still only
+    fires the lower-``exit_rule_index`` one AMONG THOSE USABLE.
 
-    Unlike :class:`_RestingStopLoss`, this object carries NO cross-bar price
+    Unlike :class:`RestingStopLoss`, this object carries NO cross-bar price
     watermark — it passes a ``PositionState`` whose ``high_since_entry``/
     ``low_since_entry`` are HELD FIXED at the post-slippage anchor on every
     call, never extended bar-over-bar. This is not an approximation: a
@@ -1029,18 +1278,19 @@ class _RestingTakeProfitFamily:
     Invariants:
       * ``_remaining_qty`` only ever decreases.
       * Each ladder's ``next_rung`` only ever increases.
-      * Once :meth:`step` has returned a non-``None`` result, every later call
-        returns ``None`` unconditionally — the position is closed, and this
-        object records no further fills. This is enforced by an explicit guard
-        at the top of :meth:`step`, not left to the caller's own bar-walk
-        discipline: this class is also usable directly by a future driver (the
-        combined multi-kind simulator this module's docstring anticipates)
-        that may not share :func:`resolve_take_profit_family_exit`'s
-        stop-on-first-result contract.
+      * Once :meth:`commit` has returned a non-``None`` result, every later
+        :meth:`peek` returns ``None`` unconditionally — the position is
+        closed, and this object records no further fills. This is enforced by
+        an explicit guard at the top of :meth:`peek`, not left to the
+        caller's own bar-walk discipline: this class is used directly by the
+        combined multi-kind simulator (``reference_simulator.py``), whose
+        driver does not share :func:`resolve_take_profit_family_exit`'s
+        simpler stop-on-first-result contract.
       * The FIRST rung of every ladder, and every standalone rule, is only
-        ever checked starting at ``entry_bar + 1``: this object's only current
-        caller (:func:`resolve_take_profit_family_exit`) starts its bar walk
-        there, so ``step`` is simply never invoked for ``entry_bar`` itself —
+        ever checked starting at ``entry_bar + 1``: every caller of
+        :meth:`peek`/:meth:`step` — :func:`resolve_take_profit_family_exit`
+        and the combined simulator's own driver alike — starts its bar walk
+        there, so ``peek`` is simply never invoked for ``entry_bar`` itself —
         the materialization-bar deferral for a position's FIRST candidate
         needs no state on this object either, for the same structural reason
         :class:`_LadderCursor` needs none for a ladder's LATER rungs.
@@ -1075,7 +1325,7 @@ class _RestingTakeProfitFamily:
         Postconditions: every ladder's cursor starts at rung 0.
         ``_remaining_qty`` starts at the nominal ``_original_qty`` (``1.0`` —
         this step models no real sizing, the same nominal-``qty=1.0`` stance
-        ``_RestingStopLoss`` takes).
+        ``RestingStopLoss`` takes).
         """
         self._side = side
         self._symbol = symbol
@@ -1116,8 +1366,269 @@ class _RestingTakeProfitFamily:
             low_since_entry=self._anchor,
         )
 
-    def step(self, bar: "Bar") -> Optional[_TakeProfitFireResult]:
+    @property
+    def remaining_qty(self) -> float:
+        """The position's currently open quantity, after every committed fill.
+
+        Preconditions: none. Postconditions: returns ``self._remaining_qty`` —
+        ``self._original_qty`` (``1.0``) before any candidate has committed,
+        and monotonically non-increasing thereafter as :meth:`commit` is
+        called. Used by a caller needing to blend a FOREIGN closing fill (a
+        ``stop_loss``/``signal_exit`` performing the position's final close)
+        against this family's own prior rungs — see :meth:`blend_terminal`.
+        """
+        return self._remaining_qty
+
+    def _prospective_terminal(self, qty: float, price: float) -> Optional[Tuple[float, float]]:
+        """Whether committing ``(qty, price)`` now would close the position, and at what price.
+
+        The single computation :meth:`peek` and :meth:`commit` both need —
+        factored out so the "would this be the final fill, and if so, what
+        does the quantity-weighted, rounded price come out to" question has
+        exactly one answer, computed the same way everywhere it is asked.
+
+        Preconditions: none. Pure: reads ``self._fills``/``self._remaining_qty``,
+        mutates nothing.
+        Postconditions: returns ``None`` when ``qty`` would leave
+        ``_remaining_qty`` above :data:`_FILL_QTY_REL_TOL` of zero — i.e. NOT
+        the final fill, so there is nothing yet to round or validate.
+        Otherwise returns ``(weighted_price, terminal_price)``: the
+        quantity-weighted average across every entry already in
+        ``self._fills`` plus ``(qty, price)`` (UNROUNDED), and ``price``
+        itself (the terminal slice's own bucket, per this class's uniform
+        "bucket from terminal, round the blend once" discipline). The caller
+        decides usability by rounding: ``round(weighted_price,
+        decimals_for(terminal_price))``.
+        """
+        prospective_remaining = self._remaining_qty - qty
+        if prospective_remaining > self._original_qty * _FILL_QTY_REL_TOL:
+            return None
+        prospective_fills = [*self._fills, (qty, price)]
+        total_qty = sum(q for q, _ in prospective_fills)
+        weighted_price = sum(q * p for q, p in prospective_fills) / total_qty
+        return weighted_price, price
+
+    def peek(self, bar: "Bar") -> Optional[TakeProfitCandidate]:
+        """Resolve ``bar``'s winning take-profit-family candidate WITHOUT applying it.
+
+        The trigger-decision half of what a single :meth:`step` call used to
+        do atomically, split out so a caller racing this family against a
+        competing exit kind on the same bar (the combined multi-kind
+        simulator) can compare candidates before either commits. Calling this
+        twice for the same bar with no intervening :meth:`commit` is safe and
+        returns an equivalent candidate both times: no internal state moves
+        until :meth:`commit` is called.
+
+        Preconditions: same as :meth:`step` — called once per bar in strictly
+        increasing order, starting no earlier than ``entry_bar + 1``.
+        Postconditions: returns ``None`` under the same conditions
+        :meth:`step` did (already closed; no take-profit-family intent fires
+        this bar) — or the winning candidate, fully resolved (quantity and
+        price) but not yet reflected in ``_fills``/``_remaining_qty``/any
+        ladder's ``next_rung``. A returned candidate is always genuinely
+        usable: an intent whose RAW target resolves to <= 0 or non-finite
+        (reachable when an unbounded ``pct >= 1`` on the short side lands at
+        or below zero), or one that IS raw-valid but would be this bar's
+        terminal fill and whose quantity-weighted, ROUNDED price would be
+        <= 0 (a tiny positive price can round away to zero — see
+        :meth:`_prospective_terminal`) — is skipped in favor of the NEXT
+        take-profit-family intent in the same ``intents`` list — a different
+        standalone target or ladder rung at a higher ``exit_rule_index`` still
+        gets a chance to win this bar — exactly as if the degenerate intent's
+        trigger had not been met, mirroring :class:`RestingStopLoss`'s own
+        internal skip-and-continue over ITS rules. Only when every
+        take-profit-family intent this bar is degenerate does this return
+        ``None``.
+        """
+        if self._fills and self._remaining_qty <= self._original_qty * _FILL_QTY_REL_TOL:
+            return None  # already fully closed on an earlier bar; see Invariants
+
+        cursor_map = {ladder.rule_index: ladder.next_rung for ladder in self._ladders}
+        intents = evaluate_exit_rules_for_position(
+            self._rules,
+            self._symbol,
+            self._position(),
+            bar_snapshot(bar),
+            first_only=False,
+            cursor_map=cursor_map,
+        )
+        for winner in (
+            intent
+            for intent in intents
+            if intent.rule_kind in ("take_profit", "scaled_take_profit")
+        ):
+            rule = self._rules[winner.rule_index]
+            ladder_rule_index: Optional[int] = None
+            if winner.rule_kind == "take_profit":
+                # A standalone rule is always a full close of whatever remains
+                # — the design doc's "every other exit rule kind is always a
+                # full-position close."
+                pct = rule.pct
+                qty = self._remaining_qty
+            else:
+                level = rule.levels[winner.level_index]
+                pct = level.pct
+                qty = min(winner.qty_fraction * self._original_qty, self._remaining_qty)
+                # Invariant this relies on: every intent evaluate_exit_rules_for_position
+                # classifies as "scaled_take_profit" has a matching cursor in
+                # self._ladder_by_index, since both derive from the SAME
+                # scaled_take_profit_rules(self._rules) filtering. Guarded
+                # explicitly (rather than left as a bare lookup raising an
+                # opaque KeyError) so a future change that breaks this
+                # invariant fails loudly, matching this module's
+                # Design-by-Contract style.
+                if winner.rule_index not in self._ladder_by_index:  # pragma: no cover - invariant
+                    raise AssertionError(
+                        f"scaled_take_profit intent for rule_index {winner.rule_index!r} "
+                        "has no matching ladder cursor"
+                    )
+                ladder_rule_index = winner.rule_index
+
+            price = _take_profit_target(self._anchor, pct, self._side)
+            if not (price > 0 and math.isfinite(price)):
+                # Degenerate RAW target — does not fire on this bar, but a
+                # DIFFERENT family intent later in this same bar's list may
+                # still be valid; keep scanning rather than returning None
+                # outright.
+                continue
+            terminal = self._prospective_terminal(qty, price)
+            if terminal is not None:
+                weighted_price, terminal_price = terminal
+                if not (round(weighted_price, decimals_for(terminal_price)) > 0):
+                    # RAW-valid, but this candidate would be the terminal
+                    # fill and its blended, rounded price would be <= 0 —
+                    # the SAME masking risk as the raw-invalid case above,
+                    # one stage further down the pipeline: without this,
+                    # commit() would correctly refuse it (see commit's own
+                    # docstring), but this bar's resting phase would never
+                    # learn there was a DIFFERENT, valid candidate later in
+                    # the same intents list.
+                    continue
+            return TakeProfitCandidate(
+                exit_rule_index=winner.rule_index,
+                exit_rule_kind=winner.rule_kind,
+                qty=qty,
+                price=price,
+                level_index=winner.level_index,
+                ladder_rule_index=ladder_rule_index,
+            )
+        return None
+
+    def commit(self, candidate: TakeProfitCandidate) -> Optional[TakeProfitFireResult]:
+        """Apply a candidate :meth:`peek` returned for the SAME bar.
+
+        Preconditions: ``candidate`` is what THIS object's own :meth:`peek`
+        returned for the bar currently being processed, with no other
+        ``commit``/``peek`` call on this object in between (a candidate
+        carries no bar identity of its own to check this against — that
+        discipline is the caller's, exactly as :meth:`step`'s own
+        peek-then-commit composition below observes it). ENFORCED regardless
+        of that discipline: ``candidate.price`` is a positive finite number
+        and ``candidate.qty`` is positive — every ``peek()``-sourced
+        candidate already satisfies both, so this only ever fires for one
+        constructed directly, bypassing ``peek()``.
+        Postconditions: when this candidate would be the position's FINAL
+        closing fill (its ``qty`` leaves ``_remaining_qty`` within
+        :data:`_FILL_QTY_REL_TOL` of zero) and the resulting quantity-weighted
+        price — rounded with the bucket ``candidate.price`` itself selects,
+        the same computation this method already returns as ``raw_price``/
+        ``terminal_price`` on success — would be ``<= 0``, returns ``None``
+        WITHOUT mutating ANY state: this candidate does not fire, exactly as
+        if its trigger had not been met. This is reachable even though
+        ``candidate.price`` already passed :meth:`peek`'s own raw
+        finite-positive check, since a tiny positive price can still round
+        away to zero (``round(0.00004, 4) == 0.0``) — and unlike a
+        not-yet-applied :meth:`peek` candidate, a fill already recorded below
+        could not be cleanly un-applied, so this must be decided BEFORE
+        mutating. Otherwise: same effect as the fall-through half of the old
+        atomic :meth:`step` — ``_fills``/``_remaining_qty`` advance, the
+        candidate's ladder cursor (if any) advances, and the position's final
+        closing outcome is returned once ``_remaining_qty`` reaches
+        :data:`_FILL_QTY_REL_TOL` of zero, else ``None`` (rung fired, position
+        still open).
+        """
+        if not (candidate.price > 0 and math.isfinite(candidate.price)):
+            raise ValueError(
+                f"candidate.price must be a positive finite number, got {candidate.price!r}"
+            )
+        if not candidate.qty > 0:
+            raise ValueError(f"candidate.qty must be > 0, got {candidate.qty!r}")
+        terminal = self._prospective_terminal(candidate.qty, candidate.price)
+        if terminal is not None:
+            weighted_price, terminal_price = terminal
+            if not (round(weighted_price, decimals_for(terminal_price)) > 0):
+                # The blended, rounded closing price is unusable — treated as
+                # if this candidate's trigger had not been met, so NOTHING is
+                # mutated. A later bar may still close the position via this
+                # same rung (if still reachable) or a different rule kind.
+                # Unreachable through the normal peek()-then-commit pipeline
+                # (peek() screens this exact condition via the same
+                # _prospective_terminal call before ever returning the
+                # candidate) — kept as commit()'s own defense for a candidate
+                # constructed directly, bypassing peek(), the way this
+                # method's precondition already documents as the caller's
+                # discipline to observe, not this method's to assume.
+                return None
+
+        self._fills.append((candidate.qty, candidate.price))
+        self._remaining_qty -= candidate.qty
+        if candidate.ladder_rule_index is not None:
+            self._ladder_by_index[candidate.ladder_rule_index].next_rung += 1
+
+        if terminal is None:
+            return None  # rung fired, position still open — keep walking
+        weighted_price, terminal_price = terminal
+        return TakeProfitFireResult(
+            exit_rule_index=candidate.exit_rule_index,
+            exit_rule_kind=candidate.exit_rule_kind,
+            raw_price=weighted_price,
+            terminal_price=terminal_price,
+            level_index=candidate.level_index,
+        )
+
+    def blend_terminal(self, closing_price: float) -> Tuple[float, float]:
+        """Blend a FOREIGN closing fill into this family's own prior partial rungs.
+
+        Used when a ``stop_loss`` or ``signal_exit`` — not this family's own
+        winning candidate — performs a position's final close after this
+        family already reduced it via one or more earlier rungs: the design
+        doc's exit-aggregation rule requires the recorded ``exit_price`` to be
+        the quantity-weighted average across every PRIOR partial exit plus
+        this final one, not just the closing rule's own price alone.
+        Read-only, unlike :meth:`commit`: the CALLER is the one actually
+        closing the position (via a different rule entirely), so there is no
+        ladder cursor or ``_remaining_qty`` of THIS event for this method to
+        advance — this family's state is left exactly as it was.
+
+        Preconditions: ``closing_price`` is a finite positive number.
+        Postconditions: returns ``(raw_price, terminal_price)`` — ``raw_price``
+        is the qty-weighted average across every entry already in
+        ``self._fills`` plus ``(self.remaining_qty, closing_price)``;
+        ``terminal_price`` is ``closing_price`` itself, unchanged, since the
+        FOREIGN close is by definition the terminal slice here. Mirrors
+        :class:`TakeProfitFireResult`'s two-value shape so a caller applies
+        the SAME "bucket from terminal, round the blend once" discipline
+        uniformly regardless of which rule performed the final close. Reduces
+        correctly to ``(closing_price, closing_price)`` when this family has
+        committed no prior rungs at all, so a caller may call this
+        unconditionally whenever a family object exists, whether or not it
+        ever fired.
+        """
+        if not (closing_price > 0 and math.isfinite(closing_price)):
+            raise ValueError(
+                f"closing_price must be a positive finite number, got {closing_price!r}"
+            )
+        fills = [*self._fills, (self._remaining_qty, closing_price)]
+        total_qty = sum(q for q, _ in fills)
+        raw_price = sum(q * p for q, p in fills) / total_qty
+        return raw_price, closing_price
+
+    def step(self, bar: "Bar") -> Optional[TakeProfitFireResult]:
         """Evaluate ``bar``, applying at most one winning candidate.
+
+        Now a thin composition of :meth:`peek` then :meth:`commit` — kept as
+        one call for every existing caller that does not need to interleave
+        this family with a competing exit kind on the same bar.
 
         Preconditions: the caller invokes this once per bar, in strictly
         increasing bar order, starting no earlier than the position's
@@ -1131,73 +1642,10 @@ class _RestingTakeProfitFamily:
         position open. Internal state advances whenever a candidate fires,
         whether or not this call returns a result.
         """
-        if self._fills and self._remaining_qty <= self._original_qty * _FILL_QTY_REL_TOL:
-            return None  # already fully closed on an earlier bar; see Invariants
-
-        cursor_map = {ladder.rule_index: ladder.next_rung for ladder in self._ladders}
-        intents = evaluate_exit_rules_for_position(
-            self._rules,
-            self._symbol,
-            self._position(),
-            _snapshot(bar),
-            first_only=False,
-            cursor_map=cursor_map,
-        )
-        winner = next(
-            (
-                intent
-                for intent in intents
-                if intent.rule_kind in ("take_profit", "scaled_take_profit")
-            ),
-            None,
-        )
-        if winner is None:
+        candidate = self.peek(bar)
+        if candidate is None:
             return None
-
-        rule = self._rules[winner.rule_index]
-        ladder: Optional[_LadderCursor] = None
-        if winner.rule_kind == "take_profit":
-            # A standalone rule is always a full close of whatever remains —
-            # the design doc's "every other exit rule kind is always a
-            # full-position close."
-            pct = rule.pct
-            qty = self._remaining_qty
-        else:
-            level = rule.levels[winner.level_index]
-            pct = level.pct
-            qty = min(winner.qty_fraction * self._original_qty, self._remaining_qty)
-            # Invariant this relies on: every intent evaluate_exit_rules_for_position
-            # classifies as "scaled_take_profit" has a matching cursor in
-            # self._ladder_by_index, since both derive from the SAME
-            # scaled_take_profit_rules(self._rules) filtering. Guarded
-            # explicitly (rather than left as a bare lookup raising an opaque
-            # KeyError) so a future change that breaks this invariant fails
-            # loudly, matching this module's Design-by-Contract style.
-            ladder = self._ladder_by_index.get(winner.rule_index)
-            if ladder is None:  # pragma: no cover - invariant, not a reachable state
-                raise AssertionError(
-                    f"scaled_take_profit intent for rule_index {winner.rule_index!r} "
-                    "has no matching ladder cursor"
-                )
-
-        price = _take_profit_target(self._anchor, pct, self._side)
-        self._fills.append((qty, price))
-        self._remaining_qty -= qty
-        if ladder is not None:
-            ladder.next_rung += 1
-
-        if self._remaining_qty > self._original_qty * _FILL_QTY_REL_TOL:
-            return None  # rung fired, position still open — keep walking
-
-        total_qty = sum(q for q, _ in self._fills)
-        weighted_price = sum(q * p for q, p in self._fills) / total_qty
-        return _TakeProfitFireResult(
-            exit_rule_index=winner.rule_index,
-            exit_rule_kind=winner.rule_kind,
-            raw_price=weighted_price,
-            terminal_price=price,
-            level_index=winner.level_index,
-        )
+        return self.commit(candidate)
 
 
 def resolve_take_profit_family_exit(
@@ -1214,7 +1662,7 @@ def resolve_take_profit_family_exit(
     came from somewhere other than a whole-spec replay — mirrors
     :func:`resolve_stop_loss_exit`'s own role. A spec's standalone
     ``TakeProfitRule``\\ s and ``ScaledTakeProfitRule`` ladders are resolved
-    together by a single :class:`_RestingTakeProfitFamily`, not by two
+    together by a single :class:`RestingTakeProfitFamily`, not by two
     independent walks: they must race on the same bar per the design doc's
     tie-break rule, and two independent resolvers could each decide "I fire
     this bar" without knowing about the other, double-closing the position.
@@ -1253,7 +1701,7 @@ def resolve_take_profit_family_exit(
     if not take_profit_rules(rules) and not scaled_take_profit_rules(rules):
         return None
     anchor = entry_price_basis(symbol_bars[entry.entry_bar].open, entry.side, entry_slippage_bps)
-    family = _RestingTakeProfitFamily(
+    family = RestingTakeProfitFamily(
         side=entry.side,
         symbol=entry.symbol,
         anchor=anchor,
@@ -1274,9 +1722,9 @@ def resolve_take_profit_family_exit(
             # (fill_simulator.py's terminal-close branch derives dp from the
             # terminal slice's reference_price, then rounds the weighted
             # average with that dp), never re-derived from the blended value
-            # itself. See _TakeProfitFireResult's docstring for the full
+            # itself. See TakeProfitFireResult's docstring for the full
             # argument and production line references.
-            exit_price=round(fired.raw_price, _decimals_for(fired.terminal_price)),
+            exit_price=round(fired.raw_price, decimals_for(fired.terminal_price)),
             exit_rule_kind=fired.exit_rule_kind,
             exit_rule_index=fired.exit_rule_index,
             level_index=fired.level_index,
@@ -1363,7 +1811,7 @@ def signal_exit_rules(rules: Sequence[ExitRule]) -> List[Tuple[int, SignalExitRu
     return [(idx, rule) for idx, rule in enumerate(rules) if isinstance(rule, SignalExitRule)]
 
 
-class _PrefixHistoryView:
+class PrefixHistoryView:
     """A ``HistoryView`` over ``view``'s first ``i + 1`` bars.
 
     Exists to bridge one convention mismatch, and it is the sharpest trap in
@@ -1438,6 +1886,52 @@ class _PrefixHistoryView:
         return self._view.indicator(ref, i)
 
 
+def signal_exit_intent_at(
+    rules: Sequence[ExitRule],
+    symbol: str,
+    position: PositionState,
+    view: HistoryView,
+    trigger_bar: int,
+    bar: "Bar",
+) -> Optional[int]:
+    """The lowest-index ``SignalExitRule`` firing at ``trigger_bar`` against ``position``, or ``None``.
+
+    The one-bar trigger-decision kernel both :func:`resolve_signal_exit`'s own
+    walk and the combined multi-kind simulator's own per-bar signal-exit check
+    need — factored out so the frozen-``PositionState``/prefix-truncated-
+    evaluator/first-intent-wins selection is a SINGLE implementation two
+    callers share by construction, not two copies a comment merely promises
+    stay in lockstep. Callers differ only in how/when they build ``position``
+    and in what they do with the result (``resolve_signal_exit`` builds it
+    once and reuses it across its own whole-series loop; the combined
+    simulator builds it fresh per call) — this function owns none of that,
+    only the per-bar evaluation itself.
+
+    Preconditions: ``rules`` is the WORKING exit-rule list; ``0 <= trigger_bar
+    < view.length()``; ``bar`` is the ``Bar`` at ``trigger_bar``; ``position``
+    is the caller's already-constructed frozen ``PositionState`` for this
+    walk — this function neither constructs nor validates it, and does not
+    itself check whether ``rules`` contains any ``SignalExitRule`` (a caller
+    wanting to skip the walk entirely when it does not should check
+    :func:`signal_exit_rules` itself, once, outside its own loop).
+    Postconditions: returns the winning ``SignalExitRule``'s
+    ``exit_rule_index`` among every intent
+    ``evaluate_exit_rules_for_position`` reports for this bar, or ``None``
+    when none of them is a ``signal_exit`` intent.
+    Invariants: no side effects; deterministic in its inputs.
+    """
+    intents = evaluate_exit_rules_for_position(
+        rules,
+        symbol,
+        position,
+        bar_snapshot(bar),
+        view=PrefixHistoryView(view, trigger_bar),
+        first_only=False,
+    )
+    winner = next((intent for intent in intents if intent.rule_kind == "signal_exit"), None)
+    return winner.rule_index if winner is not None else None
+
+
 def resolve_signal_exit(
     rules: Sequence[ExitRule],
     entry: ReferenceEntryFill,
@@ -1485,7 +1979,7 @@ def resolve_signal_exit(
     materialized at entry beats a ``signal_exit`` close queued on the same bar)
     belongs to the combined simulator, not here. This walk selects only
     ``signal_exit`` intents and ignores every other kind the shared evaluator
-    reports, the same way :class:`_RestingTakeProfitFamily` ignores stop-loss
+    reports, the same way :class:`RestingTakeProfitFamily` ignores stop-loss
     intents.
 
     Preconditions:
@@ -1559,19 +2053,10 @@ def resolve_signal_exit(
         low_since_entry=entry.entry_price,
     )
     for trigger_bar in range(entry.entry_bar, n):
-        intents = evaluate_exit_rules_for_position(
-            rules,
-            entry.symbol,
-            position,
-            _snapshot(symbol_bars[trigger_bar]),
-            view=_PrefixHistoryView(view, trigger_bar),
-            first_only=False,
+        winner_idx = signal_exit_intent_at(
+            rules, entry.symbol, position, view, trigger_bar, symbol_bars[trigger_bar]
         )
-        winner = next(
-            (intent for intent in intents if intent.rule_kind == "signal_exit"),
-            None,
-        )
-        if winner is None:
+        if winner_idx is None:
             continue
         exit_bar = trigger_bar + 1
         if exit_bar >= n:
@@ -1580,7 +2065,7 @@ def resolve_signal_exit(
         raw_open = fill_bar.open
         if not (raw_open > 0 and math.isfinite(raw_open)):
             continue  # fill-bar open guard: drop this firing, keep scanning
-        exit_price = _round_price(raw_open)
+        exit_price = round_reference_price(raw_open)
         # A price below its own bucket's resolution survives the guard above
         # and still rounds away to zero (``round(0.00004, 4)`` is ``0.0``),
         # which ``ReferenceSignalExit`` would reject. Treat it as the same
@@ -1600,7 +2085,7 @@ def resolve_signal_exit(
             exit_date=fill_bar.timestamp[:10],
             exit_price=exit_price,
             exit_rule_kind="signal_exit",
-            exit_rule_index=winner.rule_index,
+            exit_rule_index=winner_idx,
         )
     return None
 

@@ -9,7 +9,7 @@ Pydantic models give those payloads a typed shape — activities emit
 Large artifacts (drafts, plans) already live under the job's ``work_dir`` on the
 shared volume, so only the light state needed to resume the next phase travels
 through Temporal here: the planning result, the current draft, elicited stories,
-and the pipeline status.
+the author-selected title, and the pipeline status.
 """
 
 from __future__ import annotations
@@ -26,10 +26,17 @@ class PlanningStageResult(BaseModel):
         - ``status == "PASS"`` unless the job was cancelled/failed while awaiting
           outline approval, in which case ``status == "FAIL"`` and the draft/gates
           activities short-circuit.
+        - ``elicited_stories_text`` and ``selected_title`` are the planning-stage
+          state the downstream activities re-seed onto the fresh ``PipelineContext``
+          they each build: the author narratives gathered during story elicitation,
+          and the title the author chose after outline approval. Both default to
+          ``None`` so a ``FAIL`` DTO carries neither, and so an in-flight workflow
+          whose history predates a field still deserializes.
     """
 
     planning_phase_result: Dict[str, Any] = Field(default_factory=dict)
     elicited_stories_text: Optional[str] = None
+    selected_title: Optional[str] = None
     status: str = "PASS"
 
 

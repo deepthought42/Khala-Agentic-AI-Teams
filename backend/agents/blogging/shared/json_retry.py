@@ -17,11 +17,17 @@ instead of duplicating the loop.
 Most call sites also hand-roll the same ``Agent(model=..., system_prompt=...)``
 construction and ``EventLoopException`` unwrap around that loop.
 ``run_json_gate`` wraps ``call_json_with_retry`` to own both, so a call site
-only supplies its model, system prompt, prompt, and fallback behavior.
+only supplies its model, system prompt, prompt, and fallback behavior. It
+*applies* that unwrap rather than defining it: the rule itself is
+``shared.text_parsing.unwrap_llm_cause``, reached through the thin
+``_unwrap_event_loop_exception`` shim that narrows it to this module's
+``Exception``-typed ``unwrap_exception`` seam.
 
 Invariants:
     - Exactly one JSON-parse retry policy and one transient-error
       classification rule is defined here.
+    - No unwrap policy is defined here; it is imported from
+      ``shared.text_parsing``.
 """
 
 from __future__ import annotations
@@ -31,10 +37,12 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 from strands import Agent
-from strands.types.exceptions import EventLoopException
 
 from llm_service import LLMJsonParseError, LLMRateLimitError, LLMTemporaryError
 from llm_service.util import extract_json_from_response
+
+from .system_prompt_assembly import SystemContentSegment
+from .text_parsing import unwrap_llm_cause
 
 AgentInvoker = Callable[[str], Any]
 """A callable that runs a single LLM turn, e.g. a ``strands.Agent`` instance: ``agent(prompt) -> result``."""
@@ -173,12 +181,39 @@ def call_json_with_retry(
 
 
 def _unwrap_event_loop_exception(exc: Exception) -> Exception:
-    return exc.original_exception if isinstance(exc, EventLoopException) else exc
+    """Narrow :func:`~agents.blogging.shared.text_parsing.unwrap_llm_cause` to this
+    module's ``Exception``-typed seam.
+
+    Holds no unwrap policy of its own — ``unwrap_llm_cause`` is the single
+    implementation of "recover the model error strands wrapped in
+    ``EventLoopException``". This exists only to preserve
+    ``call_json_with_retry``'s ``unwrap_exception`` contract
+    (``Exception -> Exception``), which the ``cause`` it produces relies on:
+    that value is re-raised from inside an ``except Exception`` block and
+    handed to ``on_unexpected_error``.
+
+    Preconditions:
+        - ``exc`` is the exception caught at an LLM call boundary.
+    Postconditions:
+        - Returns ``exc.original_exception`` when ``exc`` is an
+          ``EventLoopException`` whose original is an ``Exception``.
+        - Returns ``exc`` unchanged otherwise, which covers two cases this
+          narrowing exists for. A wrapper carrying no original at all
+          (``original_exception is None``) yields the wrapper rather than
+          ``None``, so ``call_json_with_retry`` always has a real exception to
+          classify, raise, or pass to a fallback hook. A wrapper carrying a
+          ``BaseException`` that is not an ``Exception`` (e.g. a
+          ``KeyboardInterrupt``) also yields the wrapper: recovering it here
+          and re-raising it would turn a handled LLM failure into an unwind
+          past every ``except Exception`` in the call chain.
+    """
+    unwrapped = unwrap_llm_cause(exc)
+    return unwrapped if isinstance(unwrapped, Exception) else exc
 
 
 def run_json_gate(
     model: Any,
-    system_prompt: Union[str, List[Any]],
+    system_prompt: Union[str, List[SystemContentSegment]],
     prompt: str,
     *,
     strict_json_suffix: str = _DEFAULT_STRICT_JSON_SUFFIX,

@@ -273,6 +273,7 @@ def plan_stage_activity(job_id: str, request_dict: Dict[str, Any]) -> Dict[str, 
         return PlanningStageResult(
             planning_phase_result=ctx.planning_phase_result.model_dump(mode="json"),
             elicited_stories_text=ctx.elicited_stories_text,
+            selected_title=ctx.selected_title,
             status="PASS",
         ).model_dump()
 
@@ -306,6 +307,9 @@ def draft_stage_activity(
     # bug (or cross-deploy schema skew), not a pipeline failure.
     ppr = PlanningPhaseResult.model_validate(planning_stage["planning_phase_result"])
     elicited_stories_text = planning_stage.get("elicited_stories_text")
+    # ``.get``, not ``[...]``: a planning DTO serialized before this field existed
+    # carries no key, so an in-flight workflow rebuilds with the context default.
+    selected_title = planning_stage.get("selected_title")
 
     def _body() -> Dict[str, Any]:
         from agents.blogging.agent_implementations.blog_writing_process_v2 import run_draft_stage
@@ -314,6 +318,7 @@ def draft_stage_activity(
         ctx.planning_phase_result = ppr
         ctx.plan = ppr.content_plan
         ctx.elicited_stories_text = elicited_stories_text
+        ctx.selected_title = selected_title
 
         abort = run_draft_stage(ctx)
         if abort is not None:
@@ -361,6 +366,10 @@ def gates_stage_activity(
     ppr = PlanningPhaseResult.model_validate(planning_stage["planning_phase_result"])
     draft_result = WriterOutput.model_validate(draft_stage["draft"])
     elicited_stories_text = draft_stage.get("elicited_stories_text")
+    # From the PLANNING DTO, not the draft one: the title is chosen once in planning
+    # and never mutated downstream, so ``DraftStageResult`` does not carry it.
+    # ``.get`` keeps a pre-field history deserializable (see the draft activity).
+    selected_title = planning_stage.get("selected_title")
 
     def _body() -> Dict[str, Any]:
         from agents.blogging.agent_implementations.blog_writing_process_v2 import run_gates_stage
@@ -370,6 +379,7 @@ def gates_stage_activity(
         ctx.plan = ppr.content_plan
         ctx.draft_result = draft_result
         ctx.elicited_stories_text = elicited_stories_text
+        ctx.selected_title = selected_title
 
         run_gates_stage(ctx)
         return GatesStageResult(
