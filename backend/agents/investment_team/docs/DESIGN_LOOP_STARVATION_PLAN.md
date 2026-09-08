@@ -44,10 +44,23 @@ lines.
 - It runs **only on the reviewer branch** of `_review_and_handle_critique`
   (`deterministic_ready is True`). A spec that never passes the readiness gate
   never triggers a fetch, so the design loop's cheap-rejection path stays free.
-- It fetches **the same `(symbols, asset_class, start, end, as_of)` key synthesis
-  will fetch**, and `MarketDataService` is backed by a durable content-hashed
-  Parquet cache. On the happy path the synthesis fetch that follows is a cache
-  hit — the fetch is *moved earlier*, not duplicated.
+- It fetches **the same symbols, over the same window, at the same `as_of`** that
+  synthesis will fetch, and `MarketDataService` is backed by a durable
+  content-hashed Parquet cache. So the synthesis fetch that follows hits that
+  cache — the fetch is *moved earlier*, not duplicated.
+
+  Stated precisely, because the precision is what makes it hold: that cache is
+  keyed **per symbol**, not per universe (`market_data_cache/store.py:607`;
+  `get_or_fetch_multi` is a parallel wrapper over the single-symbol
+  `get_or_fetch`). The design round and the later synthesis fetch resolve their
+  universes independently, and `_max_universe_symbols()` re-reads its ceiling
+  from the environment each time, so the two lists are not guaranteed identical.
+  Per-symbol keying is exactly why that does not matter here: every symbol the
+  two fetches share is a hit, and a cap change costs only the symbols it adds.
+  The affordability argument survives a mid-attempt cap change instead of
+  quietly depending on there not being one — which is the same assumption the
+  memo-key constraint below refuses to make, appearing here in a cost claim
+  rather than a correctness one.
 - Net new cost is limited to specs that pass readiness, get reviewed, and then
   never reach synthesis.
 - A per-attempt memo plus a probe-signature memo keeps repeat rounds free when
