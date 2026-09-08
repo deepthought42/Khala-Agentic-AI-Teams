@@ -620,3 +620,53 @@ def test_revise_renders_and_passes_the_suppression_block(monkeypatch) -> None:
     batch_prompt = _only_prompt_starting(prompts, "YOUR TASK: Revise the draft")
     assert _suppression_line(batch_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
     assert SUPPRESSION_INSTRUCTION in batch_prompt
+
+
+def test_revision_plan_prompt_carries_the_stories_and_coverage(monkeypatch) -> None:
+    """The *planner* needs the context at least as much as the executor.
+
+    ``revise()`` asks for a structured revision plan first, then instructs the model to
+    apply that plan. The planning prompt runs under ``WRITING_SYSTEM_PROMPT`` too, so a
+    planner that cannot see the author's stories may read a genuine first-person passage
+    as fabricated and prescribe deleting it — and the executor is then told to follow the
+    plan, which its own copy of the block arrives too late to prevent.
+    """
+    from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
+    from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
+    from agents.blogging.shared.content_plan import ContentPlanSection
+
+    from ._content_plan_test_utils import make_content_plan
+
+    plan_prompts: list[str] = []
+
+    def fake_call_json(self, prompt, *a, **kw):
+        plan_prompts.append(prompt)
+        return {"summary": "s", "changes": [], "risks": []}
+
+    _capture_prompts(monkeypatch)
+    monkeypatch.setattr(BlogWriterAgent, "_call_agent_json", fake_call_json)
+
+    make_writer_agent().revise(
+        ReviseWriterInput(
+            draft="# Draft\n\nBody.",
+            feedback_items=[
+                FeedbackItem(
+                    category="style", severity="must_fix", issue="Tighten.", suggestion="Cut."
+                )
+            ],
+            content_plan=make_content_plan(
+                overarching_topic="Topic",
+                narrative_flow="flow",
+                sections=[ContentPlanSection(title="Intro", coverage_description="hook", order=0)],
+            ),
+            elicited_stories=STORIES,
+            covered_sections=["Why it broke", "Intro"],
+        )
+    )
+
+    plan_prompt = _only_prompt_starting(plan_prompts, "Analyse ALL feedback items")
+    assert STORIES in plan_prompt, "the planner cannot see the author's stories"
+    assert _suppression_line(plan_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+    # The stories must precede the draft they are evidence about.
+    assert plan_prompt.index(STORIES) < plan_prompt.index("CURRENT DRAFT:")

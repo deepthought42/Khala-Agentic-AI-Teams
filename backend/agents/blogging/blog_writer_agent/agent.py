@@ -1064,6 +1064,12 @@ class BlogWriterAgent(_BlogAgentBase):
         # ── Step 1+2: Analyse feedback and create structured revision plan ──
         if on_llm_request:
             on_llm_request(f"Analysing {num_items} feedback items and creating revision plan...")
+        # Rendered once for both LLM steps below. The planner needs it as much as the
+        # executor: it decides *whether* a first-person passage is fabricated, and the
+        # executor is then told to apply its plan.
+        covered_sections_section = _render_covered_sections_section(
+            revise_input.covered_sections, revise_input.elicited_stories
+        )
         revision_plan: RevisionPlan = revision.generate_revision_plan(
             draft,
             items,
@@ -1071,6 +1077,7 @@ class BlogWriterAgent(_BlogAgentBase):
             call_json=self._call_agent_json,
             call_text=self._call_text,
             llm=self._model,
+            covered_sections_section=covered_sections_section,
         )
         logger.info(
             "Revision plan: %s planned changes, %s risks identified",
@@ -1119,9 +1126,7 @@ class BlogWriterAgent(_BlogAgentBase):
             revise_input,
             llm=self._model,
             allowed_claims_section=_render_allowed_claims_section(revise_input.allowed_claims),
-            covered_sections_section=_render_covered_sections_section(
-                revise_input.covered_sections, revise_input.elicited_stories
-            ),
+            covered_sections_section=covered_sections_section,
         )
         current_draft = draft
         primary_succeeded = False

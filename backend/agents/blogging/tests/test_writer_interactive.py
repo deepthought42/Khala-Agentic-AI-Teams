@@ -701,8 +701,8 @@ def test_revise_with_feedback_batches(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
     monkeypatch.setattr(
@@ -749,8 +749,8 @@ def test_revise_skips_json_fallback_when_primary_returns_identical_draft(monkeyp
     monkeypatch.setattr(
         revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
     monkeypatch.setattr(
@@ -800,8 +800,8 @@ def test_revise_programming_error_propagates(monkeypatch) -> None:
     monkeypatch.setattr(
         wa_mod.revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
 
@@ -845,8 +845,8 @@ def test_revise_falls_back_to_original_when_llm_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         wa_mod.revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
     monkeypatch.setattr(BlogWriterAgent, "_call_text", lambda self, *a, **kw: "no marker")
@@ -887,8 +887,8 @@ def test_revise_batch_uses_json_fallback_when_text_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         wa_mod.revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
 
@@ -934,8 +934,8 @@ def test_revise_wrapped_temporary_retries_then_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         wa_mod.revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
     wrapped = LLMTemporaryError("temporary")
@@ -996,8 +996,8 @@ def test_revise_wrapped_json_parse_error_retries_then_fallback(monkeypatch) -> N
     monkeypatch.setattr(
         wa_mod.revision,
         "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None: RevisionPlan(
-            summary="planned", changes=[], risks=[]
+        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
+            RevisionPlan(summary="planned", changes=[], risks=[])
         ),
     )
 
