@@ -62,6 +62,11 @@ language: python             # or typescript, etc.
 stack: fastapi                # free text, e.g. fastapi, angular, temporal-worker
 gates: [code_review, security]   # subset of {code_review, qa, security} — which gates this case scores
 mode: diff                    # "diff" or "files" — see below
+origin:                       # where the case came from — see "Provenance" below
+  sourcing: real              # real | invented
+  commit: "0040820"           # short SHA of the origin commit, quoted; required when sourcing: real
+  # note: <provenance note>   # required when invented (why no real example existed);
+                              # permitted when real (a substitution or other nuance)
 expected_findings:
   - <label>                    # zero or more; see §2
   - <label>
@@ -110,6 +115,57 @@ keep `expected_findings` inline in `case.yaml` instead.
 
 YAML is chosen because it is diff-friendly line by line in a pull-request
 review, matching the "human-reviewable in a PR" requirement.
+
+### Provenance
+
+`origin` is a required top-level field. It records where the case's fixture
+came from, so a reader can tell evidence grounded in a defect this repository
+actually shipped from a plausible construction, without leaving the case file:
+
+- **`sourcing`** is `real` or `invented`.
+- **`commit`** is the short SHA of the origin commit and is required when
+  `sourcing: real`, omitted otherwise. That commit is the *fix* — the ground
+  truth for what the defect was and where it lived. A real case's `diff.patch`
+  is therefore the inverse of that commit, reduced to the change blocks its
+  labels point at. **The patch applies to the origin commit itself** — the
+  fixed file — and the post-diff file is what that produces: the fixed file
+  with only the labeled blocks reverted. It is not the fix commit's parent,
+  because the parent still carries whatever else that commit repaired, and a
+  fixture must contain no defect it does not label. Labels' line numbers are
+  positions in that produced file. A real case stays pinned to its origin
+  commit; it is not resynchronized as the repository moves on.
+
+  Reduction carries a labeled block's dependencies with it. A labeled block may
+  call a name whose import moved out with the fix, or claim in a docstring a
+  precondition a sibling block enforces, and a fix that *moves* code appears as
+  a deletion at the new site paired with an insertion at the old one. Those
+  blocks are part of the same defect: reverting only the block a label sits in
+  yields a fixture that raises instead of exhibiting its defect, states a defect
+  the surviving code still prevents, or carries both copies of the moved code.
+  Where a defect has no coherent subset, the case keeps the whole inverse.
+
+  **A `sourcing: real` case is always `mode: diff`.** The construction above is
+  defined in terms of a patch, and there is no files-mode equivalent: a plain
+  tree of full file contents taken from a fix commit's parent carries every
+  defect that commit repaired, not only the labeled one, which is the reason
+  the parent is ruled out as a diff base too. A real fix can still be the
+  *model* for a files-mode case, but that case is `sourcing: invented` and says
+  so in its `note`.
+
+  **`commit` must be quoted.** An all-digit short SHA is an integer to a YAML
+  1.2 parser, and octal to PyYAML when every digit is below 8 — either way the
+  leading zero is lost and a comparison against `git rev-parse --short` fails.
+- **`note`** is *required* when `sourcing: invented` and *permitted* when
+  `sourcing: real` — a real case may use it to record that its fixture was drawn
+  from a different commit than the selection plan originally cited, or any other
+  provenance nuance worth keeping beside the case. When required, it states why
+  no real example was available — a search that came back empty, or a structural
+  reason the class cannot survive in merged history. "No example was found"
+  alone is not a reason.
+
+A case whose fixture is authored rather than derived is not second-class, but
+it is a weaker grade of evidence, and this field is what keeps that difference
+visible to anyone reading a metric computed over the corpus.
 
 ### Case identifier policy
 
@@ -291,6 +347,11 @@ language: python
 stack: fastapi
 gates: [code_review]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: code_review
@@ -332,6 +393,11 @@ language: python
 stack: fastapi
 gates: [code_review, security, qa]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: code_review

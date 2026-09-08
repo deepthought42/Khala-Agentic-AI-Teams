@@ -1,0 +1,12 @@
+- label_id: L1
+  gate: security
+  defect_class: injection
+  severity: critical
+  polarity: must_find
+  file_path: app/api/routes/audit.py
+  line: 24
+  line_end: 25
+  description: >
+    `actor` and `since` arrive straight from the request query string and are
+    f-string-interpolated into the WHERE clause inside single quotes, so
+    either one can close the quote and append arbitrary SQL.

@@ -1,0 +1,23 @@
+diff --git a/backend/agents/investment_team/api/main.py b/backend/agents/investment_team/api/main.py
+--- a/backend/agents/investment_team/api/main.py
++++ b/backend/agents/investment_team/api/main.py
+@@ -5080,17 +5080,9 @@
+             )
+         if isinstance(exc, HTTPException):
+             raise
+-        if is_dispatch_failure:
+-            raise HTTPException(
+-                status_code=503,
+-                detail="Failed to start the paper-trading workflow; Temporal worker unavailable.",
+-            ) from exc
+-        logger.exception(
+-            "Unexpected error starting paper-trading workflow for session %s", session_id
+-        )
+         raise HTTPException(
+-            status_code=500,
+-            detail="Unexpected error starting the paper-trading workflow.",
++            status_code=503,
++            detail="Failed to start the paper-trading workflow; Temporal worker unavailable.",
+         ) from exc
+ 
+     return PaperTradingResponse(

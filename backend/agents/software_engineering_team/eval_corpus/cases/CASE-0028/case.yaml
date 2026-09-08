@@ -1,0 +1,10 @@
+case_id: CASE-0028
+title: Progress counter can grow past the next phase's fixed value
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "70f16f7"

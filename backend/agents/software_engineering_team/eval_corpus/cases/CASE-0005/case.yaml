@@ -1,0 +1,12 @@
+case_id: CASE-0005
+title: Predicate name is the inverse of what the function returns
+language: python
+stack: fastapi
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    Naming nits are fixed pre-merge inside the same squash-merged pull request
+    that introduced them, so no isolated rename survives in main's history.

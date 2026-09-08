@@ -1,0 +1,13 @@
+case_id: CASE-0044
+title: Unclosed bracket in a dictionary literal
+language: python
+stack: fastapi
+gates: [qa]
+mode: files
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    Same structural reason as the other build-failure classes: a syntax error
+    cannot survive pre-merge lint and build gating, and squash merges remove
+    the intermediate commits where one briefly existed.

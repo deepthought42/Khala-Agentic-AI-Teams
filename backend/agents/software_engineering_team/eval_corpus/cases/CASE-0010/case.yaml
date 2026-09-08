@@ -1,0 +1,14 @@
+case_id: CASE-0010
+title: Missing report answered with 200 instead of the documented 404
+language: python
+stack: fastapi
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    Real candidates found in history build the spec-compliance check itself
+    rather than being an application defect it later caught; the gate blocks
+    merge on review approval, so a spec violation reaching main is close to
+    the failure mode it exists to prevent.

@@ -1,0 +1,12 @@
+- label_id: L1
+  gate: qa
+  defect_class: resource-leak
+  severity: medium
+  polarity: must_find
+  file_path: user-interface/src/app/components/flowchart-panel/flowchart-panel.component.ts
+  line: 12
+  line_end: 14
+  description: >
+    The handler is registered on `window`, which outlives every component, and
+    closes over `this`. Nothing removes it, so each instantiation leaves
+    another listener holding a destroyed component alive.

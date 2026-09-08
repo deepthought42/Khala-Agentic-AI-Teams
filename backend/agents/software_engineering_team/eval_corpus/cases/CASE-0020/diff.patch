@@ -1,0 +1,35 @@
+diff --git a/app/api/routes/audit.py b/app/api/routes/audit.py
+new file mode 100644
+--- /dev/null
++++ b/app/api/routes/audit.py
+@@ -0,0 +1,30 @@
++"""Audit-trail read endpoints."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from fastapi import APIRouter
++
++from ..db import connection
++
++router = APIRouter(prefix="/audit", tags=["audit"])
++
++
++@router.get("/events")
++def search_events(actor: str, since: str) -> list[dict[str, Any]]:
++    """Return audit events recorded for one actor.
++
++    Preconditions:
++        * ``actor`` and ``since`` arrive from the request query string.
++    Postconditions:
++        * Returns the matching audit rows, newest first.
++    """
++    query = (
++        f"SELECT id, actor, action, created_at FROM audit_events "
++        f"WHERE actor = '{actor}' AND created_at >= '{since}' "
++        "ORDER BY created_at DESC"
++    )
++    with connection() as cur:
++        cur.execute(query)
++        return cur.fetchall()

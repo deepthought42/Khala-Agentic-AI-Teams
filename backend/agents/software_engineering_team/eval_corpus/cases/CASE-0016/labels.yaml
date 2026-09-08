@@ -1,0 +1,14 @@
+- label_id: L1
+  gate: code_review
+  defect_class: refactor
+  severity: medium
+  polarity: must_find
+  file_path: backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
+  line: 281
+  line_end: 305
+  description: >
+    This block replaces a one-line call to `_run_execution_phase` with a
+    hand-inlined copy of that helper's body — the review-gated invocation and
+    both failure branches. The class inherits the helper from
+    `BaseV2DevelopmentAgent`, so the inlined copy adds no behaviour and drifts
+    from the base on the next change.

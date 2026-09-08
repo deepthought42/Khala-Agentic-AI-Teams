@@ -1,0 +1,10 @@
+case_id: CASE-0039
+title: Catch-all except returns None, erasing the difference from not-found
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "4f1b84e"

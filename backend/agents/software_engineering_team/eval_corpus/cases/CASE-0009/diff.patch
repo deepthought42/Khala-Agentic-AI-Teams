@@ -1,0 +1,12 @@
+diff --git a/user-interface/src/app/components/coding-team-page/out-of-scope-issues/out-of-scope-issues.component.html b/user-interface/src/app/components/coding-team-page/out-of-scope-issues/out-of-scope-issues.component.html
+--- a/user-interface/src/app/components/coding-team-page/out-of-scope-issues/out-of-scope-issues.component.html
++++ b/user-interface/src/app/components/coding-team-page/out-of-scope-issues/out-of-scope-issues.component.html
+@@ -69,7 +69,7 @@
+           <mat-checkbox
+             [checked]="isSelected(p)"
+             (change)="toggleSelection(p)"
+-            [aria-label]="'Select: ' + p.description"
++            [attr.aria-label]="'Select: ' + p.description"
+             class="oos-issue__checkbox"
+           ></mat-checkbox>
+ 

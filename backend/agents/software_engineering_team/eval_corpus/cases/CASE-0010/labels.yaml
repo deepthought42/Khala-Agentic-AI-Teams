@@ -1,0 +1,12 @@
+- label_id: L1
+  gate: code_review
+  defect_class: spec-compliance
+  severity: high
+  polarity: must_find
+  file_path: app/api/routes/reports.py
+  line: 25
+  line_end: 26
+  description: >
+    The documented contract for this resource is a 404 when the report does
+    not exist. The handler instead returns 200 with an empty summary, so a
+    caller cannot distinguish a missing report from an empty one.

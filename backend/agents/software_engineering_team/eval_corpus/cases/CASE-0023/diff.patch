@@ -1,0 +1,58 @@
+diff --git a/backend/unified_api/routes/integrations.py b/backend/unified_api/routes/integrations.py
+--- a/backend/unified_api/routes/integrations.py
++++ b/backend/unified_api/routes/integrations.py
+@@ -643,10 +643,12 @@
+     cfg = get_slack_config()
+     signing_secret = str(cfg.get("signing_secret") or "").strip()
+ 
+-    # When a secret exists, verify FIRST — a bad/stale/malformed signature is a client
+-    # auth failure (401), independent of event type.
+-    if signing_secret and not verify_slack_request(signing_secret, body, timestamp, signature):
+-        raise HTTPException(status_code=401, detail="Invalid Slack signature")
++    # Verify signature (skip only for url_verification if no secret configured yet)
++    if signing_secret:
++        if not verify_slack_request(signing_secret, body, timestamp, signature):
++            raise HTTPException(status_code=401, detail="Invalid Slack signature")
++    else:
++        logger.warning("Slack signing secret not configured — skipping signature verification")
+ 
+     # Parse the body BEFORE the no-secret refusal: the event type lives in the JSON body
+     # (not a header), so url_verification must be identifiable while unsigned.
+@@ -833,16 +835,7 @@
+     cfg = get_slack_config()
+     signing_secret = str(cfg.get("signing_secret") or "").strip()
+ 
+-    if not signing_secret:
+-        logger.warning("Slack signing secret not configured — refusing slash command until a signing secret is set")
+-        raise HTTPException(
+-            status_code=_SLACK_NO_SECRET_STATUS,
+-            detail=(
+-                "Slack signing secret not configured; refusing to process slash commands. "
+-                "Configure the Slack signing secret and retry."
+-            ),
+-        )
+-    if not verify_slack_request(signing_secret, body, timestamp, signature):
++    if signing_secret and not verify_slack_request(signing_secret, body, timestamp, signature):
+         raise HTTPException(status_code=401, detail="Invalid Slack signature")
+ 
+     # Parse form-encoded body
+@@ -885,18 +878,7 @@
+     cfg = get_slack_config()
+     signing_secret = str(cfg.get("signing_secret") or "").strip()
+ 
+-    if not signing_secret:
+-        logger.warning(
+-            "Slack signing secret not configured — refusing interactive payload until a signing secret is set"
+-        )
+-        raise HTTPException(
+-            status_code=_SLACK_NO_SECRET_STATUS,
+-            detail=(
+-                "Slack signing secret not configured; refusing to process interactive components. "
+-                "Configure the Slack signing secret and retry."
+-            ),
+-        )
+-    if not verify_slack_request(signing_secret, body, timestamp, signature):
++    if signing_secret and not verify_slack_request(signing_secret, body, timestamp, signature):
+         raise HTTPException(status_code=401, detail="Invalid Slack signature")
+ 
+     return {"ok": True}

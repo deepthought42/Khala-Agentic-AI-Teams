@@ -1,0 +1,10 @@
+case_id: CASE-0040
+title: Catch-all reported as a specific, unrelated failure
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "87a02c2"

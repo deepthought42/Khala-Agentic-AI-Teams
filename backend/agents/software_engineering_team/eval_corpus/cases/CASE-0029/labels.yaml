@@ -1,0 +1,13 @@
+- label_id: L1
+  gate: qa
+  defect_class: race-condition
+  severity: high
+  polarity: must_find
+  file_path: backend/agents/investment_team/api/main.py
+  line: 1460
+  line_end: 1465
+  description: >
+    Cancellation is re-checked immediately before the RUNNING and FAILED
+    writes but not before this one, and the record construction and store
+    above run inside that window. A cancel landing there is silently
+    overwritten with COMPLETED, leaving a cancelled job reported as finished.

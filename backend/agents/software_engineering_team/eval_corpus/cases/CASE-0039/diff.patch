@@ -1,0 +1,46 @@
+diff --git a/backend/agents/investment_team/strategy_lab/run_state.py b/backend/agents/investment_team/strategy_lab/run_state.py
+--- a/backend/agents/investment_team/strategy_lab/run_state.py
++++ b/backend/agents/investment_team/strategy_lab/run_state.py
+@@ -106,34 +106,14 @@
+ 
+ 
+ def load_run_from_job_service(run_id: str) -> Optional[Dict[str, Any]]:
+-    """Try to load a run state from the job service (fallback when not in ``active_runs``).
+-
+-    Preconditions:
+-        - ``run_id`` may or may not name a persisted job.
+-
+-    Postconditions:
+-        - Returns the normalized state dict (via ``normalize_persisted_job``)
+-          when the job service holds a record for ``run_id``.
+-        - Returns ``None`` when the job service reports no record — the job
+-          service's ``GET /jobs/{team}/{job_id}`` always responds 200 with
+-          ``job: null`` for a missing job (see ``backend/job_service/main.py``),
+-          never an error, so this is the only "not found" outcome and it
+-          never involves an exception.
+-
+-    Raises:
+-        - Whatever ``get_lab_run_job_client().get_job(run_id)`` raises
+-          (transport errors, HTTP error statuses, a ``RuntimeError`` for
+-          unconfigured ``JOB_SERVICE_URL``, etc.) propagates uncaught. These
+-          are genuine failures, not "run not found" — swallowing them here
+-          previously made a transient job-service outage indistinguishable
+-          from a nonexistent run, which corrupted resume behavior downstream
+-          (``rehydrate_active_run_offset``/``get_resume_seed_counters`` would
+-          silently default to 0/empty instead of the real persisted offset).
+-    """
+-    client = get_lab_run_job_client()
+-    job = client.get_job(run_id)
+-    if job:
+-        return normalize_persisted_job(job, fallback_status="completed", run_id=run_id)
++    """Try to load a run state from the job service (fallback when not in ``active_runs``)."""
++    try:
++        client = get_lab_run_job_client()
++        job = client.get_job(run_id)
++        if job:
++            return normalize_persisted_job(job, fallback_status="completed", run_id=run_id)
++    except Exception:
++        pass
+     return None
+ 
+ 

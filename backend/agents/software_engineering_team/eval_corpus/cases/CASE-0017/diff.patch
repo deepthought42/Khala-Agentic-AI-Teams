@@ -1,0 +1,12 @@
+diff --git a/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py b/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
+--- a/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
++++ b/backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
+@@ -197,7 +197,7 @@
+         issues=issues,
+         gaps=gaps,
+         open_questions=open_questions,
+-        summary=str(raw.get("summary") or "Spec review complete"),
++        summary=str(raw.get("summary", "") or "Spec review complete"),
+     )
+ 
+ 

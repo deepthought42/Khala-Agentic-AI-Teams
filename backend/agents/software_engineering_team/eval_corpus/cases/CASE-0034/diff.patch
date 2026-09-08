@@ -1,0 +1,18 @@
+diff --git a/backend/agents/investment_team/market_data_service.py b/backend/agents/investment_team/market_data_service.py
+--- a/backend/agents/investment_team/market_data_service.py
++++ b/backend/agents/investment_team/market_data_service.py
+@@ -953,10 +953,10 @@
+             zero-volume sentinel ADV/liquidity math already excludes), logged
+             at WARNING.
+         """
+-        o = round(MarketDataService._coerce_finite_or_nan(open), 4)
+-        h = round(MarketDataService._coerce_finite_or_nan(high), 4)
+-        ll = round(MarketDataService._coerce_finite_or_nan(low), 4)
+-        c = round(MarketDataService._coerce_finite_or_nan(close), 4)
++        o = round(float(open), 4)
++        h = round(float(high), 4)
++        ll = round(float(low), 4)
++        c = round(float(close), 4)
+         if not (math.isfinite(o) and math.isfinite(h) and math.isfinite(ll) and math.isfinite(c)):
+             return (None, False)
+         # Volume can be non-finite (NaN on early-listing/low-liquidity sessions)

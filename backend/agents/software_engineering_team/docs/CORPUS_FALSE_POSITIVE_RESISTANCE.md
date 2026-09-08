@@ -242,6 +242,11 @@ language: python
 stack: fastapi
 gates: [security]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: security
@@ -368,6 +373,11 @@ language: python
 stack: fastapi
 gates: [code_review]
 mode: diff
+origin:
+  sourcing: invented
+  note: >
+    Illustration authored for this specification rather than drawn from
+    a fix commit.
 expected_findings:
   - label_id: L1
     gate: code_review

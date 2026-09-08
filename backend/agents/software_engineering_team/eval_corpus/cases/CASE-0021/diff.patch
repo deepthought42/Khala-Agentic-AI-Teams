@@ -1,0 +1,12 @@
+diff --git a/user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts b/user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts
+--- a/user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts
++++ b/user-interface/src/app/components/process-designer-chat/process-designer-chat.component.ts
+@@ -794,7 +794,7 @@
+     // Draw trigger node (rounded rect, green tint)
+     const trigY = nodeY(0);
+     svg += `<rect x="${cx - nodeWidth / 2}" y="${trigY}" width="${nodeWidth}" height="${nodeHeight}" rx="25" ry="25" fill="#1a3a2a" stroke="#3fb950" stroke-width="1.5"/>`;
+-    svg += `<text x="${cx}" y="${trigY + nodeHeight / 2 + 5}" text-anchor="middle" fill="#3fb950" font-size="12" font-family="sans-serif">${this.escSvg(process.trigger.trigger_type.toUpperCase())}: ${this.escSvg(this.truncate(process.trigger.description || 'Trigger', 20))}</text>`;
++    svg += `<text x="${cx}" y="${trigY + nodeHeight / 2 + 5}" text-anchor="middle" fill="#3fb950" font-size="12" font-family="sans-serif">${this.escSvg(process.trigger.trigger_type.toUpperCase())}: ${this.truncate(process.trigger.description || 'Trigger', 20)}</text>`;
+ 
+     // Arrow from trigger to first step
+     if (steps.length > 0) {

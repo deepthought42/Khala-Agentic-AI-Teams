@@ -1,0 +1,10 @@
+case_id: CASE-0021
+title: Trigger description interpolated unescaped into trusted SVG
+language: typescript
+stack: angular
+gates: [security]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "7e11ddc"

@@ -1,0 +1,10 @@
+case_id: CASE-0016
+title: Inherited execution-phase helper reimplemented inline in the subclass
+language: python
+stack: fastapi
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "51810fd5"

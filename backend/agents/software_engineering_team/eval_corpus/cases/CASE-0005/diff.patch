@@ -1,0 +1,36 @@
+diff --git a/app/agents/support_agent/validation.py b/app/agents/support_agent/validation.py
+new file mode 100644
+--- /dev/null
++++ b/app/agents/support_agent/validation.py
+@@ -0,0 +1,31 @@
++"""Ticket validation helpers."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from .queue import enqueue
++
++
++def is_valid(ticket: dict[str, Any]) -> list[str]:
++    """Collect the reasons a ticket cannot be accepted.
++
++    Preconditions:
++        * ``ticket`` is a ``dict``.
++    Postconditions:
++        * Returns one message per failed check; empty when nothing failed.
++    """
++    assert isinstance(ticket, dict), "ticket must be a dict"
++    problems: list[str] = []
++    if not ticket.get("body"):
++        problems.append("body is empty")
++    if not ticket.get("reporter"):
++        problems.append("reporter is missing")
++    return problems
++
++
++def accept(ticket: dict[str, Any]) -> bool:
++    """Enqueue a ticket that passes validation."""
++    if is_valid(ticket):
++        return False
++    return enqueue(ticket)

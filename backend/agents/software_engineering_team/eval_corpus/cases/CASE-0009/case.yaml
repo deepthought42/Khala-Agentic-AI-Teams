@@ -1,0 +1,10 @@
+case_id: CASE-0009
+title: aria-label bound as a host attribute on mat-checkbox
+language: html
+stack: angular
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "3fd49f5"

@@ -1,0 +1,16 @@
+case_id: CASE-0029
+title: Cancellation re-check missing before the terminal status write
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "0523b9c"
+  note: >
+    Substituted for the selection plan's first-choice commit, whose fix
+    replaced an atomic helper used at four sites at once and removed a
+    sentinel that unchanged callers still import, so no subset of it reduces
+    to one coherent defect. This backup commit fixes the same race in the same
+    function with a single guard.

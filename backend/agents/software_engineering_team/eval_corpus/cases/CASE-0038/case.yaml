@@ -1,0 +1,10 @@
+case_id: CASE-0038
+title: One store method skips the path validation its siblings apply
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "0436308"

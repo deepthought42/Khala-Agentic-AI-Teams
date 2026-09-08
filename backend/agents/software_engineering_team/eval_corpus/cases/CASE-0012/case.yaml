@@ -1,0 +1,14 @@
+case_id: CASE-0012
+title: Native blocking alert() used for an error toast
+language: typescript
+stack: angular
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "086a4894"
+  note: >
+    Substituted for the commit the selection plan cited (1308c1d), whose
+    squashed diff contains no alert() — it had already been removed by this
+    commit, which is the one that actually performs the replacement.

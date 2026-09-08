@@ -1,0 +1,69 @@
+diff --git a/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py b/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
+--- a/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
++++ b/backend/agents/software_engineering_team/backend_code_v2_team/orchestrator.py
+@@ -26,6 +26,7 @@
+ from .models import (
+     BackendCodeV2WorkflowResult,
+     MicrotaskReviewConfig,
++    MicrotaskReviewFailedError,
+     Phase,
+     ToolAgentKind,
+ )
+@@ -277,28 +278,36 @@
+ 
+         config = review_config or MicrotaskReviewConfig()
+ 
+-        current_files = self._run_execution_phase(
+-            task_id=task_id,
+-            task=task,
+-            planning_result=planning_result,
+-            repo_path=repo_path,
+-            architecture=architecture,
+-            spec_content=spec_content,
+-            existing_code=existing_code,
+-            tool_runners=tool_runners,
+-            progress_callback=progress_callback,
+-            review_deps=review_deps,
+-            review_config=config,
+-            llm=self.llm,
+-            result=result,
+-            run_execution_with_review_gates=run_execution_with_review_gates,
+-            update_job=_update_job,
+-            logger=logger,
+-            status_text="Starting code implementation",
+-        )
+-        if current_files is None:
++        try:  # pragma: no cover  # integration-only: runs review-gated execution loop against live LLM + pytest/lint
++            exec_result = run_execution_with_review_gates(
++                llm=self.llm,
++                task=task,
++                planning_result=planning_result,
++                repo_path=repo_path,
++                architecture=architecture,
++                spec_content=spec_content,
++                existing_code=existing_code,
++                tool_runners=tool_runners,
++                progress_callback=progress_callback,
++                review_config=config,
++                review_deps=review_deps,
++            )
++            result.execution_result = exec_result
++        except MicrotaskReviewFailedError as err:
++            result.failure_reason = (
++                f"Microtask {err.microtask.id} failed review: {err.review_result.summary}"
++            )
++            logger.error("[%s] %s", task_id, result.failure_reason)
+             return result
+-        exec_result = result.execution_result
++        except Exception as exc:
++            result.failure_reason = f"Execution failed: {exc}"
++            logger.error("[%s] %s", task_id, result.failure_reason)
++            return result
++
++        current_files = exec_result.files
++        if not current_files:
++            result.failure_reason = "Execution produced no files."
++            return result
+ 
+         completed_count, failed_count = self._record_execution_bookkeeping(
+             task_id=task_id,

@@ -1,0 +1,38 @@
+- label_id: L1
+  gate: security
+  defect_class: auth
+  severity: critical
+  polarity: must_find
+  file_path: backend/unified_api/routes/integrations.py
+  line: 647
+  line_end: 650
+  description: >
+    Signature verification on the events endpoint runs only when a signing
+    secret happens to be configured. With the secret unset the request is
+    accepted unverified, so a missing configuration value silently turns an
+    authenticated webhook into an open endpoint. It must fail closed.
+
+- label_id: L2
+  gate: security
+  defect_class: auth
+  severity: critical
+  polarity: must_find
+  file_path: backend/unified_api/routes/integrations.py
+  line: 838
+  line_end: 839
+  description: >
+    The slash-command endpoint short-circuits the same way: with an empty
+    signing secret the `and` never reaches the verification call and the
+    request is accepted unsigned.
+
+- label_id: L3
+  gate: security
+  defect_class: auth
+  severity: critical
+  polarity: must_find
+  file_path: backend/unified_api/routes/integrations.py
+  line: 881
+  line_end: 882
+  description: >
+    The interactive-payload endpoint repeats the same short-circuit, accepting
+    unsigned payloads whenever the signing secret is unset.

@@ -1,0 +1,22 @@
+diff --git a/user-interface/src/app/components/flowchart-panel/flowchart-panel.component.ts b/user-interface/src/app/components/flowchart-panel/flowchart-panel.component.ts
+new file mode 100644
+--- /dev/null
++++ b/user-interface/src/app/components/flowchart-panel/flowchart-panel.component.ts
+@@ -0,0 +1,17 @@
++import { Component, OnInit } from '@angular/core';
++
++@Component({
++  selector: 'app-flowchart-panel',
++  standalone: true,
++  template: '<div class="flowchart" [style.width.px]="width"></div>',
++})
++export class FlowchartPanelComponent implements OnInit {
++  width = 0;
++
++  ngOnInit(): void {
++    this.width = window.innerWidth;
++    window.addEventListener('resize', () => {
++      this.width = window.innerWidth;
++    });
++  }
++}

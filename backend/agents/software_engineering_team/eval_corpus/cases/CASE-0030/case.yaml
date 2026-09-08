@@ -1,0 +1,10 @@
+case_id: CASE-0030
+title: Lock released between session enumeration and write-back
+language: python
+stack: fastapi
+gates: [qa]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "f5eb3e9"

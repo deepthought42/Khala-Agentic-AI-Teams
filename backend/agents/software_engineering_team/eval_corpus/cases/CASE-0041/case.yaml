@@ -1,0 +1,14 @@
+case_id: CASE-0041
+title: Module uses a name it never imports
+language: python
+stack: fastapi
+gates: [qa]
+mode: files
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    This repository's CI gates lint and build before merge, and every commit
+    on main is a squash merge, so the mid-development commits that introduce
+    and fix a broken import are squashed away and never appear in main's
+    history.

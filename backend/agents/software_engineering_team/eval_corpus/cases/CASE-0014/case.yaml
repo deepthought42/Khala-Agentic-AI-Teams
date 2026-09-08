@@ -1,0 +1,10 @@
+case_id: CASE-0014
+title: Teardown success spec passes without exercising the subscribe path
+language: typescript
+stack: angular
+gates: [code_review]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: real
+  commit: "0175839"

@@ -1,0 +1,15 @@
+case_id: CASE-0020
+title: Request query parameters interpolated into a raw SQL string
+language: python
+stack: fastapi
+gates: [security]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    The one real identifier-interpolation commit in this history (27691e3)
+    hardened a fixed code literal that was never attacker-controlled — defence
+    in depth, not a vulnerability a gate should have caught. Every real SQL
+    path in this codebase parameterizes its values, so no exploitable
+    injection exists here to source from.

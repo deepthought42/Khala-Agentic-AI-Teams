@@ -1,0 +1,11 @@
+diff --git a/backend/agents/agent_provisioning_team/shared/environment_store.py b/backend/agents/agent_provisioning_team/shared/environment_store.py
+--- a/backend/agents/agent_provisioning_team/shared/environment_store.py
++++ b/backend/agents/agent_provisioning_team/shared/environment_store.py
+@@ -367,7 +367,6 @@
+                     try:
+                         data = json.loads(env_file.read_text(encoding="utf-8"))
+                         env = EnvironmentInfo.from_dict(data)
+-                        safe_path_component(env.agent_id, kind="agent_id")
+                         if env.agent_id in seen:
+                             continue
+                         seen.add(env.agent_id)

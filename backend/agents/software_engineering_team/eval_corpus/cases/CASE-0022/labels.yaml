@@ -1,0 +1,14 @@
+- label_id: L1
+  gate: security
+  defect_class: csrf
+  severity: medium
+  polarity: must_find
+  file_path: app/api/routes/account.py
+  line: 36
+  line_end: 40
+  description: >
+    The session cookie above is issued `SameSite=None`, so a browser sends it
+    on a cross-site POST. This endpoint mutates account state, authenticates
+    purely on that cookie, and accepts a form-encoded body with no origin
+    check and no CSRF token, so any third-party page can drive it on a
+    logged-in user's behalf.

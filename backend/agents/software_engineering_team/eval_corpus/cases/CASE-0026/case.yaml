@@ -1,0 +1,13 @@
+case_id: CASE-0026
+title: Cached payload deserialized with pickle
+language: python
+stack: fastapi
+gates: [security]
+mode: diff
+# expected_findings: split out into labels.yaml, per the case-format spec
+origin:
+  sourcing: invented
+  note: >
+    A full search of the backend for pickle.load/pickle.loads and
+    yaml.load/yaml.unsafe_load found zero production hits, so no unsafe
+    deserialization exists in this codebase to have had a defect.

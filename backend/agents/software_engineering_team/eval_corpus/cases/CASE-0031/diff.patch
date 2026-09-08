@@ -1,0 +1,15 @@
+diff --git a/backend/agents/investment_team/api/main.py b/backend/agents/investment_team/api/main.py
+--- a/backend/agents/investment_team/api/main.py
++++ b/backend/agents/investment_team/api/main.py
+@@ -363,10 +363,7 @@
+             if args:
+                 return args[0]
+             raise KeyError(key)
+-        if not self._client.delete_job(key):
+-            if args:
+-                return args[0]
+-            raise KeyError(key)
++        self._client.delete_job(key)
+         return job.get("data", job)
+ 
+     def values(self) -> List[Any]:

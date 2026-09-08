@@ -1,0 +1,13 @@
+- label_id: L1
+  gate: code_review
+  defect_class: maintainability
+  severity: low
+  polarity: must_find
+  file_path: backend/agents/software_engineering_team/product_requirements_analysis_agent/question_processing.py
+  line: 200
+  line_end: 200
+  description: >
+    The trailing `or "Spec review complete"` already supplies the fallback for
+    both an absent key and an empty string, so the explicit `""` default in
+    `.get` can never change the result. It is dead, and it invites the reader
+    to think two different fallbacks are in play.

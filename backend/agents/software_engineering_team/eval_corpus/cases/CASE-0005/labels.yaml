@@ -1,0 +1,14 @@
+- label_id: L1
+  gate: code_review
+  defect_class: naming
+  severity: medium
+  polarity: must_find
+  file_path: app/agents/support_agent/validation.py
+  line: 10
+  line_end: 10
+  description: >
+    `is_valid` reads as a predicate but returns the list of validation
+    failures, so it is truthy exactly when the ticket is invalid. The caller's
+    `if is_valid(ticket)` branch returns False, which is correct only under
+    those list semantics; read as the name promises, it rejects exactly the
+    tickets that passed.

@@ -1,0 +1,16 @@
+- label_id: L1
+  gate: qa
+  defect_class: unvalidated-input
+  severity: high
+  polarity: must_find
+  file_path: backend/agents/agent_provisioning_team/shared/credential_store.py
+  line: 314
+  line_end: 314
+  description: >
+    `agent_id` is interpolated into a filename with no validation, so an
+    identifier containing a path separator or `..` resolves outside
+    `storage_dir` — a read and write primitive against a store that holds
+    encrypted secrets. Every public method turns an identifier into a path
+    through here: writes call it directly, and reads and deletes reach it via
+    `_agent_file_candidates`, which repeats the same unchecked interpolation
+    for its legacy paths.
