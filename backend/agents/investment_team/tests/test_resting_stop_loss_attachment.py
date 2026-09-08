@@ -1,5 +1,6 @@
-"""Tests for migrating ``StopLossRule(basis="entry_price", style="market")`` to a
-resting ``STOP`` order attached at entry-fill.
+"""Tests for migrating ``StopLossRule(basis="entry_price")`` to a resting
+protective order attached at entry-fill — a ``STOP`` for ``style="market"``,
+a ``STOP_LIMIT`` for ``style="limit"``.
 
 Exercises that resting-order mechanism directly and so opts into it
 explicitly (via ``_EngineEntryDispatcher(resting_stop_loss_enabled=True, ...)``
@@ -18,6 +19,11 @@ Covers:
   translation into the generalized exit-leg attachment plumbing, and that its
   price math matches ``rule_compiler.stop_loss_level`` (the bar-close evaluator's
   own formula) exactly.
+- The limit style specifically: it resolves to the same leg shape a limit-style
+  BRACKET stop leg does (verified by comparing resolved attachments, not by
+  restating the arithmetic), and both of its prices re-anchor to the entry's
+  actual fill price together — the stop via ``entry_price_pct``, the limit via
+  ``entry_price_limit_offset_pct``.
 - ``_EngineEntryDispatcher``: ``maybe_emit`` attaches the resolved ``StopAttachment``
   via ``attached_exits`` (not the fixed ``attached_stop_loss`` bracket field), and
   omits it for an ineligible rule.
@@ -85,7 +91,10 @@ from investment_team.trading_service.strategy.contract import (
     OrderType,
     StopAttachment,
     TimeInForce,
+    UnfilledPolicy,
 )
+
+from ._resting_stop_loss_fixtures import limit_stop_rule
 
 # ---------------------------------------------------------------------------
 # _is_resting_stop_loss: eligibility predicate
@@ -105,9 +114,27 @@ def test_trailing_basis_is_not_eligible(basis: str) -> None:
     assert _is_resting_stop_loss(StopLossRule(pct=0.03, basis=basis)) is False
 
 
-def test_limit_style_is_not_eligible() -> None:
-    """``style="limit"`` is out of scope for this migration (future issue)."""
+def test_limit_style_is_eligible() -> None:
+    """``style="limit"`` rests as a STOP_LIMIT rather than a STOP, but is
+    resting-eligible on the same terms — the predicate gates on ``basis`` and the
+    ``pct`` bound, not on execution style."""
     rule = StopLossRule(pct=0.03, basis="entry_price", style="limit", limit_offset_pct=0.01)
+    assert _is_resting_stop_loss(rule) is True
+
+
+def test_limit_style_with_trailing_basis_is_not_eligible() -> None:
+    """A limit-style stop cannot carry a trailing basis at all (the DSL rejects
+    the combination outright), so the predicate can never see one — pinned here
+    via ``model_construct`` to show the ``basis`` gate, not the style gate, is
+    what would exclude it if one ever reached the predicate."""
+    rule = StopLossRule.model_construct(
+        kind="stop_loss",
+        pct=0.03,
+        basis="trailing_high",
+        style="limit",
+        limit_offset_pct=0.01,
+        note="",
+    )
     assert _is_resting_stop_loss(rule) is False
 
 
@@ -413,10 +440,11 @@ def test_dispatcher_attaches_resting_stop_loss_short() -> None:
 
 
 def test_dispatcher_omits_attachment_for_ineligible_rule() -> None:
-    """A ``style="limit"`` rule (out of scope for this migration) is left alone —
-    no resting attachment, so it remains purely bar-close evaluated."""
-    rule = StopLossRule(pct=0.03, basis="entry_price", style="limit", limit_offset_pct=0.01)
-    req = _emit([rule], side="long", close=100.0)
+    """A trailing-basis rule (out of scope for this migration) is left alone —
+    no resting attachment, so it remains purely bar-close evaluated. Both
+    execution styles are now in scope, so the basis is what makes a rule
+    ineligible here."""
+    req = _emit([StopLossRule(pct=0.03, basis="trailing_high")], side="long", close=100.0)
     assert req.attached_exits == []
 
 
@@ -482,13 +510,14 @@ def _bar(
     low: float | None = None,
     close: float | None = None,
     volume: float = 1_000_000.0,
+    symbol: str = "AAA",
 ) -> Bar:
-    """Build an OHLC-valid ``Bar`` for AAA; ``high``/``low`` default to
+    """Build an OHLC-valid ``Bar``; ``high``/``low`` default to
     brackets around ``open``/``close`` so ``BarSafetyAssertion`` never rejects
     a bar where only ``close`` was overridden."""
     resolved_close = close if close is not None else open_price
     return Bar(
-        symbol="AAA",
+        symbol=symbol,
         timestamp=ts,
         timeframe="1d",
         open=open_price,
@@ -931,3 +960,930 @@ def test_gap_through_resting_only_close_does_not_trip_conformance_gate_false_cri
     )
     fails = [r for r in results if not r.passed]
     assert fails == [], [r.details for r in fails]
+
+
+# ---------------------------------------------------------------------------
+# style="limit": resolves to a STOP_LIMIT leg, priced like a bracket stop leg
+# ---------------------------------------------------------------------------
+
+
+def _limit_stop_rule(pct: float = 0.03, limit_offset_pct: float = 0.01) -> StopLossRule:
+    """This suite's default stop distance over the shared rule shape."""
+    return limit_stop_rule(pct=pct, limit_offset_pct=limit_offset_pct)
+
+
+def test_limit_style_leg_spec_translation_matches_bracket_shape() -> None:
+    """A limit-style rule translates to the same STOP_LIMIT leg shape
+    ``_bracket_to_leg_specs`` builds for a limit-style bracket stop leg — so
+    ``resolve_exit_leg_attachments`` runs identical price math for both."""
+    [leg] = _stop_loss_rule_to_leg_specs(_limit_stop_rule())
+    assert leg == ExitLegSpec(kind=OrderType.STOP_LIMIT, pct=0.03, limit_offset_pct=0.01)
+
+
+@pytest.mark.parametrize("side", [OrderSide.LONG, OrderSide.SHORT])
+def test_limit_style_resolved_prices_match_bracket_stop_leg(side: OrderSide) -> None:
+    """Acceptance criterion: both prices are resolved through the same logic the
+    bracket already uses, rather than re-derived. Verified by COMPARISON against
+    an equivalent bracket stop leg — restating the arithmetic here would only
+    prove this test agrees with itself."""
+    rule = _limit_stop_rule(pct=0.03, limit_offset_pct=0.01)
+    bracket = OcoBracketRule(
+        stop_loss=BracketStopLeg(pct=0.03, style="limit", limit_offset_pct=0.01),
+        take_profit=BracketTakeProfitLeg(pct=0.50),
+    )
+    resting = resolve_resting_stop_loss_attachment(rule, side, 100.0)
+    bracket_stop, _ = resolve_bracket_attachments(bracket, side, 100.0)
+
+    # EXACT equality, not ``pytest.approx``: both adapters feed the same
+    # ``resolve_exit_leg_attachments`` the same numbers, so the results are
+    # bit-identical by construction — which is the claim being verified. A 1e-6
+    # tolerance is ~9 orders of magnitude looser than a ULP here, so it would
+    # still pass if the two paths ever diverged by exactly the floating-point
+    # noise ``entry_price_limit_offset_pct`` exists to avoid.
+    assert resting.stop_price == bracket_stop.stop_price
+    assert resting.limit_offset == bracket_stop.limit_offset
+    assert resting.limit_offset_kind == bracket_stop.limit_offset_kind
+
+
+def test_limit_style_attachment_carries_limit_offset_reanchor_fraction() -> None:
+    """``entry_price_limit_offset_pct`` mirrors ``entry_price_pct`` for the limit
+    side, so materialization can re-derive the offset off the RE-ANCHORED stop
+    instead of the signal-close-anchored ``limit_offset`` preview."""
+    attachment = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    assert attachment.entry_price_pct == pytest.approx(0.03)
+    assert attachment.entry_price_limit_offset_pct == pytest.approx(0.01)
+    assert attachment.limit_offset is not None
+    assert attachment.trail_offset is None
+
+
+def test_market_style_attachment_has_no_limit_offset_reanchor_fraction() -> None:
+    """The market style never sets the limit-side fraction — it has no limit at
+    all, and ``validate_prices`` rejects the fraction without a ``limit_offset``."""
+    attachment = resolve_resting_stop_loss_attachment(
+        StopLossRule(pct=0.03, basis="entry_price"), OrderSide.LONG, 100.0
+    )
+    assert attachment.entry_price_limit_offset_pct is None
+
+
+def test_limit_style_attachment_preserves_stop_loss_reason() -> None:
+    """Acceptance criterion: ``engine_exit:stop_loss`` attribution survives the
+    rule-agnostic ``attached_exits`` plumbing for the limit style too — several
+    quality gates match that literal exactly."""
+    attachment = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    assert attachment.reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+
+
+def test_dispatcher_attaches_limit_style_stop_as_stop_limit_leg() -> None:
+    """End of the wiring: a spec whose sole exit is a limit-style stop gets a
+    STOP_LIMIT-shaped attachment on ``attached_exits``, not the fixed bracket
+    field."""
+    req = _emit([_limit_stop_rule()], side="long", close=100.0)
+    assert req.attached_stop_loss is None
+    [leg] = req.attached_exits
+    assert isinstance(leg, StopAttachment)
+    assert leg.limit_offset is not None
+    assert leg.entry_price_limit_offset_pct == pytest.approx(0.01)
+
+
+# ---------------------------------------------------------------------------
+# entry_price_limit_offset_pct validation (OrderRequest.validate_prices)
+# ---------------------------------------------------------------------------
+
+
+def _order_with_leg(leg: StopAttachment) -> OrderRequest:
+    return OrderRequest(
+        client_order_id="co-1",
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=10.0,
+        order_type=OrderType.MARKET,
+        tif=TimeInForce.DAY,
+        attached_exits=[leg],
+    )
+
+
+@pytest.mark.parametrize("bad_pct", [0.0, 1.0, -0.1, 1.5])
+def test_validate_prices_rejects_out_of_range_limit_offset_reanchor(bad_pct: float) -> None:
+    """The limit-side fraction shares ``limit_offset_pct``'s strict ``(0, 1)``
+    bound; outside it the derived limit would be non-positive or on the wrong
+    side of the stop, so it must fail loudly at submission."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_limit_offset_pct = bad_pct
+    with pytest.raises(ValueError, match="entry_price_limit_offset_pct must satisfy"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_rejects_limit_offset_reanchor_without_limit_offset() -> None:
+    """Without ``limit_offset`` the leg is not a STOP_LIMIT at all, so the
+    fraction would be silently ignored at materialization — reject it instead."""
+    leg = resolve_resting_stop_loss_attachment(
+        StopLossRule(pct=0.03, basis="entry_price"), OrderSide.LONG, 100.0
+    )
+    leg.entry_price_limit_offset_pct = 0.01
+    with pytest.raises(ValueError, match="requires limit_offset"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_rejects_limit_offset_reanchor_without_entry_price_pct() -> None:
+    """Without ``entry_price_pct`` the STOP does not re-anchor, so re-deriving the
+    limit off it would anchor the leg's two prices differently — the exact
+    inconsistency the field exists to prevent."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_pct = None
+    with pytest.raises(ValueError, match="requires entry_price_pct"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_accepts_the_resolved_limit_style_attachment() -> None:
+    """The shape the resolver actually produces passes validation unchanged."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    _order_with_leg(leg).validate_prices()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the limit-style resting STOP_LIMIT
+# ---------------------------------------------------------------------------
+
+
+def test_end_to_end_limit_style_materializes_stop_limit_after_entry_fill() -> None:
+    """Acceptance criterion: the limit-style rule rests as a ``STOP_LIMIT``,
+    attached only once the entry has filled, with its limit on the protective
+    side of the stop (below it, for a sell-stop-limit closing a long)."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    assert order_book.children_of(parent.order_id) == []
+
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.stop_price == pytest.approx(95.0)
+    # 95 * (1 - 0.01): the limit sits below the stop for a long-closing sell.
+    assert child.request.limit_price == pytest.approx(94.05)
+
+
+def test_end_to_end_limit_style_reanchors_both_prices_to_actual_fill_on_gap() -> None:
+    """The bug this variant is the first to expose: on a gap, the stop re-anchors
+    to the entry's real fill price but the ``limit_offset`` preview — an ABSOLUTE
+    distance computed off the SIGNAL bar's close — does not. Without
+    ``entry_price_limit_offset_pct`` the child's two prices would end up anchored
+    to different reference prices, silently changing the stop-to-limit gap the
+    spec asked for. Signal close 100 (preview stop 95, preview offset 0.95); the
+    entry gaps down and fills at 90, so the child must sit at stop 85.5 with the
+    offset re-derived off THAT stop (0.855), i.e. limit 84.645 — not 85.5 - 0.95
+    = 84.55, which the stale preview offset would have produced."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    [preview] = req.attached_exits
+    assert preview.stop_price == pytest.approx(95.0)
+    assert preview.limit_offset == pytest.approx(0.95)  # anchored to the signal close
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=90.0))
+    assert portfolio.positions["AAA"].entry_price == pytest.approx(90.0)
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.stop_price == pytest.approx(85.5)
+    assert child.request.limit_price == pytest.approx(84.645)
+    # The invariant, stated directly: one anchor for both prices.
+    assert child.request.limit_price == pytest.approx(child.request.stop_price * (1 - 0.01))
+
+
+def test_end_to_end_limit_style_short_side_places_limit_above_the_stop() -> None:
+    """Short mirror: a buy-stop-limit closing a short sits ABOVE the stop, and
+    both prices re-anchor together on the short's own gap direction."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="short", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=110.0))
+    assert portfolio.positions["AAA"].side == OrderSide.SHORT
+    assert portfolio.positions["AAA"].entry_price == pytest.approx(110.0)
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.side == OrderSide.LONG  # buy to close the short
+    assert child.request.stop_price == pytest.approx(115.5)  # 110 * 1.05
+    assert child.request.limit_price == pytest.approx(116.655)  # 115.5 * 1.01
+    assert child.request.limit_price > child.request.stop_price
+
+
+def test_end_to_end_limit_style_fill_carries_engine_exit_stop_loss_reason() -> None:
+    """Acceptance criterion: a limit-style resting fill is attributed
+    ``engine_exit:stop_loss``, same as the market style's — the quality gates
+    match that literal exactly."""
+    sim, order_book, _ = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.02)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    # Stop 95, limit 93.1: a bar that trades down through both fills at the limit.
+    outcome = sim.process_bar(_bar("2024-01-03", open_price=97.0, high=98.0, low=92.0, close=93.0))
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    # The reason literal alone is not discriminating — the bar-close evaluator
+    # stamps the same one. The PRICE is: this resting STOP_LIMIT fills at its
+    # limit (95 * 0.98), whereas a bar-close close would fill at the 93.0 close
+    # or a later open. Asserting it makes the test prove which mechanism closed
+    # the position instead of trusting the fixture's feature-flag setup.
+    assert trade.exit_price == pytest.approx(93.1)
+
+
+def test_validate_prices_rejects_reanchoring_stop_limit_without_the_limit_fraction() -> None:
+    """The reverse implication, which is what makes "one anchor for both prices"
+    structural: a leg whose stop re-anchors AND that carries a limit must say how
+    the limit follows. Without this check a caller could construct the
+    mixed-anchor state directly — the stop re-derived off the real fill while
+    ``limit_offset`` stayed on the emission-time anchor — which is exactly the
+    mis-pricing ``entry_price_limit_offset_pct`` exists to prevent."""
+    leg = resolve_resting_stop_loss_attachment(_limit_stop_rule(), OrderSide.LONG, 100.0)
+    leg.entry_price_limit_offset_pct = None
+    with pytest.raises(ValueError, match="different references"):
+        _order_with_leg(leg).validate_prices()
+
+
+def test_validate_prices_accepts_a_bracket_style_stop_limit_leg() -> None:
+    """A leg that does NOT re-anchor (no ``entry_price_pct``, as every bracket
+    leg) is unaffected by that requirement — its absolute ``limit_offset`` is
+    already on the same anchor as its ``stop_price``."""
+    _order_with_leg(StopAttachment(stop_price=95.0, limit_offset=0.95)).validate_prices()
+
+
+def test_attachment_retires_a_dispatcher_emitted_stop_loss_fallback() -> None:
+    """The partial-fill handoff: while an entry is only partially filled it has no
+    attached protection yet, so the bar-close evaluator stays live and may emit
+    its own resting stop-loss close. A ``style="limit"`` close deliberately does
+    not cancel entry continuations, so the entry can complete and materialize the
+    attached leg alongside that fallback — two full-position protective orders at
+    DIFFERENT anchors, of which ``_scan_pending_for_gate`` records only one, so a
+    replacement close would cancel one and the other could still pre-empt it.
+
+    The attached leg is authoritative (anchored on the cumulative fill), so
+    materializing it retires the fallback.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # Stand in for the bar-close evaluator's fallback: a dispatcher-emitted
+    # (parentless) resting STOP_LIMIT carrying the same stop-loss attribution.
+    fallback = order_book.submit(
+        OrderRequest(
+            client_order_id="e1",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            # Sized off the entry request, as a real bar-close fallback is: a
+            # FULL-position close. A hardcoded qty would silently stop modelling
+            # the production order if ``_emit``'s sizing ever changed.
+            qty=req.qty,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=94.0,  # a different anchor from the attached leg's
+            limit_price=93.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    assert any(po.order_id == fallback.order_id for po in order_book.pending_for_symbol("AAA"))
+
+    # Entry fills -> the attached leg materializes and supersedes the fallback.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    [child] = order_book.children_of(parent.order_id)
+    assert child.request.order_type == OrderType.STOP_LIMIT
+    assert child.request.stop_price == pytest.approx(95.0)  # cumulative-fill anchored
+
+    # Exactly one protective stop-loss order remains, and it is the attached one.
+    stop_loss_orders = [
+        po
+        for po in order_book.pending_for_symbol("AAA")
+        if (po.request.reason or "") == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    ]
+    assert [po.order_id for po in stop_loss_orders] == [child.order_id]
+
+
+def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
+    """The retirement predicate targets the fallback exactly — a different
+    engine exit (here a take-profit) resting on the same position is untouched,
+    so this cannot strip protection or targets it does not own."""
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    parent = order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    other = order_book.submit(
+        OrderRequest(
+            client_order_id="e2",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            # Sized off the entry, matching the sibling fallback fixture, so the
+            # unrelated exit is a realistic full-position close rather than ~5%
+            # of the position. The predicate targets by reason, not size, so this
+            # is fidelity rather than correctness.
+            qty=req.qty,
+            order_type=OrderType.LIMIT,
+            limit_price=120.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    assert "AAA" in portfolio.positions
+    # Without this the test passes VACUOUSLY: the retirement pass runs only as a
+    # consequence of attachment materializing, so a regression that never created
+    # the child would leave the take-profit trivially untouched and still pass.
+    assert len(order_book.children_of(parent.order_id)) == 1
+    assert any(po.order_id == other.order_id for po in order_book.pending_for_symbol("AAA"))
+
+
+def test_fallback_still_fills_on_the_bar_its_replacement_materializes() -> None:
+    """The retirement is deferred to the END of the bar, and that timing is
+    load-bearing.
+
+    ``process_bar`` iterates a snapshot but skips any order no longer in the book,
+    so cancelling the fallback mid-loop destroys its fill opportunity for the
+    current bar — and the replacement child cannot cover that bar either (absent
+    from the snapshot, and skipped by the engine-internal same-bar guard). On a
+    bar that both completes the entry AND crosses the fallback's stop and limit,
+    an immediate cancel would leave the position open through a stop it had
+    already triggered.
+
+    Here the fallback rests at stop 99 / limit 98, and the bar that fills the
+    entry trades down to 97 — so the fallback is marketable on exactly that bar.
+    It must fill and close the position rather than be cancelled unfilled.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    order_book.submit(
+        OrderRequest(
+            client_order_id="e1",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            # Sized off the entry request so this is a FULL-position close, as a
+            # real bar-close fallback is. ``_fill_exit`` clips to the live qty,
+            # so matching the entry exactly is both sufficient and safe.
+            qty=req.qty,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=99.0,
+            limit_price=98.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # This bar opens at 100 (entry fills, attachment materializes) and trades
+    # down through 99 to 97, making the fallback marketable on this same bar.
+    outcome = sim.process_bar(
+        _bar("2024-01-02", open_price=100.0, high=100.5, low=97.0, close=97.5)
+    )
+
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    # The price is what names the closer; the reason literal does not, since the
+    # bar-close evaluator stamps the same one. Only the fallback can fill here
+    # (its limit is 98, while the replacement child's stop of 95 is not crossed
+    # by a low of 97) — asserting 98.0 keeps that explicit if a new exit path
+    # ever appears on this bar.
+    assert trade.exit_price == pytest.approx(98.0)
+    assert "AAA" not in portfolio.positions
+
+
+def _partially_filled_day_entry(
+    sim: FillSimulator, order_book: OrderBook, portfolio: Portfolio
+) -> OrderRequest:
+    """Open a partially-filled DAY entry carrying a limit-style resting stop.
+
+    A thin-volume bar clips the 2000-share entry against the 10% participation
+    cap, so the position opens partially and the remainder requeues. The parent
+    is DAY-TIF, so the next date change routes it through ``expire_day_orders``
+    — the path that materializes protective legs OUTSIDE ``process_bar``.
+
+    Postconditions:
+        - a position is open on AAA for less than the request's full
+          ``qty``; the DAY parent is still pending with a requeued remainder.
+    """
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    req.tif = TimeInForce.DAY
+    req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # 10% of 10_000 shares of volume = 1_000 fillable against a ~2_000 request.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0))
+    pos = portfolio.positions["AAA"]
+    assert pos.original_qty < req.qty, "fixture must leave the entry PARTIALLY filled"
+    # The second postcondition, asserted rather than merely declared: the whole
+    # point of the fixture is a DAY parent still pending, since expire_day_orders
+    # can only queue the retirement its consumers exercise if one is there to
+    # expire. Were REQUEUE_NEXT_BAR semantics ever to drop the remainder instead,
+    # the partial-fill check above would still pass and the fixture would go on
+    # silently producing a state its docstring does not describe.
+    assert any(
+        po.request.client_order_id == req.client_order_id
+        for po in order_book.pending_for_symbol("AAA")
+    ), "fixture must leave the DAY parent pending with its requeued remainder"
+    return req
+
+
+def _fallback_stop_limit(req: OrderRequest, submitted_at: str) -> OrderRequest:
+    """The bar-close fallback the evaluator emits while an entry is partial.
+
+    Sized off the entry request so this is a FULL-position close, as a real
+    bar-close fallback is; ``_fill_exit`` clips to the live qty.
+
+    The symbol is DERIVED from ``req`` rather than passed. A separate parameter
+    made the entry and its fallback two sources of truth for one fact, so a
+    multi-symbol call site that forgot it would get a fallback labelled and
+    targeted at the default symbol while sized off another's ``req.qty``. That
+    hazard is not hypothetical here: parameterizing this helper by symbol is
+    what turned a sibling assertion vacuous earlier on this branch.
+    """
+    return OrderRequest(
+        client_order_id=f"fallback-{req.symbol}-{submitted_at}",
+        symbol=req.symbol,
+        side=OrderSide.SHORT,
+        qty=req.qty,
+        order_type=OrderType.STOP_LIMIT,
+        stop_price=99.0,
+        limit_price=98.0,
+        tif=TimeInForce.GTC,
+        reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+    )
+
+
+def test_day_expiry_retirement_leaves_the_fallback_its_fill_turn() -> None:
+    """A retirement queued by ``expire_day_orders`` must survive the next bar's
+    PRE-LOOP drain.
+
+    The pre-loop drain exists for retirements a mid-loop raise stranded, whose
+    fallback already spent its fill turn. ``expire_day_orders`` breaks that
+    assumption: the service calls it BETWEEN bars, so a retirement it queues
+    targets a fallback that has not yet reached the coming bar's snapshot.
+    Draining it ahead of the loop would cancel the fallback unfilled while the
+    replacement child — stamped with this bar's timestamp — is skipped by the
+    engine-internal same-bar guard until the next one, leaving the position open
+    through a stop it had already triggered.
+
+    Here the bar that expires the DAY parent also trades down through the
+    fallback's stop (99) and limit (98) to 97, so the fallback is marketable on
+    exactly the bar the handoff happens. It must fill and close the position.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _partially_filled_day_entry(sim, order_book, portfolio)
+    order_book.submit(
+        _fallback_stop_limit(req, "2024-01-02"),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Date change: expire_day_orders materializes the attachment (queueing a
+    # retirement stamped for THIS bar), then process_bar runs against it.
+    cur = _bar("2024-01-03", open_price=100.0, high=100.5, low=97.0, close=97.5)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert "AAA" not in portfolio.positions
+
+
+def test_day_expiry_attachment_records_its_firing_credit() -> None:
+    """A leg attached on the DAY-expiry path still reports ``engine_exit_attached``.
+
+    ``expire_day_orders`` runs between bars with no ``events`` list in scope, so
+    the attachment buffers its event for ``process_bar`` to flush. Without that
+    credit the leg's eventual close reconciles against a zero firing count and
+    the conformance leak check reports a false critical on a position that was
+    in fact protected — so the event, not just the order, is the contract here.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    _partially_filled_day_entry(sim, order_book, portfolio)
+
+    cur = _bar("2024-01-03", open_price=100.0)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    attached = [ev for ev in outcome.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert len(attached) == 1, "the DAY-expiry attachment must report its firing credit"
+    assert attached[0].reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert attached[0].order_type == OrderType.STOP_LIMIT.value
+    # Stamped with the bar that attached it, not the bar that flushed it — they
+    # are the same bar, which is the point of flushing at the top of process_bar.
+    assert attached[0].timestamp == "2024-01-03"
+
+
+def test_day_expiry_firing_credit_reaches_the_conformance_counters() -> None:
+    """The buffered event increments the same counters a bar-close emission does.
+
+    This is the end the false critical actually reads: ``_check_stop_loss``
+    reconciles below-floor trades against ``exit_rule_firings_by_symbol``, so the
+    event only helps if it lands there.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    _partially_filled_day_entry(sim, order_book, portfolio)
+
+    cur = _bar("2024-01-03", open_price=100.0)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    diagnostics = BacktestExecutionDiagnostics()
+    _apply_fill_outcome_events(diagnostics, outcome)
+    assert diagnostics.exit_rule_firings.get("stop_loss") == 1
+    assert diagnostics.exit_rule_firings_by_symbol.get("AAA", {}).get("stop_loss") == 1
+
+
+def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None:
+    """A retirement queued for one symbol must not be applied during another's bar.
+
+    ``expire_day_orders`` expires DAY orders order-book-WIDE, so one rollover can
+    materialize replacements and queue retirements for several symbols at once —
+    before ANY of their fill loops have run. ``process_bar``, by contrast, is per
+    (symbol, bar). A drain that ignored symbol would let whichever symbol happens
+    to be processed first cancel the others' fallbacks.
+
+    That is not merely early, it is unrecoverable for the bar: those replacements
+    carry the FIRST symbol's bar timestamp, so when the same-timestamp bar for
+    another symbol arrives its child is skipped by the engine-internal same-bar
+    guard as well. Fallback cancelled, replacement ineligible, position open
+    through a stop that had already triggered.
+
+    Here AAA is processed first on a quiet bar; BBB's bar at the same timestamp
+    then trades down through its fallback's stop (99) and limit (98) to 97. BBB's
+    fallback must still be on the book to take it.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    fallbacks: dict[str, object] = {}
+
+    # Two partially-filled DAY entries, one per symbol, each carrying the
+    # limit-style resting stop and each with a bar-close fallback resting.
+    for sym in ("AAA", "BBB"):
+        req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+        req = req.model_copy(update={"symbol": sym, "client_order_id": f"entry-{sym}"})
+        req.tif = TimeInForce.DAY
+        req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+        order_book.submit(
+            req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+        )
+        sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
+        # ``0 <`` matters as much as ``< req.qty``: a ZERO fill would satisfy a
+        # bare ``<`` while leaving the mechanism under test unexercised — the
+        # parent must stay live with a requeued remainder for
+        # ``expire_day_orders`` to abandon. Without it, engine or bar-data drift
+        # would surface as a bare list-comparison failure below instead of
+        # naming the fixture.
+        filled = portfolio.positions[sym].original_qty
+        assert 0 < filled < req.qty, "fixture must be PARTIAL (some, not all, of the entry)"
+        fallbacks[sym] = order_book.submit(
+            _fallback_stop_limit(req, "2024-01-02"),
+            submitted_at="2024-01-02",
+            submitted_equity=10_000_000.0,
+        )
+
+    # Date change. The service calls this once, on the first symbol's bar of the
+    # new day — and it expires BOTH symbols' parents, queueing both retirements
+    # stamped with AAA's bar.
+    aaa_bar = _bar("2024-01-03", open_price=100.0, symbol="AAA")
+    sim.expire_day_orders(aaa_bar)
+    sim.process_bar(aaa_bar)
+
+    # Assert on the ORDER IDs the book handed back, not on a formatted
+    # client_order_id: the id scheme belongs to the helper, and keying on it
+    # would let a helper rename turn the first assertion below into a vacuous
+    # "no order has that string" while still reading as a real check.
+    assert not any(
+        po.order_id == fallbacks["AAA"].order_id for po in order_book.pending_for_symbol("AAA")
+    ), "this symbol's own fallback should be retired once its bar has run"
+    assert any(
+        po.order_id == fallbacks["BBB"].order_id for po in order_book.pending_for_symbol("BBB")
+    ), "another symbol's bar must not retire this symbol's fallback"
+
+    # BBB's bar at the SAME timestamp crosses its fallback's stop and limit.
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=100.0, high=100.5, low=97.0, close=97.5, symbol="BBB")
+    )
+
+    [trade] = outcome.closed_trades
+    assert trade.symbol == "BBB"
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert trade.exit_price == pytest.approx(98.0)
+    assert "BBB" not in portfolio.positions
+
+
+@pytest.mark.parametrize(
+    "state, expect_retired",
+    [
+        ("idle", True),
+        ("armed", False),
+        ("partially_filled", False),
+    ],
+    ids=["idle_fallback_is_retired", "armed_survives", "partially_filled_survives"],
+)
+def test_retirement_spares_a_fallback_that_is_actually_working(
+    state: str, expect_retired: bool
+) -> None:
+    """Retirement removes a DUPLICATE fallback, not one that is doing the work.
+
+    An idle fallback is redundant once the correctly-anchored attachment exists,
+    and is retired. But a fallback that has already triggered (``stop_limit_armed``
+    — resting as a marketable LIMIT) or already closed part of the position
+    (``cumulative_filled_qty > 0``, remainder requeued) is not a duplicate. The
+    replacement cannot take over from either: it is UNARMED, so it needs the stop
+    level crossed *again*, which a recovery that never revisits the level will not
+    do — and by then the bar-close evaluator has ceded the rule, because the leg is
+    on the book. Cancelling would leave the residual open through a stop that had
+    already fired.
+
+    Keeping both is safe: ``_fill_exit`` clips every exit to ``pos.qty``, so the
+    survivor cannot over-close.
+
+    Driven against the predicate directly rather than through ``process_bar``: an
+    armed fallback is a marketable limit, so any bar that lets the entry fill also
+    fills it, and the fill mechanics would mask exactly what is under test here.
+
+    The ``idle`` case is the control — without it this would still pass if the
+    predicate degenerated into never retiring anything.
+    """
+    sim, order_book, _portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    fallback = order_book.submit(
+        _fallback_stop_limit(req, "2024-01-01"),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    keeper = order_book.submit(
+        OrderRequest(
+            client_order_id="keeper",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=req.qty,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=95.0,
+            limit_price=94.05,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    if state == "armed":
+        fallback.stop_limit_armed = True
+    elif state == "partially_filled":
+        fallback.cumulative_filled_qty = req.qty / 4.0
+
+    sim._retire_superseded_stop_loss_fallbacks(
+        symbol="AAA",
+        child_side=OrderSide.SHORT,
+        keep_order_id=keeper.order_id,
+        child_order_type=OrderType.STOP_LIMIT,
+    )
+
+    still_pending = any(
+        po.order_id == fallback.order_id for po in order_book.pending_for_symbol("AAA")
+    )
+    assert still_pending is not expect_retired
+    # The replacement is never retired by its own queue entry, in any state.
+    assert any(po.order_id == keeper.order_id for po in order_book.pending_for_symbol("AAA"))
+
+
+def test_day_expiry_attach_credit_is_scoped_to_the_symbol_being_processed() -> None:
+    """An attach credit raised for one symbol must not land in another's outcome.
+
+    ``expire_day_orders`` runs order-book-WIDE, so one rollover can buffer
+    ``engine_exit_attached`` credits for several symbols before any of their bars
+    is processed. ``process_bar`` returns a ``FillOutcome`` for ONE symbol, and
+    its postcondition says the events it carries are that bar's. A flat buffer
+    would put BBB's credit in AAA's outcome — the same global-state-versus-per-
+    (symbol, bar) shape the retirement queue was fixed for, in the buffer sitting
+    three lines away from it.
+
+    Keyed by symbol at insertion, that misattribution is unrepresentable, which
+    is what this pins.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    for sym in ("AAA", "BBB"):
+        req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+        req = req.model_copy(update={"symbol": sym, "client_order_id": f"entry-{sym}"})
+        req.tif = TimeInForce.DAY
+        req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+        order_book.submit(
+            req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+        )
+        sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
+        # ``0 <`` matters as much as ``< req.qty``: a ZERO fill would satisfy a
+        # bare ``<`` while leaving the mechanism under test unexercised — the
+        # parent must stay live with a requeued remainder for
+        # ``expire_day_orders`` to abandon. Without it, engine or bar-data drift
+        # would surface as a bare list-comparison failure below instead of
+        # naming the fixture.
+        filled = portfolio.positions[sym].original_qty
+        assert 0 < filled < req.qty, "fixture must be PARTIAL (some, not all, of the entry)"
+
+    # One rollover expires BOTH parents and buffers BOTH credits.
+    sim.expire_day_orders(_bar("2024-01-03", open_price=100.0, symbol="AAA"))
+
+    aaa = sim.process_bar(_bar("2024-01-03", open_price=100.0, symbol="AAA"))
+    aaa_attached = [ev for ev in aaa.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert [ev.symbol for ev in aaa_attached] == ["AAA"], "AAA's bar must carry only AAA's credit"
+
+    bbb = sim.process_bar(_bar("2024-01-03", open_price=100.0, symbol="BBB"))
+    bbb_attached = [ev for ev in bbb.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert [ev.symbol for ev in bbb_attached] == ["BBB"], (
+        "BBB's credit must survive for its own bar"
+    )
+
+
+def test_retirement_spares_another_stop_rules_differently_shaped_fallback() -> None:
+    """An attachment supersedes its OWN rule's fallback, not another rule's.
+
+    A spec may carry more than one resting-eligible stop rule — unusual but not
+    DSL-forbidden — and only the FIRST is migrated. A later one keeps firing
+    through the bar-close evaluator and emits its own parentless fallback under
+    the same byte-stable ``engine_exit:stop_loss`` reason, which is fixed by the
+    conformance gates and cannot carry a rule index. So the reason alone cannot
+    separate them, and retiring on it would cancel protection this attachment
+    never replaced.
+
+    Order type separates the styles: a market-style attachment (plain STOP) must
+    leave a limit-style rule's STOP_LIMIT fallback alone. The same-shape control
+    below keeps this from passing by never retiring anything.
+
+    Two rules of the SAME style still collide — that needs identity on the order
+    itself, which is out of scope here and called out in the predicate.
+    """
+    sim, order_book, _portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+
+    other_rule_fallback = order_book.submit(
+        _fallback_stop_limit(req, "2024-01-01"),  # STOP_LIMIT, the tighter rule's
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    same_shape_fallback = order_book.submit(
+        OrderRequest(
+            client_order_id="market-fallback",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=req.qty,
+            order_type=OrderType.STOP,  # the wider market-style rule's
+            stop_price=90.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # A market-style attachment materializes: a plain STOP.
+    sim._retire_superseded_stop_loss_fallbacks(
+        symbol="AAA",
+        child_side=OrderSide.SHORT,
+        keep_order_id="keeper-not-on-book",
+        child_order_type=OrderType.STOP,
+    )
+
+    pending = {po.order_id for po in order_book.pending_for_symbol("AAA")}
+    assert other_rule_fallback.order_id in pending, (
+        "a market-style attachment must not retire another rule's STOP_LIMIT"
+    )
+    assert same_shape_fallback.order_id not in pending, (
+        "control: the same-shape fallback IS superseded and must still be retired"
+    )
+
+
+def test_unarmed_attached_stop_limit_pre_empts_the_close_it_races() -> None:
+    """Why a position-emptying close must cancel the attached leg even un-armed.
+
+    This is an ENGINE property, not a dispatcher one, and it is what makes the
+    cancel in ``_retire_orders_against_closed_position`` load-bearing for the
+    un-armed state rather than only the latched one:
+
+    * ``process_bar`` walks a submission-ordered snapshot, so the child —
+      submitted back when the entry filled — is examined before a close queued
+      only last bar.
+    * ``stop_limit_triggered`` arms off the bar's full high/low, and an armed
+      STOP_LIMIT is evaluated as a resting limit on that same bar, so the child
+      can arm AND fill in one bar without ever having been armed before it.
+    * A MARKET close, by contrast, prices at ``bar.open``.
+
+    So on a bar that opens at the take-profit and then dips through the stop, the
+    child fills at its stale stop geometry, the stale-continuation guard drops the
+    intended close, and the position books the stop's exit at a price the open had
+    already bettered. Left resting, the leg does not merely duplicate the close —
+    it wins against it.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # Entry fills at 100 and the attached leg materializes, armed by the
+    # materializer but with its stop never yet breached.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    pos = portfolio.positions["AAA"]
+    children = [
+        po
+        for po in order_book.pending_for_symbol("AAA")
+        if po.request.order_type == OrderType.STOP_LIMIT
+    ]
+    assert len(children) == 1, "the limit-style rule must have attached exactly one leg"
+    child = children[0]
+    assert not child.stop_limit_armed, "the stop must be un-breached, or this is the latched case"
+    stale_limit = child.request.limit_price
+    assert stale_limit is not None
+
+    # The replacement close a take-profit / signal-exit would queue: a full-size
+    # bound MARKET, submitted on the prior bar so it is eligible below.
+    order_book.submit(
+        OrderRequest(
+            client_order_id="tp-close",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=pos.qty,
+            order_type=OrderType.MARKET,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    for po in order_book.pending_for_symbol("AAA"):
+        if po.request.client_order_id == "tp-close":
+            po.working_against_entry_order_id = pos.entry_order_id
+
+    # Opens at the take-profit level, then dips through the stop and recovers.
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=108.0, high=108.0, low=94.0, close=100.0)
+    )
+
+    assert "AAA" not in portfolio.positions, "the bar should have closed the position"
+    assert len(outcome.exit_fills) == 1, "exactly one of the two racing exits may fill"
+    fill = outcome.exit_fills[0]
+    assert fill.price == stale_limit, (
+        "the un-armed child won the race and booked the stop's geometry; the "
+        "MARKET close would have filled at the bar's open"
+    )
+    assert fill.price < 108.0, "and did so at a materially worse price than the open"
+
+
+def test_cancelling_the_attached_leg_lets_the_intended_close_fill_at_the_open() -> None:
+    """The other half of the race: with the leg cancelled, the close wins.
+
+    Paired with ``test_unarmed_attached_stop_limit_pre_empts_the_close_it_races``
+    over the SAME bar, this isolates the leg as the cause — the close is eligible
+    either way, so the 94.05-vs-108.00 difference is the cancellation and nothing
+    else. It also keeps the sibling honest: were the close somehow ineligible on
+    this bar, the sibling would pass merely because the child ran unopposed, and
+    this test would fail rather than let that go unnoticed.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    pos = portfolio.positions["AAA"]
+    # Exactly what ``_retire_orders_against_closed_position`` does when it emits
+    # the replacement close — modelled here so this suite stays engine-level.
+    for po in list(order_book.pending_for_symbol("AAA")):
+        if po.request.order_type == OrderType.STOP_LIMIT:
+            order_book.cancel(po.order_id)
+    order_book.submit(
+        OrderRequest(
+            client_order_id="tp-close",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=pos.qty,
+            order_type=OrderType.MARKET,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    for po in order_book.pending_for_symbol("AAA"):
+        if po.request.client_order_id == "tp-close":
+            po.working_against_entry_order_id = pos.entry_order_id
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=108.0, high=108.0, low=94.0, close=100.0)
+    )
+    assert len(outcome.exit_fills) == 1, (
+        "the intended close must be eligible on this bar, or the sibling test "
+        "proves nothing about which order won"
+    )
+    assert outcome.exit_fills[0].price == 108.0, (
+        "with no leg racing it, the MARKET close prices at the bar's open"
+    )

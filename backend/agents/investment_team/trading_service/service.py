@@ -80,6 +80,7 @@ from .data_stream.protocol import BarEvent, EndOfStreamEvent, StreamEvent
 from .engine.execution_model import build_execution_model
 from .engine.fill_simulator import (
     ENGINE_EXIT_REASON_PREFIX,
+    ENGINE_EXIT_REASON_STOP_LOSS,
     FillOutcome,
     FillSimulator,
     FillSimulatorConfig,
@@ -136,7 +137,6 @@ _MAX_ORDER_EVENTS = 20
 #: quality gates match it byte-exactly. Referencing this one constant from all
 #: three same-module sites means an edit to the suffix can't desynchronize one
 #: from another.
-ENGINE_EXIT_REASON_STOP_LOSS = f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
 
 
 def _engine_exit_kind(reason: str) -> str:
@@ -499,8 +499,9 @@ class _EvalGate(NamedTuple):
     """What :meth:`_EngineExitDispatcher._should_evaluate` found for one bar.
 
     A named result (vs. a bare tuple) so the per-position gate facts are
-    self-documenting and safe to extend. ``resting_limit_stop_id`` is the
-    ``order_id`` of an already-resting engine STOP_LIMIT (or ``None``);
+    self-documenting and safe to extend. ``resting_limit_stop_ids`` holds the
+    ``order_id`` of EVERY already-resting engine STOP_LIMIT competing with this
+    position (empty when none rests), in either latch state;
     ``entry_continuation_in_flight`` is ``True`` when the position's own entry is
     still filling (a same-side partially-filled continuation rests);
     ``scaled_partial_in_flight`` is ``True`` when a prior scaled-take-profit rung's
@@ -512,10 +513,36 @@ class _EvalGate(NamedTuple):
 
     tracked: "_TrackedPosition"
     pos: Position
-    resting_limit_stop_id: Optional[str]
+    resting_limit_stop_ids: Tuple[str, ...]
     entry_continuation_in_flight: bool
     scaled_partial_in_flight: bool
+    #: Whether the resting stop-loss migration's entry-attached leg is CURRENTLY
+    #: on the book for this position. Gates the cede: the rule is handed to the
+    #: resting mechanism only while that mechanism actually has protection in
+    #: place — see ``_EngineExitDispatcher._evaluate``.
+    resting_stop_child_present: bool
     pending: List[PendingOrder]
+
+
+class _PendingGateFacts(NamedTuple):
+    """The per-order facts one pending-order scan derives, by name.
+
+    Replaces a positional tuple that had grown to four elements, three of them
+    bare booleans — a shape where transposing two at either end still type-checks
+    and reads plausibly, and where every added fact silently invalidates each
+    unpacking site. Field access makes both failure modes impossible, and lets
+    :meth:`_EngineExitDispatcher._scan_pending_for_gate`'s contract name its
+    fields rather than describe tuple positions.
+
+    Invariant: constructed only by that scan, which returns ``None`` instead when
+    an in-flight engine MARKET full close means the bar must stand down — so a
+    non-``None`` result always carries all four facts.
+    """
+
+    resting_limit_stop_ids: Tuple[str, ...]
+    entry_continuation_in_flight: bool
+    scaled_partial_in_flight: bool
+    resting_stop_child_present: bool
 
 
 @dataclass(frozen=True)
@@ -536,7 +563,7 @@ class _EmitContext:
     order_book: OrderBook
     cur_bar: Any
     result: "TradingServiceResult"
-    resting_limit_stop_id: Optional[str]
+    resting_limit_stop_ids: Tuple[str, ...]
     # The symbol's pending-order snapshot from ``_should_evaluate`` — reused by the
     # full-close path instead of re-querying the order book per helper.
     pending: List[PendingOrder]
@@ -572,12 +599,18 @@ class _EngineExitDispatcher:
       ids must not collide, hence the ``e`` prefix vs the strategy's
       ``c`` prefix.
     * ``exclude_rule_index`` — the spec index of a rule ceded to a
-      resting-order mechanism for this run (currently only the
-      entry_price/market stop-loss migration's resting ``STOP``
-      attachment — see ``_EngineEntryDispatcher.resting_stop_loss_enabled``);
+      resting-order mechanism for this run (currently the entry_price
+      stop-loss migration's entry-fill attachment: a resting ``STOP`` for a
+      market-style rule, a resting ``STOP_LIMIT`` for a limit-style one — see
+      ``_EngineEntryDispatcher.resting_stop_loss_enabled``);
       ``None`` (the default) evaluates every rule as today. Enforces mutual
-      exclusion between the two mechanisms: see
-      ``rule_compiler._filtered_intent_for_rule`` for where this is applied.
+      exclusion between the two mechanisms: the ceded rule is dropped before
+      evaluation (see ``rule_compiler._filtered_intent_for_rule``), so a bar
+      can never see both a resting-stop fill and a bar-close exit for it.
+      The ceded rule's ENTRY-ATTACHED order is separately kept out of this
+      dispatcher's resting-stop-limit bookkeeping until it latches — see
+      :meth:`_scan_pending_for_gate` for why an un-armed protective child is
+      not this dispatcher's to cancel.
 
     Empty ``exit_rules`` makes :meth:`maybe_emit` a no-op.
 
@@ -639,6 +672,27 @@ class _EngineExitDispatcher:
         Engine-emitted orders carry ``reason="engine_exit:<rule_kind>"``
         so the conformance gate can count them off the
         order-lifecycle event stream.
+
+        Preconditions:
+            - Called once per bar per symbol, AFTER the strategy's own orders
+              for this bar are already queued in ``pending_for_prev`` (engine
+              closes must sit behind them in submission order).
+            - ``position_tracker`` and ``order_book`` reflect post-fill state
+              for ``cur_bar``.
+        Postconditions:
+            - A no-op when the spec has no exit rules or the per-bar gate stands
+              the bar down. Otherwise appends at most one engine close per open
+              position to ``pending_for_prev``, tagged
+              ``engine_exit:<rule_kind>``, and cancels a superseded resting
+              stop-limit when it emits a replacement. Sizing depends on the
+              dispatch: a FULL close is sized at the position's full open
+              quantity (the fill simulator clips it to what is actually open),
+              whereas a scaled-ladder rung is sized off the ORIGINAL entry qty
+              and deliberately leaves the rest open — see
+              :meth:`_emit_partial_scale_out`.
+            - The rule ceded to the resting-order mechanism is excluded from
+              evaluation only while that mechanism's leg is actually on the book
+              for the position — never unconditionally.
         """
         if not self.exit_rules:
             return
@@ -647,10 +701,10 @@ class _EngineExitDispatcher:
         gate = self._should_evaluate(sym, position_tracker, portfolio, order_book)
         if gate is None:
             return
-        exclude_resting_limit_stop = gate.resting_limit_stop_id is not None
+        exclude_resting_limit_stop = bool(gate.resting_limit_stop_ids)
 
         # Resting structured exit: when a limit-style STOP_LIMIT already rests on
-        # the book (``resting_limit_stop_id`` set), the spec's (single — see
+        # the book (``resting_limit_stop_ids`` non-empty), the spec's (single — see
         # StrategySpec validation) limit-style stop is treated as in flight, so the
         # chosen intent excludes that stop rule. This both (a) suppresses a
         # duplicate stop-limit emission and (b) lets a lower-priority rule
@@ -677,6 +731,7 @@ class _EngineExitDispatcher:
             gate.pos,
             cur_bar,
             exclude_resting_limit_stop=exclude_resting_limit_stop,
+            resting_stop_child_present=gate.resting_stop_child_present,
             exclude_scaled=exclude_scaled,
         )
         if intent is None:
@@ -690,7 +745,7 @@ class _EngineExitDispatcher:
             order_book=order_book,
             cur_bar=cur_bar,
             result=result,
-            resting_limit_stop_id=gate.resting_limit_stop_id,
+            resting_limit_stop_ids=gate.resting_limit_stop_ids,
             pending=gate.pending,
         )
         # A scaled-ladder rung and a full-position close have distinct emission
@@ -831,7 +886,7 @@ class _EngineExitDispatcher:
         the close qty just appended to ``ctx.pending_for_prev`` is ``>=`` the
         current ``pos.qty`` (``_emit_partial_scale_out`` guards on
         ``req.qty >= pos.qty``; ``_emit_full_close`` always closes the full qty).
-        ``intent.style != "limit"`` whenever ``ctx.resting_limit_stop_id`` is set
+        ``intent.style != "limit"`` whenever ``ctx.resting_limit_stop_ids`` is non-empty
         (guaranteed: a resting limit stop is excluded from evaluation, so the
         chosen intent is a different rule).
         Postconditions: binds competing opposite-side resting exits and same-bar
@@ -869,20 +924,32 @@ class _EngineExitDispatcher:
         # A resting limit-style STOP_LIMIT is excluded from evaluation, so when one
         # rests the chosen intent is always a *different*, market-style rule
         # (take-profit / signal-exit / scaled rung) — a guaranteed close next bar.
-        # Cancel the now redundant resting stop-limit: left on the book it sits
-        # ahead of this close in submission order, so on a recovery bar that makes
-        # its latched limit marketable it would fill first at the stale limit price
-        # and the intended close would be dropped by the stale-continuation guard.
+        # Cancel the now redundant resting stop-limits: left on the book they sit
+        # ahead of this close in submission order, so ``process_bar`` examines them
+        # first and they fill at their stale stop geometry while this close is still
+        # waiting to price at the bar's open — after which the stale-continuation
+        # guard drops it. That holds in BOTH latch states, which is why the scan
+        # reports both: a LATCHED one needs only a bar that makes its limit
+        # marketable, and an UN-ARMED one needs only a bar whose range crosses its
+        # stop, since ``stop_limit_triggered`` arms off the full high/low and the
+        # order can arm and fill on that same bar.
         # Binding alone cannot prevent this — it only retires the stop *after* the
         # position is gone, which is too late once the stop itself is what closed it.
-        if ctx.resting_limit_stop_id is not None:
+        if ctx.resting_limit_stop_ids:
             # A limit-style intent never reaches here (a resting limit stop is
             # excluded from evaluation, so the chosen rule is a different one) —
             # enforce it with a raise so the stop-cancel can't fire for a re-emitted
             # limit stop even under ``python -O``.
             if intent.style == "limit":  # pragma: no cover - excluded by _evaluate
                 raise ValueError("cannot cancel a resting limit stop for a limit-style intent")
-            order_book.cancel(ctx.resting_limit_stop_id)
+            # ALL of them, not just one: preserving a working fallback alongside
+            # its replacement (see ``_retire_superseded_stop_loss_fallbacks``)
+            # means two competing stop-limits can rest at once. Cancelling only
+            # the last one scanned leaves the other ahead of this close in
+            # submission order, where it can fill on a recovery bar and pre-empt
+            # the exit — the exact race this cancel exists to prevent.
+            for stop_id in ctx.resting_limit_stop_ids:
+                order_book.cancel(stop_id)
 
     # ------------------------------------------------------------------
     # Sub-steps. Kept as private methods so subclasses or sibling unit
@@ -918,9 +985,14 @@ class _EngineExitDispatcher:
         The single pending-order pass also derives (a) the resting limit-stop's
         ``order_id`` so ``maybe_emit`` can drop the in-flight limit stop from the
         chosen intent and cancel that resting STOP_LIMIT when a different rule
-        replaces it, and (b) whether the position's own entry is still filling (a
+        replaces it, (b) whether the position's own entry is still filling (a
         same-side partially-filled continuation rests) so the scaled-take-profit
-        deferral needs no second order-book scan. A spec has at most one
+        deferral needs no second order-book scan, (c) whether a prior scaled rung's
+        market scale-out is still in flight, so ``maybe_emit`` defers the next rung
+        without standing the whole bar down, and (d) whether this migration's
+        entry-attached protective leg is currently on the book for this position,
+        which is what makes the stop-loss cede per-position rather than
+        run-level. A spec has at most one
         limit-style stop (enforced by ``StrategySpec``), so "an engine STOP_LIMIT
         rests" unambiguously means "that stop is in flight" — no per-order
         identity bookkeeping beyond the single id is needed. The id is only
@@ -934,10 +1006,12 @@ class _EngineExitDispatcher:
         ``order_id`` of the already-resting limit-style stop (non-``None`` only when
         the spec has a limit stop AND an engine STOP_LIMIT for this position is
         resting; a non-``None`` id means the chosen intent must exclude that stop
-        rule), and ``entry_continuation_in_flight`` — ``True`` iff a
+        rule), ``entry_continuation_in_flight`` — ``True`` iff a
         scaled-take-profit spec has a same-side partially-filled entry continuation
-        still resting (so the
-        scaled deferral can read it without rescanning the book).
+        still resting (so the scaled deferral can read it without rescanning the
+        book) — ``scaled_partial_in_flight``, and ``resting_stop_child_present``.
+        See :meth:`_scan_pending_for_gate`, which defines all four, for their exact
+        semantics; :class:`_PendingGateFacts` names them.
         """
         tracked = position_tracker.get(sym)
         if tracked is None:
@@ -955,13 +1029,13 @@ class _EngineExitDispatcher:
         scan = self._scan_pending_for_gate(tracked, pos, pending)
         if scan is None:
             return None  # an in-flight engine MARKET full close is already pending
-        resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight = scan
         return _EvalGate(
             tracked=tracked,
             pos=pos,
-            resting_limit_stop_id=resting_limit_stop_id,
-            entry_continuation_in_flight=entry_continuation_in_flight,
-            scaled_partial_in_flight=scaled_partial_in_flight,
+            resting_limit_stop_ids=scan.resting_limit_stop_ids,
+            entry_continuation_in_flight=scan.entry_continuation_in_flight,
+            scaled_partial_in_flight=scan.scaled_partial_in_flight,
+            resting_stop_child_present=scan.resting_stop_child_present,
             pending=pending,
         )
 
@@ -970,7 +1044,7 @@ class _EngineExitDispatcher:
         tracked: _TrackedPosition,
         pos: Position,
         pending: List[PendingOrder],
-    ) -> Optional[tuple[Optional[str], bool, bool]]:
+    ) -> Optional[_PendingGateFacts]:
         """Derive the per-order gate facts from one bar's pending-order snapshot.
 
         A single pass over the symbol's ``pending`` orders. The derived facts only
@@ -984,12 +1058,26 @@ class _EngineExitDispatcher:
         close is already pending — the bar must stand down, since re-emitting would
         stack a redundant guaranteed close while the rule keeps re-triggering. An
         in-flight *scaled-take-profit rung* market does NOT stand the bar down (see
-        ``scaled_partial_in_flight`` below). Otherwise returns
-        ``(resting_limit_stop_id, entry_continuation_in_flight,
-        scaled_partial_in_flight)``:
-          * ``resting_limit_stop_id`` — the ``order_id`` of an already-resting
-            limit-style STOP_LIMIT (or ``None``; a non-``None`` id means the chosen
-            intent must exclude that stop rule);
+        ``scaled_partial_in_flight`` below). Otherwise returns a
+        :class:`_PendingGateFacts` carrying all four facts by name:
+          * ``resting_limit_stop_ids`` — the ``order_id`` of EVERY already-resting
+            limit-style STOP_LIMIT (empty when none rests; non-empty means the
+            chosen intent must exclude that stop rule, and that ``maybe_emit``
+            cancels them ALL when it emits a replacement close). A collection
+            rather than one id because a fallback that is already working is
+            deliberately preserved alongside its replacement — see
+            ``_retire_superseded_stop_loss_fallbacks`` — so two competing
+            stop-limits can rest at once, and cancelling only one would leave
+            the other ahead of the replacement in submission order. Reported in BOTH
+            latch states, entry-attached children of this migration included:
+            the cancel fires only for a close that EMPTIES the position, and an
+            un-armed child left on the book there is examined before that close
+            in ``process_bar``'s submission-ordered snapshot, where it can arm
+            and fill off the bar's full range while the close prices at the open
+            — booking the stop's exit in place of the intended one. Cancelling
+            costs no protection: the cede is derived from
+            ``resting_stop_child_present``, so removing the child hands the rule
+            back to the bar-close evaluator — see the per-order check below;
           * ``entry_continuation_in_flight`` — ``True`` iff a scaled-take-profit
             spec has the position's own same-side, partially-filled entry
             continuation still resting (so the scaled deferral can read it without a
@@ -1001,12 +1089,26 @@ class _EngineExitDispatcher:
             rung before the next fires" guarantee the full-MARKET standdown gave,
             now WITHOUT also blocking the full-position exits that protect the
             remainder.
+          * ``resting_stop_child_present`` — ``True`` iff THIS migration's own
+            entry-attached protective leg is currently on the book for THIS
+            position (``parent_order_id`` set, the byte-stable
+            ``engine_exit:stop_loss`` reason, bound to the position's entry).
+            Covers both attached shapes — a plain ``STOP`` for a market-style
+            rule, a ``STOP_LIMIT`` for a limit-style one — since it answers
+            whether protection EXISTS, not what order type it is. Like
+            ``resting_limit_stop_ids`` it is NOT gated on the latch: an un-armed
+            child still counts as protection present. ``_evaluate`` consumes it
+            to make the rule cede per-position — the rule is handed to the
+            resting mechanism only while that mechanism actually holds
+            protection, so a position whose attachment has not materialized yet
+            (the partial-fill window) keeps its bar-close evaluation.
         """
         track_resting = self._has_limit_stop_rule
         track_continuation = self._has_scaled_take_profit_rule
-        resting_limit_stop_id: Optional[str] = None
+        resting_limit_stop_ids: List[str] = []
         entry_continuation_in_flight = False
         scaled_partial_in_flight = False
+        resting_stop_child_present = False
         for po in pending:
             po_req = po.request
             if po_req.side == tracked.side:
@@ -1045,9 +1147,70 @@ class _EngineExitDispatcher:
                     continue
                 # In-flight guaranteed FULL close — stand the whole bar down.
                 return None
+            # This migration's own entry-attached leg, for THIS position: parent set
+            # (only ``submit_attached`` can), the byte-stable stop-loss reason, and
+            # bound to this position's entry. Covers both shapes the migration
+            # attaches — a plain STOP for a market-style rule, a STOP_LIMIT for a
+            # limit-style one — since the cede below is about whether protection
+            # EXISTS, not about its order type.
+            is_resting_migration_leg = (
+                po_req.parent_order_id is not None
+                and reason == ENGINE_EXIT_REASON_STOP_LOSS
+                and po.working_against_entry_order_id == pos.entry_order_id
+            )
+            if is_resting_migration_leg:
+                resting_stop_child_present = True
             if track_resting and po_req.order_type == OrderType.STOP_LIMIT:
-                resting_limit_stop_id = po.order_id
-        return resting_limit_stop_id, entry_continuation_in_flight, scaled_partial_in_flight
+                # EVERY opposite-side stop-limit resting against this position is
+                # reported, in BOTH latch states — including an entry-attached
+                # child of this migration (``parent_order_id`` set — only
+                # ``OrderBook.submit_attached`` can set it, and ``submit`` rejects
+                # it outright, so that marker is structural).
+                #
+                # An earlier revision skipped this migration's own leg while
+                # un-armed, on the reasoning that an un-breached child is the
+                # position's standing protection rather than a competing close.
+                # That reasoning does not survive contact with the only place the
+                # ids are used to cancel: ``_retire_orders_against_closed_position``
+                # runs ONLY for a close that EMPTIES the position, never merely
+                # because "some other rule fired". At that point the child is
+                # protecting a position which a guaranteed market close will flatten
+                # at the next bar's OPEN, and leaving it on the book inverts the
+                # intrabar chronology:
+                #
+                #   ``process_bar`` walks a submission-ordered snapshot, so the
+                #   child — submitted back at entry-fill — is examined BEFORE the
+                #   replacement close queued only last bar. A STOP_LIMIT is armed by
+                #   ``stop_limit_triggered`` against the bar's full high/low range
+                #   and can arm AND fill on that same bar, whereas the MARKET close
+                #   prices at ``bar.open``. So on a bar that opens near the
+                #   take-profit and then dips through the stop, the child fills at
+                #   its stale stop geometry and the stale-continuation guard drops
+                #   the intended close — booking a stop-loss exit in place of the
+                #   take-profit, at a price the open had already bettered.
+                #
+                # Cancelling does NOT strip the position's protection, which is what
+                # the old skip was guarding against. The cede is derived per-bar from
+                # whether this migration's leg is actually on the book
+                # (``resting_stop_child_present`` below): cancelling the child makes
+                # the next scan report no protection, so ``exclude_rule_index`` stops
+                # applying and the bar-close evaluator resumes covering the stop rule
+                # for whatever residual a participation-capped close leaves open.
+                # The trade is one bar of INTRABAR cover on that residual — the
+                # pre-migration behavior — against mispricing the whole position's
+                # exit, so it is not close.
+                #
+                # The dispatcher's own trigger-time emission (no parent) is reported
+                # in either latch state, as it always was: it exists only because the
+                # bar-close evaluator already detected the breach, so it is
+                # post-trigger by construction.
+                resting_limit_stop_ids.append(po.order_id)
+        return _PendingGateFacts(
+            resting_limit_stop_ids=tuple(resting_limit_stop_ids),
+            entry_continuation_in_flight=entry_continuation_in_flight,
+            scaled_partial_in_flight=scaled_partial_in_flight,
+            resting_stop_child_present=resting_stop_child_present,
+        )
 
     def _evaluate(
         self,
@@ -1058,6 +1221,7 @@ class _EngineExitDispatcher:
         *,
         exclude_resting_limit_stop: bool = False,
         exclude_scaled: bool = False,
+        resting_stop_child_present: bool = False,
     ) -> Optional[ExitIntent]:
         """Run the pure rule evaluator and pick the intent to act on.
 
@@ -1087,16 +1251,29 @@ class _EngineExitDispatcher:
         skipped rather than standing the whole bar down.
 
         ``self.exclude_rule_index`` (constructor-set, not a ``maybe_emit`` parameter
-        since it is fixed for the whole run) drops the rule ceded to a resting-order
-        mechanism outright, before the pure evaluator even builds its intent — see
-        :class:`_EngineExitDispatcher`'s docstring for the mutual-exclusion contract
-        this enforces.
+        since it is fixed for the whole run) names the rule ceded to a resting-order
+        mechanism — see :class:`_EngineExitDispatcher`'s docstring for the
+        mutual-exclusion contract this enforces.
+
+        ``resting_stop_child_present`` decides whether that cede currently APPLIES.
+        The cede is per-position, not run-level: ``self.exclude_rule_index`` reaches
+        the evaluator only while the resting mechanism actually holds protection on
+        the book for this position; otherwise ``None`` is passed and the ceded rule
+        stays fully eligible here. The two differ whenever attachment lags the cede
+        — most reachably the partial-fill window, where materialization waits for
+        the entry's terminal slice — and keeping the rule live there is the whole
+        point: protection present means only the child acts, protection absent
+        means only this evaluator does. Never both, and never neither. Defaults to
+        ``False`` so a caller that does not pass it gets the SAFE side (rule still
+        evaluated) rather than a silent protection gap.
 
         Preconditions: ``tracked``/``pos`` describe the same open position
         (``pos.qty > 0``); ``cur_bar`` exposes ``high``/``low``/``close``.
         Postconditions: returns an ``ExitIntent`` to emit, or ``None`` (no rule
         triggered, the only trigger is an excluded resting limit stop / deferred
-        partial scale-out, or the only trigger is the rule at ``exclude_rule_index``).
+        partial scale-out, or the only trigger is the rule at ``exclude_rule_index``
+        — that last case only when ``resting_stop_child_present``, since otherwise
+        the ceded rule is not excluded and its trigger IS returned).
         """
         snapshot = tracked.snapshot(sym, pos.qty)
         # Hot path: evaluate this one position directly — no per-bar ``{sym: ...}``
@@ -1121,7 +1298,23 @@ class _EngineExitDispatcher:
             cursor_map=cursor_map,
             exclude_limit_style=exclude_resting_limit_stop,
             exclude_scaled=exclude_scaled,
-            exclude_rule_index=self.exclude_rule_index,
+            # PER-POSITION cede, not run-level: hand the rule to the resting
+            # mechanism only while that mechanism actually has protection on the
+            # book for THIS position. ``self.exclude_rule_index`` says which rule
+            # was ceded for the run; ``resting_stop_child_present`` says whether
+            # the cede is currently earned.
+            #
+            # The two diverge whenever attachment lags the cede, and the window is
+            # not exotic — a participation-capped entry under the default
+            # ``REQUEUE_NEXT_BAR`` policy is partially open for one or more bars
+            # before its terminal slice, and ``FillSimulator`` deliberately defers
+            # materialization until then so the children are sized to the
+            # cumulative position rather than the first slice. Ceding run-wide
+            # would leave that partial position with neither mechanism: no child
+            # yet, and the rule already dropped from this evaluator. Same for a
+            # position the strategy subprocess opens on a symbol the entry
+            # dispatcher skips.
+            exclude_rule_index=(self.exclude_rule_index if resting_stop_child_present else None),
         )
 
     @cached_property
@@ -1879,29 +2072,45 @@ _RESTING_STOP_LOSS_BASIS = "entry_price"
 
 
 def _is_resting_stop_loss(rule: Any) -> bool:
-    """Return True for the resting-eligible stop-loss variant migrated here.
+    """Return True for a resting-eligible stop-loss variant migrated here.
 
-    Eligible only for ``StopLossRule(basis="entry_price", style="market")``
-    with ``0 < pct < 1.0`` — the open upper bound matches ``ExitLegSpec.pct``'s
-    own ``(0, 1)`` constraint. That bound also excludes, by construction, the
-    ``pct=1.0`` short-safety auto-stop ``TradingService.__init__`` injects
-    when a spec allows shorts with no explicit stop covering them: that rule
-    is a deliberate no-op for longs (``entry * (1 - 1.0) == 0``) and would
-    fail ``ExitLegSpec``'s strict upper bound if fed through this path.
-    Excluding it leaves it exactly as it behaves today — bar-close-only —
-    rather than crashing every long entry on a spec where shorts are
-    possible.
+    Eligible for ``StopLossRule(basis="entry_price")`` in EITHER execution
+    style — ``"market"`` resolves to a resting ``STOP``, ``"limit"`` to a
+    resting ``STOP_LIMIT`` — with ``0 < pct < 1.0``. The open upper bound
+    matches ``ExitLegSpec.pct``'s own ``(0, 1)`` constraint. That bound also
+    excludes, by construction, the ``pct=1.0`` short-safety auto-stop
+    ``TradingService.__init__`` injects when a spec allows shorts with no
+    explicit stop covering them: that rule is a deliberate no-op for longs
+    (``entry * (1 - 1.0) == 0``) and would fail ``ExitLegSpec``'s strict
+    upper bound if fed through this path. Excluding it leaves it exactly as
+    it behaves today — bar-close-only — rather than crashing every long entry
+    on a spec where shorts are possible. (It is a ``style="market"`` rule, so
+    admitting the limit style here does not reach it: the DSL forbids
+    ``pct >= 1.0`` on a limit-style stop outright.)
+
+    A limit-style rule always carries ``limit_offset_pct`` in ``(0, 1)`` and
+    ``basis="entry_price"`` — ``StopLossRule._validate_limit_style`` enforces
+    both — so for the two styles that exist today the ``basis`` test is the only
+    one that can reject a limit-style rule, and ``_stop_loss_rule_to_leg_specs``
+    can read ``limit_offset_pct`` unguarded.
+
+    The style test enumerates both current values rather than being dropped as
+    vacuous: it is a deliberate ALLOWLIST, so a third ``StopLossRule.style`` added
+    later stays bar-close-only until someone decides how it should rest. Dropping
+    it would instead route that new style straight through
+    ``_stop_loss_rule_to_leg_specs``, whose ``style == "limit"`` test would
+    silently shape it as a plain ``STOP``.
     """
     return (
         isinstance(rule, StopLossRule)
         and rule.basis == _RESTING_STOP_LOSS_BASIS
-        and rule.style == "market"
+        and rule.style in ("market", "limit")
         and 0.0 < rule.pct < 1.0
     )
 
 
 # Env var gating which of the two mechanisms handles the resting-eligible
-# entry_price/market stop-loss variant for a run — see
+# entry_price stop-loss variants for a run — see
 # ``_resting_stop_loss_enabled`` for the default and
 # ``_first_resting_stop_loss_index`` for how the two mechanisms are kept
 # mutually exclusive once this selects the resting path.
@@ -1909,9 +2118,10 @@ _STOP_LOSS_RESTING_ORDER_ENV = "STOP_LOSS_RESTING_ORDER_ENABLED"
 
 
 def _resting_stop_loss_enabled() -> bool:
-    """Whether this run submits the resting-eligible entry_price/market
-    stop-loss variant as a resting ``STOP`` order (the #7495 migration)
-    instead of leaving it to the legacy bar-close evaluator.
+    """Whether this run attaches the resting-eligible entry_price stop-loss
+    variants at entry-fill — a resting ``STOP`` for ``style="market"``, a
+    resting ``STOP_LIMIT`` for ``style="limit"`` — instead of leaving them to
+    the legacy bar-close evaluator.
 
     Defaults to ``False`` — the bar-close evaluator (``_EngineExitDispatcher``
     / ``rule_compiler.stop_loss_level``) is the long-established mechanism
@@ -1924,21 +2134,85 @@ def _resting_stop_loss_enabled() -> bool:
     removed for good — a run that sets no explicit configuration keeps
     today's bar-close behavior unchanged.
 
+    Note what changes for the LIMIT style specifically: the bar-close path
+    already ends in a resting ``STOP_LIMIT`` (``_build_stop_limit_close``), so
+    this flag does not change that rule's order type — it changes WHEN the
+    order is placed, from the bar the stop level is detected as breached to
+    the bar the entry fills. The order therefore rests un-armed on the book
+    for the position's whole life, which is what lets it fill intrabar at its
+    exact level instead of at the next bar's open.
+
+    This being ``True`` is necessary but NOT sufficient for a rule to be ceded:
+    ``TradingService.run`` also requires ``_engine_entry_emission_active``, since
+    a run whose entries are not engine-managed (the custom-code path) can never
+    attach the resting leg, and ceding there would leave the rule with neither
+    mechanism.
+
     The two mechanisms are mutually exclusive for the affected rule by
     construction, not by convention: see ``_first_resting_stop_loss_index``
     (the single source of "which ``exit_rules`` entry this migration step
-    affects") and its two call sites — ``_EngineEntryDispatcher.__post_init__``
+    affects") and its call sites — ``_EngineEntryDispatcher.__post_init__``
     attaches the resting order only when this returns ``True``, and
     ``TradingService.run`` excludes that same rule index from
     ``_EngineExitDispatcher``'s bar-close evaluation only when this returns
     ``True`` — so a bar can never see both a resting-stop fill and a
-    bar-close exit for the same rule.
+    bar-close exit for the same rule. The entry-attached order itself stays
+    out of that dispatcher's cancel bookkeeping until it latches (see
+    ``_EngineExitDispatcher._scan_pending_for_gate``), so an un-armed
+    protective child is never cancelled out from under a live position.
     """
     return os.environ.get(_STOP_LOSS_RESTING_ORDER_ENV, "false").strip().lower() in {
         "true",
         "1",
         "yes",
     }
+
+
+def _engine_entry_emission_active(entry_rules: Sequence[Any], sizing: Any) -> bool:
+    """Whether the engine actually emits entries for this run — and therefore
+    whether anything can attach a resting exit leg at entry-fill.
+
+    Single source of the ``_EngineEntryDispatcher.maybe_emit`` precondition,
+    shared with ``TradingService.run``'s decision to cede a stop-loss rule to
+    the resting mechanism. The two MUST agree: ceding a rule the entry
+    dispatcher can never attach for would remove it from the bar-close
+    evaluator while nothing replaced it, leaving the position with no stop
+    enforcement at all.
+
+    The case that makes this load-bearing is the custom-code path
+    (``requires_custom_code``), where the mode layers pass ``entry_rules=None``
+    and the strategy subprocess submits its own entries: the dispatcher never
+    fires, so a resting leg is never attached. ``TradingService.__init__``
+    already applies this same reasoning to an ``oco_bracket``'s stop leg for
+    exactly the same reason — a bracket only protects ENGINE-managed entries —
+    so this predicate makes that carve-out explicit and reusable rather than
+    re-deriving it per call site.
+
+    KNOWN GAP (pre-existing, and not closed by this predicate): ceding is
+    run-scoped while attachment is per-ENTRY-ORDER, and ``maybe_emit`` has a
+    second early return this predicate does not model — a symbol outside
+    ``target_symbols``. A run with entry rules, sizing, AND a symbol filter
+    therefore still cedes the rule for the whole run, so a position opened on a
+    non-target symbol by the strategy subprocess (``StreamingHarness`` always
+    runs it) gets no attached leg while the bar-close evaluator has already
+    dropped the rule. The same is true of any position the subprocess opens on
+    its own under an otherwise engine-managed spec. This predicate closes the
+    broad hole — the custom-code path, where NO entry is ever engine-emitted —
+    but a complete fix needs a per-position signal (cede only for positions whose
+    entry order actually carried the leg) rather than a run-level flag, which is
+    a larger change than this migration step.
+
+    Preconditions:
+        - ``entry_rules`` is the run's entry-rule sequence — possibly
+          empty, or ``None`` on the custom-code path; both are falsy, and both are
+          load-bearing inputs this guard exists for rather than domain violations.
+          ``sizing`` is the run's sizing config or ``None``.
+    Postconditions:
+        - ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
+          not ``None`` — byte-for-byte the FIRST of ``maybe_emit``'s early returns (see
+          the known gap above for the second).
+    """
+    return bool(entry_rules) and sizing is not None
 
 
 def _first_resting_stop_loss_index(exit_rules: Sequence[Any]) -> Optional[int]:
@@ -1963,12 +2237,19 @@ def _first_resting_stop_loss_index(exit_rules: Sequence[Any]) -> Optional[int]:
 def _stop_loss_rule_to_leg_specs(rule: StopLossRule) -> List[ExitLegSpec]:
     """Translate a resting-eligible ``StopLossRule`` into a generic exit leg.
 
-    Preconditions: ``_is_resting_stop_loss(rule)`` is True.
-    Postconditions: returns ``[ExitLegSpec(kind=STOP, pct=rule.pct)]`` —
-    the same shape :func:`_bracket_to_leg_specs` builds for a market-style
-    bracket stop leg, so :func:`resolve_exit_leg_attachments` resolves
-    identical price math for both (see ``rule_compiler.stop_loss_level``,
-    which this mirrors: ``ref_price * (1 ∓ pct)``).
+    Preconditions:
+        - ``_is_resting_stop_loss(rule)`` is True.
+    Postconditions:
+        - returns a single-element list holding
+          ``ExitLegSpec(kind=STOP, pct=rule.pct)`` for a market-style rule, or
+          ``ExitLegSpec(kind=STOP_LIMIT, pct=rule.pct,
+          limit_offset_pct=rule.limit_offset_pct)`` for a limit-style one — the same
+          two shapes :func:`_bracket_to_leg_specs` builds for a bracket stop leg,
+          selected by the same ``style == "limit"`` test, so
+          :func:`resolve_exit_leg_attachments` resolves identical price math for
+          both sources (see ``rule_compiler.stop_loss_level``, which the stop level
+          mirrors: ``ref_price * (1 ∓ pct)``, and ``spec_dsl.protective_limit_price``,
+          which the limit side mirrors).
     """
     # Explicit raise (not assert, which ``python -O`` strips) so the contract
     # stays enforced in optimized production runs — the same posture
@@ -1980,9 +2261,23 @@ def _stop_loss_rule_to_leg_specs(rule: StopLossRule) -> List[ExitLegSpec]:
     if not _is_resting_stop_loss(rule):
         raise ValueError(
             "_stop_loss_rule_to_leg_specs requires a resting-eligible StopLossRule "
-            f"(basis='entry_price', style='market', 0 < pct < 1.0); got {rule!r}"
+            f"(basis='entry_price', style in ('market', 'limit'), 0 < pct < 1.0); got {rule!r}"
         )
-    return [ExitLegSpec(kind=OrderType.STOP, pct=rule.pct)]
+    # Mirrors ``_bracket_to_leg_specs``'s stop-leg ternary deliberately: the two
+    # translations feed the same resolver, so keeping them structurally parallel
+    # is what makes "a resting stop-loss and a bracket stop leg price identically"
+    # checkable by reading, not just by testing. ``limit_offset_pct`` is
+    # non-``None`` for a limit-style rule by DSL validation (see
+    # ``_is_resting_stop_loss``), and ``ExitLegSpec`` rejects it on a non-
+    # STOP_LIMIT leg, hence the matching conditional on both fields.
+    is_limit = rule.style == "limit"
+    return [
+        ExitLegSpec(
+            kind=OrderType.STOP_LIMIT if is_limit else OrderType.STOP,
+            pct=rule.pct,
+            limit_offset_pct=rule.limit_offset_pct if is_limit else None,
+        )
+    ]
 
 
 def resolve_resting_stop_loss_attachment(
@@ -1997,24 +2292,32 @@ def resolve_resting_stop_loss_attachment(
     :func:`resolve_exit_leg_attachments` for the shared price-resolution
     contract (anchoring, sign convention, and raises).
 
-    Preconditions: ``_is_resting_stop_loss(rule)`` is True; ``ref_price`` is
-    a finite number ``> 0``; ``side`` is the entry's ``OrderSide``.
-    Postconditions: returns a :class:`StopAttachment` whose ``stop_price``
-    is finite, strictly positive, and strictly on the protective side of
-    ``ref_price`` (a preview only — see ``entry_price_pct`` below), and
-    whose ``entry_price_pct == rule.pct`` so materialization re-anchors
-    ``stop_price`` to the entry's actual fill price rather than trusting
-    this ``ref_price``-anchored preview verbatim (``ref_price`` is the
-    signal bar's close, which can gap away from where the entry actually
-    fills — see :class:`StopAttachment`'s ``entry_price_pct`` field for why
-    that matters here specifically). Also carries
-    ``reason == ENGINE_EXIT_REASON_STOP_LOSS`` — the same named constant
-    :meth:`_EngineExitDispatcher._build_close_order` stamps for a
-    ``StopLossRule`` close on the bar-close path — so materialization (see
-    :class:`StopAttachment`'s ``reason`` field) tags the resting fill with
-    the same, gate-relied-upon attribution regardless of which path actually
-    closes the position, instead of the generic ``exit_leg_{idx}`` label the
-    rule-agnostic ``attached_exits`` plumbing would otherwise derive.
+    Preconditions:
+        - ``_is_resting_stop_loss(rule)`` is True; ``ref_price`` is
+          a finite number ``> 0``; ``side`` is the entry's ``OrderSide``.
+    Postconditions:
+        - returns a :class:`StopAttachment` whose ``stop_price``
+          is finite, strictly positive, and strictly on the protective side of
+          ``ref_price`` (a preview only — see ``entry_price_pct`` below), and
+          whose ``entry_price_pct == rule.pct`` so materialization re-anchors
+          ``stop_price`` to the entry's actual fill price rather than trusting
+          this ``ref_price``-anchored preview verbatim (``ref_price`` is the
+          signal bar's close, which can gap away from where the entry actually
+          fills — see :class:`StopAttachment`'s ``entry_price_pct`` field for why
+          that matters here specifically). For a limit-style rule the attachment
+          is additionally a STOP_LIMIT leg (``limit_offset`` set) carrying
+          ``entry_price_limit_offset_pct == rule.limit_offset_pct``, so the limit
+          re-anchors off the SAME re-derived stop the ``entry_price_pct`` re-anchor
+          produces — without it the stop would follow the real fill while the
+          limit offset stayed pinned to the pre-gap preview, leaving the leg's two
+          prices anchored to different reference prices. Also carries
+          ``reason == ENGINE_EXIT_REASON_STOP_LOSS`` — the same named constant
+          :meth:`_EngineExitDispatcher._build_close_order` stamps for a
+          ``StopLossRule`` close on the bar-close path — so materialization (see
+          :class:`StopAttachment`'s ``reason`` field) tags the resting fill with
+          the same, gate-relied-upon attribution regardless of which path actually
+          closes the position, instead of the generic ``exit_leg_{idx}`` label the
+          rule-agnostic ``attached_exits`` plumbing would otherwise derive.
 
     Raises:
         ValueError: if ``rule`` is not resting-eligible (via
@@ -2036,9 +2339,17 @@ def resolve_resting_stop_loss_attachment(
     # attachment's final shape is established in one step; StopAttachment is a
     # Pydantic BaseModel, so model_copy (not dataclasses.replace) is the
     # correct mechanism here.
+    #
+    # ``entry_price_limit_offset_pct`` is set for the limit style ONLY: on a
+    # market-style leg ``limit_offset`` is ``None``, and
+    # ``OrderRequest.validate_prices`` rejects the fraction without it (the field
+    # would be silently ignored). Keying off ``rule.limit_offset_pct`` rather than
+    # re-testing ``rule.style`` reuses the DSL's own style/offset coupling
+    # (``_validate_limit_style``: set iff limit-style) instead of restating it.
     return attachment.model_copy(
         update={
             "entry_price_pct": rule.pct,
+            "entry_price_limit_offset_pct": rule.limit_offset_pct,
             "reason": ENGINE_EXIT_REASON_STOP_LOSS,
         }
     )
@@ -2072,8 +2383,10 @@ class _EngineEntryDispatcher:
     #: sizes. Empty (the default, used by raw-sizing unit tests) is treated as
     #: whole-share.
     asset_class: str = ""
-    #: Whether the resting-eligible entry_price/market ``StopLossRule`` (if
-    #: any) is attached here as a resting ``STOP`` order. Defaults to
+    #: Whether the resting-eligible entry_price ``StopLossRule`` (if
+    #: any) is attached here at entry-fill — a resting ``STOP`` for a
+    #: market-style rule, a resting ``STOP_LIMIT`` for a limit-style one.
+    #: Defaults to
     #: ``_resting_stop_loss_enabled()`` (env-gated, off by default) so a
     #: dispatcher built without this argument matches the run's feature
     #: check; unit tests exercising this path directly override it explicitly.
@@ -2089,6 +2402,16 @@ class _EngineEntryDispatcher:
         # (``_compute_qty``) reads these cached values instead of re-normalizing
         # the asset class on every entry.
         self._fractional: bool = is_fractional_asset_class(self.asset_class)
+        # Whether this dispatcher can emit entries at all — and therefore whether
+        # anything can attach a resting exit leg. ``entry_rules``/``sizing`` are
+        # fixed at construction, so this is derived once here rather than on every
+        # ``maybe_emit`` call, like the other per-run constants below. Assigned via
+        # the SHARED ``_engine_entry_emission_active`` (not an inlined restatement)
+        # so it cannot drift from the identical condition ``TradingService.run``
+        # applies before ceding a stop-loss rule to the resting mechanism.
+        self._entry_emission_active: bool = _engine_entry_emission_active(
+            self.entry_rules, self.sizing
+        )
         # Whether the dispatcher applies the runtime position clamp for this
         # sizing kind. EVERY engine sizing kind is clamped to ``max_position_pct``
         # at the sizing price so the cap is a true pre-entry sizing bound: we
@@ -2115,7 +2438,9 @@ class _EngineEntryDispatcher:
         self._bracket: Optional[OcoBracketRule] = next(
             (r for r in self.exit_rules if isinstance(r, OcoBracketRule)), None
         )
-        # First resting-eligible entry_price/market StopLossRule (if any),
+        # First resting-eligible entry_price StopLossRule (if any), in either
+        # execution style — ``_stop_loss_rule_to_leg_specs`` maps the style to
+        # the leg kind (STOP vs STOP_LIMIT), so nothing here is style-aware —
         # attached to every entry order the same way ``self._bracket`` is —
         # but ONLY when ``resting_stop_loss_enabled`` selects this mechanism
         # for the run (see ``_resting_stop_loss_enabled`` for the default and
@@ -2182,7 +2507,47 @@ class _EngineEntryDispatcher:
         views: Dict[str, StreamingHistoryView],
         result: "TradingServiceResult",
     ) -> None:
-        if not self.entry_rules or self.sizing is None:
+        """Emit at most one engine-managed entry for ``cur_bar``'s symbol.
+
+        Mutates TWO caller-owned structures, which is why the contract is worth
+        stating rather than leaving to the inline comments below: it appends to
+        ``pending_for_prev`` and bumps counters/events on
+        ``result.execution_diagnostics``.
+
+        The skips are deliberately of two kinds. **Silent** (diagnostics
+        untouched): emission is inactive, the symbol is outside
+        ``target_symbols``, a pending LONG/SHORT entry already exists for it, or
+        the history view is empty — none of these say anything about the entry
+        predicate, so counting them would blur the "dead predicate" signal.
+        **Counted** (a counter AND an event): an open position
+        (``already_in_position_skips``) and a risk-gate rejection
+        (``risk_capped_entries``) — both mean the predicate DID fire and
+        something downstream stopped it, which is exactly what a zero-trade
+        post-mortem needs to distinguish.
+
+        Two outcomes sit outside that split, so it should not be read as
+        exhaustive without them. A bar where no entry rule matches is the
+        dead-predicate baseline the counters exist to be measured against, and is
+        deliberately uncounted. And an order that is built but then fails
+        ``validate_prices`` is logged at error level and dropped — nothing
+        appended, no counter, no event — so a validation-rejected entry is
+        visible only in the logs, never in ``execution_diagnostics``.
+
+        Preconditions:
+            - called once per bar per symbol from the dispatcher loop;
+              ``pending_for_prev`` is the caller's queue for the next bar. A no-op
+              unless ``self._entry_emission_active`` — the custom-code path
+              (``entry_rules=None``) must never emit here, because nothing can attach
+              and so the stop-loss cede can never be earned.
+        Postconditions:
+            - on success exactly one price-validated, presized
+              ``OrderRequest`` is appended to ``pending_for_prev``,
+              ``orders_emitted`` is incremented, and an "emitted" event recorded.
+              On a counted skip the matching counter and event are recorded and
+              nothing is appended. On a silent skip, on no match, and on a
+              ``validate_prices`` rejection, nothing is touched at all.
+        """
+        if not self._entry_emission_active:
             return
         if self.target_symbols and cur_bar.symbol not in self.target_symbols:
             return
@@ -2686,7 +3051,7 @@ def _apply_fill_outcome_events(
             sym_fills = diagnostics.exit_rule_fills_by_symbol.setdefault(ev.symbol, {})
             sym_fills[kind] = sym_fills.get(kind, 0) + 1
         elif ev.kind == "engine_exit_attached":
-            # A resting stop-loss leg (the entry_price/market migration's
+            # A resting stop-loss leg (the entry_price migration's
             # exclusive marker — see ``FillSimulator._materialize_stop_child``)
             # was attached at entry-fill time. The bar-close evaluator's own
             # ``_record_emission`` never sees this leg (it has zero
@@ -3020,7 +3385,17 @@ class TradingService:
         # When disabled (the default), ``exclude_rule_idx`` stays ``None`` so
         # ``_EngineExitDispatcher`` evaluates every rule exactly as it does
         # today.
-        resting_stop_loss_enabled = _resting_stop_loss_enabled()
+        # Ceding a rule requires BOTH the feature check and an entry dispatcher
+        # that can actually attach the resting leg. On the custom-code path
+        # (``entry_rules is None`` at construction) the dispatcher never fires, so
+        # ceding there would strip the rule from the bar-close evaluator with
+        # nothing replacing it — the position would run with no stop enforcement
+        # at all. ``_engine_entry_emission_active`` is the shared predicate
+        # ``_EngineEntryDispatcher.maybe_emit`` returns early on, so the two can
+        # never disagree about whether an attachment is possible.
+        resting_stop_loss_enabled = _resting_stop_loss_enabled() and _engine_entry_emission_active(
+            self._entry_rules, self._sizing
+        )
         exclude_rule_idx = (
             _first_resting_stop_loss_index(self._exit_rules) if resting_stop_loss_enabled else None
         )

@@ -373,7 +373,7 @@ def _filtered_intent_for_rule(
     shares ``rule_kind``/``basis``/``style`` with the resting-eligible variant
     but is never resting-attached — see ``_is_resting_stop_loss`` in
     ``trading_service.service``). Used when a resting-order mechanism (the
-    entry_price/market stop-loss migration) has been attached for that rule
+    entry_price stop-loss migration) has been attached for that rule
     instead, so the bar-close evaluator must never also produce an intent for
     it — see ``_EngineExitDispatcher.exclude_rule_index`` for the mutual-
     exclusion contract this enforces.
@@ -419,8 +419,9 @@ def first_exit_intent_for_position(
     would allocate on every bar of every open position.
 
     ``exclude_rule_index``, when set, is the spec index of a rule ceded to a
-    resting-order mechanism for this run (e.g. the entry_price/market
-    stop-loss migration's resting ``STOP`` attachment) — see
+    resting-order mechanism for this run (e.g. the entry_price
+    stop-loss migration's entry-fill attachment — a resting ``STOP`` for a
+    market-style rule, a resting ``STOP_LIMIT`` for a limit-style one) — see
     :func:`_filtered_intent_for_rule` for why this is an index match rather
     than an intent-shape filter like the other two.
 

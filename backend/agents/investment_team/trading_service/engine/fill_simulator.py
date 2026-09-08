@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from ...execution.bar_safety import BarSafetyAssertion, _ts_le
 from ...execution.risk_filter import RiskFilter
@@ -55,6 +55,13 @@ logger = logging.getLogger(__name__)
 #: dispatcher and this simulator's reconciliation guard key off it, so it lives
 #: here — the lowest layer that needs it — to stay a single source of truth.
 ENGINE_EXIT_REASON_PREFIX = "engine_exit:"
+
+#: The stop-loss reason literal, derived from the prefix above. Lives here (not
+#: only in ``trading_service.service``) because this layer now needs it too: the
+#: resting stop-loss migration's attached leg carries it, and materialization
+#: uses it to recognise and retire a dispatcher-emitted fallback it supersedes.
+#: ``service`` re-exports this so the literal has exactly one definition.
+ENGINE_EXIT_REASON_STOP_LOSS = f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
 
 #: Callback that reconciles exit attribution for a *strategy-initiated* close.
 #: Given the closing position's facts and the realized return, it returns an
@@ -95,6 +102,33 @@ class FillDiagnosticEvent:
     detail: str = ""
 
 
+class _DeferredStopLossRetirement(NamedTuple):
+    """One queued ``_retire_superseded_stop_loss_fallbacks`` call.
+
+    ``queued_for_bar`` is the timestamp of the bar whose materialization
+    superseded the fallback, and it is what makes the two drain sites
+    distinguishable. A retirement queued from inside ``process_bar``'s fill
+    loop carries that bar's timestamp; one queued by ``expire_day_orders``
+    — which the service calls BEFORE ``process_bar(cur_bar)`` — carries the
+    CURRENT bar's timestamp while that bar's loop has not run yet. Only the
+    former's replacement child is already unblocked by the time a later bar's
+    pre-loop drain runs, so only the former may be drained ahead of a bar. (The
+    gate is the replacement's eligibility, not whether the fallback spent a fill
+    turn — a mid-loop raise can strand an entry whose fallback was never
+    examined, and retiring that one is still safe.)
+
+    Invariants:
+        - ``keep_order_id`` is the replacement child (never retired by
+          its own queue entry); ``queued_for_bar`` is an ISO-8601 bar timestamp.
+    """
+
+    symbol: str
+    child_side: OrderSide
+    keep_order_id: str
+    queued_for_bar: str
+    child_order_type: OrderType
+
+
 @dataclass
 class FillOutcome:
     """Everything that happened on one fill tick for one symbol."""
@@ -123,6 +157,28 @@ class FillSimulator:
     ) -> None:
         self.portfolio = portfolio
         self.order_book = order_book
+        #: Stop-loss fallbacks superseded by a materialized attachment, retired
+        #: only once the fill loop of the bar they were queued for is done — see
+        #: ``_retire_superseded_stop_loss_fallbacks`` for why the delay is
+        #: load-bearing. Entries carry the bar they were queued for so the
+        #: pre-loop drain can tell a retirement stranded by a raise on an EARLIER
+        #: bar (safe to apply now) from one ``expire_day_orders`` queued for THIS
+        #: bar moments ago (whose fallback has not had its fill turn yet).
+        self._deferred_stop_loss_retirements: List[_DeferredStopLossRetirement] = []
+        #: ``engine_exit_attached`` events raised by ``expire_day_orders``, which
+        #: the service calls between bars where no ``events`` list is in scope.
+        #: Flushed into the next ``process_bar`` FOR THE SAME SYMBOL, so the
+        #: firing credit lands with the bar that actually attached the leg.
+        #: Keyed by symbol at insertion rather than filtered on flush: like the
+        #: retirement queue this is global state consumed by a per-(symbol, bar)
+        #: method, and ``expire_day_orders`` runs order-book-wide, so a flat list
+        #: would let one symbol's rollover credits land in another symbol's
+        #: ``FillOutcome``. Keyed, that misattribution is unrepresentable.
+        #: Same lifetime caveat as the retirement queue above: entries for a
+        #: symbol that never receives another bar stay buffered for the life of
+        #: the run and are dropped at the end of it. Harmless — these are
+        #: diagnostics-only events, moot once the run is over.
+        self._deferred_attach_events: Dict[str, List[FillDiagnosticEvent]] = {}
         self.risk = risk_filter
         self.config = config
         # Engine-side exit-attribution reconciliation. ``None`` (default)
@@ -147,10 +203,74 @@ class FillSimulator:
     # ------------------------------------------------------------------
 
     def process_bar(self, bar: Bar, next_bar: Optional[Bar] = None) -> FillOutcome:
+        """Advance the book one bar for ONE symbol and report what happened.
+
+        Per (symbol, bar), not per bar: a multi-symbol run calls this once for
+        each symbol's bar at a given timestamp. Anything the simulator defers
+        across calls is therefore scoped by symbol as well as by bar — see
+        ``_drain_deferred_stop_loss_retirements``.
+
+        The fill loop iterates a SNAPSHOT of the symbol's pending orders and
+        skips any order that has since left the book, so a cancel issued from
+        inside the loop removes that order's fill opportunity for this bar.
+        That is why retirements are queued rather than applied inline.
+
+        Preconditions:
+            - ``bar`` is the next bar for its symbol, not earlier than any bar
+              already processed for it; ``next_bar``, when given, is the
+              following bar for the SAME symbol (the realistic execution model
+              reads it for adverse selection, and another symbol's price move
+              would corrupt the fill).
+        Postconditions:
+            - Returns a ``FillOutcome`` holding this bar's entry fills, exit
+              fills, closed trades and diagnostic events — all for
+              ``bar.symbol``, including any attach credits deferred from
+              ``expire_day_orders`` for that symbol. The deferred retirement
+              queue holds no entry for ``bar.symbol`` at or before
+              ``bar.timestamp``, and the deferred attach buffer holds none for
+              it at all; entries for other symbols are untouched by both.
+            - On a raise, neither deferred structure is consumed for this bar,
+              so a caller that catches and keeps ticking loses no credit and no
+              retirement.
+        """
         entry_fills: List[Fill] = []
         exit_fills: List[Fill] = []
         closed: List[TradeRecord] = []
         events: List[FillDiagnosticEvent] = []
+
+        # Safety net for the deferred-retirement queue: if a PRIOR bar raised
+        # mid-loop (a bar-safety assertion, an execution-model error) its drain
+        # was skipped, stranding entries here. Draining them now — before this
+        # bar's snapshot — keeps the documented invariant ("a superseded fallback
+        # never outlives the bar that replaced it by more than the raise that
+        # interrupted it") true for any caller that catches and keeps ticking.
+        # Retiring one bar late is safe for those, though NOT because the
+        # fallback had its turn — a raise can abort the loop before the fallback's
+        # position in the snapshot, so it may never have been examined. The reason
+        # is the replacement: it was materialized and stamped with that earlier
+        # bar, so from this bar on the same-bar guard no longer skips it and it
+        # holds the protection. The fallback is redundant either way.
+        # ``before_bar`` is what keeps the "one bar late" claim honest — it holds
+        # back anything queued FOR this bar by
+        # ``expire_day_orders`` (which the service calls just before this), whose
+        # fallback is about to enter the snapshot below with its turn still ahead
+        # of it.
+        self._drain_deferred_stop_loss_retirements(symbol=bar.symbol, before_bar=bar.timestamp)
+
+        # Attach events raised by ``expire_day_orders`` for THIS symbol: it runs
+        # between bars with no ``events`` list in scope, so it buffers and this
+        # flush carries them into the same bar's diagnostics. Without the credit
+        # they carry, a resting-stop close on an abandoned entry reconciles
+        # against zero firings and trips the conformance leak check as a false
+        # critical. Another symbol's credits stay queued for its own bar.
+        #
+        # Copied, NOT consumed: the buffer entry is dropped only once the bar has
+        # completed (below). ``events`` is local, so a mid-loop raise discards it
+        # — clearing here would lose the credit outright, which is the very
+        # false critical this flush exists to prevent. Leaving it queued means a
+        # caller that catches and keeps ticking delivers it on the next bar for
+        # this symbol instead.
+        events.extend(self._deferred_attach_events.get(bar.symbol, ()))
 
         # Work on a snapshot of pending orders for this symbol so cancels /
         # removes inside the loop don't mutate iteration.
@@ -424,7 +544,9 @@ class FillSimulator:
                         # Submit protective legs sized to the existing
                         # position so it doesn't run unprotected.
                         if was_filled:
-                            self._maybe_materialize_brackets_on_abandon(po=po, bar=bar)
+                            self._maybe_materialize_brackets_on_abandon(
+                                po=po, bar=bar, events=events
+                            )
                     else:
                         self.order_book.requeue(
                             po.order_id,
@@ -555,6 +677,25 @@ class FillSimulator:
                                 reason=po.request.reason,
                             )
                         )
+
+        # The bar completed, so this symbol's flushed credits are safely inside
+        # the ``FillOutcome`` about to be returned and can leave the buffer. A
+        # raise above skips this, keeping them queued for the next bar.
+        self._deferred_attach_events.pop(bar.symbol, None)
+
+        # SIBLING of the ``_deferred_attach_events`` pop above: both deferred
+        # per-(symbol, bar) structures are finalized in this block, by different
+        # idioms. Any future one belongs here too — a sibling left out of a
+        # scoping or cleanup fix is the most repeated defect on this surface,
+        # so keep the two in sync.
+        #
+        # Retire superseded stop-loss fallbacks only now, after every order in
+        # this bar's snapshot has had its fill opportunity — including any
+        # fallback an attachment materialized above supersedes. Scoped to THIS
+        # symbol: ``expire_day_orders`` expires order-book-wide, so at a DAY
+        # rollover the queue also holds entries for symbols whose own
+        # ``process_bar`` has not run yet on this timestamp.
+        self._drain_deferred_stop_loss_retirements(symbol=bar.symbol)
 
         return FillOutcome(
             entry_fills=entry_fills,
@@ -876,7 +1017,7 @@ class FillSimulator:
             # from ``OrderBook``'s eligible-parent set and break any later
             # ``submit_attached`` call against this parent.
             self.order_book.remove(po.order_id, was_filled=True)
-            self._maybe_materialize_brackets_on_abandon(po=po, bar=bar)
+            self._maybe_materialize_brackets_on_abandon(po=po, bar=bar, events=events)
             return None, f"risk_gate:{gate.reason}"
 
         # Capital check against the *additional* notional only — the existing
@@ -893,7 +1034,7 @@ class FillSimulator:
             # parent's eligible-parent registration since the first slice
             # already filled.
             self.order_book.remove(po.order_id, was_filled=True)
-            self._maybe_materialize_brackets_on_abandon(po=po, bar=bar)
+            self._maybe_materialize_brackets_on_abandon(po=po, bar=bar, events=events)
             return None, "insufficient_capital"
 
         pos = self.portfolio.extend(req.symbol, filled_qty, fill_price, ref_price)
@@ -1435,11 +1576,33 @@ class FillSimulator:
         TIF expiry — the order-book level uses ``was_filled=True`` for
         partial bracket parents specifically so this hook can still
         ``submit_attached`` against their (still-registered) id here.
+
+        Called by the service BETWEEN bars — after the previous
+        ``process_bar`` and before the next — which is why any attach event
+        it raises is buffered rather than appended, and why a stop-loss
+        retirement queued from here must survive the next bar's pre-loop
+        drain: the fallback it supersedes has not had that bar's fill
+        opportunity yet.
+
+        Preconditions:
+            - ``bar`` is the bar about to be processed.
+        Postconditions:
+            - returns the expired orders; every partially-filled
+              parent among them has its protective legs on the book, with any
+              attach event buffered for the next ``process_bar`` to record.
         """
         expired = self.order_book.expire_day_orders(bar.timestamp)
         for po in expired:
             if po.cumulative_filled_qty > 0:
-                self._maybe_materialize_brackets_on_abandon(po=po, bar=bar)
+                # No CALLER-PROVIDED ``events`` list exists here — the service
+                # calls this between bars, outside ``process_bar`` — so buffer
+                # under the order's own symbol, and that symbol's next
+                # ``process_bar`` flushes it into the diagnostics.
+                self._maybe_materialize_brackets_on_abandon(
+                    po=po,
+                    bar=bar,
+                    events=self._deferred_attach_events.setdefault(po.request.symbol, []),
+                )
         return expired
 
     # ------------------------------------------------------------------
@@ -1521,6 +1684,11 @@ class FillSimulator:
         *,
         po: PendingOrder,
         bar: Bar,
+        # Required, not Optional: after this change every caller has a list to
+        # pass (``expire_day_orders`` passes the deferred buffer), and a default
+        # would let a future call site silently drop the firing credit — the
+        # exact failure this hook was wired up to fix.
+        events: List[FillDiagnosticEvent],
     ) -> None:
         """Materialize protective legs when ``_continue_entry`` abandons an
         already-filled bracket parent (risk-gate or insufficient-capital
@@ -1533,6 +1701,25 @@ class FillSimulator:
         this hook the residual position runs unprotected (no SL, no TP).
         Sized to the existing position's cumulative entry-filled qty so
         the legs cover everything that was actually opened.
+
+        ``events`` is required, so a resting stop-loss leg attached here always
+        records its ``engine_exit_attached`` firing credit. A leg attached WITHOUT that
+        credit closes the position as ``engine_exit:stop_loss`` against a zero
+        firing count, which the conformance leak check reads as a stop that
+        never fired — a false critical on a position that was in fact protected.
+        The one caller that cannot pass a list is ``expire_day_orders`` (the
+        service calls it between bars); it buffers into
+        ``_deferred_attach_events`` instead, which ``process_bar`` flushes into
+        the same bar's diagnostics.
+
+        Preconditions:
+            - ``po`` was removed with ``was_filled=True`` (its id is
+              still registered as an eligible attachment parent); ``events`` is a list
+              the caller will drain into the bar's diagnostics.
+        Postconditions:
+            - when ``po`` carries attachments and a position is open,
+              its protective legs rest on the book sized to that position, and any
+              attach event has been appended to ``events``.
         """
         req = po.request
         if not req.has_attached_exits:
@@ -1540,7 +1727,9 @@ class FillSimulator:
         pos = self.portfolio.positions.get(req.symbol)
         if pos is None:
             return
-        self._materialize_attached_exit_children(po=po, bar=bar, filled_qty=pos.original_qty)
+        self._materialize_attached_exit_children(
+            po=po, bar=bar, filled_qty=pos.original_qty, events=events
+        )
 
     def _materialize_attached_exit_children(
         self,
@@ -1548,11 +1737,16 @@ class FillSimulator:
         po: PendingOrder,
         bar: Bar,
         filled_qty: float,
-        # Optional: unlike ``_fill_entry``/``_continue_entry`` (always called
-        # from ``process_bar``, where an ``events`` list is always in scope),
-        # this method's ``_maybe_materialize_brackets_on_abandon`` call sites
-        # are deliberately left un-wired (a narrow, documented scope
-        # boundary), so they call without an ``events`` list.
+        # Optional only for callers with no list in scope. Every path that has
+        # one passes it: a resting stop-loss leg that attaches without
+        # recording its ``engine_exit_attached`` credit later closes the
+        # position against a zero firing count, which the conformance leak
+        # check reads as a stop that never fired — a false critical on a
+        # position that was in fact protected. The one caller the service
+        # invokes between bars, ``expire_day_orders``, passes the
+        # ``_deferred_attach_events`` buffer rather than nothing, so this
+        # default now guards future callers rather than marking a scope
+        # boundary any current path relies on.
         events: Optional[List[FillDiagnosticEvent]] = None,
     ) -> None:
         """Submit every attached ``StopAttachment`` / ``LimitAttachment`` leg
@@ -1702,8 +1896,16 @@ class FillSimulator:
         ``req.side``, never from ``child_side``.
         Postconditions: exactly one resting STOP/STOP_LIMIT/TRAILING_STOP
         child is submitted to the order book, tagged with ``oco_group_id``
-        and ``parent_order_id=po.order_id``. When ``events`` is provided and
-        ``sl.entry_price_pct`` is set (the resting entry_price/market
+        and ``parent_order_id=po.order_id``.
+        Invariant: the child's ``stop_price`` and (for a STOP_LIMIT)
+        ``limit_price`` are always derived from one anchor — the parent's
+        actual fill price when ``sl.entry_price_pct`` is set, the
+        emission-time preview otherwise. ``sl.entry_price_limit_offset_pct``
+        is what carries that anchor through to the limit side; validation
+        (``OrderRequest.validate_prices``) requires it whenever a re-anchoring
+        leg is also a STOP_LIMIT, so the two prices cannot diverge.
+        When ``events`` is provided and
+        ``sl.entry_price_pct`` is set (the resting entry_price
         stop-loss migration's exclusive marker — see ``StopAttachment``),
         an ``"engine_exit_attached"`` diagnostic event is appended so the
         firing-count telemetry credits this resting leg at materialization
@@ -1735,7 +1937,22 @@ class FillSimulator:
         is_limit = sl.limit_offset is not None
         sl_limit_price = None
         if is_limit:
-            if sl.limit_offset_kind == "abs":
+            if sl.entry_price_limit_offset_pct is not None:
+                # This leg's stop just re-anchored to the real fill price above, so
+                # its limit must re-anchor off the SAME stop — otherwise the
+                # ``limit_offset`` preview (an absolute distance
+                # ``preview_stop * limit_offset_pct``, computed in
+                # ``resolve_exit_leg_attachments`` off the signal bar's close) would
+                # keep the pre-gap anchor while ``resolved_stop_price`` moved,
+                # silently changing the stop-to-limit gap the spec asked for.
+                # Deriving off ``resolved_stop_price`` (not ``sl.stop_price``) is
+                # what ties the two together, and it holds the invariant on the
+                # defensive ``entry_fill_price is None`` path too: there
+                # ``resolved_stop_price`` falls back to the preview stop, so this
+                # reproduces the preview ``limit_offset`` exactly rather than
+                # mixing anchors.
+                limit_off = resolved_stop_price * sl.entry_price_limit_offset_pct
+            elif sl.limit_offset_kind == "abs":
                 limit_off = sl.limit_offset
             else:  # "bps"
                 limit_off = apply_bps_offset(resolved_stop_price, sl.limit_offset)
@@ -1782,6 +1999,20 @@ class FillSimulator:
             oco_group_id=oco_group_id,
         )
         sl_child.working_against_entry_order_id = po.order_id
+        if sl.entry_price_pct is not None:
+            # DEFERRED, not immediate — see the helper's docstring: cancelling
+            # inside ``process_bar``'s fill loop would rob the fallback of this
+            # bar's fill opportunity, and the replacement submitted here cannot
+            # fill until the next bar.
+            self._deferred_stop_loss_retirements.append(
+                _DeferredStopLossRetirement(
+                    symbol=req.symbol,
+                    child_side=child_side,
+                    keep_order_id=sl_child.order_id,
+                    queued_for_bar=bar.timestamp,
+                    child_order_type=sl_order_type,
+                )
+            )
         if events is not None and sl.entry_price_pct is not None:
             events.append(
                 FillDiagnosticEvent(
@@ -1810,6 +2041,199 @@ class FillSimulator:
                 if req.side == OrderSide.LONG
                 else entry_fill_price + offset
             )
+
+    def _drain_deferred_stop_loss_retirements(
+        self, *, symbol: str, before_bar: Optional[str] = None
+    ) -> None:
+        """Run queued stop-loss fallback retirements.
+
+        The invariant is not "after the fill loop" but the narrower **never
+        while a fill loop is iterating** — ``process_bar`` calls this at two
+        points (before its snapshot and after the loop) and both satisfy that.
+        Deferring out of the loop — after ``process_bar``'s fill loop — is
+        load-bearing, not tidiness. That loop iterates a snapshot but skips any
+        order no longer in the book (``if po.order_id not in self.order_book``),
+        so cancelling a fallback mid-loop destroys its fill opportunity for the
+        CURRENT bar. The replacement child cannot take over on that bar either:
+        it is absent from the snapshot, and the engine-internal same-bar guard
+        (``working_against_entry_order_id`` set with ``submitted_at`` not
+        strictly earlier) skips it until the next one. So an immediate cancel on
+        a bar that crossed the fallback's stop AND limit would leave the position
+        open through a stop it had already triggered.
+
+        Running here instead, the fallback keeps its turn: if the bar filled it,
+        the position is closed and the queue entry finds nothing left to cancel;
+        if it did not fill, it is retired and the correctly-anchored attachment
+        takes over from the next bar.
+
+        Two scopes decide WHICH queued retirements run, because the queue is
+        global while the thing that grants a fill opportunity — ``process_bar``
+        — is per (symbol, bar).
+
+        ``symbol`` is the hard one. ``expire_day_orders`` expires DAY orders
+        order-book-WIDE and materializes a replacement for every partially
+        filled parent it finds, so at a rollover it can queue retirements for
+        several symbols at once, before ANY of their fill loops have run. A
+        drain that ignored symbol would let the first symbol processed cancel
+        the others' fallbacks; worse, those replacements carry the FIRST
+        symbol's bar timestamp, so when a same-timestamp bar for one of them
+        arrives its child is skipped by the same-bar guard too — fallback gone,
+        replacement ineligible, position open through a triggered stop. So a
+        retirement is applied only inside its own symbol's ``process_bar``.
+        (An entry whose symbol never gets another bar simply stays queued; the
+        orders it would cancel are moot once the run ends.)
+
+        ``before_bar`` is the temporal scope, and exists because the queue has
+        two producers on opposite sides of a bar's fill loop:
+
+        * ``None`` (the post-loop call) drains everything. Every entry present
+          was queued for this bar, and the loop it was waiting on is done.
+        * A bar timestamp (the pre-loop call) drains only entries queued for a
+          STRICTLY EARLIER bar — retirements a mid-loop raise stranded. Note the
+          reason this is safe is NOT that the fallback had its turn: the raise can
+          abort the loop before the fallback's place in the snapshot. It is that
+          the replacement child's ``submitted_at`` is now strictly earlier, so the
+          same-bar guard no longer skips it and it protects the position from this
+          bar on — the fallback is redundant whether or not it was examined, and
+          the aborted bar was lost to the raise regardless. Entries queued for this
+          bar are held back: ``expire_day_orders`` runs before
+          ``process_bar(cur_bar)``, so its retirement targets a fallback that is
+          about to appear in this bar's snapshot and has NOT had its turn.
+          Draining it here would destroy that turn while the replacement child,
+          stamped with this bar's timestamp, is skipped by the engine-internal
+          same-bar guard until the next one — the position left open through a
+          stop it had already triggered.
+
+        Preconditions:
+            - ``symbol`` is the symbol of the bar being processed;
+              ``before_bar``, when given, is the timestamp of the bar about to be
+              processed.
+        Postconditions:
+            - every retirement for ``symbol`` in temporal scope has
+              been applied against the CURRENT book state and removed from the queue;
+              every other entry remains queued, in order, for the drain of its own
+              symbol and bar.
+        """
+        if not self._deferred_stop_loss_retirements:
+            return
+
+        def _in_scope(q: _DeferredStopLossRetirement) -> bool:
+            # Symbol first: the queue is global but ``process_bar`` is per-symbol,
+            # so another symbol's entry has not had its fill loop yet whatever its
+            # timestamp says.
+            if q.symbol != symbol:
+                return False
+            return before_bar is None or not _ts_le(before_bar, q.queued_for_bar)
+
+        queued = [q for q in self._deferred_stop_loss_retirements if _in_scope(q)]
+        held = [q for q in self._deferred_stop_loss_retirements if not _in_scope(q)]
+        # Reassigned before running so a queue entry can never be applied twice,
+        # and so an unexpected raise cannot strand stale entries into the next bar.
+        self._deferred_stop_loss_retirements = held
+        for entry in queued:
+            self._retire_superseded_stop_loss_fallbacks(
+                symbol=entry.symbol,
+                child_side=entry.child_side,
+                keep_order_id=entry.keep_order_id,
+                child_order_type=entry.child_order_type,
+            )
+
+    def _retire_superseded_stop_loss_fallbacks(
+        self,
+        *,
+        symbol: str,
+        child_side: OrderSide,
+        keep_order_id: str,
+        child_order_type: OrderType,
+    ) -> None:
+        """Cancel any dispatcher-emitted stop-loss order this attachment replaces.
+
+        MUST NOT run while a fill loop is iterating — see
+        :meth:`_drain_deferred_stop_loss_retirements`, which is the only caller.
+
+        The window this closes: while an entry is only PARTIALLY filled it has no
+        attached protection yet (materialization waits for the terminal slice so
+        the children size to the cumulative position), so the bar-close evaluator
+        stays live for the rule and may emit its own resting close if the level is
+        breached. A ``style="limit"`` close deliberately does NOT cancel entry
+        continuations — it may gap through unfilled, so stripping the scale-in
+        would be wrong — meaning the entry can go on to complete and materialize
+        the attached leg alongside that fallback. Two full-position protective
+        orders would then rest at DIFFERENT anchors (the fallback on the partial
+        position's entry price, this leg on the cumulative fill price), and
+        ``_scan_pending_for_gate`` records only one id, so a replacement close
+        would cancel one while the other could still fill first and pre-empt it.
+
+        This leg is the authoritative one — correctly anchored on the cumulative
+        fill and sized to ``pos.original_qty`` — so the fallback is retired rather
+        than reused. The position is never momentarily unprotected: the child is
+        submitted before this runs, and the fallback keeps working until the end
+        of the bar.
+
+        The predicate targets the fallback exactly: a dispatcher emission has no
+        ``parent_order_id`` (``OrderBook.submit`` rejects one), whereas every
+        attached child has one — so no sibling leg, bracket child, or this leg
+        itself can be caught by it.
+
+        Preconditions:
+            - called only for the resting stop-loss migration's own leg
+              (``sl.entry_price_pct`` set); ``keep_order_id`` is the child just
+              submitted; ``child_side`` is the position-closing side.
+        Postconditions:
+            - every pending same-symbol, same-side, parentless
+              ``engine_exit:stop_loss`` order that is neither partially filled nor
+              armed is cancelled; one that is either is left on the book, because
+              the replacement cannot assume its remainder or its latch. No-op in
+              the common case where the entry filled in one slice and no fallback
+              was ever emitted.
+        """
+        for other in self.order_book.pending_for_symbol(symbol):
+            # Re-read the book rather than trusting a snapshot: the fallback may
+            # have filled during the bar that materialized the replacement, in
+            # which case it is already gone and there is nothing to retire.
+            other_req = other.request
+            if other.order_id == keep_order_id:
+                continue
+            if other_req.side != child_side:
+                continue
+            if other_req.parent_order_id is not None:
+                continue
+            if (other_req.reason or "") != ENGINE_EXIT_REASON_STOP_LOSS:
+                continue
+            # Same SHAPE, or it is not this attachment's fallback. A spec may
+            # carry more than one resting-eligible stop rule (unusual but not
+            # DSL-forbidden — see ``_first_resting_stop_loss_index``), and only
+            # the FIRST is migrated; a later one keeps firing through the
+            # bar-close evaluator and emits its own parentless fallback under
+            # the same byte-stable ``engine_exit:stop_loss`` reason. Matching
+            # the order type keeps a market-style attachment from retiring a
+            # limit-style rule's STOP_LIMIT, and vice versa — the case the
+            # reason alone cannot separate, because that literal is fixed by
+            # the conformance gates and cannot carry a rule index.
+            #
+            # NOT a complete rule identity: two rules of the SAME style still
+            # collide here. Closing that needs identity on the order itself,
+            # which is a wider change than this migration.
+            if other_req.order_type != child_order_type:
+                continue
+            # A fallback that is mid-execution or has already triggered is not
+            # a duplicate of the replacement — it is the order actually doing
+            # the work, and the replacement cannot take over from it:
+            #   * ``cumulative_filled_qty > 0`` — it closed part of the position
+            #     and requeued the rest. Cancelling drops that remainder.
+            #   * ``stop_limit_armed`` — the stop level was already crossed, so
+            #     it rests as a marketable LIMIT. The replacement is UNARMED and
+            #     needs the level crossed again, which a recovery that never
+            #     revisits it will never do.
+            # Either way the bar-close evaluator has ceded the rule (the leg IS
+            # on the book), so cancelling here would leave the residual position
+            # open through a stop that had already fired. Keeping both is safe:
+            # ``_fill_exit`` clips every exit to ``pos.qty``, so the survivor
+            # cannot over-close, and whichever fills first closes the position
+            # and the other is dropped by the stale-continuation guard.
+            if other.cumulative_filled_qty > 0 or other.stop_limit_armed:
+                continue
+            self.order_book.cancel(other.order_id)
 
     def _materialize_limit_child(
         self,
