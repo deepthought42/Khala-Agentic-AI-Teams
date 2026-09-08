@@ -219,6 +219,48 @@ def test_trailing_high_stop_ratchets_before_it_closes_the_trade():
     )
 
 
+def test_trailing_low_stop_ratchets_before_it_closes_a_short():
+    """The short-side mirror of the trailing case above: a ``trailing_low``
+    basis re-anchors the stop to the running LOW, capping rather than flooring,
+    and fills at the worse of open and cap.
+
+    Worth pinning separately rather than trusting the long-side test to cover
+    it: ``trailing_low`` reaches the short branch of ``stop_caps_side``, and a
+    ``trailing_high`` rule is a deliberate no-op for a short (and vice versa),
+    so the two bases are genuinely different paths rather than one path with a
+    sign flip.
+
+    Bar 3 is discriminating in the same way as the long-side case: its high
+    (100) clears the cap the PRIOR watermark implies (100 * 1.05 = 105.00) but
+    breaches the one its own low would set (80 * 1.05 = 84.00), so it fires
+    only if the watermark is extended before the trigger check rather than
+    after it.
+    """
+    d = _dates(5)
+    bars = [
+        _bar(101, 101, 101, 101, d[0]),
+        _bar(99, 100, 98, 99, d[1]),  # trigger: the short rule's own close < 100
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 -> anchor 100
+        _bar(100, 100, 80, 81, d[3]),  # cap is still 100*1.05=105; high 100 < 105, no fire.
+        # Watermark then extends to this bar's low, 80.
+        _bar(82, 90, 82, 89, d[4]),  # cap 80*1.05=84.00; high 90 >= 84.00 -> through-bar,
+        # fill max(open 82, 84.00) = 84.00
+    ]
+    spec = _spec(
+        [StopLossRule(pct=0.05, basis="trailing_low")],
+        entry_rules=[EntryRule(side="short", when=Predicate(lhs="bar.close", op="<", rhs=100.0))],
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert trade.side == "short"
+    assert (trade.entry_bar, trade.exit_bar) == (2, 4)
+    assert trade.exit_price == 84.0  # the ratcheted cap, not the 105.00 entry-price cap
+    assert (trade.exit_rule_kind, trade.exit_rule_index, trade.level_index) == (
+        "stop_loss",
+        0,
+        None,
+    )
+
+
 def test_limit_style_stop_arms_on_one_bar_and_fills_at_the_limit_on_a_later_one():
     """A ``style="limit"`` stop is armed by a breach of its stop price but
     fills only at its own protective limit -- so a bar that breaches without
