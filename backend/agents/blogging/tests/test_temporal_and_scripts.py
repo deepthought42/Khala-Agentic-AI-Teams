@@ -594,6 +594,7 @@ def test_stage_activities_tolerate_planning_dto_without_selected_title(
         cp.PlanningPhaseResult, "model_validate", classmethod(lambda cls, d: _Dumpable(d))
     )
     monkeypatch.setattr(wm.WriterOutput, "model_validate", classmethod(lambda cls, d: _Dumpable(d)))
+
     def fake_stage(c):
         c.draft_result = _Dumpable({})
         return None
