@@ -33,7 +33,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, U
 from strands import Agent
 from strands.types.exceptions import EventLoopException
 
-from llm_service import LLMJsonParseError, LLMRateLimitError, LLMTemporaryError
+from llm_service import (
+    LLMJsonParseError,
+    LLMRateLimitError,
+    LLMTemporaryError,
+    SystemContentSegment,
+)
 from llm_service.util import extract_json_from_response
 
 AgentInvoker = Callable[[str], Any]
@@ -178,7 +183,7 @@ def _unwrap_event_loop_exception(exc: Exception) -> Exception:
 
 def run_json_gate(
     model: Any,
-    system_prompt: Union[str, List[Any]],
+    system_prompt: Union[str, List[SystemContentSegment]],
     prompt: str,
     *,
     strict_json_suffix: str = _DEFAULT_STRICT_JSON_SUFFIX,
