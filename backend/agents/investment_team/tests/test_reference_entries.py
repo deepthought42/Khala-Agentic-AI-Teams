@@ -11,6 +11,7 @@ import pytest
 from investment_team.models import StrategySpec
 from investment_team.strategy_lab.executor.reference_entries import (
     ReferenceEntryFill,
+    fill_entry_at,
     replay_entry_rules,
 )
 from investment_team.strategy_lab.spec_dsl import EntryRule, Predicate
@@ -207,6 +208,42 @@ def test_nonpositive_fill_bar_open_is_dropped_but_later_trigger_still_fires():
 def test_nan_fill_bar_open_is_dropped():
     bars = {"AAA": [_bar(101, 101, 101, 101), _bar(math.nan, 1, 1, 90)]}
     assert replay_entry_rules(_spec(), bars) == []
+
+
+def test_nonpositive_trigger_close_is_dropped_even_though_the_predicate_still_fires():
+    """A ``close < 1`` predicate numerically fires against ``close == 0``, but the
+    nonpositive-trigger-close gate must drop it anyway — mirroring production's
+    ``_compute_qty`` sizing a degenerate trigger to zero, so no position opens.
+    """
+    rules = [EntryRule(side="long", when=Predicate(lhs="bar.close", op="<", rhs=1.0))]
+    bars = {
+        "AAA": [
+            _bar(101, 101, 101, 101),
+            _bar(50, 50, 0.0, 0.0),  # trigger bar: close == 0, predicate still true
+            _bar(100, 100, 100, 100),
+        ]
+    }
+    assert replay_entry_rules(_spec_with_rules(rules), bars) == []
+
+
+def test_fill_entry_at_rejects_a_zero_trigger_close():
+    """Direct unit test of the zero half of the gate at the ``fill_entry_at``
+    level, complementing the end-to-end coverage in
+    ``test_nonpositive_trigger_close_is_dropped_even_though_the_predicate_still_fires``
+    above (which exercises the same case through a real ``close < 1``
+    predicate)."""
+    bars = [_bar(50, 50, 0.0, 0.0), _bar(100, 100, 100, 100)]
+    assert fill_entry_at("AAA", bars, trigger_bar=0, rule_side="long", rule_index=0) is None
+
+
+def test_fill_entry_at_rejects_a_nan_trigger_close():
+    """Direct unit test: no ``ComparisonOp`` in this DSL fires true against a
+    NaN close (every ordered/equality comparison is False for NaN), so the
+    NaN half of the nonpositive-trigger-close gate cannot be exercised
+    end-to-end through a real predicate — verified here directly against
+    ``fill_entry_at`` instead."""
+    bars = [_bar(50, 50, 40, math.nan), _bar(100, 100, 100, 100)]
+    assert fill_entry_at("AAA", bars, trigger_bar=0, rule_side="long", rule_index=0) is None
 
 
 def test_target_symbols_excludes_untargeted_symbol():
