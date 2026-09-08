@@ -252,20 +252,44 @@ symbols* was only half of it; *which bars* is the other. A provider can return a
 nonempty series for every requested symbol that covers only part of the
 requested window. That passes a membership check while omitting an interval —
 and a rule whose independent fires all fall inside the omitted interval reads as
-starved on what survives. Same false positive, same cause, one axis over. So the
-seam also suppresses on a failing data-quality report, which it does not have to
-derive: `fetch_multi_symbol_range` already runs
-`validate_market_data(..., mode="warn")` after the symbols resolve and leaves
-the structured result on `MarketDataService.last_quality_report`. Consulting it
-beats re-deriving coverage from the bars, which would have to model trading
-calendars to avoid flagging every weekend as a gap.
+starved on what survives. Same false positive, same cause, one axis over.
+
+That axis needs **two** checks, and the first draft of this correction got it
+wrong by reaching for an existing mechanism without reading its inputs.
+`fetch_multi_symbol_range` does already run
+`validate_market_data(..., mode="warn")` and park the result on
+`MarketDataService.last_quality_report` — but that detector counts missing bars
+*between `bars[0]` and `bars[-1]`* and is never handed the requested
+`start`/`end`, so it catches an interior hole and is structurally blind to a
+series that simply stops short of the window. It also returns zero gaps
+outright, with a `calendar_window_unsupported` note, for windows outside its
+hardcoded US-holiday years. Leaning on it alone would have covered the less
+likely half: a provider with limited history returns a truncated series far
+more often than a punctured one.
+
+So the two shapes get the check each can actually answer. **Interior holes**
+stay with the report — it owns the asset-class calendar and the tuned
+thresholds, and a hand-rolled version in the seam would have to reproduce both
+to avoid flagging every weekend. **Truncated ends** go to the seam, measured
+*relatively*: each symbol's first and last bar against the widest span any
+symbol returned, suppress if one is short. Relative comparison needs no
+calendar, so it cannot be wrong about holidays — and it matches the shape of the
+verdict it protects, since starvation is itself relative and a symbol short
+against its peers is exactly the input that corrupts it.
 
 One store-level fact worth recording because it outlives this story:
 `MarketDataCache.get_or_fetch` writes the **requested** `start`/`end` as the
 snapshot's coverage (`market_data_cache/store.py:652-660`) without checking that
 the returned bars span them, so a temporally short fetch is durably cached as if
 it were complete and a later `_find_covering_snapshot` will hit it. Fixing that
-belongs to the store. Its consequence here is bounded and acceptable:
+belongs to the store — and it is also what would close the one gap the two
+checks above leave open: a truncation identical across *every* symbol, invisible
+to the report because it never sees the window, and invisible to a relative
+comparison because there is no shorter peer. Recording real coverage instead of
+requested coverage is what retires that class. Until then it is the stated floor
+of this defence, and the case where the probe at least compares like with like,
+so the relative verdict stays coherent even over a window smaller than asked
+for. Its consequence here is bounded and acceptable:
 `fetch_multi_symbol_range` re-runs the quality report on every call, cache hits
 included, so the shortfall keeps suppressing the probe instead of silently
 recovering into a false verdict. The cost is that the probe stays quiet for that
@@ -448,16 +472,47 @@ predicted rather than followed.
       asset-class default universe alike;
     * *which dates* — a symbol can return a nonempty series that covers only
       part of the requested window, which passes a membership check while
-      hiding exactly the interval a rule's independent fires live in.
-      `MarketDataService` already computes this: `fetch_multi_symbol_range`
-      runs `validate_market_data(..., mode="warn")` and leaves the structured
-      result on `self.last_quality_report`, so the seam consults that report
-      rather than re-deriving coverage from the bars (which would have to
-      model trading calendars to avoid flagging every weekend). Suppress on a
-      failing report. Read it immediately after our own fetch and treat it,
-      like `provider_used`, as **shared mutable state on the service** that a
-      later fetch overwrites — that read ordering is the precondition, and the
-      docstring should say so.
+      hiding exactly the interval a rule's independent fires live in. This
+      needs **two** checks, because the shapes fail differently and no single
+      mechanism sees both:
+      - **Interior holes** — the service already computes this.
+        `fetch_multi_symbol_range` runs `validate_market_data(..., mode="warn")`
+        and leaves the structured result on `self.last_quality_report`; suppress
+        on a failing report. Do not re-derive it in the seam: the detector
+        carries an asset-class calendar and tuned thresholds
+        (`gap_pct_threshold` 0.005, `gap_min_count` 3), which is exactly the
+        machinery a hand-rolled check would have to reproduce to avoid flagging
+        every weekend.
+      - **Truncated ends** — the report cannot see these, and the reason is
+        structural rather than incidental: `_count_gaps` counts missing bars
+        *"between `bars[0]` and `bars[-1]`"* and `validate_market_data` is never
+        passed the requested `start`/`end` at all, so a series that simply stops
+        short of the window is indistinguishable from a complete one. It also
+        returns 0 gaps outright, with a `calendar_window_unsupported` note,
+        for windows outside its hardcoded US-holiday years. **So the seam checks
+        the ends itself, and does it relatively: compare each symbol's first and
+        last bar dates against the widest span any symbol returned, and suppress
+        if one is short.** Relative comparison is the point — it needs no
+        calendar, so it cannot be wrong about holidays, and starvation is itself
+        a relative verdict, so a symbol short against its peers is precisely the
+        input that corrupts it.
+
+      Read the report immediately after our own fetch and treat it, like
+      `provider_used`, as **shared mutable state on the service**: it is
+      assigned only under `if result:`, so an empty fetch leaves the previous
+      call's report in place. That is safe only because the seam consults it
+      solely when bars came back — the membership check above has already
+      returned `None` for an empty fetch. That ordering is a precondition, not
+      an incidental, and the docstring should say so.
+
+      **Residual, stated rather than papered over:** a truncation identical
+      across *every* symbol is caught by neither check — the report cannot see
+      the window, and a relative comparison has no shorter peer to notice. That
+      is the one case where the probe at least compares like with like, so the
+      relative verdict stays coherent even though the window is smaller than
+      asked for; combined with the snapshot-coverage issue below it is the known
+      floor of this defence, and closing it needs the store to record real
+      coverage rather than requested coverage.
 
     Neither axis raises, so no exception reaches the guard below; both would
     fabricate starvation. The second axis is the same category error as the
@@ -749,14 +804,24 @@ predicted rather than followed.
       leaving rules, universe and window identical, and assert the second round
       returns `[]` rather than replaying the daily verdict through an unchanged
       signature.
-- [ ] **Step 5.11** — *Temporally short fetches suppress the probe* (D9, second
-      axis). Every requested symbol returns bars, but the series covers a strict
-      sub-range of `config.start_date`–`config.end_date` and the stubbed
-      `last_quality_report` reports the gap ⇒ `[]`, and `probe_starvation` is
-      never called. Positive control: full-span bars with a clean report do
-      probe. **And assert the memo stays unwritten**, for the reason Step 5.8
-      gives for its own suppression path — this return is the one most likely to
-      be implemented as a plain `return []` that writes the signature on the way
+- [ ] **Step 5.11** — *Temporally incomplete fetches suppress the probe* (D9,
+      second axis). Two cases, and they must be **separate tests**, because each
+      is caught by a different mechanism and a combined case would pass with
+      only one of them implemented:
+  - *Interior hole:* every symbol returns a full-span series, the stubbed
+    `last_quality_report` reports a failing gap count ⇒ `[]`.
+  - *Truncated end:* every symbol returns bars, one symbol's series stops short
+    of the span the others cover, **and the stubbed report is clean** — this is
+    the case the report structurally cannot see (`_count_gaps` measures only
+    between `bars[0]` and `bars[-1]`), so a clean report is what proves the
+    seam's own relative endpoint check is doing the work. Without the clean
+    stub this test would pass on the report alone and pin nothing.
+
+      In both, `probe_starvation` is never called. Positive control: full-span
+      bars for every symbol with a clean report do probe. **And assert the memo
+      stays unwritten in both**, for the reason Step 5.8 gives for its own
+      suppression path — these returns are the ones most likely to be
+      implemented as a plain `return []` that writes the signature on the way
       out, and doing so would let one short window hide a genuinely starved rule
       for the rest of the attempt.
 
@@ -804,7 +869,7 @@ suddenly slows down is the signal it did not take.
 | A mid-attempt universe-cap change staling the memo, or mislabelling one universe's findings with another's signature | Universe resolved once per round and passed to both the signature and the fetch (D11) |
 | A changed backtest window served from a memo built for the previous one | `config.start_date` / `config.end_date` are signature members, not an assumed-constant (Step 2.2), pinned by Step 5.5 |
 | An intraday spec judged on daily candles | Probe suppressed for `timeframe != "1d"` before any fetch, and `timeframe` is a signature member so a mid-attempt change cannot replay the daily verdict (D12), pinned by Step 5.10 |
-| A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe on **both** axes — missing symbols, and a series that covers only part of the window — explicit and default universes alike (D9), pinned by Steps 5.8 and 5.11 |
+| A silently partial fetch fabricates a starvation finding | Any shortfall suppresses the probe: missing symbols (membership, explicit and default universes alike), interior holes (the service's quality report), and truncated ends (the seam's own relative endpoint check, since the report never sees the requested window) — D9, pinned by Steps 5.8 and 5.11 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
