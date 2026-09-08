@@ -405,10 +405,11 @@ _GUARDED_NAMES = _GUARDED_HELPERS | {f"_{name}" for name in _GUARDED_HELPERS}
 _CANONICAL_MODULE = Path(tp.__file__).resolve()
 _BLOGGING_ROOT = _CANONICAL_MODULE.parent.parent
 
-# Every definition of a guarded name allowed to exist outside
-# shared/text_parsing.py, keyed by (path relative to the blogging root, name).
-# Adding an entry is a deliberate act: it means a second thing in this package
-# answers to a shared helper's name, and a reviewer agreed that is correct.
+# Every definition of a guarded name allowed to exist in the scanned package
+# source outside shared/text_parsing.py, keyed by (path relative to the
+# blogging root, name). Adding an entry is a deliberate act: it means a second
+# thing in this package answers to a shared helper's name, and a reviewer
+# agreed that is correct. See the guard test for what "scanned" excludes.
 _SANCTIONED_SHIMS = {
     # One-line delegation to text_parsing.format_feedback_item_line, kept as a
     # named method so existing monkeypatch-based tests keep their patch point.
@@ -453,7 +454,14 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
     The rule is an allowlist, not a shape test. Every ``def`` or assignment
     binding a guarded name outside ``shared/text_parsing.py`` must appear in
     ``_SANCTIONED_SHIMS``; anything else fails regardless of what its body
-    looks like. An earlier version of this guard tried instead to prove
+    looks like.
+
+    That rule governs scanned package source, which is narrower than "every
+    file": paths under a ``tests`` directory or ``__pycache__``, and files that
+    cannot be read or parsed, are skipped before the rule is applied. Test
+    doubles are legitimately free to stub a helper, and an unreadable file is
+    lint's to report — but neither is covered here, so the exemptions are named
+    rather than left for a reader to infer from the loop. An earlier version of this guard tried instead to prove
     statically that a body was a faithful delegation, and each round of review
     found another way to satisfy the check without delegating — a literal
     return, a call through an unrelated qualifier, a lambda, a look-alike
@@ -481,7 +489,12 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:  # pragma: no cover - unparseable source is CI lint's job
+        # ValueError covers UnicodeDecodeError from read_text on a non-UTF-8
+        # file, and the null-byte rejection ast.parse raises as ValueError on
+        # Python 3.10 (SyntaxError from 3.11 on). A file that cannot be read or
+        # parsed is a stray artifact for lint to report, not drift for this
+        # test to crash on.
+        except (SyntaxError, ValueError):  # pragma: no cover - unreadable source is CI lint's job
             continue
         rel = path.relative_to(_BLOGGING_ROOT).as_posix()
         for name, lineno in _guarded_bindings(tree):
