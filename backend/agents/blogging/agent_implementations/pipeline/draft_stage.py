@@ -66,7 +66,14 @@ def run_draft_stage(
           Coverage has to reach every one of them — a later
           round that omitted it would drop the suppression block and could reintroduce
           an ``[Author: ...]`` placeholder for a section whose story is sitting in the
-          same prompt. Empty or ``None`` is the documented no-op: the writer's prompts
+          same prompt. The set is planning-time only and does not grow: a story
+          collected later by ``_fill_story_placeholders`` is appended to
+          ``elicited_stories_text`` but adds no entry here, because that path
+          identifies a gap by the ``[Author: ...]`` placeholder's topic text rather
+          than by a plan section, so it has no section title to contribute. Those
+          sections stay unnamed by the suppression block and rely on the story text
+          itself, as they did before this field existed.
+          Empty or ``None`` is the documented no-op: the writer's prompts
           are then exactly what they were before the field existed. It is ``None`` in
           Temporal mode today — ``PlanningStageResult`` does not carry it and neither
           ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so

@@ -979,7 +979,15 @@ def _fill_story_placeholders(
             must not include ``elicited_stories``. May also carry the optional
             ``covered_sections`` (plan sections that already had an author story
             before this fill), forwarded so the revision does not re-introduce a
-            placeholder for one of them; omitting it suppresses nothing.
+            placeholder for one of them; omitting it suppresses nothing. It is
+            forwarded unchanged and never extended with the sections filled here:
+            a gap on this path is identified by the ``[Author: ...]`` placeholder's
+            topic text (``StoryGap.section_title`` is that topic truncated to 80
+            chars), which is a description of the story wanted rather than a plan
+            section title. Adding one would name a non-section, often mid-word, in a
+            block whose whole job is to state exactly which plan sections are
+            covered. Stories collected here reach later prompts through
+            ``elicited_stories_text`` instead.
         work_dir: Optional directory for draft artifacts. If ``None``, no draft
             artifact is persisted.
         iteration: Current draft iteration number.
