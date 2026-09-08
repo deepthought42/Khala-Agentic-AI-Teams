@@ -332,6 +332,59 @@ def test_resume_200_when_status_failed(client: TestClient, temp_work_path: Path)
     assert r.status_code == 200
 
 
+def test_resume_clears_a_dead_attempt_s_defaulted_questions(
+    client: TestClient, temp_work_path: Path
+) -> None:
+    """A resume starts a fresh workflow, so the dead attempt's defaults must not survive it.
+
+    ``defaulted_questions`` records answers Planning chose for itself on a terminal
+    round. The resumed workflow's first planning attempt is not terminal, so if it
+    resolves every question from the submitted answers nothing rewrites the field --
+    and the previous attempt's machine-chosen answers would be attached to a plan
+    that was in fact fully human-answered. The activity's own terminal-attempt clear
+    does not reach this path: it fires only once the workflow has exhausted its
+    pause budget.
+    """
+    from software_engineering_team.shared.job_store import create_job, get_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(
+        job_id,
+        status="failed",
+        defaulted_questions=[{"question_id": "q1", "question_text": "Which auth provider?"}],
+    )
+
+    r = client.post(f"/run-team/{job_id}/resume")
+    assert r.status_code == 200
+    assert get_job(job_id)["defaulted_questions"] == []
+
+
+def test_restart_drops_defaulted_questions_with_the_rest_of_the_record(
+    client: TestClient, temp_work_path: Path
+) -> None:
+    """Restart needs no explicit clear, and this pins the reason it does not.
+
+    ``reset_job`` replaces the whole job record rather than merging into it, so
+    ``defaulted_questions`` goes with everything else. Asserted rather than assumed:
+    a future change from ``replace_job`` to a merge would silently reintroduce the
+    stale-record bug on this path, and the resume test above would not catch it.
+    """
+    from software_engineering_team.shared.job_store import create_job, get_job, update_job
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, str(temp_work_path), job_type="run_team")
+    update_job(
+        job_id,
+        status="failed",
+        defaulted_questions=[{"question_id": "q1", "question_text": "Which auth provider?"}],
+    )
+
+    r = client.post(f"/run-team/{job_id}/restart")
+    assert r.status_code == 200
+    assert not get_job(job_id).get("defaulted_questions")
+
+
 def test_resume_400_when_status_cancelled(client: TestClient, temp_work_path: Path) -> None:
     """POST /run-team/{job_id}/resume returns 400 when job status is cancelled."""
     from software_engineering_team.shared.job_store import create_job, update_job

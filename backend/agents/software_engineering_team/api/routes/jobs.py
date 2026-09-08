@@ -372,12 +372,23 @@ def resume_run_team_job(job_id: str) -> RunTeamResponse:
     # ran — without this the UI renders its frozen mid-review sub-bar through the
     # resumed run. last_activity_at is re-stamped centrally by this very write,
     # so the stall warning cannot false-fire off the dead attempt's timestamp.
+    #
+    # defaulted_questions is wiped for the same reason, one layer up: it records
+    # the answers Planning chose for itself on a terminal round, and a resume
+    # starts a fresh workflow whose first planning attempt is not terminal. If
+    # that run resolves every question from the submitted answers, nothing
+    # rewrites the field, and the dead attempt's machine-chosen answers would be
+    # attached to a plan that was in fact fully human-answered. The activity's own
+    # terminal-attempt clear does not cover this: it only fires when the workflow
+    # itself has exhausted its pause budget. (`restart` needs no equivalent —
+    # `reset_job` replaces the whole record rather than merging into it.)
     update_job(
         job_id,
         status=JOB_STATUS_RUNNING,
         error=None,
         agent_crash_details=None,
         current_activity=None,
+        defaulted_questions=[],
     )
 
     try:  # pragma: no cover  # integration-only: spawns Temporal workflow for resume
