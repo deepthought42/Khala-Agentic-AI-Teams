@@ -48,15 +48,12 @@ class PipelineContext:
           gate-driven rewrites and to build ``PublishingPack.title_options``,
           falling back to the top plan candidates when it is ``None`` (no job
           store, or no title chosen). Neither stage runs a selection round of its
-          own anymore. Unlike ``plan``/``elicited_stories_text``, ``selected_title``
-          does not yet cross the Temporal activity boundary:
-          ``draft_stage_activity``/``gates_stage_activity`` re-seed the context
-          without it, so a Temporal-mode run sees it stay at its ``None`` default
-          regardless of what the planning stage selected — the author is still
-          prompted once during planning, but in Temporal mode that choice reaches
-          neither the draft nor the publishing pack; only thread mode carries it
-          through today. Threading it across the Temporal boundary is a tracked
-          follow-up, not yet scheduled.
+          own anymore. Like ``plan``/``elicited_stories_text``, ``selected_title``
+          crosses the Temporal activity boundary: the planning activity emits it on
+          ``PlanningStageResult`` and both ``draft_stage_activity`` and
+          ``gates_stage_activity`` re-seed it from that DTO, so the author's choice
+          reaches the draft, gate-driven rewrites, and the publishing pack in
+          Temporal mode exactly as it does in thread mode.
         - ``draft_result`` is populated by the draft stage before the gates stage
           reads it.
     """

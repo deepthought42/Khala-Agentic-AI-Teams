@@ -873,6 +873,27 @@ jobs:
             --cov=shared.temporal \
             --cov-report=term-missing \
             --cov-fail-under=0
+          # shared.hitl's durable-wait guarantee ("a workflow nobody answers
+          # stays paused, and never resumes with a fabricated answer") is only
+          # provable against a real Temporal server: the pause has to actually
+          # survive skipped time, and a malformed signal has to actually cross
+          # the SDK's data converter. Those tests are `integration`-marked, so
+          # the `-m "not integration"` run above deselects them -- without this
+          # second invocation they execute nowhere in CI and the guarantee is
+          # asserted only by monkeypatched fakes. --cov-append unions their
+          # coverage into the same data file, so the shared-infra gate counts
+          # what the test environment actually exercised.
+          #
+          # TEMPORAL_TEST_SERVER_REQUIRED turns a failed test-server download
+          # into a failure instead of a skip. This job has egress; a skip here
+          # would be a green build for tests that never ran.
+          TEMPORAL_TEST_SERVER_REQUIRED=true pytest \
+            ../shared/hitl/tests \
+            -v --tb=short -m integration \
+            --cov=shared.hitl \
+            --cov-append \
+            --cov-report=term-missing \
+            --cov-fail-under=0
           mv .coverage .coverage.shared_packages
       - name: Upload shared coverage data
         uses: actions/upload-artifact@v4
