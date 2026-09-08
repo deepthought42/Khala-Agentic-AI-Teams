@@ -1603,3 +1603,146 @@ def test_parse_spec_activity_cancelled_attempt_writes_no_failed_status(
         activities.parse_spec_activity("ps-cancel", str(tmp_path), spec_content_override="spec")
 
     assert js.get_job("ps-cancel")["status"] != js.JOB_STATUS_FAILED
+
+
+def _fake_pra(monkeypatch, run_workflow):
+    """Patch the PRA agent parse_spec_activity constructs with one whose run_workflow
+    is ``run_workflow``. Returns nothing; the caller asserts on its own captures."""
+    from software_engineering_team import product_requirements_analysis_agent as pra_mod
+
+    class _FakeAgent:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        def run_workflow(self, **kwargs):
+            return run_workflow(**kwargs)
+
+    monkeypatch.setattr(pra_mod, "ProductRequirementsAnalysisAgent", _FakeAgent)
+
+
+def _fake_requirements(title="Widget"):
+    from shared.dev_models.models import ProductRequirements
+
+    return ProductRequirements(
+        title=title,
+        description="d",
+        acceptance_criteria=[],
+        constraints=[],
+        priority="medium",
+        metadata={},
+    )
+
+
+def test_parse_spec_activity_pra_updater_is_cancellation_checked(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """Phase 1's PRA progress updater carries the same guard as Phase 2's.
+
+    The updater forwards while the attempt is live, then raises without writing once
+    cancellation lands — and the outer handler turns that into a Temporal cancellation
+    rather than a FAILED write.
+    """
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-cancel", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(activities.activity, "info", lambda: _fake_activity_info(attempt=3))
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+
+    def _run_workflow(**kwargs):
+        updater = kwargs["job_updater"]
+        updater(current_phase="spec_review", progress=10)
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        updater(current_phase="communicate", progress=40)  # must raise, writing nothing
+        raise AssertionError("the cancelled updater must abort the PRA run")
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    with pytest.raises(CancelledError):
+        activities.parse_spec_activity("ps-pra-cancel", str(tmp_path), spec_content_override="spec")
+
+    job = js.get_job("ps-pra-cancel")
+    # The live write landed; the cancelled one did not, and no FAILED status was
+    # stamped even though this is the final Temporal attempt.
+    assert job["analysis_subprocess"] == "spec_review"
+    assert job["status"] != js.JOB_STATUS_FAILED
+
+
+def test_parse_spec_activity_cancelled_pra_failure_writes_no_failed_status(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """PRA folds every exception into ``success=False``, so an aborted updater reaches
+    the PRA-failure branch looking like an ordinary PRA failure. That branch must
+    re-check cancellation rather than stamp FAILED on the winner's job record."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-folded", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+
+    def _run_workflow(**kwargs):
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        return AnalysisWorkflowResult(success=False, failure_reason="parse_spec cancelled")
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    with pytest.raises(CancelledError):
+        activities.parse_spec_activity("ps-pra-folded", str(tmp_path), spec_content_override="spec")
+
+    job = js.get_job("ps-pra-folded")
+    assert job["status"] != js.JOB_STATUS_FAILED
+    assert job.get("phase") != "completed"
+
+
+def test_parse_spec_activity_runs_pra_and_returns_validated_spec(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The live (uncancelled) PRA path still works end to end: progress writes land
+    through the wrapped updater and the validated spec comes back on the result."""
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-ok", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(title="Widget"),
+    )
+
+    def _run_workflow(**kwargs):
+        kwargs["job_updater"](current_phase="spec_cleanup", progress=90)
+        return AnalysisWorkflowResult(
+            success=True, final_spec_content="validated spec", iterations=2
+        )
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    result = activities.parse_spec_activity(
+        "ps-pra-ok", str(tmp_path), spec_content_override="spec"
+    )
+
+    assert result["validated_spec"] == "validated spec"
+    assert result["pra_iterations"] == 2
+    assert result["requirements_title"] == "Widget"
+
+    job = js.get_job("ps-pra-ok")
+    assert job["analysis_subprocess"] == "spec_cleanup"
+    assert job["status"] != js.JOB_STATUS_FAILED
