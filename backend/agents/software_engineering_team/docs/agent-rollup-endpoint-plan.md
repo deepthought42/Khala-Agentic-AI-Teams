@@ -143,7 +143,21 @@ wanted):
 ### 3.5 The HTTP read must aggregate in SQL, not materialize rows
 
 **Response size is not the constraint; the scan is.** `by_agent_phase` is bounded
-by (distinct agent keys) x (distinct phases) — tens of entries. That says nothing
+by (distinct agent keys) x (distinct phases) — tens of entries in practice.
+**That is an empirical expectation, not an enforced bound**, and the plan should
+not pretend otherwise: `agent_key` and `phase` are unconstrained `TEXT NOT NULL
+DEFAULT ''` in the DDL, and `_record_to_row` writes whatever the record carries
+(`getattr(record, "agent_key", "") or ""`) with no normalization, length cap, or
+allowlist. Nothing stops a caller from minting a distinct key per call — a
+templated or accidentally-interpolated agent name would do it — and the three
+grouping sets then produce up to roughly `3n` rows for `n` traces. So the correct
+statement of the win is **relative**: aggregating removes the per-call row
+multiplier and makes transfer and Python memory proportional to the number of
+*distinct* keys rather than the number of calls. That is a large constant-factor
+reduction under any realistic key set and the right change regardless, but it is
+not a constant bound, and constraining those dimensions is a separate story about
+the write path, not this read. The `statement_timeout` below is what actually
+bounds the pathological case. That says nothing
 about the query behind it, and reasoning from the small response to "no bound
 needed" is the wrong inference.
 
@@ -163,7 +177,7 @@ concurrent caller, against a 15s alias timeout (`SE_METRICS_ALIAS_TIMEOUT`). The
 degrades precisely as the epic succeeds: more trace volume is the goal.
 
 **Do this:** add an aggregating read alongside `fetch_traces_since` — one query,
-one row per group, nothing unbounded materialized:
+one row per group rather than one row per call:
 
 ```sql
 SELECT agent_key, phase,
@@ -179,8 +193,19 @@ SELECT agent_key, phase,
        percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_ms_p95
 FROM se_agent_traces
 WHERE ts >= %s
+  AND (%s::text IS NULL OR job_id = %s)
 GROUP BY GROUPING SETS ((agent_key), (phase), (agent_key, phase))
 ```
+
+**The `job_id` predicate is not optional garnish — §4.1's signature is
+`fetch_trace_rollup_rows(cutoff, *, job_id=None)`, and a query that omits it
+silently ignores the argument**, returning organization-wide groups where the
+caller asked for one job's. Written as a single always-bound parameter pair so
+the SQL string stays constant (no branch, no f-string), `NULL` meaning "no
+filter". Note `job_id` is `TEXT NOT NULL DEFAULT ''`, so the **empty string is a
+real, matchable value**, not a synonym for "unfiltered" — `job_id=""` must select
+the untagged rows, and `job_id=None` must select everything. Both cases get a
+test; conflating them is the obvious implementation slip.
 
 One query yields all three views; `GROUPING()` tags which set each row came from.
 
@@ -254,7 +279,8 @@ existence:
 - *Before*: N rows on the wire, N Python dicts, N-element Python lists, CPython
   `sorted()` — inside the API worker process, GIL-bound, per request.
 - *After*: an index range scan on `idx_se_agent_traces_ts` plus a hash aggregate
-  with per-group sorts, in the database, returning tens of rows.
+  with per-group sorts, in the database, returning one row per distinct group
+  (tens, for any realistic key set — see the cardinality note in §3.5).
 
 That is a different order of concern, but it is not *no* concern, and the endpoint
 already lives with exactly this shape: `fetch_cost_since` is
@@ -602,7 +628,7 @@ New tests:
 
 | Test | Asserts |
 |---|---|
-| Timeout is installed **before** the aggregate | the fake cursor records `SET LOCAL statement_timeout = <ms>` as the *first* statement, with a positive value inside `[1000, 10000]`, and the `GROUPING SETS` query strictly after it |
+| Timeout is installed **before** the aggregate, at the **exact** clamped value | the fake cursor records `SET LOCAL statement_timeout = <ms>` as the *first* statement and the `GROUPING SETS` query strictly after it. **Assert the exact value, parameterized over `POSTGRES_STATEMENT_TIMEOUT_MS`** — unset → `5000`, `2500` → `2500`, `0` → `1000` (floor), `30000` → `10000` (ceiling). A range assertion like "inside `[1000, 10000]`" is not a test: an implementation that ignores the variable entirely and hardcodes `10000` passes it, while violating both the `5s` default and a `1.5s` operator setting |
 | Cancellation degrades, not raises | the fake cursor raises psycopg's query-cancelled error on the aggregate; the read returns the empty three-view shape and logs at **WARNING** (§4.1). Assert the level explicitly — `any(r.levelname == "WARNING" ... for r in caplog.records)`, not `caplog.at_level(logging.DEBUG)` — or the test passes against the silenced behaviour it exists to forbid |
 
 These are not optional garnish. §3.5's cache deferral makes `statement_timeout` the
@@ -790,11 +816,18 @@ metrics module only as a line in the project-layout tree). It should cover:
      the requested window could see them.
 
   Order the operator's checks accordingly: confirm calls actually happened in the
-  window first, then the sink flag, then the logs — **and note that one of these
-  five is visible at production log levels**: a `statement_timeout` cancellation
-  logs at WARNING (§4.1), so its absence is real evidence against cause 4. The
-  other failure modes remain DEBUG-only. Check in that order — not "assume the sink is
-  broken". If distinguishing these from the response itself is ever wanted, that
+  window first, then the sink flag, then the logs — **and note that one narrow
+  slice of these is visible at production log levels**: a `statement_timeout`
+  cancellation logs at WARNING (§4.1).
+
+  Read that evidence precisely, because the obvious over-reading is wrong. Cause 4
+  is *any* query failure. Only the cancellation **subtype** logs at WARNING;
+  connection refusal, pool exhaustion, and a malformed statement all still take
+  `trace_store`'s generic DEBUG path and produce the same empty rollup. **So the
+  absence of a WARNING rules out a timed-out query — it does not rule out cause
+  4**, and an operator who treats it as exoneration for the database will go
+  looking in the wrong place. Everything but the cancellation remains DEBUG-only.
+  Check in that order — not "assume the sink is broken". If distinguishing these from the response itself is ever wanted, that
   is a separate health/error-state surface, deliberately not in scope here (an
   error key on the payload would change the shape this story promises to leave
   alone). Link `SE_TRACE_TO_POSTGRES` and `SE_TRACE_RETENTION_DAYS` in
@@ -848,11 +881,28 @@ python -m pytest agents/software_engineering_team/tests/test_api_metrics.py -v
 python -m pytest agents/software_engineering_team/tests/test_agent_rollup.py -v
 python -m pytest unified_api/tests/test_job_proxy_routes.py -k se_metrics -v
 
-# Coverage on both modified source files (90% floor)
+# Coverage on both modified source files. Two things this command must do
+# explicitly, neither of which it gets for free:
+#
+#   1. Include the store suites. The timeout and cursor tests (§4.3) live in
+#      test_observability_stores*.py, and they exercise most branches of the
+#      modified trace_store reader. Measuring --cov=...shared.trace_store while
+#      omitting them reports a floor against tests that never ran.
+#   2. Pass --cov-fail-under=90 by hand. The repo has two coverage
+#      configurations — backend/pyproject.toml sets fail_under = 90, while
+#      agents/software_engineering_team/pyproject.toml sets 80 — and the SE
+#      pyproject also carries [tool.pytest.ini_options], so it can win pytest's
+#      rootdir resolution when the args point inside that package. Which floor
+#      a bare invocation actually applies depends on how pytest-cov and
+#      coverage.py resolve their config here; rather than assert an answer this
+#      plan has not verified, make the command independent of it. The explicit
+#      flag also documents the intended floor at the point of use.
 python -m pytest agents/software_engineering_team/tests/test_api_metrics.py \
   agents/software_engineering_team/tests/test_agent_rollup.py \
+  agents/software_engineering_team/tests/test_observability_stores.py \
   --cov=software_engineering_team.api.routes.status \
-  --cov=software_engineering_team.shared.trace_store --cov-report=term-missing
+  --cov=software_engineering_team.shared.trace_store \
+  --cov-fail-under=90 --cov-report=term-missing
 
 # The SQL in §4.1 needs a real server — run the live-Postgres path for the
 # parity test; a fake cursor would not exercise percentile_cont/percentile_disc
