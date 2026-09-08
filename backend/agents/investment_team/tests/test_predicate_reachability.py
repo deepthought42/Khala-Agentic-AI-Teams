@@ -510,6 +510,23 @@ def _starvation(spec, market_data=_MD):
     return PredicateReachabilityProbe().check_starvation(spec, market_data)
 
 
+def _warmup_shadowed_spec(**kwargs) -> StrategySpec:
+    """Spec whose entry[1] is selectable ONLY while entry[0] is warming up.
+
+    entry[0] needs a 200-bar sma, so it is warming across the fixture's first
+    199 bars; entry[1] (``_BROAD``) fires from bar 51 and, once that sma is
+    warm, entry[0] covers it on every remaining bar. That leaves 148 prefix
+    bars where first-match priority selects entry[1]. Several tests read the
+    emitted wording off exactly this pair, so it lives here rather than inline
+    in each of them.
+    """
+    return _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+        **kwargs,
+    )
+
+
 def test_genuinely_starved_second_rule_is_reported() -> None:
     # Broad-then-narrow: entry[1]'s firing set is a strict subset of entry[0]'s,
     # so it can never win the first-match-wins scan.
@@ -558,7 +575,7 @@ def test_starvation_finding_leads_with_evidence_and_names_remedies() -> None:
     # message.
     spec = _spec(_BROAD, extra_entries=[_entry(_NARROW)])
     detail = _starvation(spec)[0].details
-    assert "fires on 149/300 post-warmup bar(s)" in detail  # the evidence
+    assert "fires 149 time(s) over 300 post-warmup bar(s)" in detail  # the evidence
     assert "entry[0] covers 149" in detail  # who shadows it, and by how much
     assert "folding its conditions" in detail  # remedy 1: fold
     assert "listing it BEFORE the broader rule" in detail  # remedy 2: reorder
@@ -617,7 +634,7 @@ def test_rarely_firing_rule_below_the_evidence_floor_abstains_with_info() -> Non
     assert r.severity == "info"
     assert r.passed is True
     assert r.rule_id == "entry[1]"
-    assert "fires on 4/300" in r.details
+    assert "fires 4 time(s) over 300 post-warmup bar(s)" in r.details
     assert "rarely-firing" in r.details
     assert "structurally starved" not in r.details
 
@@ -632,7 +649,7 @@ def test_evidence_floor_boundary_four_versus_five_covered_fires() -> None:
 
     at = _starvation(five)
     assert [r.severity for r in at] == ["critical"]
-    assert "fires on 5/300" in at[0].details
+    assert "fires 5 time(s) over 300 post-warmup bar(s)" in at[0].details
 
 
 def test_a_single_independent_fire_makes_a_rare_rule_reachable() -> None:
@@ -707,6 +724,171 @@ def test_starvation_probe_fewer_than_two_rules_or_no_data_returns_empty() -> Non
     assert probe.probe_starvation(spec, {"AAA": []}) == []
 
 
+def test_rule_shadowed_only_after_an_earlier_rule_warms_up_is_a_warning_not_a_critical() -> None:
+    # entry[0] needs 200 bars before it can fire at all; entry[1] is a bare
+    # close threshold that fires from bar 51. Over bars 51..198 `entry[0]` is
+    # still warming up, so `evaluate_entry_rules` returns entry[1] and the
+    # engine opens positions from it — calling it starved ("contributes no
+    # entries") would be a false critical.
+    spec = _warmup_shadowed_spec()
+    results = _starvation(spec)
+    assert [(r.severity, r.rule_id) for r in results] == [("warning", "entry[1]")]
+    detail = results[0].details
+    assert "selectable only while an earlier rule is still warming up" in detail
+    assert "warmup-prefix bar(s)" in detail
+    assert "entry[0] covers" in detail
+
+
+def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_trading() -> None:
+    # The prefix fires are entry-eligible only because the backtest stream
+    # marks no bar as warm-up. Paper trading suppresses entries across its
+    # priming prefix, so the author must not read "it opens positions" as
+    # holding wherever the strategy ends up running — but the paper outcome is
+    # a property of that run's prime length, not a second absolute: the API
+    # permits warmup_bars=0, and LiveStream._warmup then skips priming
+    # entirely, leaving the earlier rule warming up on live executable bars.
+    spec = _warmup_shadowed_spec()
+    detail = _starvation(spec)[0].details
+    assert "in THIS backtest" in detail
+    assert "depends on the run's priming" in detail
+    assert "shorter or disabled prime" in detail
+    assert "plan for the head start not being there" in detail
+    # Never restate the paper case as an absolute in either direction. Priming
+    # warms the earlier rules; whether one is SATISFIED on a live bar is its
+    # predicate's business, so a long prime removes the head start rather than
+    # guaranteeing starvation on bars this window never saw.
+    assert "does not survive paper trading" not in detail
+    assert "shadowed on every executable bar" not in detail
+    assert "fully starved" not in detail
+    assert "whether one of them is satisfied on any given live bar" in detail
+
+
+def test_warmup_only_finding_claims_selection_not_a_filled_order() -> None:
+    # The probe proves the rule wins first-match priority on those bars, not
+    # that an order results: _EngineEntryDispatcher.maybe_emit returns before
+    # evaluating entry rules while the symbol holds a position or a pending
+    # entry, and a matched entry can be risk-sized to zero. The finding must
+    # claim the former and disclaim the latter.
+    spec = _warmup_shadowed_spec()
+    detail = _starvation(spec)[0].details
+    assert "first-match priority selects" in detail
+    assert "does not model" in detail
+    assert "risk sizing" in detail
+    assert "will open positions" not in detail
+
+
+def test_warmup_only_finding_quotes_no_paper_trade_prime_length() -> None:
+    # The paper warm-up default lives in PaperTradeConfig, another layer's
+    # config. A figure copied into author-facing text would go stale silently,
+    # so the wording stays conditional and names no bar count.
+    spec = _warmup_shadowed_spec()
+    detail = _starvation(spec)[0].details
+    assert "500" not in detail
+    assert "a prime long enough to warm the earlier rules" in detail
+
+
+def test_warmup_only_finding_conditions_the_selection_claim_on_the_custom_path() -> None:
+    # modes/backtest.py hands the engine entry_rules=None for a custom spec, so
+    # maybe_emit returns on its first guard and these rules are never evaluated.
+    # A trailing "the executed code may differ" note cannot repair a sentence
+    # that already asserted the selection happened, so the claim is conditioned.
+    spec = _warmup_shadowed_spec(custom=True)
+    results = _starvation(spec)
+    assert [r.severity for r in results] == ["warning"]
+    detail = results[0].details
+    assert "on the authored rules it is the rule first-match priority WOULD select" in detail
+    assert "never evaluates them" in detail
+    assert "in THIS backtest it is the rule first-match priority selects" not in detail
+
+
+def test_warmup_only_finding_states_the_warmup_condition_not_a_position_in_time() -> None:
+    # The sweep is view-major (one symbol's bars, then the next) while
+    # HistoricalReplayStream merges symbols into one date-sorted timeline. With
+    # histories that begin on different dates, a bar counted on the prefix here
+    # can replay AFTER one counted in the steady-state window, so "at the start
+    # of the window" is a temporal claim these counters cannot support. What
+    # they do support is the condition: warming versus warm.
+    detail = _starvation(_warmup_shadowed_spec())[0].details
+    assert "while those earlier rules are still warming up" in detail
+    assert "never once they are warm" in detail
+    assert "at the start of the window" not in detail
+    assert "the fetched window's left edge" not in detail
+
+
+def test_warmup_only_finding_claims_selection_plainly_on_the_compiled_path() -> None:
+    spec = _warmup_shadowed_spec()
+    detail = _starvation(spec)[0].details
+    assert "in THIS backtest it is the rule first-match priority selects" in detail
+    assert "WOULD select" not in detail
+
+
+def test_warmup_only_steady_state_clause_uses_steady_state_coverage_only() -> None:
+    # Both covered and independent prefix fires, plus steady-state covered
+    # fires. The clause quotes v.fires, so it must name only the coverers of
+    # those fires — pairing it with the merged view could attribute more fires
+    # than it just reported, or name a coverer that only fired on the prefix.
+    later = _pattern(70, list(range(0, 12)) + list(range(40, 48)))
+    warming = ["warmup"] * 30 + ["miss"] * 40
+    prefix_coverer = _pattern(70, range(0, 6))
+    steady_coverer = _pattern(70, range(40, 48))
+    v = _verdict(later, warming, prefix_coverer, steady_coverer)
+    assert v.warmup_independent_fires == 6  # bars 6-11, nothing covers them
+    assert v.warmup_coverage == ((1, 6),)  # bars 0-5, prefix only
+    assert v.coverage == ((2, 8),)  # bars 40-47, steady state
+    assert v.verdict == "warmup_only"
+    results = PredicateReachabilityProbe().to_starvation_gate_results(
+        [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+    )
+    detail = results[0].details
+    assert "it fires 8 time(s), every one of them also covered by an earlier rule" in detail
+    assert "entry[2] covers 8" in detail
+    assert "entry[1]" not in detail  # a prefix-only coverer never enters this clause
+
+
+def test_a_prefix_covered_fire_does_not_qualify_the_head_start_as_shadowing() -> None:
+    # A fire an earlier rule took BEFORE the earlier rules warmed up says
+    # nothing about what happens after: the rule still stopped firing on its
+    # own. covered_fires spans both windows, so gating on it let one such fire
+    # buy the whole warmup_only narrative; the gate reads steady-state fires.
+    verdict = _RuleStarvation(
+        rule_index=1,
+        side="long",
+        evaluated=40,
+        fires=0,
+        independent_fires=0,
+        coverage=(),
+        legs=(),
+        warmup_independent_fires=7,
+        warmup_covered_fires=3,
+        warmup_coverage=((0, 3),),
+        warmup_conclusive_bars=3,
+    )
+    assert verdict.covered_fires == 3
+    assert verdict.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [verdict], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
+    )
+
+
+def test_a_prefix_bar_the_rule_misses_on_is_judged_too() -> None:
+    # entry[0] never finishes warming, so every bar is a prefix bar. entry[1]
+    # covers all five of entry[2]'s fires; entry[2] then misses on 100 bars.
+    # A bar it misses has no fire for the warming rule to have covered, so the
+    # question the exclusion protects never arises there and the window is not
+    # five bars wide — it is 105.
+    v = _verdict(
+        ["satisfied"] * 5 + ["miss"] * 100,
+        ["warmup"] * 105,
+        ["satisfied"] * 5 + ["miss"] * 100,
+    )
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 105, 105)
+    assert (v.covered_fires, v.warmup_coverage) == (5, ((1, 5),))
+    assert v.verdict == "starved"
+
+
 def test_check_starvation_convenience_wraps_probe_and_format() -> None:
     spec = _spec(_BROAD, extra_entries=[_entry(_NARROW)])
     results = PredicateReachabilityProbe().check_starvation(spec, _MD, phase="synthesis")
@@ -768,15 +950,333 @@ def test_starvation_verdict_starved_at_the_evidence_floor() -> None:
     assert v.dominant_index == 0
 
 
-def test_starvation_verdict_excludes_bars_where_an_earlier_rule_is_warming_up() -> None:
-    # A bar the earlier rule cannot be judged on is not evidence either way —
-    # it must not be counted as an independent fire.
+def test_starvation_verdict_keeps_warmup_prefix_fires_out_of_the_steady_state_window() -> None:
+    # Bars where an earlier rule is still warming up are not part of the
+    # steady-state denominator — but they are not discarded either: the engine
+    # selects the later rule there, so they are counted separately.
     later = ["satisfied"] * 30
     earlier = ["warmup"] * 10 + ["satisfied"] * 20
     v = _verdict(later, earlier)
     assert v.evaluated == 20
     assert (v.fires, v.independent_fires) == (20, 0)
+    assert v.warmup_independent_fires == 10
+    assert v.verdict == "warmup_only"
+
+
+def test_prefix_fires_covered_by_a_satisfied_earlier_rule_still_count_as_starvation() -> None:
+    # entry[0] warms over the prefix and never fires; entry[1] is satisfied
+    # across bars 5-14; entry[2] fires on exactly those bars and never again.
+    # Every fire entry[2] has is shadowed by entry[1] — a warming rule cannot
+    # win a bar, but a satisfied one does — so this is starvation, not death.
+    # Discarding the prefix bar because *some* earlier rule was warming used to
+    # leave fires == 0 and read the rule as dead, emitting nothing at all while
+    # probe() separately reported it as firing.
+    later = _pattern(60, range(5, 15))
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    coverer = _pattern(60, range(5, 15))
+    v = _verdict(later, warming, coverer)
+    assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (0, 0, 0)
+    assert v.warmup_covered_fires == 10
+    assert v.covered_fires == 10
+    # Coverage stays split by window: these ten fires are all on the prefix, so
+    # the steady-state tuple is empty and the merged view carries them.
+    assert v.coverage == ()
+    assert v.warmup_coverage == ((1, 10),)
+    assert v.combined_coverage == ((1, 10),)
+    assert v.dominant_index == 1
     assert v.verdict == "starved"
+
+
+def test_covered_prefix_fires_count_toward_the_evidence_floor() -> None:
+    # Four covered fires is below the floor even when they are prefix fires;
+    # five reaches it. The floor counts covered fires wherever they land.
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    four = _verdict(_pattern(60, range(5, 9)), warming, _pattern(60, range(5, 9)))
+    assert (four.warmup_covered_fires, four.covered_fires) == (4, 4)
+    assert four.verdict == "abstained_thin"
+    five = _verdict(_pattern(60, range(5, 10)), warming, _pattern(60, range(5, 10)))
+    assert (five.warmup_covered_fires, five.covered_fires) == (5, 5)
+    assert five.verdict == "starved"
+
+
+def _fire_evidence(fires: int, warmup_covered: int, evaluated: int = 30) -> str:
+    from investment_team.strategy_lab.quality_gates.predicate_reachability import (
+        _fire_evidence_text,
+    )
+
+    return _fire_evidence_text(
+        _RuleStarvation(
+            rule_index=1,
+            side="long",
+            evaluated=evaluated,
+            fires=fires,
+            independent_fires=0,
+            coverage=((0, fires + warmup_covered),),
+            legs=(),
+            warmup_covered_fires=warmup_covered,
+            warmup_conclusive_bars=warmup_covered,
+        )
+    )
+
+
+def test_fire_evidence_never_divides_a_total_by_a_window_that_excludes_part_of_it() -> None:
+    # Prefix fires are outside `evaluated` by construction, so printing the
+    # total against it reads as "100 time(s) over 30 bar(s)" and calls a prefix
+    # fire post-warmup, which it is not. Each shape reports its own window.
+    only_steady = _fire_evidence(fires=12, warmup_covered=0)
+    assert only_steady == "it fires 12 time(s) over 30 post-warmup bar(s)"
+
+    only_prefix = _fire_evidence(fires=0, warmup_covered=100)
+    assert "fires 100 time(s), every one of them on the warmup prefix" in only_prefix
+    assert "not at all across the 30 bar(s)" in only_prefix
+    assert "100 time(s) over 30" not in only_prefix
+
+    both = _fire_evidence(fires=8, warmup_covered=100)
+    assert "fires 108 time(s)" in both
+    assert "8 across the 30 bar(s) where every earlier rule is warm" in both
+    assert "100 on the warmup prefix" in both
+    assert "108 time(s) over 30" not in both
+
+
+def test_starved_and_thin_findings_both_use_the_split_evidence_clause() -> None:
+    # A steady-state window with no fires at all, and every fire on the prefix:
+    # the impossible-ratio shape. Both rungs must render it coherently.
+    warming = ["warmup"] * 40 + ["miss"] * 30
+    for satisfied, expect_severity in ((range(0, 40), "critical"), (range(0, 4), "info")):
+        v = _verdict(_pattern(70, satisfied), warming, _pattern(70, satisfied))
+        results = PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        assert [r.severity for r in results] == [expect_severity]
+        detail = results[0].details
+        assert "every one of them on the warmup prefix" in detail
+        assert "not at all across the 30 bar(s)" in detail
+
+
+def test_coverage_clause_names_the_fires_rather_than_leaning_on_a_pronoun() -> None:
+    # Every _fire_evidence_text shape ends on a bar count, so a following "them"
+    # attaches to the bars — and in the prefix-only shape that reads as "an
+    # earlier rule fires on every one of the 30 bars where every earlier rule is
+    # warm", contradicting the clause it follows. Both rungs name the fires.
+    warming = ["warmup"] * 40 + ["miss"] * 30
+    for satisfied, expect_severity, verb in (
+        (range(0, 40), "critical", "is covered by"),
+        (range(0, 4), "info", "is also covered by"),
+    ):
+        v = _verdict(_pattern(70, satisfied), warming, _pattern(70, satisfied))
+        results = PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        assert [r.severity for r in results] == [expect_severity]
+        detail = results[0].details
+        assert f"every earlier rule is warm, and every one of those fires {verb}" in detail
+        assert "rule fires on every one of them" not in detail
+        assert "is warm, all of them" not in detail
+
+
+def test_conclusive_prefix_coverage_is_not_gated_by_the_steady_state_bar_floor() -> None:
+    # entry[0] never finishes warming up over the whole window (an indicator
+    # whose lookback exceeds it), so the steady-state window is empty. entry[1]
+    # is satisfied throughout and shadows every fire entry[2] has. The bar floor
+    # guards inference from ABSENCE — "never fired, so dead" — while starvation
+    # argues from PRESENCE and has its own floor, so withholding here would
+    # abstain on a question the data has already settled.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, ["satisfied"] * 60)
+    assert v.evaluated == 0
+    assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (0, 0, 0)
+    assert v.covered_fires == 60
+    assert v.warmup_coverage == ((1, 60),)
+    assert v.verdict == "starved"
+
+
+def test_conclusive_prefix_bars_do_not_lower_the_starvation_evidence_floor() -> None:
+    # Same shape but only four covered fires. The window is judgeable — 60
+    # conclusive bars — so the abstention is the thin-evidence one, not the
+    # bar-count one: judged_bars is a window-coverage floor, and
+    # _MIN_STARVATION_FIRES is what guards the starvation claim itself.
+    later = _pattern(60, range(0, 4))
+    v = _verdict(later, ["warmup"] * 60, ["satisfied"] * 60)
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 60, 60)
+    assert v.covered_fires == 4
+    assert v.verdict == "abstained_thin"
+
+
+def test_prefix_selection_with_no_steady_state_window_abstains_rather_than_starving() -> None:
+    # entry[0] never finishes warming up, so there is no bar where every earlier
+    # rule is warm. entry[1] covers the first 20 bars — conclusive, so the bar
+    # floor is cleared — but entry[2] is selected outright on the other 40.
+    # "warmup_only" would claim the selection stops once the earlier rules warm
+    # up, and this window never shows them warm; "starved" would be a critical
+    # saying the rule is never selected, on 40 bars where it is.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, _pattern(60, range(0, 20)))
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 20, 20)
+    assert (v.warmup_independent_fires, v.warmup_covered_fires) == (40, 20)
+    assert v.verdict == "abstained_steady"
+
+    results = PredicateReachabilityProbe().to_starvation_gate_results(
+        [v], _spec(_BROAD, extra_entries=[_entry(_NARROW), _entry(_NARROW)])
+    )
+    assert [r.severity for r in results] == ["info"]
+    detail = results[0].details
+    assert "fires on 40 warmup-prefix bar(s)" in detail
+    assert "only 0 bar(s) of this window have every earlier rule warm" in detail
+    # Neither neighbouring rung's claim may leak into it.
+    assert "and never after" not in detail
+    assert "structurally starved" not in detail
+    assert "Treat it as starved" not in detail
+
+
+def test_warmup_only_still_reached_once_the_steady_window_meets_the_floor() -> None:
+    # The steady-state floor gates warmup_only, it does not retire it: twenty
+    # all-warm bars is exactly enough to see the head start end. The rule keeps
+    # firing across them and is covered every time, so there is shadowing to
+    # report — the covered_fires gate is satisfied and only the floor is at
+    # issue here.
+    earlier = ["warmup"] * 40 + ["satisfied"] * 20
+    v = _verdict(["satisfied"] * 60, earlier)
+    assert (v.evaluated, v.warmup_independent_fires, v.covered_fires) == (20, 40, 20)
+    assert v.verdict == "warmup_only"
+    # One bar short of the floor and the same shape abstains instead. The bar
+    # floor has to be cleared some other way for this to be the steady-state
+    # abstention rather than the bar one, so a second earlier rule settles the
+    # first 20 prefix bars.
+    thin = _verdict(
+        _pattern(60, range(0, 41)),
+        ["warmup"] * 41 + ["satisfied"] * 19,
+        _pattern(60, range(0, 20)),
+    )
+    assert (thin.evaluated, thin.judged_bars) == (19, 39)
+    assert (thin.warmup_independent_fires, thin.covered_fires) == (21, 20)
+    assert thin.verdict == "abstained_steady"
+
+
+def test_bar_abstention_reports_the_count_its_floor_reads() -> None:
+    # The rung is gated on judged_bars, so quoting evaluated would under-report
+    # the window whenever a satisfied earlier rule settled part of the prefix.
+    v = _verdict(
+        _pattern(15, range(0)),
+        ["warmup"] * 5 + ["satisfied"] * 10,
+        _pattern(15, range(0, 3)),
+    )
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (10, 5, 15)
+    assert v.verdict == "abstained_bars"
+    detail = (
+        PredicateReachabilityProbe()
+        .to_starvation_gate_results([v], _spec(_BROAD, extra_entries=[_entry(_NARROW)]))[0]
+        .details
+    )
+    assert f"only {v.judged_bars} bar(s) judged" in detail
+
+
+def test_a_short_window_still_abstains_on_bars_even_when_every_bar_is_conclusive() -> None:
+    # Nineteen conclusive bars is still nineteen bars. The carve-out restores
+    # bars the warming rule made unaskable; it does not lower the floor.
+    later = _pattern(19, range(19))
+    v = _verdict(later, ["warmup"] * 19, ["satisfied"] * 19)
+    assert (v.warmup_conclusive_bars, v.judged_bars) == (19, 19)
+    assert v.covered_fires == 19
+    assert v.verdict == "abstained_bars"
+
+
+def test_prefix_bars_with_no_satisfied_earlier_rule_stay_unjudged() -> None:
+    # Nothing covers these bars, so the warming rule's eventual verdict is
+    # exactly what would decide them — genuinely unjudged, not conclusive.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, ["miss"] * 60)
+    assert (v.warmup_conclusive_bars, v.judged_bars) == (0, 0)
+    assert v.warmup_independent_fires == 60
+    assert v.verdict == "abstained_bars"
+
+
+def test_a_rule_with_no_fire_anywhere_is_still_dead() -> None:
+    # covered_fires gates "dead" now, so pin that a genuinely never-firing rule
+    # still reaches it and starvation reporting still stays silent.
+    warming = ["warmup"] * 20 + ["miss"] * 40
+    v = _verdict(["miss"] * 60, warming, _pattern(60, range(5, 15)))
+    assert (v.fires, v.warmup_covered_fires, v.covered_fires) == (0, 0, 0)
+    assert v.verdict == "dead"
+
+
+def test_warmup_prefix_fires_are_not_independent_when_another_earlier_rule_covers_them() -> None:
+    # Two earlier rules: the first is warming up over the prefix, the second is
+    # satisfied throughout. The later rule is shadowed on every bar, warmup
+    # prefix included, so it is genuinely starved — not warmup_only.
+    later = ["satisfied"] * 30
+    warming = ["warmup"] * 10 + ["miss"] * 20
+    covering = ["satisfied"] * 30
+    v = _verdict(later, warming, covering)
+    assert v.evaluated == 20
+    assert (v.fires, v.independent_fires, v.warmup_independent_fires) == (20, 0, 0)
+    assert v.verdict == "starved"
+
+
+def test_unshadowed_prefix_fires_with_no_covered_fire_anywhere_are_reachable() -> None:
+    # The rule fires ONLY while the earlier rule warms up, and no fire it has
+    # is covered by anything. Nothing was ever shadowed: it stopped firing,
+    # which is a property of its predicate, not of priority. Calling it
+    # warmup_only would prescribe folding or reordering for a rule no ordering
+    # can bring back, and calling it dead would contradict `probe`, which
+    # counts those same bars and reports it firing. Neither: it IS selected
+    # there, so it is reachable, and its firing count is `to_gate_results`' to
+    # report.
+    later = ["satisfied"] * 10 + ["miss"] * 20
+    earlier = ["warmup"] * 10 + ["satisfied"] * 20
+    v = _verdict(later, earlier)
+    assert (v.evaluated, v.fires, v.covered_fires) == (20, 0, 0)
+    assert v.warmup_independent_fires == 10
+    assert v.coverage == ()
+    assert v.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
+    )
+
+
+def test_warmup_only_needs_enough_covered_fires_to_call_it_a_priority_problem() -> None:
+    # Same prefix head start, but now the rule keeps firing afterwards and an
+    # earlier rule takes every one of those bars. THAT is priority shadowing,
+    # so the ordering remedies the finding prescribes are the right ones.
+    later = ["satisfied"] * 30
+    earlier = ["warmup"] * 10 + ["satisfied"] * 20
+    v = _verdict(later, earlier)
+    assert (v.fires, v.covered_fires, v.warmup_independent_fires) == (20, 20, 10)
+    assert v.verdict == "warmup_only"
+    detail = (
+        PredicateReachabilityProbe()
+        .to_starvation_gate_results([v], _spec(_BROAD, extra_entries=[_entry(_NARROW)]))[0]
+        .details
+    )
+    assert "every one of them also covered by an earlier rule" in detail
+
+
+def test_thin_steady_state_coverage_does_not_license_the_shadowing_narrative() -> None:
+    # _MIN_STARVATION_FIRES exists because one covered fire is a coin flip at a
+    # coverage fraction of a half. That reasoning does not weaken because the
+    # rule also has prefix fires: those establish that it IS selected, which is
+    # the rung's other half, and say nothing about why it stopped being. Four
+    # covered steady-state fires stays silent; five earns the warning.
+    earlier = ["warmup"] * 20 + ["satisfied"] * 40
+    four = _verdict(["satisfied"] * 24 + ["miss"] * 36, earlier)
+    assert (four.fires, four.warmup_independent_fires) == (4, 20)
+    assert four.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [four], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
+    )
+    five = _verdict(["satisfied"] * 25 + ["miss"] * 35, earlier)
+    assert (five.fires, five.warmup_independent_fires) == (5, 20)
+    assert five.verdict == "warmup_only"
+
+
+def test_a_steady_state_independent_fire_outranks_warmup_prefix_fires() -> None:
+    later = ["satisfied"] * 30
+    earlier = ["warmup"] * 10 + ["miss"] + ["satisfied"] * 19
+    v = _verdict(later, earlier)
+    assert (v.independent_fires, v.warmup_independent_fires) == (1, 10)
+    assert v.verdict == "reachable"
 
 
 def test_starvation_verdict_coverage_is_ordered_by_descending_share() -> None:
