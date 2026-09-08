@@ -188,6 +188,7 @@ def test_shutdown_blogging_temporal_components_running_loop(monkeypatch) -> None
     from agents.blogging.temporal import worker
 
     fake_worker = MagicMock()
+
     async def fake_shutdown():
         return None
 
@@ -614,6 +615,62 @@ def test_stage_activities_tolerate_planning_dto_without_selected_title(
     assert ctx.selected_title is None
 
 
+def test_selected_title_round_trips_through_plan_draft_and_gates_activities(
+    monkeypatch, tmp_path
+) -> None:
+    """The exact dict ``plan_stage_activity`` serializes — a real
+    ``PlanningStageResult.model_dump()``, not a hand-typed literal like the other
+    activity tests in this module use — is what ``draft_stage_activity`` and
+    ``gates_stage_activity`` each re-seed ``ctx.selected_title`` from in turn.
+
+    The other activity tests above prove each hop's ``.get("selected_title")``
+    deserialization side in isolation, against a dict they construct by hand; this
+    proves the title survives real serialization *and* deserialization chained
+    across both Temporal activity-boundary hops in one pass.
+    """
+    import importlib
+
+    acts, ctx = _patch_context(monkeypatch, tmp_path)
+    cp = importlib.import_module("agents.blogging.shared.content_plan")
+    wm = importlib.import_module("agents.blogging.blog_writer_agent.models")
+    monkeypatch.setattr(
+        cp.PlanningPhaseResult, "model_validate", classmethod(lambda cls, d: _Dumpable(d))
+    )
+    monkeypatch.setattr(wm.WriterOutput, "model_validate", classmethod(lambda cls, d: _Dumpable(d)))
+
+    def fake_planning(c):
+        c.planning_phase_result = _Dumpable({"content_plan": {"x": 1}})
+        c.elicited_stories_text = "story"
+        c.selected_title = "Chosen Title"
+        return None
+
+    def fake_draft(c):
+        c.draft_result = _Dumpable({"draft": "hello"})
+        return None
+
+    def fake_gates(c):
+        c.draft_result = _Dumpable({"draft": "final"})
+        c.status = "PASS"
+        return None
+
+    v2 = _blog_writing_process_v2_module()
+    monkeypatch.setattr(v2, "run_planning_stage", fake_planning)
+    monkeypatch.setattr(v2, "run_draft_stage", fake_draft)
+    monkeypatch.setattr(v2, "run_gates_stage", fake_gates)
+
+    planning_dto = acts.plan_stage_activity("j1", {"brief": "x"})
+    assert planning_dto["selected_title"] == "Chosen Title"
+
+    ctx.selected_title = "stale-between-activities"
+    draft_dto = acts.draft_stage_activity("j1", {"brief": "x"}, planning_dto)
+    assert ctx.selected_title == "Chosen Title"
+
+    ctx.selected_title = "stale-between-activities"
+    gates_dto = acts.gates_stage_activity("j1", {"brief": "x"}, planning_dto, draft_dto)
+    assert ctx.selected_title == "Chosen Title"
+    assert gates_dto["status"] == "PASS"
+
+
 def test_finalize_job_activity_delegates(monkeypatch, tmp_path) -> None:
     """finalize_job_activity reconstructs models and calls finalize_blog_job."""
     import importlib
@@ -690,7 +747,9 @@ def test_draft_stage_activity_abort_returns_fail_with_partial_draft(monkeypatch,
         cp.PlanningPhaseResult, "model_validate", classmethod(lambda cls, d: _Dumpable(d))
     )
     monkeypatch.setattr(
-        _blog_writing_process_v2_module(), "run_draft_stage", lambda c: (None, _Dumpable({"draft": "partial"}), "FAIL")
+        _blog_writing_process_v2_module(),
+        "run_draft_stage",
+        lambda c: (None, _Dumpable({"draft": "partial"}), "FAIL"),
     )
 
     planning = {"planning_phase_result": {"content_plan": {}}}
