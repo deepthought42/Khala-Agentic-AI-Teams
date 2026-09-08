@@ -523,7 +523,7 @@ evaluation contract rather than absorbed into an implementation step.
 
 | File | Role |
 |---|---|
-| `strategy_lab/orchestrator_design.py` | **Add** `_fetch_design_probe_bars` on `DesignMixin`; reset its per-attempt memo in `_run_design_attempt`; **add** `_design_starvation_probe_enabled()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
+| `strategy_lab/orchestrator_design.py` | **Add** `_fetch_design_probe_bars` on `DesignMixin`; reset its per-attempt memo in `_run_design_attempt`; **add** `_design_starvation_probe_enabled()`, `_effective_probe_as_of()`, `_starvation_probe_signature()`, `_StarvationProbeCache`, `_design_starvation_findings()`; thread `config` + cache through `_run_design_review_rounds` → `_review_and_handle_critique`; extend the one merge expression |
 | `investment_team/tests/conftest.py` | **Add** autouse fixture stubbing `_fetch_design_probe_bars` → `None` so the existing suite stays hermetic |
 | `investment_team/tests/test_strategy_lab_design_loop.py` | Reviewer-receives-the-finding test; no-starved-rules-unchanged test; flag-off test; clarify the two `_market_must_not_run` comments |
 | `investment_team/tests/test_strategy_lab_design_review_helpers.py` | Direct-call unit tests for the merge and the memo |
@@ -545,10 +545,12 @@ evaluation contract rather than absorbed into an implementation step.
     same list to both the signature and this fetch, so there is exactly one
     resolution per round and no window in which the two could disagree. See D11
     for why that matters more than it looks;
-  - `as_of = (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or
-    self._design_probe_as_of` — the snapshot id when the spec carries one, and
-    otherwise **a single UTC timestamp stamped once per design attempt**, beside
-    the cache resets in Step 1.2. Not `None`, which is what `_fetch_market_data`
+  - `as_of = self._effective_probe_as_of(spec)` (defined in Step 2.2) — the
+    snapshot id when the spec carries one, and otherwise **a single UTC
+    timestamp stamped once per design attempt**, beside the cache resets in
+    Step 1.2. The helper exists so this seam and the probe signature cannot word
+    the same fallback differently; they did, briefly, and Step 2.2 records why
+    that mattered even though it happened to be harmless. Not `None`, which is what `_fetch_market_data`
     passes and what an earlier revision of this step copied: `_parse_as_of(None)`
     returns `_now_utc()` **evaluated per call**
     (`market_data_cache/store.py:335-342`), and `_find_covering_snapshot` selects
@@ -636,7 +638,8 @@ evaluation contract rather than absorbed into an implementation step.
     path; `_fetch_market_data` remains synthesis-only and remains the marker
     tests use for "synthesis was entered".*
 
-- [ ] **Step 1.2** — Stamp `self._design_probe_as_of = _now_utc().isoformat()` and
+- [ ] **Step 1.2** — Stamp
+      `self._design_probe_as_of = datetime.now(timezone.utc).isoformat()` and
       reset `self._design_probe_bars_cache = {}` in
       `_run_design_attempt` (same file, `DesignMixin`), beside the existing
       `self._consecutive_spec_mutation_rounds = {}` and
@@ -653,11 +656,34 @@ evaluation contract rather than absorbed into an implementation step.
 - [ ] **Step 2.2** — `_starvation_probe_signature(spec, config, resolved_symbols) -> tuple`:
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
       spec.asset_class, spec.timeframe, tuple(resolved_symbols),
-      config.start_date, config.end_date,
-      (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`,
+      config.start_date, config.end_date, effective_as_of)`,
       where `resolved_symbols` is the list Step 2.4 resolved **once** for this
       round and also passed to the fetch seam — literally the same object, not a
-      second call that happens to agree (D11).
+      second call that happens to agree (D11) — and `effective_as_of` is
+      `self._effective_probe_as_of(spec)`, **the same helper the seam fetches
+      with** (D13).
+
+      **Not `... or None`.** An earlier revision of this step wrote the fallback
+      as `None` because that is what `_fetch_market_data` passes, and then D13
+      changed the seam's fallback to the per-attempt stamp without changing this
+      one. The two are constant within a single cache's lifetime, so nothing
+      breaks *today* — which is exactly what makes it worth fixing rather than
+      leaving. The safety is a coincidence of two lifetimes happening to match,
+      not a property anyone stated; widen the cache to the attempt, or make the
+      stamp refresh, and the signature silently serves a verdict computed
+      against a different cutoff. D11's rule is the fix, though it lands
+      differently here than it did for symbols. `resolve_strategy_symbols`
+      re-reads the environment on every call, so that value had to be
+      *evaluated* once and passed; `_design_probe_as_of` is a stored stamp, so
+      two readers cannot disagree about its value — only about the expression
+      wrapped around it. Closing that needs one expression, not one evaluation:
+      **add `_effective_probe_as_of(spec) -> str` on `DesignMixin`**, returning
+      `(getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or
+      self._design_probe_as_of`, and have both Step 1.1's seam and this
+      signature call it. A helper rather than a threaded parameter keeps the
+      seam at three arguments — D1, Step 1.1, the conftest stub and the
+      `_must_not_run` patches all describe that arity — and makes the divergence
+      unrepresentable rather than merely corrected.
 
       It extends synthesis's `(entry_rules, requires_custom_code)` key with
       `asset_class`, `timeframe` (D12 — the design loop mutates the spec between
