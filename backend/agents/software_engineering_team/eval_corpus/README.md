@@ -38,48 +38,37 @@ cases/CASE-NNNN/
 
 ### The `origin` block
 
-Each `case.yaml` carries an `origin` block recording provenance, documented in
-[`CORPUS_CASE_FORMAT.md`](../docs/CORPUS_CASE_FORMAT.md) §1:
+Each `case.yaml` carries an `origin` block recording provenance. The rules —
+which fields are required when, what a real case's `diff.patch` is reduced to,
+which commit it applies to, and why real cases stay pinned — are normative in
+[`CORPUS_CASE_FORMAT.md`](../docs/CORPUS_CASE_FORMAT.md) §1 and are not
+restated here.
 
 ```yaml
 origin:
   sourcing: real        # real | invented
-  commit: 0040820       # short SHA of the fix commit; real sourcing only
-  note: >               # why no real example was available; invented only
-    ...
+  commit: "0040820"     # short SHA of the fix commit, quoted; real sourcing only
+  note: >               # invented: why no real example was available
+    ...                 # real: may record a substitution or other nuance
 ```
 
-For a real-sourced case, `diff.patch` is the **inverse** of that fix commit,
-reduced to exactly the change blocks its labels point at — the diff that
-introduces the labeled defect and nothing else.
+What is specific to this corpus, rather than to the format:
 
-That reduction is not cosmetic. A fix commit usually repairs several things at
-once, and the matching rule assigns one finding per label and counts the rest
-against precision. A fixture carrying the whole reversed commit would therefore
-penalise a gate for correctly reporting a real defect the case never labeled.
-Each patch is rebuilt mechanically as a diff from the fixed file to the fixed
-file with only the labeled blocks reverted, and every label re-anchored in the
-result, so no fixture contains an unlabeled defect.
-
-A labeled block does not always stand alone. It may call a name whose import
-moved out with the fix, or claim in a docstring a precondition that a sibling
-block enforces; and a fix that *moves* code appears as a deletion at the new
-site paired with an insertion at the old one. Reverting only the block a label
-sits in then produces a fixture that raises `NameError` instead of exhibiting
-its defect, states a defect the surviving code still prevents, or contains both
-copies of the moved code. Reduction therefore carries those dependencies along
-with the labeled block — they are part of the same defect, not additions to it.
-Two cases have no reducible subset at all and keep the whole inverse; both are
-named under Limits below.
-
-That changes what a patch applies to. The base is the **origin commit itself**
-— the fixed file — and the post-diff file is what applying the patch to it
-produces: the fixed file with only the labeled blocks reverted. It is no longer
-the commit's parent, because the parent still carries the defects this case
-does not label. Every label's line number is a position in that produced file,
-read back by applying the patch rather than recomputed from the commit. Real
-cases stay pinned to their origin commit and are not synchronized with a moving
-`main`.
+- **Four cases record a substitution** in `note` on a real-sourced case, where
+  the fixture came from a different commit than the selection plan cited. They
+  are listed under *Substitutions from the selection plan* below.
+- **Two cases keep the whole inverse** rather than a reduced subset, because
+  their defect has no coherent one. `CASE-0033`'s label is file-wide — a
+  component with twelve subscriptions and no teardown. `CASE-0029` replaced an
+  atomic compare-and-set with a check-then-write at four sites in one function,
+  with the import and docstring moving together, so reverting a subset leaves
+  the fixture calling a name the remaining sites need. Each is one design defect
+  repeated, which a gate reports once, so each keeps a single label; their
+  precision contribution is not meaningful and should be read that way.
+- **One case reduces to a single line** rather than a whole block. `CASE-0035`'s
+  block reverts four sibling constructor arguments to the same unsafe pattern,
+  and labelling all four would score a gate that reports the pattern once — the
+  correct behaviour — at 25% recall for the case.
 
 ## Achieved distribution
 
@@ -124,9 +113,25 @@ ground truth is complete.
 
 ### Frontend share: a hand-off for the other half
 
-The corpus-wide target is 28% frontend. This half lands **8 of 40 (20%)**, so
-the false-positive-resistance half needs roughly **9 of its ~24 cases (≈37%)
-frontend** for the corpus as a whole to reach 28%.
+The corpus-wide target is 28% frontend. This half lands **8 of 40 (20%)**.
+
+The hand-off is larger than a first pass suggests, because this half
+over-delivered on directory count. The selection plan sized the corpus at 60 —
+34 must-find-primary plus 26 false-positive-primary — and this half came out at
+**40** directories rather than 34, so the finished corpus will be about **66**.
+Frontend share is measured over that whole, and the extra six backend-leaning
+directories dilute it:
+
+| | |
+|---|---|
+| Frontend cases needed for 28% of 66 | 19 (18.48 rounded up) |
+| Already delivered here | 8 |
+| **Needed from the false-positive half** | **11 of its 26 (≈42%)** |
+
+Delivering instead the plan's absolute 17 frontend cases — 9 more — lands the
+corpus at 17/66, or **26%**. Either number is defensible; what is not
+defensible is carrying forward a figure that reaches neither, which the
+earlier "9 of ~24 (≈37%)" did.
 
 That shortfall is real and is recorded rather than papered over. Frontend
 supply in this repository's shipped-and-fixed history is genuinely thinner

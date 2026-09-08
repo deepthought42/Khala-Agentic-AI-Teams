@@ -4,6 +4,7 @@ language: python
 stack: fastapi
 gates: [code_review]
 mode: diff
+expected_findings: see labels.yaml   # split out, per the case-format spec
 origin:
   sourcing: real
-  commit: 51810fd5
+  commit: "51810fd5"

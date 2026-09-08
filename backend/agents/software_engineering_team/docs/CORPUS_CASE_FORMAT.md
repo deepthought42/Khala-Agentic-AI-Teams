@@ -64,8 +64,9 @@ gates: [code_review, security]   # subset of {code_review, qa, security} — whi
 mode: diff                    # "diff" or "files" — see below
 origin:                       # where the case came from — see "Provenance" below
   sourcing: real              # real | invented
-  commit: 0040820             # short SHA of the origin commit; required when sourcing: real
-  # note: <why no real example was available>   # required when sourcing: invented; permitted when real
+  commit: "0040820"           # short SHA of the origin commit, quoted; required when sourcing: real
+  # note: <provenance note>   # required when invented (why no real example existed);
+                              # permitted when real (a substitution or other nuance)
 expected_findings:
   - <label>                    # zero or more; see §2
   - <label>
@@ -133,6 +134,19 @@ actually shipped from a plausible construction, without leaving the case file:
   fixture must contain no defect it does not label. Labels' line numbers are
   positions in that produced file. A real case stays pinned to its origin
   commit; it is not resynchronized as the repository moves on.
+
+  Reduction carries a labeled block's dependencies with it. A labeled block may
+  call a name whose import moved out with the fix, or claim in a docstring a
+  precondition a sibling block enforces, and a fix that *moves* code appears as
+  a deletion at the new site paired with an insertion at the old one. Those
+  blocks are part of the same defect: reverting only the block a label sits in
+  yields a fixture that raises instead of exhibiting its defect, states a defect
+  the surviving code still prevents, or carries both copies of the moved code.
+  Where a defect has no coherent subset, the case keeps the whole inverse.
+
+  **`commit` must be quoted.** An all-digit short SHA is an integer to a YAML
+  1.2 parser, and octal to PyYAML when every digit is below 8 — either way the
+  leading zero is lost and a comparison against `git rev-parse --short` fails.
 - **`note`** is *required* when `sourcing: invented` and *permitted* when
   `sourcing: real` — a real case may use it to record that its fixture was drawn
   from a different commit than the selection plan originally cited, or any other

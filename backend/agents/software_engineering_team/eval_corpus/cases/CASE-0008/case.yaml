@@ -4,6 +4,7 @@ language: python
 stack: temporal-worker
 gates: [code_review]
 mode: diff
+expected_findings: see labels.yaml   # split out, per the case-format spec
 origin:
   sourcing: real
-  commit: 766c6e5
+  commit: "766c6e5"

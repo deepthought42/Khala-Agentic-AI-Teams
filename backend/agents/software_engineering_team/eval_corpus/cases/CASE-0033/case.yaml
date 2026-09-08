@@ -4,6 +4,7 @@ language: typescript
 stack: angular
 gates: [qa]
 mode: diff
+expected_findings: see labels.yaml   # split out, per the case-format spec
 origin:
   sourcing: real
-  commit: 9ac88a3
+  commit: "9ac88a3"

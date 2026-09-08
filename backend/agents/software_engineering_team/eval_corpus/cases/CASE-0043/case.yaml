@@ -4,6 +4,7 @@ language: typescript
 stack: angular
 gates: [qa]
 mode: files
+expected_findings: see labels.yaml   # split out, per the case-format spec
 origin:
   sourcing: invented
   note: >
