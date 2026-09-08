@@ -103,10 +103,13 @@ both objects would report agreement the data does not have. This costs
 behaviour — additive, not a re-architecture — and is the only way the "same
 window" claim this plan makes is actually true.
 
-- `_dora_payload(window)` — unchanged logic, including the function-local import
-  and the zeroed literal (which stays valid even if the metrics module fails to
+- `_dora_payload(window, cutoff)` — unchanged **apart from forwarding `cutoff`**
+  to `compute_dora`'s new optional parameter; a signature of `(window)` alone
+  cannot receive the route's instant, and the one-instant fix above then silently
+  does not happen. Otherwise unchanged, including the function-local import and
+  the zeroed literal (which stays valid even if the metrics module fails to
   import).
-- `_rollup_payload(window)` — function-local import of the §4.1 aggregating read
+- `_rollup_payload(window, cutoff)` — function-local import of the §4.1 aggregating read
   (`trace_store.fetch_trace_rollup_rows`), **not** `compute_agent_rollup`: that
   wrapper calls `fetch_traces_since` and materializes every matching row, which is
   the exact risk §3.5 exists to remove. It receives the route's single `cutoff`
@@ -660,16 +663,18 @@ Same for rounding.
 
 ### 4.2 `backend/agents/software_engineering_team/api/routes/status.py`
 
-1. Extract the current body of `metrics_dora` into `_dora_payload(window)`
-   verbatim — no behavior change, so the existing fallback test keeps passing on
-   its assertions about DORA fields.
-2. Add `_rollup_payload(window)` per §3.3, built on the §4.1 aggregating read
+1. Extract the current body of `metrics_dora` into `_dora_payload(window, cutoff)`
+   — verbatim apart from forwarding `cutoff` to `compute_dora`'s new optional
+   parameter (§3.3). No other behavior change, so the existing fallback test keeps
+   passing on its assertions about DORA fields.
+2. Add `_rollup_payload(window, cutoff)` per §3.3, built on the §4.1 aggregating read
    rather than `compute_agent_rollup`'s row-materializing path (§3.5). **No
    caching layer** — §3.5 defers that behind the measurement gate, so this helper
    is a direct call under the `statement_timeout` bound. Keeping it uncached also
    keeps the endpoint tests honest: there is no process-global state to leak
    between them.
-3. Rewrite `metrics_dora` as the three-line composition in §3.3, and extend its
+3. Rewrite `metrics_dora` as the composition in §3.3 — clamp, derive the single
+   `cutoff`, call both helpers with it — and extend its
    docstring: what the new key is, that it is additive, and that it is empty
    rather than absent when there is no trace data.
 4. Update the module docstring's one-line summary (currently "supervisor logs,
