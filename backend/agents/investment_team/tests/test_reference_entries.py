@@ -227,16 +227,21 @@ def test_nonpositive_trigger_close_is_dropped_even_though_the_predicate_still_fi
 
 
 def test_fill_entry_at_rejects_a_zero_trigger_close():
-    """Direct unit test: no ``ComparisonOp`` in this DSL fires true against a
-    NaN close (every comparison, including ``==``, is False for NaN), so the
-    NaN half of this gate cannot be exercised end-to-end through a real
-    predicate — verified here directly against ``fill_entry_at`` instead.
-    """
+    """Direct unit test of the zero half of the gate at the ``fill_entry_at``
+    level, complementing the end-to-end coverage in
+    ``test_nonpositive_trigger_close_is_dropped_even_though_the_predicate_still_fires``
+    above (which exercises the same case through a real ``close < 1``
+    predicate)."""
     bars = [_bar(50, 50, 0.0, 0.0), _bar(100, 100, 100, 100)]
     assert fill_entry_at("AAA", bars, trigger_bar=0, rule_side="long", rule_index=0) is None
 
 
 def test_fill_entry_at_rejects_a_nan_trigger_close():
+    """Direct unit test: no ``ComparisonOp`` in this DSL fires true against a
+    NaN close (every ordered/equality comparison is False for NaN), so the
+    NaN half of the nonpositive-trigger-close gate cannot be exercised
+    end-to-end through a real predicate — verified here directly against
+    ``fill_entry_at`` instead."""
     bars = [_bar(50, 50, 40, math.nan), _bar(100, 100, 100, 100)]
     assert fill_entry_at("AAA", bars, trigger_bar=0, rule_side="long", rule_index=0) is None
 

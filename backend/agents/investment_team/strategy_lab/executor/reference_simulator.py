@@ -21,9 +21,10 @@ candidate BEFORE either commits, exactly the comparison the two modules'
 standalone ``replay_*`` wrappers cannot make (each drives its own book to
 completion in isolation). ``SignalExitRule`` has no analogous stepper object
 — its own trigger check is genuinely stateless per bar (see
-:func:`_peek_signal_exit`) — so this module evaluates it directly via the
-same shared ``rule_compiler.evaluate_exit_rules_for_position``
-:func:`~.reference_exits.resolve_signal_exit` itself calls.
+:func:`_peek_signal_exit`) — so this module evaluates it via
+:func:`~.reference_exits.signal_exit_intent_at`, the SAME per-bar
+trigger-decision kernel :func:`~.reference_exits.resolve_signal_exit`'s own
+walk calls, rather than a second copy of that decision.
 
 Per-bar evaluation order
 ------------------------
@@ -152,20 +153,19 @@ from ..spec_dsl import ExitRule, OcoBracketRule
 from .predicate_evaluator import HistoryView, PandasHistoryView, evaluate_entry_rules
 from .reference_entries import ReferenceEntryFill, bars_to_frame, fill_entry_at
 from .reference_exits import (
-    PrefixHistoryView,
     RestingStopLoss,
     RestingTakeProfitFamily,
-    bar_snapshot,
     decimals_for,
     entry_price_basis,
     round_reference_price,
     scaled_take_profit_rules,
+    signal_exit_intent_at,
     signal_exit_rules,
     stop_loss_rules_for_side,
     take_profit_rules,
     working_exit_rules,
 )
-from .rule_compiler import PositionState, evaluate_exit_rules_for_position
+from .rule_compiler import PositionState
 
 if TYPE_CHECKING:
     # Deferred for the same reason the sibling modules defer it: importing any
@@ -239,11 +239,11 @@ class ReferenceTrade:
         """
         if self.trade_num < 1:
             raise ValueError(f"trade_num must be >= 1, got {self.trade_num!r}")
-        if not self.symbol:
+        if not isinstance(self.symbol, str) or not self.symbol:
             raise ValueError(f"symbol must be a non-empty string, got {self.symbol!r}")
-        if not self.entry_date:
+        if not isinstance(self.entry_date, str) or not self.entry_date:
             raise ValueError(f"entry_date must be a non-empty string, got {self.entry_date!r}")
-        if not self.exit_date:
+        if not isinstance(self.exit_date, str) or not self.exit_date:
             raise ValueError(f"exit_date must be a non-empty string, got {self.exit_date!r}")
         if self.entry_bar < 0:
             raise ValueError(f"entry_bar must be >= 0, got {self.entry_bar!r}")
@@ -394,7 +394,7 @@ def _finalize_exit_price(pos: _OpenPosition, raw_closing_price: float) -> Option
     Preconditions: none (``raw_closing_price`` may be any float). Called only
     for a STOP or ``signal_exit`` close — a take-profit-family close instead
     rounds its own already-committed
-    :class:`~.reference_exits._TakeProfitFireResult` directly, matching
+    :class:`~.reference_exits.TakeProfitFireResult` directly, matching
     :func:`~.reference_exits.resolve_take_profit_family_exit`'s existing,
     already-tested behavior. A take-profit candidate's price is NOT
     analytically bounded away from zero the way this function's own STOP/
@@ -412,7 +412,7 @@ def _finalize_exit_price(pos: _OpenPosition, raw_closing_price: float) -> Option
     rung), the quantity-weighted blend of its prior fills plus this closing
     price via :meth:`~.reference_exits.RestingTakeProfitFamily.blend_terminal`,
     rounded using THIS closing price's own bucket — mirrors
-    ``_TakeProfitFireResult``'s documented "bucket from terminal, round the
+    ``TakeProfitFireResult``'s documented "bucket from terminal, round the
     blend once" discipline. Does not mutate ``pos.tp_book``.
     """
     if not (raw_closing_price > 0 and math.isfinite(raw_closing_price)):
@@ -434,13 +434,17 @@ def _peek_signal_exit(
 ) -> Optional[int]:
     """The lowest-index ``SignalExitRule`` firing at ``trigger_bar``, or ``None``.
 
-    Mirrors :func:`~.reference_exits.resolve_signal_exit`'s own per-bar body
-    exactly — same frozen ``PositionState`` (the PRE-slippage ``entry_price``
-    for both the anchor and the (unread) watermarks), same
-    :class:`~.reference_exits.PrefixHistoryView` truncation so a signal
-    predicate's "now" means ``trigger_bar``, never the dataset's final bar —
-    so the combined driver's signal-exit trigger decision never drifts from
-    the already-tested standalone replay.
+    A thin per-call wrapper over :func:`~.reference_exits.signal_exit_intent_at`
+    — the SAME per-bar trigger-decision kernel :func:`~.reference_exits.resolve_signal_exit`'s
+    own walk calls, so the combined driver's signal-exit trigger decision
+    cannot drift from the already-tested standalone replay: there is exactly
+    one implementation of "which SignalExitRule fires here," not two kept in
+    sync by comment. This function's own job is just building the frozen
+    ``PositionState`` fresh for THIS call (the PRE-slippage ``entry_price``
+    for both the anchor and the (unread) watermarks) and the early-out when
+    ``working_rules`` carries no ``SignalExitRule`` at all — ``resolve_signal_exit``
+    does the equivalent construction once, outside its own whole-series loop,
+    rather than per bar, since it is the one walking every bar itself.
 
     Preconditions: ``working_rules`` is the WORKING exit-rule list;
     ``0 <= trigger_bar < view.length()``; ``bar`` is
@@ -461,16 +465,7 @@ def _peek_signal_exit(
         high_since_entry=entry.entry_price,
         low_since_entry=entry.entry_price,
     )
-    intents = evaluate_exit_rules_for_position(
-        working_rules,
-        entry.symbol,
-        position,
-        bar_snapshot(bar),
-        view=PrefixHistoryView(view, trigger_bar),
-        first_only=False,
-    )
-    winner = next((intent for intent in intents if intent.rule_kind == "signal_exit"), None)
-    return winner.rule_index if winner is not None else None
+    return signal_exit_intent_at(working_rules, entry.symbol, position, view, trigger_bar, bar)
 
 
 def _finish_trade(

@@ -626,6 +626,11 @@ class RestingStopLoss:
       * ``_armed`` is monotonic: once a limit-style stop's level is breached it
         never disarms, so a gap-through that left it unfilled still fills on a
         later bar whose range reaches the limit, without re-crossing the stop.
+      * ``_retired`` is monotonic between a :meth:`retire_limit_style_rules`/
+        :meth:`restore_limit_style_rules` pair: an index in ``_retired`` is
+        skipped before any candidate evaluation (no ``_armed`` side effect)
+        until :meth:`restore_limit_style_rules` removes it, at which point it
+        resumes with its ``_armed`` latch exactly as it was left.
     """
 
     def __init__(
@@ -1114,7 +1119,7 @@ class _LadderCursor:
     next_rung: int
 
 
-class _TakeProfitFireResult(NamedTuple):
+class TakeProfitFireResult(NamedTuple):
     """The winning candidate's outcome once its fill fully closes the position.
 
     ``raw_price`` is the qty-weighted average across every partial fill plus
@@ -1144,7 +1149,7 @@ class _TakeProfitFireResult(NamedTuple):
     level_index: Optional[int]
 
 
-class _TakeProfitCandidate(NamedTuple):
+class TakeProfitCandidate(NamedTuple):
     """A take-profit-family candidate :meth:`RestingTakeProfitFamily.peek`
     resolved but has not yet applied.
 
@@ -1356,7 +1361,7 @@ class RestingTakeProfitFamily:
         weighted_price = sum(q * p for q, p in prospective_fills) / total_qty
         return weighted_price, price
 
-    def peek(self, bar: "Bar") -> Optional[_TakeProfitCandidate]:
+    def peek(self, bar: "Bar") -> Optional[TakeProfitCandidate]:
         """Resolve ``bar``'s winning take-profit-family candidate WITHOUT applying it.
 
         The trigger-decision half of what a single :meth:`step` call used to
@@ -1452,7 +1457,7 @@ class RestingTakeProfitFamily:
                     # learn there was a DIFFERENT, valid candidate later in
                     # the same intents list.
                     continue
-            return _TakeProfitCandidate(
+            return TakeProfitCandidate(
                 exit_rule_index=winner.rule_index,
                 exit_rule_kind=winner.rule_kind,
                 qty=qty,
@@ -1462,7 +1467,7 @@ class RestingTakeProfitFamily:
             )
         return None
 
-    def commit(self, candidate: _TakeProfitCandidate) -> Optional[_TakeProfitFireResult]:
+    def commit(self, candidate: TakeProfitCandidate) -> Optional[TakeProfitFireResult]:
         """Apply a candidate :meth:`peek` returned for the SAME bar.
 
         Preconditions: ``candidate`` is what THIS object's own :meth:`peek`
@@ -1516,7 +1521,7 @@ class RestingTakeProfitFamily:
         if terminal is None:
             return None  # rung fired, position still open — keep walking
         weighted_price, terminal_price = terminal
-        return _TakeProfitFireResult(
+        return TakeProfitFireResult(
             exit_rule_index=candidate.exit_rule_index,
             exit_rule_kind=candidate.exit_rule_kind,
             raw_price=weighted_price,
@@ -1544,7 +1549,7 @@ class RestingTakeProfitFamily:
         ``self._fills`` plus ``(self.remaining_qty, closing_price)``;
         ``terminal_price`` is ``closing_price`` itself, unchanged, since the
         FOREIGN close is by definition the terminal slice here. Mirrors
-        :class:`_TakeProfitFireResult`'s two-value shape so a caller applies
+        :class:`TakeProfitFireResult`'s two-value shape so a caller applies
         the SAME "bucket from terminal, round the blend once" discipline
         uniformly regardless of which rule performed the final close. Reduces
         correctly to ``(closing_price, closing_price)`` when this family has
@@ -1561,7 +1566,7 @@ class RestingTakeProfitFamily:
         raw_price = sum(q * p for q, p in fills) / total_qty
         return raw_price, closing_price
 
-    def step(self, bar: "Bar") -> Optional[_TakeProfitFireResult]:
+    def step(self, bar: "Bar") -> Optional[TakeProfitFireResult]:
         """Evaluate ``bar``, applying at most one winning candidate.
 
         Now a thin composition of :meth:`peek` then :meth:`commit` — kept as
@@ -1660,7 +1665,7 @@ def resolve_take_profit_family_exit(
             # (fill_simulator.py's terminal-close branch derives dp from the
             # terminal slice's reference_price, then rounds the weighted
             # average with that dp), never re-derived from the blended value
-            # itself. See _TakeProfitFireResult's docstring for the full
+            # itself. See TakeProfitFireResult's docstring for the full
             # argument and production line references.
             exit_price=round(fired.raw_price, decimals_for(fired.terminal_price)),
             exit_rule_kind=fired.exit_rule_kind,
@@ -1824,6 +1829,52 @@ class PrefixHistoryView:
         return self._view.indicator(ref, i)
 
 
+def signal_exit_intent_at(
+    rules: Sequence[ExitRule],
+    symbol: str,
+    position: PositionState,
+    view: HistoryView,
+    trigger_bar: int,
+    bar: "Bar",
+) -> Optional[int]:
+    """The lowest-index ``SignalExitRule`` firing at ``trigger_bar`` against ``position``, or ``None``.
+
+    The one-bar trigger-decision kernel both :func:`resolve_signal_exit`'s own
+    walk and the combined multi-kind simulator's own per-bar signal-exit check
+    need — factored out so the frozen-``PositionState``/prefix-truncated-
+    evaluator/first-intent-wins selection is a SINGLE implementation two
+    callers share by construction, not two copies a comment merely promises
+    stay in lockstep. Callers differ only in how/when they build ``position``
+    and in what they do with the result (``resolve_signal_exit`` builds it
+    once and reuses it across its own whole-series loop; the combined
+    simulator builds it fresh per call) — this function owns none of that,
+    only the per-bar evaluation itself.
+
+    Preconditions: ``rules`` is the WORKING exit-rule list; ``0 <= trigger_bar
+    < view.length()``; ``bar`` is the ``Bar`` at ``trigger_bar``; ``position``
+    is the caller's already-constructed frozen ``PositionState`` for this
+    walk — this function neither constructs nor validates it, and does not
+    itself check whether ``rules`` contains any ``SignalExitRule`` (a caller
+    wanting to skip the walk entirely when it does not should check
+    :func:`signal_exit_rules` itself, once, outside its own loop).
+    Postconditions: returns the winning ``SignalExitRule``'s
+    ``exit_rule_index`` among every intent
+    ``evaluate_exit_rules_for_position`` reports for this bar, or ``None``
+    when none of them is a ``signal_exit`` intent.
+    Invariants: no side effects; deterministic in its inputs.
+    """
+    intents = evaluate_exit_rules_for_position(
+        rules,
+        symbol,
+        position,
+        bar_snapshot(bar),
+        view=PrefixHistoryView(view, trigger_bar),
+        first_only=False,
+    )
+    winner = next((intent for intent in intents if intent.rule_kind == "signal_exit"), None)
+    return winner.rule_index if winner is not None else None
+
+
 def resolve_signal_exit(
     rules: Sequence[ExitRule],
     entry: ReferenceEntryFill,
@@ -1945,19 +1996,10 @@ def resolve_signal_exit(
         low_since_entry=entry.entry_price,
     )
     for trigger_bar in range(entry.entry_bar, n):
-        intents = evaluate_exit_rules_for_position(
-            rules,
-            entry.symbol,
-            position,
-            bar_snapshot(symbol_bars[trigger_bar]),
-            view=PrefixHistoryView(view, trigger_bar),
-            first_only=False,
+        winner_idx = signal_exit_intent_at(
+            rules, entry.symbol, position, view, trigger_bar, symbol_bars[trigger_bar]
         )
-        winner = next(
-            (intent for intent in intents if intent.rule_kind == "signal_exit"),
-            None,
-        )
-        if winner is None:
+        if winner_idx is None:
             continue
         exit_bar = trigger_bar + 1
         if exit_bar >= n:
@@ -1986,7 +2028,7 @@ def resolve_signal_exit(
             exit_date=fill_bar.timestamp[:10],
             exit_price=exit_price,
             exit_rule_kind="signal_exit",
-            exit_rule_index=winner.rule_index,
+            exit_rule_index=winner_idx,
         )
     return None
 

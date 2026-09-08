@@ -22,7 +22,7 @@ from investment_team.strategy_lab.executor.reference_exits import (
     ReferenceTakeProfitExit,
     RestingStopLoss,
     RestingTakeProfitFamily,
-    _TakeProfitCandidate,
+    TakeProfitCandidate,
     entry_price_basis,
     replay_signal_exits,
     replay_stop_loss_exits,
@@ -1066,7 +1066,7 @@ def test_module_imports_no_forbidden_engine_module():
         "]\n"
         "print(sorted(hits))\n"
     )
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]", proc.stdout
 
@@ -1609,7 +1609,7 @@ def test_commit_refuses_a_terminal_close_that_rounds_to_zero_without_mutating_st
     a chance to close the position."""
     rules = [TakeProfitRule(pct=0.6)]
     family = RestingTakeProfitFamily(side="short", symbol="AAA", anchor=0.0001, rules=rules)
-    candidate = _TakeProfitCandidate(
+    candidate = TakeProfitCandidate(
         exit_rule_index=0,
         exit_rule_kind="take_profit",
         qty=1.0,

@@ -16,6 +16,7 @@ import copy
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 import pytest
 
@@ -101,8 +102,14 @@ def _spec(
 
 
 def _dates(n: int, start_day: int = 1) -> "list[str]":
-    """``n`` distinct, strictly increasing ISO timestamps starting at day ``start_day``."""
-    return [f"2024-01-{start_day + i:02d}T00:00:00" for i in range(n)]
+    """``n`` distinct, strictly increasing ISO timestamps starting at day ``start_day``.
+
+    Real date arithmetic, not string formatting into a fixed month: a fixed
+    ``"2024-01-{day:02d}"`` template would silently emit an invalid date like
+    ``"2024-01-32"`` once ``start_day + n`` exceeds January's own length.
+    """
+    start = date(2024, 1, 1) + timedelta(days=start_day - 1)
+    return [(start + timedelta(days=i)).isoformat() + "T00:00:00" for i in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -900,6 +907,15 @@ def test_trade_rejects_an_empty_exit_date():
         _trade(exit_date="")
 
 
+@pytest.mark.parametrize("field", ["symbol", "entry_date", "exit_date"])
+def test_trade_rejects_a_non_string_value_for_a_string_field(field):
+    """Truthiness alone would let a non-string, truthy value (e.g. an int)
+    through -- the docstring promises a non-empty STRING, which ``not value``
+    alone does not enforce."""
+    with pytest.raises(ValueError, match=field):
+        _trade(**{field: 123})
+
+
 def test_trade_rejects_trade_num_below_one():
     with pytest.raises(ValueError, match="trade_num"):
         _trade(trade_num=0)
@@ -1027,7 +1043,8 @@ def test_simulate_does_not_mutate_spec_or_bars():
 
 def test_module_imports_no_forbidden_engine_module():
     """The design doc's module boundary, asserted rather than left to prose:
-    importing this module must not drag in the live engine.
+    importing this module must not drag in the live engine or the live
+    trading service (``trading_service.service``/``trading_service.engine``).
 
     Run in a subprocess for the same reason the sibling ``reference_exits``
     suite does: in this process the forbidden modules are already loaded by
@@ -1048,6 +1065,6 @@ def test_module_imports_no_forbidden_engine_module():
         "]\n"
         "print(sorted(hits))\n"
     )
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]", proc.stdout
