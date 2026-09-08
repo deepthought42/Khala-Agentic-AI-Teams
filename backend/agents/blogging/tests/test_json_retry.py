@@ -448,6 +448,35 @@ def test_run_json_gate_wrapper_without_an_original_reaches_on_unexpected_error(m
     assert received == [wrapper]
 
 
+def test_unwrap_event_loop_exception_delegates_to_the_shared_helper(monkeypatch):
+    """The shim calls ``text_parsing.unwrap_llm_cause`` rather than reimplementing it.
+
+    The drift guard in ``test_text_parsing.py`` sanctions this shim by name and
+    deliberately does not inspect bodies, so an inline unwrap policy could
+    reappear here without that guard noticing — the tests above would catch one
+    that *diverges*, but not one that merely duplicates. This pins the
+    delegation itself: the sentinel returned below can only have come from the
+    patched helper, and the recorded call proves the wrapper reached it
+    unchanged.
+
+    The narrowing that follows the call is the shim's own and stays untested
+    here; ``test_run_json_gate_does_not_recover_a_base_exception_original``
+    covers it.
+    """
+    sentinel = RuntimeError("produced by the shared helper")
+    calls = []
+
+    def fake_unwrap_llm_cause(exc):
+        calls.append(exc)
+        return sentinel
+
+    monkeypatch.setattr(json_retry_module, "unwrap_llm_cause", fake_unwrap_llm_cause)
+    wrapper = EventLoopException(ValueError("original"))
+
+    assert json_retry_module._unwrap_event_loop_exception(wrapper) is sentinel
+    assert calls == [wrapper]
+
+
 def test_run_json_gate_does_not_recover_a_base_exception_original(monkeypatch):
     """A non-``Exception`` original stays wrapped rather than escaping the handler.
 

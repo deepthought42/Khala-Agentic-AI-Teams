@@ -481,7 +481,13 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
 
     - The guard does not inspect bodies, so it does not check that the
       sanctioned shim forwards its arguments to the canonical helper. That is
-      behaviour, and belongs to ``BlogWriterAgent``'s own tests.
+      behaviour, and belongs to the shim owner's own tests --
+      ``BlogWriterAgent``'s for the writer method, and
+      ``test_json_retry.py``'s
+      ``test_unwrap_event_loop_exception_delegates_to_the_shared_helper`` for
+      the json_retry shim. An allowlist entry here says a name may exist, never
+      that what answers to it still delegates; without that paired test the
+      entry would pre-approve an inline policy regrowing at that exact name.
     - It does not detect a guarded name defined twice in one file. That is a
       Python redefinition, already reported by ruff's F811.
 
@@ -489,8 +495,10 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
     rather than exempt. It once held its own unwrap — returning
     ``original_exception`` unconditionally, so a wrapper carrying ``None``
     yielded ``None`` where ``unwrap_llm_cause`` yields the wrapper — and the
-    fix is why the guard now watches that name: a shim that delegates today can
-    grow a body of its own tomorrow, and an unwatched name is how it would.
+    fix is why the guard now watches that name: an unwatched name is free to
+    hold anything, while a watched one at least has to be argued for here. What
+    keeps it honest afterwards is the delegation test named above, not this
+    entry.
     """
     unsanctioned: list[str] = []
     seen: set[tuple[str, str]] = set()
