@@ -172,7 +172,10 @@ diffs. Every substitution is recorded here rather than forced.
 
 No path was genericized for sensitivity: real-sourced cases use their true
 repository-relative paths throughout, and no fixture embeds a credential,
-token, key, or other private value.
+token, key, or other private value. The one hard-coded key literal — the
+fallback in `CASE-0025`, which is the defect that case labels — is a
+self-describing placeholder decoding to `placeholder-not-a-real-key-32byt`,
+not a secret.
 
 ## Case index
 
@@ -190,7 +193,7 @@ token, key, or other private value.
 | CASE-0014 | Teardown success spec passes without exercising the subscribe path | `testing` | code_review | real | 0175839 | frontend |
 | CASE-0015 | Team-agnostic platform test imports a domain team package | `architecture` | code_review | invented | — | backend |
 | CASE-0016 | Review-gated execution loop hand-inlined in each team orchestrator | `refactor` | code_review | real | 51810fd5 | backend |
-| CASE-0017 | Redundant `or` fallback masks a valid falsy value | `maintainability` | code_review | real | 66bc52d5 | backend |
+| CASE-0017 | Dead empty-string default under a correct `or` fallback | `maintainability` | code_review | real | 66bc52d5 | backend |
 | CASE-0018 | Crash handler leaves the dedicated error field unset | `side-effects`, `inconsistent-state` | code_review, qa | real | c8cbbb7 | backend |
 | CASE-0019 | Docstring documents a precondition the function never enforces | `documentation` | code_review | real | c0db42b | backend |
 | CASE-0020 | Request query parameters interpolated into a raw SQL string | `injection` | security | invented | — | backend |
@@ -212,7 +215,7 @@ token, key, or other private value.
 | CASE-0036 | Identifier from an external API truncated by JS number precision | `integer-overflow` | qa | invented | — | frontend |
 | CASE-0037 | Externally supplied agent id used directly as a path component | `unvalidated-input` | qa | real | 3a31cee | backend |
 | CASE-0038 | One store method skips the path validation its siblings apply | `unvalidated-input` | qa | real | 0436308 | backend |
-| CASE-0039 | Bare except returns None, erasing the difference from not-found | `missing-error-handling` | qa | real | 4f1b84e | backend |
+| CASE-0039 | Catch-all except returns None, erasing the difference from not-found | `missing-error-handling` | qa | real | 4f1b84e | backend |
 | CASE-0040 | Catch-all reported as a specific, unrelated failure | `missing-error-handling` | qa | real | 87a02c2 | backend |
 | CASE-0041 | Module uses a name it never imports | `missing-import` | qa | invented | — | backend |
 | CASE-0042 | Template path points at a directory that does not exist | `wrong-path` | qa | invented | — | backend |

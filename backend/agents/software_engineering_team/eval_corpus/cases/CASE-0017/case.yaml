@@ -1,5 +1,5 @@
 case_id: CASE-0017
-title: Redundant `or` fallback masks a valid falsy value
+title: Dead empty-string default under a correct `or` fallback
 language: python
 stack: fastapi
 gates: [code_review]

@@ -8,6 +8,7 @@
   line_end: 10
   description: >
     `is_valid` reads as a predicate but returns the list of validation
-    failures, so it is truthy exactly when the ticket is invalid. The caller
-    below reads `if is_valid(ticket)` and enqueues precisely the tickets that
-    failed.
+    failures, so it is truthy exactly when the ticket is invalid. The caller's
+    `if is_valid(ticket)` branch returns False, which is correct only under
+    those list semantics; read as the name promises, it rejects exactly the
+    tickets that passed.

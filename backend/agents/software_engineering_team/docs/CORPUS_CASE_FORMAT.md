@@ -65,6 +65,7 @@ mode: diff                    # "diff" or "files" — see below
 origin:                       # where the case came from — see "Provenance" below
   sourcing: real              # real | invented
   commit: 0040820             # short SHA of the origin commit; required when sourcing: real
+  # note: <why no real example was available>   # required when sourcing: invented; permitted when real
 expected_findings:
   - <label>                    # zero or more; see §2
   - <label>

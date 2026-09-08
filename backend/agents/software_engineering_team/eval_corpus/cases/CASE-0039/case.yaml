@@ -1,5 +1,5 @@
 case_id: CASE-0039
-title: Bare except returns None, erasing the difference from not-found
+title: Catch-all except returns None, erasing the difference from not-found
 language: python
 stack: fastapi
 gates: [qa]
