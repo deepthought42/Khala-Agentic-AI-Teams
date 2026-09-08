@@ -1219,7 +1219,7 @@ def test_unshadowed_prefix_fires_with_no_covered_fire_anywhere_are_reachable() -
     )
 
 
-def test_warmup_only_needs_a_covered_fire_to_call_the_head_start_a_priority_problem() -> None:
+def test_warmup_only_needs_enough_covered_fires_to_call_it_a_priority_problem() -> None:
     # Same prefix head start, but now the rule keeps firing afterwards and an
     # earlier rule takes every one of those bars. THAT is priority shadowing,
     # so the ordering remedies the finding prescribes are the right ones.
@@ -1234,6 +1234,27 @@ def test_warmup_only_needs_a_covered_fire_to_call_the_head_start_a_priority_prob
         .details
     )
     assert "every one of them also covered by an earlier rule" in detail
+
+
+def test_thin_steady_state_coverage_does_not_license_the_shadowing_narrative() -> None:
+    # _MIN_STARVATION_FIRES exists because one covered fire is a coin flip at a
+    # coverage fraction of a half. That reasoning does not weaken because the
+    # rule also has prefix fires: those establish that it IS selected, which is
+    # the rung's other half, and say nothing about why it stopped being. Four
+    # covered steady-state fires stays silent; five earns the warning.
+    earlier = ["warmup"] * 20 + ["satisfied"] * 40
+    four = _verdict(["satisfied"] * 24 + ["miss"] * 36, earlier)
+    assert (four.fires, four.warmup_independent_fires) == (4, 20)
+    assert four.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [four], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
+    )
+    five = _verdict(["satisfied"] * 25 + ["miss"] * 35, earlier)
+    assert (five.fires, five.warmup_independent_fires) == (5, 20)
+    assert five.verdict == "warmup_only"
 
 
 def test_a_steady_state_independent_fire_outranks_warmup_prefix_fires() -> None:

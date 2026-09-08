@@ -465,19 +465,27 @@ class _RuleStarvation:
             rule selected" about a rule this same window selects.
           * ``"warmup_only"`` — never independent in the steady-state window,
             but fires on at least one warmup-prefix bar where no earlier rule
-            is satisfied, AND fires at least once in the steady-state window.
-            ``evaluate_entry_rules`` DOES select it there, so it is neither
-            starved (it is still the rule selected there — subject to the
-            selection-vs-order caveat on this class) nor plainly reachable (it
-            stops being selected once the earlier rules warm up). The
-            steady-state fire is what makes that second half a priority claim
-            at all: with ``independent_fires`` already zero, it is a fire an
-            earlier rule took on a bar where every earlier rule was warm. The
-            test reads :attr:`fires` rather than :attr:`covered_fires` because
-            the latter spans the prefix too, and a fire an earlier rule took
-            BEFORE the earlier rules warmed up says nothing about what happens
-            after. With no steady-state fire the head start ends because the
-            rule stopped firing, and the rung above owns it.
+            is satisfied, AND covers at least ``_MIN_STARVATION_FIRES``
+            steady-state fires. ``evaluate_entry_rules`` DOES select it there,
+            so it is neither starved (it is still the rule selected there —
+            subject to the selection-vs-order caveat on this class) nor plainly
+            reachable (it stops being selected once the earlier rules warm up).
+
+            The steady-state fires are what make that second half a priority
+            claim at all: with ``independent_fires`` already zero, they are
+            fires an earlier rule took on bars where every earlier rule was
+            warm. Two things about them are load-bearing. They must be
+            :attr:`fires`, not :attr:`covered_fires` — the latter spans the
+            prefix, and a fire an earlier rule took BEFORE the earlier rules
+            warmed up says nothing about what happens after. And there must be
+            enough of them to clear ``_MIN_STARVATION_FIRES``, for the reason
+            that constant exists: one covered fire is a coin flip, not a
+            persistent priority problem, and the finding prescribes reordering
+            the rules. The prefix fires cannot stand in — they establish that
+            the rule IS selected, which is this rung's OTHER half. Below the
+            floor the rung above owns it: the rule is selected on the prefix,
+            nothing about priority explains the rest, and its firing count is
+            :meth:`PredicateReachabilityProbe.to_gate_results`' to report.
           * ``"dead"`` — :attr:`covered_fires` is zero, so with the two rungs
             above ruled out the rule has no fire of any kind. Already reported
             once, per rule, by
@@ -509,7 +517,7 @@ class _RuleStarvation:
         if self.warmup_independent_fires > 0:
             if self.evaluated < _MIN_EVALUATED_BARS:
                 return "abstained_steady"
-            if self.fires == 0:
+            if self.fires < _MIN_STARVATION_FIRES:
                 return "reachable"
             return "warmup_only"
         if self.covered_fires == 0:
