@@ -104,9 +104,9 @@ Two consequences bind this plan:
 
 ## The decision: Option A (settled 2026-09-08)
 
-The story's contract says the adapter never fabricates. The shipped adapter fabricates exactly once
-per run, on an explicitly-bounded final round, and announces it only to a worker log. Something had
-to give.
+The story's contract says the adapter never fabricates. The shipped adapter fabricates on
+explicitly-bounded terminal rounds — one batch per PRA clarification round, so possibly several in a
+single run, not once — and announces it only to a worker log. Something had to give.
 
 **Decided — Option A: keep the bounded default, make it auditable, amend the criterion.** This is
 no longer an open question; the tasks below implement it. Option B is recorded only so the
@@ -119,6 +119,19 @@ see it. Today they cannot: `_default_answer`'s output flows to
 `submit_product_analysis_answers` and the only trace is `logger.warning` inside an activity worker.
 The job record, the status API, and the UI all show a plan that looks fully human-answered.
 
+Id drift is not the only way to reach the bound, and the earlier drafts of this record that implied
+it was were wrong. PRA raises several unrelated clarification rounds per run; eight legitimate
+rounds followed by a genuinely new ninth question also arrives at `allow_repause=False`, and the
+terminal round then defaults a question the user has never seen. That is a strictly worse case than
+drift — drift re-asks something already answered, this invents an answer to something never asked —
+and it would be right to pause or fail for it instead, if it could be told apart. It cannot: nothing
+in the pause envelope or the callback carries a PRA-side round identifier, and this record already
+concedes the same limitation for de-duplication (Task 4 Step 2). Distinguishing the two needs a
+round id PRA does not emit, which is the deferred wiring work, not this change. So the terminal
+default covers both cases, and the audit record — which is the same for both — is what a reader has
+to work from. Worth stating plainly rather than leaving the narrower drift story standing as if it
+were the whole justification.
+
 Option A therefore keeps the behaviour and closes the real gap the criterion was reaching for:
 every defaulted answer becomes a recorded fact on the job. The criterion is then restated to the
 invariant that is actually true and actually worth holding —
@@ -129,10 +142,10 @@ invariant that is actually true and actually worth holding —
 
 **Not taken — Option B: strict compliance.** Remove `_default_answer`, and have the terminal round
 fail the run with an "unanswered clarification questions" error. It never guesses, which is
-honest. But `MAX_PLANNING_PAUSE_ROUNDS` is reached only when ids drift — a Planning-side
-nondeterminism problem — and Option B bills that to the user as a hard failure after eight rounds of
-answering questions by hand. Trading a degraded-but-labelled plan for a dead job is the wrong trade
-here. It also requires unwinding `RunTeamWorkflowV2`'s termination invariant and the activity-side
+honest. But `MAX_PLANNING_PAUSE_ROUNDS` is reached largely through Planning-side nondeterminism —
+ids that do not survive a replay — and Option B bills that to the user as a hard failure after eight
+rounds of answering questions by hand. Trading a degraded-but-labelled plan for a dead job is the
+wrong trade here. It also requires unwinding `RunTeamWorkflowV2`'s termination invariant and the activity-side
 `allow_repause` contract, which is a materially larger change than the story is scoped for.
 
 Had Option B been chosen, Tasks 2 and 4 would have been replaced by: delete
@@ -174,6 +187,13 @@ resumption of this one. **The tasks below were implemented as written.**
 | `backend/agents/planning_team/tests/test_temporal_answer_signal.py` | Tests for the hook: fired with the defaulted ids on a terminal round, not fired on a resolving or re-pausing round, a raising hook propagates rather than being swallowed |
 | `backend/agents/software_engineering_team/api/models.py` | Add `defaulted_questions` to `JobStatusResponse` (empty-list default) — without it the persisted value never leaves the job record |
 | `backend/agents/software_engineering_team/api/state.py` | Populate `defaulted_questions` in `build_job_status_response`, which assembles an explicit payload dict and drops unlisted keys |
+| `backend/agents/planning_team/exceptions.py` | Add `PlanningDefaultsNotRecorded` — the type a failed audit write raises so it survives every boundary between the hook and the activity (Task 4 Step 2b) |
+| `backend/agents/planning_team/adapters/product_analysis.py` | Widen `poll_until_terminal`'s `passthrough_exceptions` to carry it out of the PRA poll loop |
+| `backend/agents/planning_team/orchestrator.py` | Re-raise it ahead of `run_workflow`'s broad `except Exception`, which would otherwise fold it back into a generic planning failure |
+| `backend/agents/planning_team/tests/test_adapters.py`, `tests/test_orchestrator.py` | Prove it escapes each of those two boundaries, and that an ordinary callback error still folds into a failed status |
+| `backend/agents/software_engineering_team/api/routes/jobs.py` | Clear `defaulted_questions` on `POST /run-team/{job_id}/resume` — a resume reuses the job record and starts a non-terminal run (Task 4 Step 2c) |
+| `user-interface/src/app/models/software-engineering.model.ts` | Add `DefaultedQuestion` and the `defaulted_questions` member to `JobStatusResponse` |
+| `user-interface/src/app/components/job-status/job-status.component.html`, `run-team-tracking/run-team-tracking.component.html` | Render the defaults where the user watches the run (Task 4 Step 3a) |
 | `backend/agents/software_engineering_team/tests/test_temporal_activities.py` | Assert the terminal round persists `defaulted_questions` on the job record, and that the status response echoes it |
 | `backend/agents/planning_team/system_design/planning_hitl_temporal_contract.md` | Correct the two stale claims; document the terminal-round default and the reporting hook |
 | `system_design/specs/SPEC-024-planning-team-clarification-hitl-contract.md` | Append an addendum recording two amendments: the bounded-default exception to the never-fabricate rule, and the §4.1 wire-contract divergence (`submit_planning_answers` shipped, `selected_option_ids` did not) |
@@ -185,7 +205,7 @@ resumption of this one. **The tasks below were implemented as written.**
 **Files:** none (verification only)
 
 - [x] **Step 1:** Run `python3 -m pytest agents/planning_team/tests/test_temporal_answer_signal.py --cov=planning_team.temporal.answer_signal --cov-report=term-missing` from `backend/` and confirm `87 stmts, 0 miss, 100%`. Record the number in the PR body — it is the baseline the change must not regress.
-- [x] **Step 2:** Run the SE-side pause-loop tests (`test_temporal_activities.py -k repause or paused`, `test_temporal_workflows_trace_id.py -k pause`) green before touching anything, so a later failure is attributable.
+- [x] **Step 2:** Run the SE-side pause-loop tests (`test_temporal_activities.py -k 'repause or paused'`, `test_temporal_workflows_trace_id.py -k pause`) green before touching anything, so a later failure is attributable. The quotes are load-bearing: unquoted, the shell hands `or` and `paused` to pytest as paths and the run dies on file-not-found rather than verifying anything.
 - [x] **Step 3:** Confirm no caller outside `plan_project_activity` passes `allow_repause` (a repo-wide grep). If a second caller has appeared, it must be listed in the PR body — the reporting hook has to reach it too, or its defaults stay invisible.
 - [x] **Step 4:** Re-confirm the gate before writing any code: `plan_project_activity` still passes `use_product_analysis=False`, and `DocumentProductionAgent.run` still reaches `answer_callback` only inside its PRA branch. If either has changed, the path is now live and this work stops being pre-emptive — say so in the PR body, because it changes how urgently the observability gap needs closing.
 
@@ -200,12 +220,16 @@ resumption of this one. **The tasks below were implemented as written.**
 - [x] **Step 1: Write the failing tests** in `test_temporal_answer_signal.py`:
   - a terminal round (`allow_repause=False`) with two unmatched questions calls `on_defaulted` once for that batch, with a record per defaulted question in `missing` order, each carrying `question_id`, `question_text`, `selected_option_id` and `selected_option_label`
   - two successive batches on the *same* callback fire the hook twice (the multi-round case above)
-  - what the callback RETURNS stays wire-shaped (`question_id`/`selected_option_id`/`other_text`); the enriched context is for the audit record only, since PRA's answers route validates `AnswerSubmission` and an extra key there is a rejected batch
+  - what the callback RETURNS stays wire-shaped (`question_id`/`selected_option_id`/`other_text`); the enriched context is for the audit record only. An earlier draft justified this by saying PRA's answers route *rejects* an extra key — it does not. `shared.hitl.models.AnswerSubmission` sets no `extra="forbid"`, so Pydantic's default silently drops unknown keys. That is a weaker argument for separation but not a worse one: a batch that quietly loses its audit context is harder to notice than one that bounces, so the two shapes stay deliberately apart rather than relying on validation to keep them so
   - a fully-resolved round never calls it
   - a re-pausing round (`allow_repause=True`, unmatched question) never calls it — it raises first
   - `on_defaulted=None` (the default) behaves exactly as today
   - an `on_defaulted` that raises propagates rather than being swallowed: a reporting hook that
-    fails silently reintroduces the invisible-default bug this task exists to close
+    fails silently reintroduces the invisible-default bug this task exists to close. **A direct
+    test of the factory is not enough on its own** — it proves only the first hop. Every boundary
+    between the hook and the activity needs its own test, or a missed entry in
+    `passthrough_exceptions` or in `run_workflow` leaves this list green while the failure folds
+    back into a warning. Those live with the boundaries they cover (Task 4 Step 2b), not here
   - a non-callable `on_defaulted` fails the factory's assertion, matching how `next_resume_token`
     is already validated at construction rather than at the call site
 - [x] **Step 2:** Add the parameter and the assertion; call the hook in `_resolved_cb` immediately before returning the defaulted list, after the existing `logger.warning`. Keep every line of this change inside `build_temporal_planning_answer_callback` — do not touch `PlanningAnswerSignalMixin`. The adapter has no counterpart in `shared/hitl/temporal_signal.py`, so it survives the tracked mixin convergence; the state machine does not.
@@ -230,16 +254,26 @@ resumption of this one. **The tasks below were implemented as written.**
 - Modify: `backend/agents/software_engineering_team/temporal/activities.py`
 - Modify: `backend/agents/software_engineering_team/api/models.py`
 - Modify: `backend/agents/software_engineering_team/api/state.py`
-- Modify: `backend/agents/software_engineering_team/tests/test_temporal_activities.py`
+- Modify: `backend/agents/software_engineering_team/api/routes/jobs.py`
+- Modify: `backend/agents/software_engineering_team/tests/test_temporal_activities.py`, `tests/test_api.py`
 - Modify: the `build_job_status_response` tests under `software_engineering_team/tests/`
+- Modify: `user-interface/src/app/models/software-engineering.model.ts`
+- Modify: `user-interface/src/app/components/job-status/job-status.component.html` and its spec
+- Modify: `user-interface/src/app/components/run-team-tracking/run-team-tracking.component.html` and `run-team-tracking-view-model.spec.ts`
 
 A job-record write on its own is invisible, so it does not satisfy this task's own title.
 `JobStatusResponse` (`api/models.py`) carries `pending_questions` and `waiting_for_answers` but no
 `defaulted_questions`, and `build_job_status_response` (`api/state.py`) assembles an explicit
 payload dict — an unlisted key is dropped, not passed through. Without both changes,
 `GET /run-team/{job_id}` never returns the value and the whole "auditable rather than silent"
-justification for keeping the default fails. The status API is therefore in scope here; only
-*rendering* it in the Angular UI is the follow-on.
+justification for keeping the default fails.
+
+**The same argument does not stop at the API, and an earlier draft of this task deferred the UI as
+if it did.** Option A's case rests on "a guess is better than a hang, but only if the user can see
+it" — and the user reads a run in the Angular tracking view, not in a JSON response. A field
+returned by an endpoint nothing renders is the job-record problem moved one hop and re-labelled as
+someone else's story. The UI is therefore in scope here too (Step 3a), for exactly the reason the
+paragraph above gives for the API.
 
 - [x] **Step 1: Write the failing tests** — (a) a `plan_project_activity` call with `allow_repause=False` and a partially-answered batch leaves `defaulted_questions` on the job record, carrying each defaulted `question_id` and `selected_option_id`; (b) `build_job_status_response` echoes that value, and returns an empty list (not `None`, not a missing key) for a job that defaulted nothing.
 - [x] **Step 2:** Pass an `on_defaulted` hook that **accumulates** across calls and writes the whole accumulated list to `defaulted_questions` each time (`update_job` merges top-level, so assigning the key replaces its value).
@@ -254,7 +288,9 @@ justification for keeping the default fails. The status API is therefore in scop
 
 - [x] **Step 2a — clear the field at the start of a terminal attempt.** The hook only ever writes, and the activity is retryable. An attempt that records defaults then fails leaves the pause envelope already consumed, so the retry replays Planning fresh; if that replay matches every question the hook never fires, and the job keeps the failed attempt's records while shipping a plan that was fully human-answered. Over-reporting is the gentler error, but it is the one that teaches readers to distrust the field.
 - [x] **Step 2b — make a failed audit write actually stop the round.** Leaving the hook unguarded is *not* sufficient, and assuming it is was a real defect: `poll_until_terminal` folds any `on_poll` exception outside its `passthrough_exceptions` into a failed status, `DocumentProductionAgent.run` logs that and carries on producing a plan, and `run_workflow`'s broad `except Exception` would fold it again even after it escaped the poll loop. Three boundaries, each turning the failure into a warning. A dedicated `PlanningDefaultsNotRecorded` in `planning_team/exceptions.py`, passed through by the poll loop and by `run_workflow`, is what makes the failure reach the activity — the mirror image of `PlanningAnswerPauseSignal`'s treatment. Keep the passthrough narrow: an ordinary callback error must still fold into a failed status, fail-closed.
+- [x] **Step 2c — clear the field on the manual resume route too.** Step 2a covers a Temporal retry of a terminal attempt; it does not cover `POST /run-team/{job_id}/resume`, which reuses the same job record and starts a **fresh** workflow whose first planning attempt is not terminal. A run that records defaults, fails, and is then resumed can complete Planning without ever entering another terminal attempt — nothing rewrites the field, and the dead attempt's machine-chosen answers end up attached to a plan that was fully human-answered. Add `defaulted_questions=[]` to the `update_job` that already wipes `error`, `agent_crash_details` and `current_activity` for the same reason. `POST .../restart` needs no equivalent and a test should pin why: `reset_job` calls `replace_job`, so the whole record goes rather than merging.
 - [x] **Step 3:** Add `defaulted_questions` to `JobStatusResponse` (defaulting to an empty list, so every existing caller keeps deserializing) and populate it in `build_job_status_response` from the job record. Follow how `pending_questions` is already threaded through both.
+- [x] **Step 3a — render it.** Add `DefaultedQuestion` and a `defaulted_questions` member to the UI's `JobStatusResponse`, and a collapsed panel in both surfaces that show a run (`job-status` and `run-team-tracking`), mirroring how `failed_tasks` is already presented. Three properties the tests must hold: the panel names the questions and the chosen option **labels**, not bare ids (the ids are LLM-minted and mean nothing to a reader); every field but `question_id` is nullable, so a missing text or option falls back rather than rendering `null` as though it were an answer; and the panel is absent, not empty, when nothing was defaulted — an always-visible "0 defaulted" row teaches readers to skip it, which is the one failure mode a disclosure panel cannot afford.
 - [x] **Step 4:** Update the `plan_project_activity` docstring's Postconditions to state that a terminal round records its defaults on the job record, and note on `JobStatusResponse` what a non-empty `defaulted_questions` means: these answers were chosen by the system, not by a human.
 - [x] **Step 5:** Run `make lint` and the full `planning_team` + `software_engineering_team` Temporal and API test suites.
 
@@ -271,10 +307,6 @@ justification for keeping the default fails. The status API is therefore in scop
 - Closing the `submit_answers` / `submit_planning_answers` wire-contract divergence itself. Task 3
   Step 5 only *records* it; adopting one name, and the `selected_option_ids` payload extension
   SPEC-024 §4.1 requires, is its own story with a live-history migration to plan
-- *Rendering* `defaulted_questions` in the Angular UI — a follow-on worth its own story: a plan built
-  partly on machine-chosen answers should say so where the user reads the plan. Returning the field
-  from the status API is **not** deferred with it; that is Task 4, because without it there is
-  nothing for a UI story to render and the audit trail stops at the job record
 - Flipping `use_product_analysis` to `True` in `plan_project_activity`, which is what would make any
   of this path reachable in the first place. That is a product decision with its own blast radius
   (a live PRA sub-job per planning run); this plan deliberately lands ahead of it rather than
@@ -287,12 +319,13 @@ justification for keeping the default fails. The status API is therefore in scop
 | Risk | Mitigation |
 |---|---|
 | Reviewer prefers strict compliance (Option B) | The swap is scoped in "The one open decision" above; Tasks 1 and 3 hold either way |
-| `on_defaulted` raising inside a resumed activity fails the round | Deliberate — a silent reporting failure is the bug being fixed. The hook does one `update_job` call; the activity's existing exception path already handles a failed write |
+| `on_defaulted` raising inside a resumed activity fails the round | Deliberate — a silent reporting failure is the bug being fixed. Leaving the hook unguarded is **not** what achieves it, and an earlier draft of this row said it was: three boundaries between the hook and the activity each turn a plain raise into a warning. The failure reaches the activity only as `PlanningDefaultsNotRecorded`, which both the PRA poll loop and `run_workflow` pass through (Step 2b) |
 | `defaulted_questions` collides with an existing job-record field | Grep the job-service schema before Step 2 of Task 4; rename to `auto_defaulted_questions` if taken |
 | An activity retry re-writes `defaulted_questions` and duplicates the audit entries | Write the whole accumulated list, never append server-side (Task 4 Step 2). A retry runs a fresh accumulator and rebuilds the field deterministically |
-| Multiple PRA rounds in one execution overwrite each other's records | Accumulate across hook calls, de-duplicating on `(question_id, question_text)` — the hook fires per round, not per execution (Task 4 Step 2) |
+| Multiple PRA rounds in one execution overwrite each other's records | Accumulate across hook calls, de-duplicating on the **whole audit record** — `question_id`, `question_text`, `selected_option_id` and `selected_option_label` together — because the hook fires per round, not per execution (Task 4 Step 2). Not the `(question_id, question_text)` pair an earlier draft of this row named: PRA's parser defaults both identically across rounds, so that pair collapses two unrelated rounds differing only in their options |
 | The audit record names LLM-minted ids for questions nothing else persists | Each record carries the question text and the chosen option's label; the pause envelope holding `pending_questions` is cleared before the replay, so ids alone would be unresolvable |
 | The record is read as proof the defaults shaped the plan | It is not. The hook fires before `_on_poll` POSTs the batch, and `_on_poll` ignores the result, so a rejected submission is indistinguishable from an applied one — a gap the team contract already tracks as deferred wiring work. The field description states the narrower claim: chosen and submitted, not confirmed applied. Coordinating the record with a confirmed submission belongs to that deferred work, not here |
-| A terminal attempt's failure leaves a half-written record behind | Clear the field at the start of a terminal attempt (Step 2a) |
+| A terminal attempt's failure leaves a half-written record behind | Clear the field at the start of a terminal attempt (Step 2a), inside the activity's error boundary so a failed clear is recorded as a job failure rather than escaping unhandled on the final attempt |
+| A manual resume carries a dead attempt's defaults onto a fresh, fully-answered plan | The resume route clears the field alongside the other dead-attempt state it already wipes (Step 2c); `restart` is covered by `reset_job` replacing the record outright, pinned by its own test |
 | A failed audit write degrades into a logged warning | Raise a type all three boundaries pass through (Step 2b) |
 | The sibling test story is already satisfied by this module's 46 tests | Say so explicitly in the PR body so it is closed knowingly rather than left open against work that exists |
