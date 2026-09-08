@@ -365,3 +365,263 @@ def test_blog_writer_agent_falls_back_when_llm_client_is_not_strands_model() -> 
     )
     assert agent._model is raw_client
     assert agent._text_model is raw_client
+
+
+# ----------------------------------------------------------------------
+# system_prompt_content threading: the segment list must actually reach the
+# Strands ``Agent`` on every route the writer takes to the model.
+#
+# The tests above pin constructor *state* (``agent._system_prompt_content``).
+# These pin *delivery* -- without them the whole point of the caching work
+# (the model actually receiving the cached prefix) is unverified, and the
+# JSON-fallback path could silently lose brand and style context entirely.
+# ----------------------------------------------------------------------
+
+
+def _capture_agent_construction(monkeypatch, module, response: str = "ok") -> list:
+    """Replace ``module.Agent`` with a recorder and return its capture list.
+
+    Preconditions:
+        - ``module`` exposes a module-level ``Agent`` name (the writer agent
+          module, or ``shared.json_retry``).
+    Postconditions:
+        - Returns a list that receives one ``{"model", "system_prompt"}`` dict
+          per ``Agent(...)`` construction, in construction order.
+        - Every constructed recorder returns ``response`` when invoked.
+    """
+    captured: list = []
+
+    class _RecordingAgent:
+        def __init__(self, *, model, system_prompt):
+            captured.append({"model": model, "system_prompt": system_prompt})
+
+        def __call__(self, prompt):
+            return response
+
+    monkeypatch.setattr(module, "Agent", _RecordingAgent)
+    return captured
+
+
+def _writer_with_guidelines():
+    return make_writer_agent(
+        brand_spec_content="MyBrand: Test brand.",
+        writing_style_guide_content="Use concise, natural sentences.",
+    )
+
+
+def test_call_agent_passes_an_explicit_segment_list_to_the_strands_agent(monkeypatch) -> None:
+    """An explicitly-passed segment list reaches ``Agent(system_prompt=...)`` as-is."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    segments = agent._writing_system_prompt_with_content
+    # Guard: this agent has guideline text, so the helper returned the list form.
+    assert isinstance(segments, list)
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    agent._call_agent(agent._model, "write something", segments)
+
+    assert len(captured) == 1
+    assert captured[0]["system_prompt"] is segments
+
+
+def test_call_agent_defaults_to_the_cached_guideline_segment(monkeypatch) -> None:
+    """With no explicit persona, ``_call_agent`` falls back to the segment-carrying
+    system prompt rather than bare ``WRITING_SYSTEM_PROMPT``, so a caller that names
+    no persona still shares the cache-eligible prefix."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+    from agents.blogging.blog_writer_agent.prompts import WRITING_SYSTEM_PROMPT
+
+    from llm_service import CacheBreakpoint
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    agent._call_agent(agent._model, "write something")
+
+    system_prompt = captured[0]["system_prompt"]
+    assert system_prompt is agent._writing_system_prompt_with_content
+    # Persona block first, then exactly one cacheable guideline segment.
+    assert system_prompt[0] == {"text": WRITING_SYSTEM_PROMPT}
+    assert isinstance(system_prompt[1], CacheBreakpoint)
+    assert "MyBrand: Test brand." in system_prompt[1].text
+    assert sum(isinstance(seg, CacheBreakpoint) for seg in system_prompt) == 1
+
+
+def test_call_agent_without_segments_reproduces_the_plain_string_construction(
+    monkeypatch,
+) -> None:
+    """An agent built with no brand/guideline text constructs the ``Agent`` with
+    ``WRITING_SYSTEM_PROMPT`` as a plain ``str`` -- byte-identical to the
+    pre-caching behavior, so non-caching callers see no change."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+    from agents.blogging.blog_writer_agent.prompts import WRITING_SYSTEM_PROMPT
+
+    agent = make_writer_agent(brand_spec_content="", writing_style_guide_content="   ")
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    agent._call_agent(agent._model, "write something")
+
+    system_prompt = captured[0]["system_prompt"]
+    assert isinstance(system_prompt, str)
+    assert system_prompt == WRITING_SYSTEM_PROMPT
+
+
+def test_call_agent_rejects_a_blank_prompt_before_constructing_an_agent(monkeypatch) -> None:
+    """The non-empty-prompt precondition still fires, and fires *before* any
+    ``Agent`` is built -- attaching segments must not defer the check."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        agent._call_agent(agent._model, "   ", agent._writing_system_prompt_with_content)
+
+    assert captured == []
+
+
+def test_call_text_carries_the_cached_segment_on_the_text_model(monkeypatch) -> None:
+    """``_call_text`` reaches the model through ``_call_agent``, so it carries the
+    segment list by default -- and still routes to the text-mode sibling."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    agent._call_text("draft this")
+
+    assert captured[0]["model"] is agent._text_model
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_call_json_raw_carries_the_cached_segment_on_the_json_model(monkeypatch) -> None:
+    """``_call_json_raw`` carries the segment list by default, on ``self._model``."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module)
+
+    agent._call_json_raw("emit json")
+
+    assert captured[0]["model"] is agent._model
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_call_agent_json_carries_the_cached_segment(monkeypatch) -> None:
+    """``_call_agent_json`` delegates to ``_call_json_raw``, so the segment list
+    travels the planning-JSON path too."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module, response='{"ok": true}')
+
+    assert agent._call_agent_json("emit json") == {"ok": True}
+
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_fallback_draft_via_json_forwards_the_cached_segment_to_run_json_gate(
+    monkeypatch,
+) -> None:
+    """The fourth route to the model bypasses ``_call_agent`` and builds its
+    ``Agent`` inside ``run_json_gate``; the writer must hand it the same segments."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured: dict = {}
+
+    def _fake_gate(model, system_prompt, prompt, **kwargs):
+        captured["model"] = model
+        captured["system_prompt"] = system_prompt
+        return {"draft": "# Recovered"}
+
+    monkeypatch.setattr(writer_module, "run_json_gate", _fake_gate)
+
+    assert agent._fallback_draft_via_json("revise this") == "# Recovered"
+
+    assert captured["model"] is agent._model
+    assert captured["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_fallback_draft_via_json_reaches_the_agent_with_the_cached_segment(monkeypatch) -> None:
+    """End-to-end through the *real* ``run_json_gate``: a JSON-fallback retry after a
+    text-path failure constructs its ``Agent`` with the brand/style segments, not a
+    bare persona. This is the silent-quality-cliff case -- the fallback path is the
+    one already struggling, so losing the guidelines there would go unnoticed."""
+    from agents.blogging.shared import json_retry
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(
+        monkeypatch, json_retry, response='{"draft": "# Recovered"}'
+    )
+
+    assert agent._fallback_draft_via_json("revise this") == "# Recovered"
+
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_fallback_draft_via_json_without_segments_uses_the_plain_string(monkeypatch) -> None:
+    """No guideline text -> ``run_json_gate`` gets ``WRITING_SYSTEM_PROMPT`` as a plain
+    ``str``, matching the pre-caching construction."""
+    from agents.blogging.blog_writer_agent.prompts import WRITING_SYSTEM_PROMPT
+    from agents.blogging.shared import json_retry
+
+    agent = make_writer_agent(brand_spec_content="", writing_style_guide_content="")
+    captured = _capture_agent_construction(
+        monkeypatch, json_retry, response='{"draft": "# Recovered"}'
+    )
+
+    assert agent._fallback_draft_via_json("revise this") == "# Recovered"
+
+    assert captured[0]["system_prompt"] == WRITING_SYSTEM_PROMPT
+    assert isinstance(captured[0]["system_prompt"], str)
+
+
+def test_escalation_summary_carries_the_cached_segment(monkeypatch) -> None:
+    """``generate_escalation_summary`` names no persona, so the new default gives it
+    the same cache-eligible prefix as the draft/revision path."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module, response="Stuck on tone.")
+
+    assert agent.generate_escalation_summary(3, [], []) == "Stuck on tone."
+
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_analyze_user_feedback_for_guideline_updates_carries_the_cached_segment(
+    monkeypatch,
+) -> None:
+    """Same for the guideline-analysis path, which reaches the model via
+    ``_call_agent_json`` with no explicit persona."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(
+        monkeypatch, writer_module, response='{"has_guideline_updates": false}'
+    )
+
+    assert agent.analyze_user_feedback_for_guideline_updates("more punch", "current") == []
+
+    assert captured[0]["system_prompt"] is agent._writing_system_prompt_with_content
+
+
+def test_uncertainty_path_deliberately_omits_the_cached_segment(monkeypatch) -> None:
+    """``identify_uncertainty_questions`` is the one writer path that passes its own
+    persona and therefore carries no cached segment. Pinned deliberately: caching
+    matches on an exact prefix, so pairing a different persona with the same segment
+    would never hit the draft/revision cache entry, and this method runs once per job
+    -- attaching it would buy one large cache write and zero reads."""
+    from agents.blogging.blog_writer_agent import agent as writer_module
+
+    agent = _writer_with_guidelines()
+    captured = _capture_agent_construction(monkeypatch, writer_module, response="[]")
+
+    assert agent.identify_uncertainty_questions("# Draft", "plan text") == []
+
+    system_prompt = captured[0]["system_prompt"]
+    assert isinstance(system_prompt, str)
+    assert "genuine uncertainty" in system_prompt
+    assert system_prompt is not agent._writing_system_prompt_with_content

@@ -371,15 +371,26 @@ class BlogWriterAgent(_BlogAgentBase):
               system-content-block list (e.g. from
               ``build_system_prompt_with_content``) when a cacheable segment
               is being attached. When falsy (e.g. ``""``), falls back to
-              ``WRITING_SYSTEM_PROMPT``.
+              ``self._writing_system_prompt_with_content``.
         Postconditions:
             - Returns the agent's response as a stripped string.
+            - The ``Agent`` is constructed with the caller's ``system_prompt``
+              when truthy, else with ``self._writing_system_prompt_with_content``
+              — so a caller that names no persona still carries this agent's
+              cached guideline segment, and every such call shares one
+              cache-eligible prefix. When the agent was built with no brand-spec
+              or guideline text that default *is* ``WRITING_SYSTEM_PROMPT``
+              verbatim (``build_system_prompt_with_content`` returns the plain
+              string for an empty segment list), so ``Agent`` construction is
+              byte-identical to the pre-caching behavior.
         Raises:
             ValueError: if ``prompt`` is not a non-empty string.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
-        agent = Agent(model=model, system_prompt=system_prompt or WRITING_SYSTEM_PROMPT)
+        agent = Agent(
+            model=model, system_prompt=system_prompt or self._writing_system_prompt_with_content
+        )
         return str(agent(prompt)).strip()
 
     def _call_text(
@@ -394,7 +405,8 @@ class BlogWriterAgent(_BlogAgentBase):
         Preconditions:
             - ``prompt`` is a non-empty string (enforced by ``_call_agent``).
             - ``system_prompt``, if falsy, falls back to
-              ``WRITING_SYSTEM_PROMPT`` (via ``_call_agent``).
+              ``self._writing_system_prompt_with_content`` (via ``_call_agent``),
+              so the cached guideline segment travels by default.
         """
         return self._call_agent(self._text_model, prompt, system_prompt)
 
@@ -413,7 +425,8 @@ class BlogWriterAgent(_BlogAgentBase):
         Preconditions:
             - ``prompt`` is a non-empty string (enforced by ``_call_agent``).
             - ``system_prompt``, if falsy, falls back to
-              ``WRITING_SYSTEM_PROMPT`` (via ``_call_agent``).
+              ``self._writing_system_prompt_with_content`` (via ``_call_agent``),
+              so the cached guideline segment travels by default.
         """
         return self._call_agent(self._model, prompt, system_prompt)
 
@@ -430,8 +443,9 @@ class BlogWriterAgent(_BlogAgentBase):
         Preconditions:
             - ``prompt`` is a non-empty string (enforced by ``_call_agent`` via
               ``_call_json_raw``).
-            - ``system_prompt``, if falsy, falls back to ``WRITING_SYSTEM_PROMPT``
-              (via ``_call_json_raw``). Accepts a plain persona string or a
+            - ``system_prompt``, if falsy, falls back to
+              ``self._writing_system_prompt_with_content`` (via
+              ``_call_json_raw``). Accepts a plain persona string or a
               Strands system-content-block list (e.g. from
               ``build_system_prompt_with_content``).
         Postconditions:
@@ -458,8 +472,11 @@ class BlogWriterAgent(_BlogAgentBase):
         Preconditions:
             - ``prompt`` is a non-empty string (same prompt used for the text path).
             - ``system_prompt``, if given, mirrors the one used for the failed
-              text-path call; falls back to ``WRITING_SYSTEM_PROMPT`` when empty,
-              matching ``_call_text``/``_call_json_raw``.
+              text-path call; falls back to
+              ``self._writing_system_prompt_with_content`` when empty, matching
+              ``_call_text``/``_call_json_raw``. The fallback path is exactly
+              where losing the brand/style context would go unnoticed, so it
+              carries the same segment list the text path did.
         Postconditions:
             - Returns a non-empty stripped draft string on success.
             - Returns ``None`` when JSON cannot yield a usable draft (caller keeps
@@ -483,7 +500,7 @@ class BlogWriterAgent(_BlogAgentBase):
         # new Agent for every attempt (including retries after a JSON-parse failure).
         data = run_json_gate(
             self._model,
-            system_prompt or WRITING_SYSTEM_PROMPT,
+            system_prompt or self._writing_system_prompt_with_content,
             prompt + _SOFT_JSON_INSTRUCTION,
             max_attempts=2,
             strict_json_suffix=strict_json_suffix,
@@ -1120,6 +1137,18 @@ class BlogWriterAgent(_BlogAgentBase):
             # output to a single object, so a JSON-mode call can wrap or empty
             # the array. ``_extract_json_array_from_text`` extracts ``[...]``
             # from prose, skipping Markdown links and other non-array ``[``.
+            #
+            # This is the one writer path that deliberately passes its own
+            # persona instead of letting ``_call_agent`` default to
+            # ``self._writing_system_prompt_with_content``, so it carries no
+            # cached guideline segment. That is intentional on both counts:
+            # spotting where a draft is uncertain is a reading task that needs
+            # the draft and the plan, not the brand spec; and prompt caching
+            # matches on an exact prefix, so pairing a *different* persona with
+            # the same segment would never hit the draft/revision path's cache
+            # entry. This method runs once per job (``draft_stage`` step 1), so
+            # attaching the segment here would buy one ~21 KB cache write at a
+            # premium rate and zero reads.
             raw = self._call_text(
                 prompt,
                 system_prompt="You are a careful writing assistant that identifies areas of genuine uncertainty.",
