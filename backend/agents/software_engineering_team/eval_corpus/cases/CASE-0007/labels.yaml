@@ -8,8 +8,8 @@
   line_end: 654
   description: >
     `str(r.get("recommendation", ""))` coerces an explicit JSON `null` to the
-    three-character string "None", which downstream code then treats as a
-    present, non-empty recommendation.
+    literal string "None", which downstream code then treats as a present,
+    non-empty recommendation.
 
 - label_id: L2
   gate: qa
