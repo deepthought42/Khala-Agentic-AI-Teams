@@ -215,7 +215,8 @@ guarantee, so do not write one that implies it.
 Resolution: **`compute_from_traces` is the canonical definition of
 `total_cost_usd`.** The parity test asserts the percentiles, the token sums, and
 both counts — `call_count` and `latency_ms_sample_count` — are *equal*, and that the two cost sums agree **within one unit in the last
-reported decimal place (`1e-6` absolute)** — see §4.3 for why no tighter bound is
+reported decimal place, asserted as integer microdollars, not a float tolerance**
+— see §4.3 for why a float bound cannot express it and why no tighter bound is
 available: both sides round to 6 decimals internally, so the rounded values are the
 only ones that exist to compare, and near a boundary they may legitimately differ
 by exactly that unit. The README says the
@@ -665,42 +666,71 @@ it explicitly (§3.5) and the test asserts it rather than trusting the mapping.
 `total_cost_usd` needs care,
 and the obvious formulation is wrong:
 
-**Compare the exposed values with a one-last-place tolerance (`1e-6`).** Neither
-side exposes an unrounded sum to compare: `compute_from_traces` rounds internally
-(`total_cost_usd=round(math.fsum(costs), 6)`, `agent_rollup.py:193`) and the §4.1
-reader returns already-shaped `CallRollup` dicts, also rounded. An earlier draft
-asked for a `1e-9` bound on the pre-rounding values, which is not implementable
-without adding a raw-sum test seam to a pure function that has no other reason to
-grow one — not worth it for a bound nothing consumes.
+**Compare the exposed values as integer microdollars, one unit apart at most.**
+Neither side exposes an unrounded sum to compare: `compute_from_traces` rounds
+internally (`total_cost_usd=round(math.fsum(costs), 6)`, `agent_rollup.py:193`) and
+the §4.1 reader returns already-shaped `CallRollup` dicts, also rounded. An earlier
+draft asked for a `1e-9` bound on the pre-rounding values, which is not
+implementable without adding a raw-sum test seam to a pure function that has no
+other reason to grow one — not worth it for a bound nothing consumes.
 
-So: assert `abs(a.total_cost_usd - b.total_cost_usd) <= 1e-6`, one unit in the last
-reported decimal place. That is the correct bound for the values that actually
-exist, and `1e-9` on those same rounded values would fail on precisely the case the
-tolerance exists to permit — when the two domains land on opposite sides of a
-6-decimal boundary the rounded values differ by a full `1e-6`, a thousand times the
-bound. Worked counterexample, reproduced locally: one million stored costs of
-`0.0072073768275` give
+So the comparison is between two six-decimal quantities that may legitimately
+differ by one unit in the last place. Assert exactly that, in the integer domain:
+
+```python
+assert abs(round(a.total_cost_usd * 1_000_000)
+           - round(b.total_cost_usd * 1_000_000)) <= 1
+```
+
+**A float tolerance cannot express this bound, and `abs(a - b) <= 1e-6` is wrong.**
+`1e-6` has no exact binary representation, and neither do the two six-decimal
+values, so their difference is not `1e-6` — it is usually a little more. On this
+section's own counterexample:
+
+```
+abs(7207.376828 - 7207.376827) == 1.0000003385357559e-06   # > 1e-6, assertion fails
+```
+
+Sampled locally over 200,000 adjacent six-decimal pairs, **73% exceed `1e-6`**
+(worst observed `1.0000076e-06`). A `1e-6` float bound therefore rejects the
+one-last-place difference roughly three times in four — the exact case it was
+written to permit. The integer form has no such failure: over 300,000 adjacent
+pairs up to `$1,000,000` the microdollar difference is never more than `1`.
+`round(x * 1_000_000)` is exact for any `x` up to about `$9.007e9`
+(`2**53` microdollars), which no cost rollup approaches. `decimal.Decimal(repr(x))`
+scaled by `10**6` is equivalent if a `Decimal` is preferred; both were checked
+against the same samples.
+
+Worked counterexample for why a one-unit difference must be permitted at all,
+reproduced locally: one million stored costs of `0.0072073768275` give
 
 ```
 math.fsum        -> 7207.376827499999  -> rounds to 7207.376827
 decimal-domain   -> 7207.3768275000000 -> rounds to 7207.376828
-unrounded delta  -> 1e-12      (comfortably inside 1e-9)
-rounded delta    -> 1e-6       (1000x outside 1e-9)
+microdollar delta -> 1        (permitted)
 ```
 
-So the assertion is made against the **exposed, already-rounded values** with the
-`1e-6` tolerance, exactly as prescribed above. The counterexample is why no tighter
-bound is possible — not an argument for a second, pre-rounding assertion: the
-unrounded sums are not exposed on either side, and adding a raw-sum seam to
-`compute_from_traces` was considered and rejected above. **One assertion, one
-tolerance, against the number users actually see.**
+The two domains land on opposite sides of a 6-decimal boundary, so the *reported*
+values differ by one unit in the last place even though the unrounded sums differ
+by `1e-12`. That is why no tighter bound is possible — not an argument for a
+second, pre-rounding assertion: the unrounded sums are not exposed on either side,
+and adding a raw-sum seam to `compute_from_traces` was considered and rejected
+above. **One assertion, in the integer domain, against the number users actually
+see.**
 
-(An earlier revision of this section concluded the opposite here — "assert against
-the pre-rounding values… assert both" — a leftover from the retracted `1e-9`
-formulation that survived the rewrite of the paragraphs above it. It contradicted
-its own section and named no second quantity to assert. Recorded rather than
-silently deleted, because "a rewrite applied to some dependent statements but not
-all" is this document's most persistent defect class.)
+(Two earlier revisions of this section are recorded rather than silently deleted,
+because this paragraph's history is the most useful thing in it. First, a revision
+concluded the opposite here — "assert against the pre-rounding values… assert
+both" — a leftover from the retracted `1e-9` formulation that survived the rewrite
+of the paragraphs above it; it contradicted its own section and named no second
+quantity to assert. Second, the bound spent four revisions as a *float* tolerance:
+`1e-9`, then `1e-6` after `1e-9` was shown to be 1000x too tight, then `1e-6`
+propagated to the sites that still said `1e-9` — and it was wrong the whole time,
+because a decimal one-unit bound cannot be written as a binary float comparison at
+all. Five separate review rounds touched this one assertion. The lesson is not
+"pick a looser number": it is that the quantity being compared is decimal, so the
+comparison belongs in an exact domain, and every round spent adjusting the float
+constant was a round spent refining the wrong answer.)
 
 Patching note: the route resolves the aggregating read through a function-local
 import of `trace_store`, so `monkeypatch.setattr(trace_store,
@@ -839,7 +869,9 @@ through the alias untouched) holds.
 
 Also verify by hand, once, against a populated database: the §4.1 aggregating
 read and `compute_from_traces` over the same window must agree field-for-field —
-**except `total_cost_usd`, which is compared within `1e-6`** per §3.5: one unit in
+**except `total_cost_usd`, which is compared as integer microdollars** per §3.5
+(`abs(round(a * 1_000_000) - round(b * 1_000_000)) <= 1`, never a float tolerance):
+one unit in
 the last reported decimal place, the only bound the exposed (already-rounded)
 values can support. A last-decimal difference there is expected, not a failed
 check. That is the claim
@@ -857,7 +889,7 @@ check. That is the claim
 | A partial fix that reads as a complete one | This plan has now twice specified CI wiring that would not have run the test it protects — first an invocation missing its marker, then an invocation on a job that SE changes never trigger. Both looked done. §4.3 now requires *observing* the parity test fail on an SE-only diff before the wiring counts as verified |
 | A speculative mitigation growing its own defect surface | The poll-collapsing cache produced four correct review findings (no per-entry TTL in `shared.cache`; single-flight needed; unbounded key growth on an unauthenticated route; process-global state leaking between tests) before any of it was written. It is deferred behind the measurement gate, with those four findings recorded as its requirements list if it is ever built |
 | A mitigation assumed to exist in shared infrastructure that does not | This plan made that mistake three times — `shared.cache` per-entry TTL, percentiles-in-SQL, and the parity suite's CI wiring were each asserted from plausibility rather than read. Every infrastructure claim in §3.5 and §4.1 now cites what was verified in the module or workflow. Treat an unverified claim about existing code as a defect, not a detail |
-| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-6` — one unit in the last reported place, matching §3.5, §4.3 and §5 |
+| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost as integer microdollars, `abs(round(a * 1_000_000) - round(b * 1_000_000)) <= 1` — one unit in the last reported place, matching §3.5, §4.3 and §5. Deliberately **not** a float tolerance: `abs(a - b) <= 1e-6` rejects ~73% of legitimate one-last-place differences, because neither `1e-6` nor the six-decimal values are exactly representable in binary |
 | Operators misread an empty rollup as a broken sink | §4.4 documents all five causes and the order to check them; the response genuinely cannot distinguish them |
 | The empty-rollup literal drifts from `AgentRollupMetrics` | Drift-guard test, mirroring the one that already protects the DORA literal |
 | A consumer reads `agent_rollup` as absent-when-empty | The key is always present; empty is three empty dicts, never `null` or missing. Stated in the route docstring, the README, and asserted in tests |
