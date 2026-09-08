@@ -97,8 +97,10 @@ return payload
 - `_rollup_payload(window)` — function-local import of the §4.1 aggregating read
   (`trace_store.fetch_trace_rollup_rows`), **not** `compute_agent_rollup`: that
   wrapper calls `fetch_traces_since` and materializes every matching row, which is
-  the exact risk §3.5 exists to remove. It derives `cutoff = now - window_days`
-  itself — the read takes a cutoff, not a window — and shapes the three views onto
+  the exact risk §3.5 exists to remove. It derives `cutoff = now - window`
+  itself — from the already-clamped argument, never the raw `window_days` query
+  parameter, per the precondition below; the read takes a cutoff, not a window —
+  and shapes the three views onto
   `AgentRollupMetrics`. Same function-local-import reasoning as `_dora_payload`; on
   any exception, logs and returns the empty-rollup literal
   `{"window_days": window, "computed_at": <now>, "by_agent": {}, "by_phase": {},
@@ -122,7 +124,8 @@ full is how the other half gets invented, so both are spelled out here:
 
 The route keeps exactly one window knob: the existing `window_days: float =
 30.0`, clamped to `[1, 365]`, feeding both `compute_dora` and — via the
-`cutoff = now - window_days` derivation in `_rollup_payload` — the §4.1
+`cutoff = now - window` derivation in `_rollup_payload` (on the clamped value,
+per §3.3's precondition) — the §4.1
 aggregating read. (Not `compute_agent_rollup`; see §3.3.) That satisfies "the same
 time-window parameter convention" with no new convention to document or clamp.
 
@@ -191,7 +194,7 @@ does not. For the cost sum it can, and the plan says so rather than overclaiming
 |---|---|---|---|
 | `median` | sorted midpoint, **averaging** the two middle values at even `n` | `percentile_cont(0.5)` — linear interpolation, which at the median of an even sample *is* their average | **Exact**, and it rests on `latency_ms` being `INTEGER` (see the DDL): the two middle values are exact integers, so `(a + b) / 2` is exact in IEEE double on both sides |
 | `p95` | nearest rank, `ordered[ceil(0.95n) - 1]`, no interpolation | `percentile_disc(0.95)` — first value whose cumulative distribution ≥ 0.95, i.e. `ordered[ceil(0.95n) - 1]` | **Exact** — `percentile_disc` selects an actual sample value, so there is no arithmetic to diverge |
-| token sums, `call_count` | Python `int` accumulation | `SUM(<integer column>)`, `COUNT(*)` | **Exact** — integer arithmetic, no representation question |
+| token sums, `call_count` | Python `int` accumulation | `SUM(<integer column>)`, `COUNT(*)` | **Exact** — integer arithmetic, no representation question — and, like the row below, it rests on the DDL rather than assuming it: all four token columns are `INTEGER NOT NULL DEFAULT 0`, and so is `cost_usd` (`DOUBLE PRECISION NOT NULL DEFAULT 0`), including the two columns added by the idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations, which carry `NOT NULL DEFAULT 0` too. This matters because `SUM` returns SQL `NULL`, not `0`, for a group whose values are all `NULL` — which would diverge from the Python accumulation. If any of these columns ever became nullable, the query needs `SUM(COALESCE(col, 0))` |
 | `latency_ms_sample_count` | `len(latencies)` — one sample per row | `COUNT(*)`, named explicitly (§3.5's query) | **Exact**, and it rests on `latency_ms` being **`NOT NULL`** in the DDL: every row contributes a sample, so the sample count equals `call_count`. If that column ever became nullable, `COUNT(*)` would overcount — `COUNT(latency_ms)` would be the correct aggregate and the two would diverge. Grounded here rather than assumed |
 | `total_cost_usd` | `math.fsum` over the raw `float8` values | `SUM(cost_usd::numeric)` | **Not exact.** `compute_from_traces` is canonical; the SQL path is compared within tolerance. See below |
 
@@ -331,12 +334,18 @@ decisions are recorded, because the second is as load-bearing as the first:
      same `5s` (e.g. `2s` acquire + the remainder for the query), and the
      pool-exhaustion case gets a test: a stub pool that blocks on acquisition must
      produce the empty three-view shape within budget, not a 30s hang.
-   - **The DORA half, which runs first and is unbounded.** See below. A pathological window is then cancelled server-side and falls into the
-   empty-rollup literal, instead of pinning a pooled connection until the alias's
-   15s timeout. That converts the worst case from "saturate and time out" into
-   "degrade to empty" — which is already the endpoint's stated contract, so it
+   - **The DORA half, which runs first and is unbounded.** See below.
+
+   With the statement timeout and a bounded acquisition both in place, a
+   pathological window on the **rollup read** is cancelled server-side and falls
+   into the empty-rollup literal, instead of pinning a pooled connection until the
+   alias's 15s timeout. That converts the worst case from "saturate and time out"
+   into "degrade to empty" — which is already the endpoint's stated contract, so it
    costs no new semantics. Note the empty result this produces is exactly cause 4
    in §4.4's ambiguity list, which is why that list matters.
+
+   That degradation is the rollup read's alone. The DORA half stays unbounded: it
+   carries no `statement_timeout`, and nothing above changes that.
 2. **Nothing else — and that is a deliberate reversal.** Earlier drafts of this
    plan also specified a poll-collapsing cache. That mitigation is now **deferred
    behind the same measurement gate as the summary table**, and the reasoning is
@@ -546,7 +555,14 @@ One existing test needs updating, and it is the one easy thing to miss:
 
 - `test_metrics_dora_falls_back_to_zeroed_shape_on_compute_failure` asserts
   `set(body.keys()) == set(DoraMetrics(...).to_dict().keys())`. It must become
-  `... == expected_keys | {"agent_rollup"}`.
+  `... == expected_keys | {"agent_rollup"}` — **and it needs the same env hardening
+  as the Postgres-unset test below.** After §4.2's composition the route runs the
+  rollup read unconditionally, so this test would execute it unpatched. Add
+  `monkeypatch.delenv("POSTGRES_HOST", raising=False)`, or patch the §4.1 read to
+  return the empty three-view shape. Without it the keys-only assertion stays green
+  either way while silently reaching a live database wherever `POSTGRES_HOST` is
+  exported — green, slow, and environment-dependent, the same defect class this
+  plan's own review history already records once.
 
 **Isolation tests must use non-empty sentinels in both directions.** The obvious
 formulation of these two tests proves nothing. Under `pytest` there is no
@@ -590,8 +606,10 @@ New tests:
 
 These are not optional garnish. §3.5's cache deferral makes `statement_timeout` the
 **only** remaining mitigation on this path, and none of the other planned tests
-would notice its absence: the endpoint tests patch `fetch_trace_rollup_rows`
-wholesale, and the parity test only exercises successful aggregation. Omitting the
+would notice its absence: the endpoint tests *that stub the read* patch
+`fetch_trace_rollup_rows` wholesale — the Postgres-unset test deliberately does
+not, but it exercises the disabled path, where no query runs and no timeout
+applies — and the parity test only exercises successful aggregation. Omitting the
 `SET LOCAL`, issuing it *after* the aggregate, or letting a cancellation propagate
 would leave every other specified test green while restoring exactly the unbounded
 request behaviour this plan exists to prevent. Asserting statement *order* is the
@@ -699,7 +717,20 @@ metrics module only as a line in the project-layout tree). It should cover:
 - `GET /dora?window_days=N` and the `/api/se/metrics` alias; the `[1, 365]` clamp
   and the shared window.
 - Why the path avoids the word `metrics` (OTel `excluded_urls`) — currently only
-  explained in a route docstring.
+  explained in a route docstring — **and how the alias escapes that same filter.**
+  The README must not leave those two bullets juxtaposed and unreconciled: a reader
+  told that `metrics` paths are untraced, directly above a documented alias whose
+  path is `/api/se/metrics`, is owed the answer. It is that the two apps are
+  configured differently, and both halves are load-bearing. The SE app calls
+  `create_team_app` without `excluded_urls` (`api/main.py:120`), inheriting the
+  *unanchored* default `"health,healthz,ready,metrics"`
+  (`shared/observability/otel.py:318`) — substring-matched, which is exactly why a
+  business route in this app must not contain the word. The unified API, which
+  serves the alias, passes *anchored* patterns
+  (`excluded_urls="^/health$,^/healthz$,^/ready$,^/metrics$"`,
+  `unified_api/main.py:1013`), so `^/metrics$` does not match `/api/se/metrics`:
+  **the alias stays traced.** `instrument_fastapi_app`'s own docstring names this
+  alias as the motivating case for the anchored form.
 - The `agent_rollup` key: the three grouping views and when to read each
   (`by_agent` for tiering candidates, `by_phase` for wall-clock hot spots,
   `by_agent_phase` for the pair, because an agent's token and cache profile can
