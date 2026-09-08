@@ -9,38 +9,7 @@ from typing import Any
 import pytest
 
 from llm_service import usage_store as us
-
-
-class FakeCursor:
-    def __init__(self, fetchone_rows=None, fetchall_rows=None, raise_on_execute=False) -> None:
-        self.executed: list[tuple] = []
-        self._fetchone = list(fetchone_rows or [])
-        self._fetchall = fetchall_rows if fetchall_rows is not None else []
-        self._raise = raise_on_execute
-
-    def execute(self, sql, params=None):
-        if self._raise:
-            raise RuntimeError("boom")
-        self.executed.append((sql, params))
-
-    def executemany(self, sql, seq):
-        if self._raise:
-            raise RuntimeError("boom")
-        self.executed.append((sql, list(seq)))
-
-    def fetchone(self):
-        return self._fetchone.pop(0) if self._fetchone else None
-
-    def fetchall(self):
-        if self._fetchall and isinstance(self._fetchall[0], list):
-            return self._fetchall.pop(0)
-        return self._fetchall
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
+from pg_cursor_fake import FakeCursor, install_fake_cursor
 
 
 class _Rec:
@@ -59,16 +28,9 @@ class _Rec:
 
 @pytest.fixture
 def fake_db(monkeypatch):
-    cursor = FakeCursor()
-
-    @contextmanager
-    def _pg_cursor(*, dict_rows: bool = False, database=None):
-        yield cursor
-
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
-    monkeypatch.setattr(us, "pg_cursor", _pg_cursor)
     monkeypatch.setattr(us, "_table_ensured", True)
-    return cursor
+    return install_fake_cursor(monkeypatch, us)
 
 
 def test_window_hours_presets() -> None:
@@ -101,11 +63,7 @@ def test_window_hours_accepts_numeric_hours() -> None:
 def test_write_rows_noop_when_postgres_off(monkeypatch) -> None:
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: False)
 
-    @contextmanager
-    def _none_cursor(*, dict_rows: bool = False, database=None):
-        yield None
-
-    monkeypatch.setattr(us, "pg_cursor", _none_cursor)
+    install_fake_cursor(monkeypatch, us, disabled=True)
     assert us.write_rows([us.record_to_row(_Rec())]) == 0
 
 
@@ -137,40 +95,42 @@ def test_fetch_summary_uses_one_snapshot_query(fake_db) -> None:
     flusher commits between them (total_calls then disagreeing with
     sum(by_model[*].calls)). GROUPING SETS keeps one snapshot.
     """
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 2,
-            "prompt_tokens": 30,
-            "completion_tokens": 10,
-            "total_tokens": 40,
-            "error_count": 1,
-            "avg_latency_ms": 12.5,
-        },
-        {
-            "bucket": "model",
-            "model": "claude-opus-4-8",
-            "agent_key": None,
-            "calls": 2,
-            "prompt_tokens": 30,
-            "completion_tokens": 10,
-            "total_tokens": 40,
-            "error_count": 1,
-            "avg_latency_ms": 12.5,
-        },
-        {
-            "bucket": "agent",
-            "model": None,
-            "agent_key": "writer",
-            "calls": 2,
-            "prompt_tokens": 30,
-            "completion_tokens": 10,
-            "total_tokens": 40,
-            "error_count": 0,
-        },
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 2,
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40,
+                "error_count": 1,
+                "avg_latency_ms": 12.5,
+            },
+            {
+                "bucket": "model",
+                "model": "claude-opus-4-8",
+                "agent_key": None,
+                "calls": 2,
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40,
+                "error_count": 1,
+                "avg_latency_ms": 12.5,
+            },
+            {
+                "bucket": "agent",
+                "model": None,
+                "agent_key": "writer",
+                "calls": 2,
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40,
+                "error_count": 0,
+            },
+        ]
+    )
     summary = us.fetch_summary(window="24h")
     assert len(fake_db.executed) == 1
     sql, _params = fake_db.executed[0]
@@ -185,28 +145,30 @@ def test_fetch_summary_uses_one_snapshot_query(fake_db) -> None:
 
 def test_fetch_summary_skips_blank_agent_and_missing_totals(fake_db) -> None:
     """Blank agent_key rows are omitted; a missing totals bucket zeros the header."""
-    fake_db._fetchall = [
-        {
-            "bucket": "model",
-            "model": "",
-            "agent_key": None,
-            "calls": 1,
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "total_tokens": None,
-            "error_count": None,
-        },
-        {
-            "bucket": "agent",
-            "model": None,
-            "agent_key": "",
-            "calls": 1,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 4,
-            "error_count": 0,
-        },
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "model",
+                "model": "",
+                "agent_key": None,
+                "calls": 1,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "error_count": None,
+            },
+            {
+                "bucket": "agent",
+                "model": None,
+                "agent_key": "",
+                "calls": 1,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 4,
+                "error_count": 0,
+            },
+        ]
+    )
     summary = us.fetch_summary(window="all")
     assert summary["total_calls"] == 0
     assert summary["total_tokens"] == 0
@@ -216,38 +178,40 @@ def test_fetch_summary_skips_blank_agent_and_missing_totals(fake_db) -> None:
 
 
 def test_fetch_summary_24h_and_all(fake_db) -> None:
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 2,
-            "prompt_tokens": 30,
-            "completion_tokens": 10,
-            "total_tokens": 40,
-            "error_count": 1,
-        },
-        {
-            "bucket": "model",
-            "model": "claude-opus-4-8",
-            "agent_key": None,
-            "calls": 1,
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "error_count": 0,
-        },
-        {
-            "bucket": "model",
-            "model": "qwen3.5:cloud",
-            "agent_key": None,
-            "calls": 1,
-            "prompt_tokens": 20,
-            "completion_tokens": 5,
-            "total_tokens": 25,
-            "error_count": 1,
-        },
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 2,
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40,
+                "error_count": 1,
+            },
+            {
+                "bucket": "model",
+                "model": "claude-opus-4-8",
+                "agent_key": None,
+                "calls": 1,
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "error_count": 0,
+            },
+            {
+                "bucket": "model",
+                "model": "qwen3.5:cloud",
+                "agent_key": None,
+                "calls": 1,
+                "prompt_tokens": 20,
+                "completion_tokens": 5,
+                "total_tokens": 25,
+                "error_count": 1,
+            },
+        ]
+    )
     summary = us.fetch_summary(window="24h")
     assert summary["window"] == "24h"
     assert summary["window_hours"] == 24.0
@@ -265,35 +229,39 @@ def test_fetch_summary_24h_and_all(fake_db) -> None:
     assert "ts >=" in cutoff_sql
 
     fake_db.executed.clear()
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "error_count": 0,
-        }
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "error_count": 0,
+            }
+        ]
+    )
     all_summary = us.fetch_summary(window="all")
     assert all_summary["window_hours"] == 0.0
     assert "ts >=" not in fake_db.executed[0][0]
 
     fake_db.executed.clear()
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "error_count": 0,
-        }
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "error_count": 0,
+            }
+        ]
+    )
     zero_summary = us.fetch_summary(window="0")
     assert zero_summary["window"] == "0"
     assert zero_summary["window_hours"] == 0.0
@@ -302,37 +270,41 @@ def test_fetch_summary_24h_and_all(fake_db) -> None:
 
 def test_fetch_summary_totals_cache_tokens_and_defaults_to_zero(fake_db) -> None:
     """Cache totals sum from the persisted columns; absent rows default to 0."""
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 2,
-            "prompt_tokens": 30,
-            "completion_tokens": 10,
-            "total_tokens": 40,
-            "cache_read_tokens": 500,
-            "cache_creation_tokens": 200,
-            "error_count": 0,
-        }
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 2,
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40,
+                "cache_read_tokens": 500,
+                "cache_creation_tokens": 200,
+                "error_count": 0,
+            }
+        ]
+    )
     summary = us.fetch_summary(window="24h")
     assert summary["total_cache_read_tokens"] == 500
     assert summary["total_cache_creation_tokens"] == 200
 
     fake_db.executed.clear()
-    fake_db._fetchall = [
-        {
-            "bucket": "total",
-            "model": None,
-            "agent_key": None,
-            "calls": 1,
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "error_count": 0,
-        }
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "bucket": "total",
+                "model": None,
+                "agent_key": None,
+                "calls": 1,
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "error_count": 0,
+            }
+        ]
+    )
     no_cache_summary = us.fetch_summary(window="24h")
     assert no_cache_summary["total_cache_read_tokens"] == 0
     assert no_cache_summary["total_cache_creation_tokens"] == 0
@@ -356,30 +328,32 @@ def test_fetch_summary_query_failure_returns_empty(fake_db) -> None:
 def test_fetch_recent_oldest_to_newest_and_limit(fake_db) -> None:
     ts_new = datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc)
     ts_old = datetime(2026, 8, 12, 11, 0, tzinfo=timezone.utc)
-    fake_db._fetchall = [
-        {
-            "ts": ts_new,
-            "team": "blogging",
-            "agent_key": "writer",
-            "model": "m1",
-            "prompt_tokens": 1,
-            "completion_tokens": 2,
-            "total_tokens": 3,
-            "latency_ms": 10,
-            "status": "success",
-        },
-        {
-            "ts": ts_old,
-            "team": "blogging",
-            "agent_key": "writer",
-            "model": "m2",
-            "prompt_tokens": 4,
-            "completion_tokens": 5,
-            "total_tokens": 9,
-            "latency_ms": 20,
-            "status": "error",
-        },
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "ts": ts_new,
+                "team": "blogging",
+                "agent_key": "writer",
+                "model": "m1",
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+                "latency_ms": 10,
+                "status": "success",
+            },
+            {
+                "ts": ts_old,
+                "team": "blogging",
+                "agent_key": "writer",
+                "model": "m2",
+                "prompt_tokens": 4,
+                "completion_tokens": 5,
+                "total_tokens": 9,
+                "latency_ms": 20,
+                "status": "error",
+            },
+        ]
+    )
     rows = us.fetch_recent(window="24h", limit=2)
     assert len(rows) == 2
     assert rows[0]["model"] == "m2"
@@ -428,30 +402,32 @@ def test_record_to_row_and_fetch_recent_preserve_call_metadata(fake_db) -> None:
     assert row[19] == 200
 
     ts = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
-    fake_db._fetchall = [
-        {
-            "ts": ts,
-            "team": "blogging",
-            "agent_key": "writer",
-            "model": "m1",
-            "prompt_tokens": 1,
-            "completion_tokens": 2,
-            "total_tokens": 3,
-            "latency_ms": 42,
-            "status": "success",
-            "caller_tag": "writer.agent.write_draft",
-            "cost_usd": 0.12,
-            "outcome": "success",
-            "error_type": "TimeoutError",
-            "job_id": "job-9",
-            "objective": "draft",
-            "request_id": "req-1",
-            "task_id": "task-2",
-            "phase": "execute",
-            "cache_read_tokens": 500,
-            "cache_creation_tokens": 200,
-        }
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "ts": ts,
+                "team": "blogging",
+                "agent_key": "writer",
+                "model": "m1",
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+                "latency_ms": 42,
+                "status": "success",
+                "caller_tag": "writer.agent.write_draft",
+                "cost_usd": 0.12,
+                "outcome": "success",
+                "error_type": "TimeoutError",
+                "job_id": "job-9",
+                "objective": "draft",
+                "request_id": "req-1",
+                "task_id": "task-2",
+                "phase": "execute",
+                "cache_read_tokens": 500,
+                "cache_creation_tokens": 200,
+            }
+        ]
+    )
     rows = us.fetch_recent(window="all", limit=1)
     assert rows == [
         {
@@ -493,11 +469,7 @@ def test_write_rows_cur_none(monkeypatch) -> None:
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
     monkeypatch.setattr(us, "_table_ensured", True)
 
-    @contextmanager
-    def _none_cursor(*, dict_rows: bool = False, database=None):
-        yield None
-
-    monkeypatch.setattr(us, "pg_cursor", _none_cursor)
+    install_fake_cursor(monkeypatch, us, disabled=True)
     assert us.write_rows([us.record_to_row(_Rec())]) == 0
 
 
@@ -510,25 +482,15 @@ def test_ensure_table_cur_none(monkeypatch) -> None:
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
     monkeypatch.setattr(us, "_table_ensured", False)
 
-    @contextmanager
-    def _none_cursor(*, dict_rows: bool = False, database=None):
-        yield None
-
-    monkeypatch.setattr(us, "pg_cursor", _none_cursor)
+    install_fake_cursor(monkeypatch, us, disabled=True)
     us._ensure_table()
     assert us._table_ensured is False
 
 
 def test_ensure_table_executes_ddl(monkeypatch) -> None:
-    cursor = FakeCursor()
-
-    @contextmanager
-    def _pg_cursor(*, dict_rows: bool = False, database=None):
-        yield cursor
-
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
-    monkeypatch.setattr(us, "pg_cursor", _pg_cursor)
     monkeypatch.setattr(us, "_table_ensured", False)
+    cursor = install_fake_cursor(monkeypatch, us)
     us._ensure_table()
     assert us._table_ensured is True
     assert [sql for sql, _ in cursor.executed] == list(us.USAGE_TABLE_STATEMENTS)
@@ -544,15 +506,9 @@ def test_ensure_table_executes_ddl(monkeypatch) -> None:
 
 
 def test_ensure_table_exception_leaves_flag_false(monkeypatch) -> None:
-    cursor = FakeCursor(raise_on_execute=True)
-
-    @contextmanager
-    def _pg_cursor(*, dict_rows: bool = False, database=None):
-        yield cursor
-
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
-    monkeypatch.setattr(us, "pg_cursor", _pg_cursor)
     monkeypatch.setattr(us, "_table_ensured", False)
+    install_fake_cursor(monkeypatch, us, raise_on_execute=True)
     us._ensure_table()
     assert us._table_ensured is False
 
@@ -610,11 +566,7 @@ def test_fetch_summary_cur_none(monkeypatch) -> None:
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
     monkeypatch.setattr(us, "_table_ensured", True)
 
-    @contextmanager
-    def _none_cursor(*, dict_rows: bool = False, database=None):
-        yield None
-
-    monkeypatch.setattr(us, "pg_cursor", _none_cursor)
+    install_fake_cursor(monkeypatch, us, disabled=True)
     summary = us.fetch_summary(window="7d")
     assert summary["total_calls"] == 0
     assert summary["window"] == "7d"
@@ -630,48 +582,46 @@ def test_fetch_recent_cur_none(monkeypatch) -> None:
     monkeypatch.setattr(us, "is_postgres_enabled", lambda: True)
     monkeypatch.setattr(us, "_table_ensured", True)
 
-    @contextmanager
-    def _none_cursor(*, dict_rows: bool = False, database=None):
-        yield None
-
-    monkeypatch.setattr(us, "pg_cursor", _none_cursor)
+    install_fake_cursor(monkeypatch, us, disabled=True)
     assert us.fetch_recent(window="24h") is None
 
 
 def test_fetch_recent_naive_and_non_datetime_ts(fake_db) -> None:
     naive = datetime(2026, 8, 12, 12, 0)  # no tzinfo
-    fake_db._fetchall = [
-        {
-            "ts": naive,
-            "team": "t",
-            "agent_key": "a",
-            "model": "m",
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2,
-            "status": "success",
-        },
-        {
-            "ts": 1_724_000_000.5,
-            "team": "t",
-            "agent_key": "a",
-            "model": "m2",
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "status": "error",
-        },
-        {
-            "ts": None,
-            "team": "",
-            "agent_key": "",
-            "model": "",
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "total_tokens": None,
-            "status": None,
-        },
-    ]
+    fake_db.queue_rows(
+        [
+            {
+                "ts": naive,
+                "team": "t",
+                "agent_key": "a",
+                "model": "m",
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "status": "success",
+            },
+            {
+                "ts": 1_724_000_000.5,
+                "team": "t",
+                "agent_key": "a",
+                "model": "m2",
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "status": "error",
+            },
+            {
+                "ts": None,
+                "team": "",
+                "agent_key": "",
+                "model": "",
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "status": None,
+            },
+        ]
+    )
     rows = us.fetch_recent(window="all", limit=10)
     assert len(rows) == 3
     # SQL returns newest-first; fetch_recent reverses to oldest-to-newest.
