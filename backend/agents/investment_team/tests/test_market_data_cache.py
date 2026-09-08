@@ -911,6 +911,13 @@ def test_get_or_fetch_reconciles_legacy_snapshot_hash(cache: MarketDataCache) ->
 
 
 def _truncating_fetch(bars: List[OHLCVBar], calls: dict):
+    """Build a ``fetch_fn`` serving ``bars`` regardless of the window asked for.
+
+    Ignoring ``start``/``end`` is the point: it stands in for a provider whose
+    answer does not span the request. Invocations are counted in ``calls["n"]``
+    so a test can assert whether the provider was dispatched at all.
+    """
+
     def fetch(symbol, ac, start, end):
         calls["n"] = calls.get("n", 0) + 1
         return list(bars), "yahoo"
@@ -1319,3 +1326,116 @@ def test_reconcile_snapshot_bounds_is_a_no_op_when_already_accurate() -> None:
     assert _reconcile_snapshot_bounds(meta, bars) is meta
     # An empty read carries no bounds to trust, so it cannot repair anything.
     assert _reconcile_snapshot_bounds(meta, []) is meta
+
+
+# ---------------------------------------------------------------------------
+# SnapshotMeta invariant enforcement
+#
+# The class documents ``start_date <= end_date`` and
+# ``requested_start <= requested_end``. Both ``covers()`` and
+# ``is_authoritative_for()`` answer from those bounds, so an inverted pair —
+# from a writer bug or a corrupt index row — would silently produce wrong
+# coverage answers. ``__post_init__`` fails at the boundary instead.
+# ---------------------------------------------------------------------------
+
+
+def _meta_kwargs(**overrides) -> dict:
+    base = dict(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        provider="yahoo",
+        fetch_ts=datetime(2024, 1, 6, tzinfo=timezone.utc),
+        start_date="2024-01-01",
+        end_date="2024-01-05",
+        row_count=5,
+        sha256="0" * 64,
+        parquet_path="/tmp/x.parquet",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_snapshot_meta_rejects_inverted_realised_bounds() -> None:
+    with pytest.raises(ValueError, match="realised bounds inverted"):
+        SnapshotMeta(**_meta_kwargs(start_date="2024-01-05", end_date="2024-01-01"))
+
+
+def test_snapshot_meta_rejects_inverted_requested_bounds() -> None:
+    with pytest.raises(ValueError, match="requested bounds inverted"):
+        SnapshotMeta(
+            **_meta_kwargs(
+                requested_start_date="2024-01-10",
+                requested_end_date="2024-01-02",
+            )
+        )
+
+
+def test_snapshot_meta_accepts_degenerate_single_day_range() -> None:
+    """A one-bar snapshot has ``start_date == end_date`` — valid, not inverted."""
+    meta = SnapshotMeta(**_meta_kwargs(start_date="2024-01-03", end_date="2024-01-03"))
+    assert meta.covers("2024-01-03", "2024-01-03")
+
+
+def test_snapshot_meta_validates_legacy_fallback_pair() -> None:
+    """With ``requested_*`` unset the realised pair stands in and is checked once.
+
+    A legacy row therefore cannot slip an inverted requested range past the
+    invariant by leaving the columns NULL.
+    """
+    meta = SnapshotMeta(**_meta_kwargs())
+    assert (meta.requested_start, meta.requested_end) == ("2024-01-01", "2024-01-05")
+
+
+# ---------------------------------------------------------------------------
+# read_snapshot_reconciled — the public read+reconcile pairing
+# ---------------------------------------------------------------------------
+
+
+def test_read_snapshot_reconciled_repairs_bounds_and_hash(cache: MarketDataCache) -> None:
+    """Reading through the public pairing yields a meta describing the bars.
+
+    Exercised on a snapshot rewound to its pre-split shape, so both repairs
+    (realised bounds and canonical sha256) have something to do.
+    """
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(_bars(5, start_day=6), calls),
+    )
+    written = cache._memory_index[0]
+    legacy = SnapshotMeta(
+        **{
+            **written.__dict__,
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-10",
+            "requested_start_date": None,
+            "requested_end_date": None,
+            "sha256": "f" * 64,
+        }
+    )
+
+    read = cache.read_snapshot_reconciled(legacy)
+    assert read is not None
+    meta, bars = read
+    assert len(bars) == 5
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-10",
+    )
+    assert meta.sha256 == written.sha256
+    assert not meta.covers("2024-01-01", "2024-01-10")
+
+
+def test_read_snapshot_reconciled_returns_none_when_parquet_missing(
+    cache: MarketDataCache, tmp_path: Path
+) -> None:
+    """Same miss semantics as ``read_snapshot``: a vanished file is a refetch."""
+    meta = SnapshotMeta(**_meta_kwargs(parquet_path=str(tmp_path / "gone.parquet")))
+    assert cache.read_snapshot(meta) is None
+    assert cache.read_snapshot_reconciled(meta) is None

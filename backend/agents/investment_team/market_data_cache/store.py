@@ -116,10 +116,13 @@ class SnapshotMeta:
     asked for.
 
     Invariants:
-        ``start_date <= end_date`` and ``requested_start <= requested_end``.
-        Neither pair constrains the other — a provider may return less than
-        it was asked for (truncation) or more (outward rounding); both are
-        represented faithfully rather than collapsed.
+        ``start_date <= end_date`` and ``requested_start <= requested_end``,
+        enforced in :meth:`__post_init__` so no caller can construct a
+        snapshot whose ranges :meth:`covers` and :meth:`is_authoritative_for`
+        would then answer from.  Neither pair constrains the other — a
+        provider may return less than it was asked for (truncation) or more
+        (outward rounding); both are represented faithfully rather than
+        collapsed.
     """
 
     symbol: str
@@ -135,6 +138,26 @@ class SnapshotMeta:
     schema_version: int = 1
     requested_start_date: Optional[str] = None
     requested_end_date: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Enforce the class invariants at construction.
+
+        Read-only: nothing is mutated, so the frozen dataclass needs no
+        ``object.__setattr__``.  Inverted bounds can only come from a writer
+        bug or a corrupt index row, and both :meth:`covers` and
+        :meth:`is_authoritative_for` would silently answer from them — so
+        fail at the boundary rather than propagate the corruption.
+
+        Postconditions:
+            Returns normally iff both invariants hold; raises
+            :class:`ValueError` naming the violated pair otherwise.
+        """
+        if self.start_date > self.end_date:
+            raise ValueError(f"realised bounds inverted: {self.start_date} > {self.end_date}")
+        if self.requested_start > self.requested_end:
+            raise ValueError(
+                f"requested bounds inverted: {self.requested_start} > {self.requested_end}"
+            )
 
     @property
     def requested_start(self) -> str:
@@ -893,14 +916,13 @@ class MarketDataCache(PostgresHelperMixin):
             as_of_dt=as_of_dt,
         )
         if existing is not None:
-            cached = self._read_snapshot(existing)
-            if cached is not None:
-                # A legacy snapshot's stored sha256 is over the raw volume and
-                # its bounds are the requested window, but _read_snapshot
-                # repaired the volume to 0.0 and the bars say what the range
-                # really is; reconcile both so the returned meta describes the
-                # bars the caller actually gets.
-                existing = _reconcile_snapshot(existing, cached)
+            # A legacy snapshot's stored sha256 is over the raw volume and its
+            # bounds are the requested window, but the read repairs the volume
+            # to 0.0 and the bars say what the range really is; the reconciled
+            # read returns a meta describing the bars the caller actually gets.
+            read = self.read_snapshot_reconciled(existing)
+            if read is not None:
+                existing, cached = read
                 if not existing.covers(start, end):
                     logger.warning(
                         "market_data_cache: replaying %s/%s/%s for %s..%s from a snapshot "
@@ -1049,7 +1071,40 @@ class MarketDataCache(PostgresHelperMixin):
         )
 
     def read_snapshot(self, meta: SnapshotMeta) -> Optional[List[OHLCVBar]]:
+        """Read a snapshot's bars, without reconciling ``meta`` against them.
+
+        Postconditions:
+            Returns ``None`` when the parquet is missing or unreadable (the
+            caller should treat that as a miss and refetch).  The bars are
+            read-repaired (OHLC invariants, non-finite volume) but ``meta``
+            is not — prefer :meth:`read_snapshot_reconciled` unless you
+            genuinely only want the bars.
+        """
         return self._read_snapshot(meta)
+
+    def read_snapshot_reconciled(
+        self, meta: SnapshotMeta
+    ) -> Optional[Tuple[SnapshotMeta, List[OHLCVBar]]]:
+        """Read a snapshot and return its metadata repaired against those bars.
+
+        The reconciliation is the whole point: ``_read_snapshot`` repairs OHLC
+        invariants and non-finite volume on read, and a row written before
+        requested and realised coverage were split records the request as its
+        coverage — so an unreconciled ``meta`` can describe neither the bars'
+        fingerprint nor their real span.  Pairing the two in one public call
+        makes it impossible to read a snapshot and forget to reconcile it, and
+        keeps the reconciliation helpers private to this module.
+
+        Postconditions:
+            Returns ``None`` exactly when :meth:`read_snapshot` does.
+            Otherwise returns ``(meta, bars)`` where ``meta.sha256`` is the
+            canonical fingerprint of ``bars`` and ``meta``'s realised bounds
+            are their true span, so :meth:`SnapshotMeta.covers` is exact.
+        """
+        bars = self._read_snapshot(meta)
+        if bars is None:
+            return None
+        return _reconcile_snapshot(meta, bars), bars
 
     # ------------------------------------------------------------------
     # Derived ADV cache

@@ -485,3 +485,8 @@ def test_row_to_meta_null_requested_columns_stay_none() -> None:
     meta = _row_to_meta(row)
     assert meta.requested_start_date is None
     assert meta.requested_end_date is None
+    # The claim being verified is the fallback, not just the None-ness: were
+    # _row_to_meta to propagate None into the properties instead of standing
+    # the realised pair in, a legacy row's lookup reach would silently shrink.
+    assert (meta.requested_start, meta.requested_end) == ("2024-01-01", "2024-01-05")
+    assert meta.is_authoritative_for("2024-01-01", "2024-01-05")
