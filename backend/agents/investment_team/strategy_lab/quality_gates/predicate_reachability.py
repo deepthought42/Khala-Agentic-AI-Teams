@@ -208,6 +208,24 @@ class _PairCooccurrence:
         return self.judged and self.later_fires > 0 and self.later_independent_fires == 0
 
 
+def _coverage_order(entry: tuple[int, int]) -> tuple[int, int]:
+    """Sort key placing the earlier rule that covered the most fires first.
+
+    Preconditions: ``entry`` is a ``(rule_index, covered_fires)`` pair from a
+    coverage tuple.
+    Postconditions: orders by descending covered-fire count, then ascending
+    rule index. Pure. This is the ONLY definition of that rule: both coverage
+    tuples are built with it, both :meth:`_RuleStarvation.__post_init__`
+    ordering asserts check against it, and
+    :attr:`_RuleStarvation.combined_coverage` re-sorts the merged view with it.
+    Spelled once so an ordering the invariant accepts cannot drift from the one
+    the properties promise — a coverage clause names its coverers in this
+    order, and :attr:`_RuleStarvation.dominant_index` reads the first entry.
+    """
+    index, count = entry
+    return (-count, index)
+
+
 _StarvationVerdict = Literal[
     "abstained_bars",
     "abstained_steady",
@@ -334,16 +352,16 @@ class _RuleStarvation:
         assert all(index < self.rule_index for index, _ in self.warmup_coverage), (
             "warmup_coverage may only name rules listed before rule_index"
         )
-        assert list(self.warmup_coverage) == sorted(
-            self.warmup_coverage, key=lambda kv: (-kv[1], kv[0])
-        ), "warmup_coverage must be ordered by descending covered fires, then ascending index"
+        assert list(self.warmup_coverage) == sorted(self.warmup_coverage, key=_coverage_order), (
+            "warmup_coverage must be ordered by descending covered fires, then ascending index"
+        )
         assert all(count > 0 for _, count in self.coverage), (
             "coverage must hold only earlier rules that covered at least one fire"
         )
         assert all(index < self.rule_index for index, _ in self.coverage), (
             "coverage may only name rules listed before rule_index"
         )
-        assert list(self.coverage) == sorted(self.coverage, key=lambda kv: (-kv[1], kv[0])), (
+        assert list(self.coverage) == sorted(self.coverage, key=_coverage_order), (
             "coverage must be ordered by descending covered fires, then ascending index"
         )
 
@@ -400,7 +418,7 @@ class _RuleStarvation:
         merged: Dict[int, int] = dict(self.coverage)
         for index, count in self.warmup_coverage:
             merged[index] = merged.get(index, 0) + count
-        return tuple(sorted(merged.items(), key=lambda kv: (-kv[1], kv[0])))
+        return tuple(sorted(merged.items(), key=_coverage_order))
 
     @property
     def dominant_index(self) -> int:
@@ -701,13 +719,11 @@ def _starvation_verdicts(
                 evaluated=evaluated,
                 fires=fires,
                 independent_fires=independent_fires,
-                coverage=tuple(sorted(covered.items(), key=lambda kv: (-kv[1], kv[0]))),
+                coverage=tuple(sorted(covered.items(), key=_coverage_order)),
                 legs=(),
                 warmup_independent_fires=warmup_independent_fires,
                 warmup_covered_fires=warmup_covered_fires,
-                warmup_coverage=tuple(
-                    sorted(warmup_covered.items(), key=lambda kv: (-kv[1], kv[0]))
-                ),
+                warmup_coverage=tuple(sorted(warmup_covered.items(), key=_coverage_order)),
                 warmup_conclusive_bars=warmup_conclusive_bars,
             )
         )
