@@ -81,6 +81,19 @@ def _approving_reply(summary: str) -> str:
     return json.dumps({"approved": True, "summary": summary, "feedback_items": []})
 
 
+def _no_self_review(self: Any, draft: str, *args: Any, **kwargs: Any) -> str:
+    """Stub for ``BlogWriterAgent._self_review``: returns ``draft`` unchanged.
+
+    Signature-agnostic on purpose -- ``*args``/``**kwargs`` swallow whatever
+    else the real method's call site passes (currently a positional
+    ``allowed_claims_section``), so a future rename or a switch to keyword
+    invocation there doesn't turn this stub into an opaque ``TypeError``
+    instead of a meaningful assertion failure. The tests using this stub
+    only need "self-review is a no-op that returns the draft".
+    """
+    return draft
+
+
 # ---------------------------------------------------------------------------
 # Writer / copy editor wire payload each carry exactly one cache_control block
 # ---------------------------------------------------------------------------
@@ -103,9 +116,7 @@ def test_writer_wire_payload_carries_single_cache_control_block(monkeypatch) -> 
     )
     # Self-review is a second, unrelated LLM call; disabling it keeps this
     # test to the single draft call the wire assertions below depend on.
-    monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
-    )
+    monkeypatch.setattr(BlogWriterAgent, "_self_review", _no_self_review)
 
     agent.run(_writer_input())
 
@@ -325,21 +336,31 @@ def test_user_turn_no_longer_carries_guideline_text(monkeypatch) -> None:
     combined_size = len(brand_text) + len(style_text)
 
     class _PromptCapturingLLM(DummyLLMClient):
+        """Captures every user-turn prompt handed to the LLM client."""
+
         def __init__(self) -> None:
             super().__init__()
             self.all_prompts: List[str] = []
 
         def complete_json(self, prompt: str, **kwargs: Any) -> dict:
             self.all_prompts.append(prompt)
+            # The "draft" value here is an int, not a string, so
+            # extract_draft_after_marker (text_parsing.py) rejects it and
+            # returns "" -- BlogWriterAgent.run then treats that as no draft
+            # and substitutes its placeholder, which skips the self-review
+            # call. Net effect: exactly one LLM call per run(), so
+            # all_prompts below holds only this single draft (user-turn)
+            # prompt. A "realistic" string draft here would take a different
+            # path and change that call count, breaking the len(...) == 1
+            # assertion for reasons unrelated to the cache-breakpoint
+            # behavior under test.
             return {"draft": 0}
 
     llm = _PromptCapturingLLM()
     agent = BlogWriterAgent(
         llm_client=llm, writing_style_guide_content=style_text, brand_spec_content=brand_text
     )
-    monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
-    )
+    monkeypatch.setattr(BlogWriterAgent, "_self_review", _no_self_review)
 
     agent.run(_writer_input())
 
