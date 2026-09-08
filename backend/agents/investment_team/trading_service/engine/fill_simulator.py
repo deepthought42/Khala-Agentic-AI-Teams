@@ -126,6 +126,7 @@ class _DeferredStopLossRetirement(NamedTuple):
     child_side: OrderSide
     keep_order_id: str
     queued_for_bar: str
+    child_order_type: OrderType
 
 
 @dataclass
@@ -1999,6 +2000,7 @@ class FillSimulator:
                     child_side=child_side,
                     keep_order_id=sl_child.order_id,
                     queued_for_bar=bar.timestamp,
+                    child_order_type=sl_order_type,
                 )
             )
         if events is not None and sl.entry_price_pct is not None:
@@ -2123,10 +2125,16 @@ class FillSimulator:
                 symbol=entry.symbol,
                 child_side=entry.child_side,
                 keep_order_id=entry.keep_order_id,
+                child_order_type=entry.child_order_type,
             )
 
     def _retire_superseded_stop_loss_fallbacks(
-        self, *, symbol: str, child_side: OrderSide, keep_order_id: str
+        self,
+        *,
+        symbol: str,
+        child_side: OrderSide,
+        keep_order_id: str,
+        child_order_type: OrderType,
     ) -> None:
         """Cancel any dispatcher-emitted stop-loss order this attachment replaces.
 
@@ -2181,6 +2189,22 @@ class FillSimulator:
             if other_req.parent_order_id is not None:
                 continue
             if (other_req.reason or "") != ENGINE_EXIT_REASON_STOP_LOSS:
+                continue
+            # Same SHAPE, or it is not this attachment's fallback. A spec may
+            # carry more than one resting-eligible stop rule (unusual but not
+            # DSL-forbidden — see ``_first_resting_stop_loss_index``), and only
+            # the FIRST is migrated; a later one keeps firing through the
+            # bar-close evaluator and emits its own parentless fallback under
+            # the same byte-stable ``engine_exit:stop_loss`` reason. Matching
+            # the order type keeps a market-style attachment from retiring a
+            # limit-style rule's STOP_LIMIT, and vice versa — the case the
+            # reason alone cannot separate, because that literal is fixed by
+            # the conformance gates and cannot carry a rule index.
+            #
+            # NOT a complete rule identity: two rules of the SAME style still
+            # collide here. Closing that needs identity on the order itself,
+            # which is a wider change than this migration.
+            if other_req.order_type != child_order_type:
                 continue
             # A fallback that is mid-execution or has already triggered is not
             # a duplicate of the replacement — it is the order actually doing

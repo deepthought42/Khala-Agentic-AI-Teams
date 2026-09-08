@@ -1633,7 +1633,10 @@ def test_retirement_spares_a_fallback_that_is_actually_working(
         fallback.cumulative_filled_qty = req.qty / 4.0
 
     sim._retire_superseded_stop_loss_fallbacks(
-        symbol="AAA", child_side=OrderSide.SHORT, keep_order_id=keeper.order_id
+        symbol="AAA",
+        child_side=OrderSide.SHORT,
+        keep_order_id=keeper.order_id,
+        child_order_type=OrderType.STOP_LIMIT,
     )
 
     still_pending = any(
@@ -1681,4 +1684,62 @@ def test_day_expiry_attach_credit_is_scoped_to_the_symbol_being_processed() -> N
     bbb_attached = [ev for ev in bbb.diagnostic_events if ev.kind == "engine_exit_attached"]
     assert [ev.symbol for ev in bbb_attached] == ["BBB"], (
         "BBB's credit must survive for its own bar"
+    )
+
+
+def test_retirement_spares_another_stop_rules_differently_shaped_fallback() -> None:
+    """An attachment supersedes its OWN rule's fallback, not another rule's.
+
+    A spec may carry more than one resting-eligible stop rule — unusual but not
+    DSL-forbidden — and only the FIRST is migrated. A later one keeps firing
+    through the bar-close evaluator and emits its own parentless fallback under
+    the same byte-stable ``engine_exit:stop_loss`` reason, which is fixed by the
+    conformance gates and cannot carry a rule index. So the reason alone cannot
+    separate them, and retiring on it would cancel protection this attachment
+    never replaced.
+
+    Order type separates the styles: a market-style attachment (plain STOP) must
+    leave a limit-style rule's STOP_LIMIT fallback alone. The same-shape control
+    below keeps this from passing by never retiring anything.
+
+    Two rules of the SAME style still collide — that needs identity on the order
+    itself, which is out of scope here and called out in the predicate.
+    """
+    sim, order_book, _portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+
+    other_rule_fallback = order_book.submit(
+        _fallback_stop_limit(req, "2024-01-01"),  # STOP_LIMIT, the tighter rule's
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    same_shape_fallback = order_book.submit(
+        OrderRequest(
+            client_order_id="market-fallback",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=req.qty,
+            order_type=OrderType.STOP,  # the wider market-style rule's
+            stop_price=90.0,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+
+    # A market-style attachment materializes: a plain STOP.
+    sim._retire_superseded_stop_loss_fallbacks(
+        symbol="AAA",
+        child_side=OrderSide.SHORT,
+        keep_order_id="keeper-not-on-book",
+        child_order_type=OrderType.STOP,
+    )
+
+    pending = {po.order_id for po in order_book.pending_for_symbol("AAA")}
+    assert other_rule_fallback.order_id in pending, (
+        "a market-style attachment must not retire another rule's STOP_LIMIT"
+    )
+    assert same_shape_fallback.order_id not in pending, (
+        "control: the same-shape fallback IS superseded and must still be retired"
     )
