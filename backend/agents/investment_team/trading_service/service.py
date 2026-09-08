@@ -523,6 +523,27 @@ class _EvalGate(NamedTuple):
     pending: List[PendingOrder]
 
 
+class _PendingGateFacts(NamedTuple):
+    """The per-order facts one pending-order scan derives, by name.
+
+    Replaces a positional tuple that had grown to four elements, three of them
+    bare booleans — a shape where transposing two at either end still type-checks
+    and reads plausibly, and where every added fact silently invalidates each
+    unpacking site. Field access makes both failure modes impossible, and lets
+    :meth:`_EngineExitDispatcher._scan_pending_for_gate`'s contract name its
+    fields rather than describe tuple positions.
+
+    Invariant: constructed only by that scan, which returns ``None`` instead when
+    an in-flight engine MARKET full close means the bar must stand down — so a
+    non-``None`` result always carries all four facts.
+    """
+
+    resting_limit_stop_id: Optional[str]
+    entry_continuation_in_flight: bool
+    scaled_partial_in_flight: bool
+    resting_stop_child_present: bool
+
+
 @dataclass(frozen=True)
 class _EmitContext:
     """The per-bar state both exit-emission handlers need.
@@ -930,9 +951,13 @@ class _EngineExitDispatcher:
         The single pending-order pass also derives (a) the resting limit-stop's
         ``order_id`` so ``maybe_emit`` can drop the in-flight limit stop from the
         chosen intent and cancel that resting STOP_LIMIT when a different rule
-        replaces it, and (b) whether the position's own entry is still filling (a
+        replaces it, (b) whether the position's own entry is still filling (a
         same-side partially-filled continuation rests) so the scaled-take-profit
-        deferral needs no second order-book scan. A spec has at most one
+        deferral needs no second order-book scan, (c) whether a prior scaled rung's
+        market scale-out is still in flight, so ``maybe_emit`` defers the next rung
+        without standing the whole bar down, and (d) whether this migration's
+        entry-attached protective leg is currently on the book for this position,
+        which is what makes the stop-loss cede per-position rather than run-level. A spec has at most one
         limit-style stop (enforced by ``StrategySpec``), so "an engine STOP_LIMIT
         rests" unambiguously means "that stop is in flight" — no per-order
         identity bookkeeping beyond the single id is needed. The id is only
@@ -946,10 +971,12 @@ class _EngineExitDispatcher:
         ``order_id`` of the already-resting limit-style stop (non-``None`` only when
         the spec has a limit stop AND an engine STOP_LIMIT for this position is
         resting; a non-``None`` id means the chosen intent must exclude that stop
-        rule), and ``entry_continuation_in_flight`` — ``True`` iff a
+        rule), ``entry_continuation_in_flight`` — ``True`` iff a
         scaled-take-profit spec has a same-side partially-filled entry continuation
-        still resting (so the
-        scaled deferral can read it without rescanning the book).
+        still resting (so the scaled deferral can read it without rescanning the
+        book) — ``scaled_partial_in_flight``, and ``resting_stop_child_present``.
+        See :meth:`_scan_pending_for_gate`, which defines all four, for their exact
+        semantics; :class:`_PendingGateFacts` names them.
         """
         tracked = position_tracker.get(sym)
         if tracked is None:
@@ -967,19 +994,13 @@ class _EngineExitDispatcher:
         scan = self._scan_pending_for_gate(tracked, pos, pending)
         if scan is None:
             return None  # an in-flight engine MARKET full close is already pending
-        (
-            resting_limit_stop_id,
-            entry_continuation_in_flight,
-            scaled_partial_in_flight,
-            resting_stop_child_present,
-        ) = scan
         return _EvalGate(
             tracked=tracked,
             pos=pos,
-            resting_limit_stop_id=resting_limit_stop_id,
-            entry_continuation_in_flight=entry_continuation_in_flight,
-            scaled_partial_in_flight=scaled_partial_in_flight,
-            resting_stop_child_present=resting_stop_child_present,
+            resting_limit_stop_id=scan.resting_limit_stop_id,
+            entry_continuation_in_flight=scan.entry_continuation_in_flight,
+            scaled_partial_in_flight=scan.scaled_partial_in_flight,
+            resting_stop_child_present=scan.resting_stop_child_present,
             pending=pending,
         )
 
@@ -988,7 +1009,7 @@ class _EngineExitDispatcher:
         tracked: _TrackedPosition,
         pos: Position,
         pending: List[PendingOrder],
-    ) -> Optional[tuple[Optional[str], bool, bool]]:
+    ) -> Optional[_PendingGateFacts]:
         """Derive the per-order gate facts from one bar's pending-order snapshot.
 
         A single pass over the symbol's ``pending`` orders. The derived facts only
@@ -1002,9 +1023,8 @@ class _EngineExitDispatcher:
         close is already pending — the bar must stand down, since re-emitting would
         stack a redundant guaranteed close while the rule keeps re-triggering. An
         in-flight *scaled-take-profit rung* market does NOT stand the bar down (see
-        ``scaled_partial_in_flight`` below). Otherwise returns
-        ``(resting_limit_stop_id, entry_continuation_in_flight,
-        scaled_partial_in_flight)``:
+        ``scaled_partial_in_flight`` below). Otherwise returns a
+        :class:`_PendingGateFacts` carrying all four facts by name:
           * ``resting_limit_stop_id`` — the ``order_id`` of an already-resting
             limit-style STOP_LIMIT (or ``None``; a non-``None`` id means the chosen
             intent must exclude that stop rule, and that ``maybe_emit`` cancels
@@ -1025,6 +1045,19 @@ class _EngineExitDispatcher:
             rung before the next fires" guarantee the full-MARKET standdown gave,
             now WITHOUT also blocking the full-position exits that protect the
             remainder.
+          * ``resting_stop_child_present`` — ``True`` iff THIS migration's own
+            entry-attached protective leg is currently on the book for THIS
+            position (``parent_order_id`` set, the byte-stable
+            ``engine_exit:stop_loss`` reason, bound to the position's entry).
+            Covers both attached shapes — a plain ``STOP`` for a market-style
+            rule, a ``STOP_LIMIT`` for a limit-style one — since it answers
+            whether protection EXISTS, not what order type it is. Unlike
+            ``resting_limit_stop_id`` it is NOT gated on the latch: an un-armed
+            child still counts as protection present. ``_evaluate`` consumes it
+            to make the rule cede per-position — the rule is handed to the
+            resting mechanism only while that mechanism actually holds
+            protection, so a position whose attachment has not materialized yet
+            (the partial-fill window) keeps its bar-close evaluation.
         """
         track_resting = self._has_limit_stop_rule
         track_continuation = self._has_scaled_take_profit_rule
@@ -1130,11 +1163,11 @@ class _EngineExitDispatcher:
                 if is_resting_migration_leg and not po.stop_limit_armed:
                     continue
                 resting_limit_stop_id = po.order_id
-        return (
-            resting_limit_stop_id,
-            entry_continuation_in_flight,
-            scaled_partial_in_flight,
-            resting_stop_child_present,
+        return _PendingGateFacts(
+            resting_limit_stop_id=resting_limit_stop_id,
+            entry_continuation_in_flight=entry_continuation_in_flight,
+            scaled_partial_in_flight=scaled_partial_in_flight,
+            resting_stop_child_present=resting_stop_child_present,
         )
 
     def _evaluate(
@@ -1176,16 +1209,29 @@ class _EngineExitDispatcher:
         skipped rather than standing the whole bar down.
 
         ``self.exclude_rule_index`` (constructor-set, not a ``maybe_emit`` parameter
-        since it is fixed for the whole run) drops the rule ceded to a resting-order
-        mechanism outright, before the pure evaluator even builds its intent — see
-        :class:`_EngineExitDispatcher`'s docstring for the mutual-exclusion contract
-        this enforces.
+        since it is fixed for the whole run) names the rule ceded to a resting-order
+        mechanism — see :class:`_EngineExitDispatcher`'s docstring for the
+        mutual-exclusion contract this enforces.
+
+        ``resting_stop_child_present`` decides whether that cede currently APPLIES.
+        The cede is per-position, not run-level: ``self.exclude_rule_index`` reaches
+        the evaluator only while the resting mechanism actually holds protection on
+        the book for this position; otherwise ``None`` is passed and the ceded rule
+        stays fully eligible here. The two differ whenever attachment lags the cede
+        — most reachably the partial-fill window, where materialization waits for
+        the entry's terminal slice — and keeping the rule live there is the whole
+        point: protection present means only the child acts, protection absent
+        means only this evaluator does. Never both, and never neither. Defaults to
+        ``False`` so a caller that does not pass it gets the SAFE side (rule still
+        evaluated) rather than a silent protection gap.
 
         Preconditions: ``tracked``/``pos`` describe the same open position
         (``pos.qty > 0``); ``cur_bar`` exposes ``high``/``low``/``close``.
         Postconditions: returns an ``ExitIntent`` to emit, or ``None`` (no rule
         triggered, the only trigger is an excluded resting limit stop / deferred
-        partial scale-out, or the only trigger is the rule at ``exclude_rule_index``).
+        partial scale-out, or the only trigger is the rule at ``exclude_rule_index``
+        — that last case only when ``resting_stop_child_present``, since otherwise
+        the ceded rule is not excluded and its trigger IS returned).
         """
         snapshot = tracked.snapshot(sym, pos.qty)
         # Hot path: evaluate this one position directly — no per-bar ``{sym: ...}``

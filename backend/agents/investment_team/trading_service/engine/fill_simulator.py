@@ -164,6 +164,16 @@ class FillSimulator:
         closed: List[TradeRecord] = []
         events: List[FillDiagnosticEvent] = []
 
+        # Safety net for the deferred-retirement queue: if a PRIOR bar raised
+        # mid-loop (a bar-safety assertion, an execution-model error) its drain
+        # was skipped, stranding entries here. Draining them now — before this
+        # bar's snapshot — keeps the documented invariant ("a superseded fallback
+        # never outlives the bar that replaced it by more than the raise that
+        # interrupted it") true for any caller that catches and keeps ticking.
+        # Retiring one bar late is safe: the fallback's same-bar fill chance has
+        # already passed, which is the only thing the deferral protects.
+        self._drain_deferred_stop_loss_retirements()
+
         # Work on a snapshot of pending orders for this symbol so cancels /
         # removes inside the loop don't mutate iteration.
         pending = list(self.order_book.pending_for_symbol(bar.symbol))

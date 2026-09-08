@@ -647,7 +647,7 @@ def test_dispatcher_emitted_stop_limit_is_always_reported(armed: bool) -> None:
     ],
 )
 def test_engine_entry_emission_active_matches_maybe_emit_guard(
-    entry_rules, sizing, expected: bool
+    entry_rules: list[EntryRule] | None, sizing: object | None, expected: bool
 ) -> None:
     """The predicate is byte-for-byte the condition ``maybe_emit`` returns early
     on, so the entry dispatcher and ``TradingService.run`` can never disagree
@@ -690,7 +690,7 @@ def test_run_cedes_the_stop_only_when_entry_emission_can_attach_it(
     # stop it from being ceded.
     assert _first_resting_stop_loss_index([rule]) == 0
 
-    captured: list = []
+    captured: list[int | None] = []
     real_exit_dispatcher = service_module._EngineExitDispatcher
 
     def _spy(*args, **kwargs):

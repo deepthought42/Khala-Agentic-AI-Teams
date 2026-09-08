@@ -1236,7 +1236,10 @@ def test_attachment_retires_a_dispatcher_emitted_stop_loss_fallback() -> None:
             client_order_id="e1",
             symbol="AAA",
             side=OrderSide.SHORT,
-            qty=100.0,
+            # Sized off the entry request, as a real bar-close fallback is: a
+            # FULL-position close. A hardcoded qty would silently stop modelling
+            # the production order if ``_emit``'s sizing ever changed.
+            qty=req.qty,
             order_type=OrderType.STOP_LIMIT,
             stop_price=94.0,  # a different anchor from the attached leg's
             limit_price=93.0,

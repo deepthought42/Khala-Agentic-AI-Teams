@@ -141,9 +141,13 @@ class StopAttachment(BaseModel):
 
     Invariant: the materialized child's stop and limit prices are always derived
     from the SAME anchor. For a leg that re-anchors to the entry's actual fill
-    (``entry_price_pct`` set) that anchor is the fill price, and
+    (``entry_price_pct`` set) that anchor is the fill price — and IF that leg also
+    has a limit side (``limit_offset`` set, i.e. a STOP_LIMIT),
     ``entry_price_limit_offset_pct`` must be set too so the limit follows the
-    stop; for every other leg it is the emission-time ``ref_price`` already
+    re-anchored stop. A re-anchoring leg with no limit side — the market-style
+    resting stop, a plain STOP — has nothing to follow and must NOT set it; the
+    field's own precondition below and ``OrderRequest.validate_prices`` both say
+    so. For every other leg the anchor is the emission-time ``ref_price`` already
     baked into ``stop_price``/``limit_offset``.
     """
 
