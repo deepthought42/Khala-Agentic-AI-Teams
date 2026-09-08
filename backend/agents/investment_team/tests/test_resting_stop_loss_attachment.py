@@ -1743,3 +1743,126 @@ def test_retirement_spares_another_stop_rules_differently_shaped_fallback() -> N
     assert same_shape_fallback.order_id not in pending, (
         "control: the same-shape fallback IS superseded and must still be retired"
     )
+
+
+def test_unarmed_attached_stop_limit_pre_empts_the_close_it_races() -> None:
+    """Why a position-emptying close must cancel the attached leg even un-armed.
+
+    This is an ENGINE property, not a dispatcher one, and it is what makes the
+    cancel in ``_retire_orders_against_closed_position`` load-bearing for the
+    un-armed state rather than only the latched one:
+
+    * ``process_bar`` walks a submission-ordered snapshot, so the child —
+      submitted back when the entry filled — is examined before a close queued
+      only last bar.
+    * ``stop_limit_triggered`` arms off the bar's full high/low, and an armed
+      STOP_LIMIT is evaluated as a resting limit on that same bar, so the child
+      can arm AND fill in one bar without ever having been armed before it.
+    * A MARKET close, by contrast, prices at ``bar.open``.
+
+    So on a bar that opens at the take-profit and then dips through the stop, the
+    child fills at its stale stop geometry, the stale-continuation guard drops the
+    intended close, and the position books the stop's exit at a price the open had
+    already bettered. Left resting, the leg does not merely duplicate the close —
+    it wins against it.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # Entry fills at 100 and the attached leg materializes, armed by the
+    # materializer but with its stop never yet breached.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    pos = portfolio.positions["AAA"]
+    children = [
+        po
+        for po in order_book.pending_for_symbol("AAA")
+        if po.request.order_type == OrderType.STOP_LIMIT
+    ]
+    assert len(children) == 1, "the limit-style rule must have attached exactly one leg"
+    child = children[0]
+    assert not child.stop_limit_armed, "the stop must be un-breached, or this is the latched case"
+    stale_limit = child.request.limit_price
+    assert stale_limit is not None
+
+    # The replacement close a take-profit / signal-exit would queue: a full-size
+    # bound MARKET, submitted on the prior bar so it is eligible below.
+    order_book.submit(
+        OrderRequest(
+            client_order_id="tp-close",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=pos.qty,
+            order_type=OrderType.MARKET,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    for po in order_book.pending_for_symbol("AAA"):
+        if po.request.client_order_id == "tp-close":
+            po.working_against_entry_order_id = pos.entry_order_id
+
+    # Opens at the take-profit level, then dips through the stop and recovers.
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=108.0, high=108.0, low=94.0, close=100.0)
+    )
+
+    assert "AAA" not in portfolio.positions, "the bar should have closed the position"
+    assert len(outcome.exit_fills) == 1, "exactly one of the two racing exits may fill"
+    fill = outcome.exit_fills[0]
+    assert fill.price == stale_limit, (
+        "the un-armed child won the race and booked the stop's geometry; the "
+        "MARKET close would have filled at the bar's open"
+    )
+    assert fill.price < 108.0, "and did so at a materially worse price than the open"
+
+
+def test_cancelling_the_attached_leg_lets_the_intended_close_fill_at_the_open() -> None:
+    """The other half of the race: with the leg cancelled, the close wins.
+
+    Paired with ``test_unarmed_attached_stop_limit_pre_empts_the_close_it_races``
+    over the SAME bar, this isolates the leg as the cause — the close is eligible
+    either way, so the 94.05-vs-108.00 difference is the cancellation and nothing
+    else. It also keeps the sibling honest: were the close somehow ineligible on
+    this bar, the sibling would pass merely because the child ran unopposed, and
+    this test would fail rather than let that go unnoticed.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    sim.process_bar(_bar("2024-01-02", open_price=100.0))
+    pos = portfolio.positions["AAA"]
+    # Exactly what ``_retire_orders_against_closed_position`` does when it emits
+    # the replacement close — modelled here so this suite stays engine-level.
+    for po in list(order_book.pending_for_symbol("AAA")):
+        if po.request.order_type == OrderType.STOP_LIMIT:
+            order_book.cancel(po.order_id)
+    order_book.submit(
+        OrderRequest(
+            client_order_id="tp-close",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=pos.qty,
+            order_type=OrderType.MARKET,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}take_profit",
+        ),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+    for po in order_book.pending_for_symbol("AAA"):
+        if po.request.client_order_id == "tp-close":
+            po.working_against_entry_order_id = pos.entry_order_id
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=108.0, high=108.0, low=94.0, close=100.0)
+    )
+    assert len(outcome.exit_fills) == 1, (
+        "the intended close must be eligible on this bar, or the sibling test "
+        "proves nothing about which order won"
+    )
+    assert outcome.exit_fills[0].price == 108.0, (
+        "with no leg racing it, the MARKET close prices at the bar's open"
+    )

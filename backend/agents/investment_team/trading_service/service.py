@@ -500,7 +500,8 @@ class _EvalGate(NamedTuple):
 
     A named result (vs. a bare tuple) so the per-position gate facts are
     self-documenting and safe to extend. ``resting_limit_stop_ids`` holds the
-    ``order_id`` of an already-resting engine STOP_LIMIT (or ``None``);
+    ``order_id`` of EVERY already-resting engine STOP_LIMIT competing with this
+    position (empty when none rests), in either latch state;
     ``entry_continuation_in_flight`` is ``True`` when the position's own entry is
     still filling (a same-side partially-filled continuation rests);
     ``scaled_partial_in_flight`` is ``True`` when a prior scaled-take-profit rung's
@@ -923,10 +924,15 @@ class _EngineExitDispatcher:
         # A resting limit-style STOP_LIMIT is excluded from evaluation, so when one
         # rests the chosen intent is always a *different*, market-style rule
         # (take-profit / signal-exit / scaled rung) — a guaranteed close next bar.
-        # Cancel the now redundant resting stop-limit: left on the book it sits
-        # ahead of this close in submission order, so on a recovery bar that makes
-        # its latched limit marketable it would fill first at the stale limit price
-        # and the intended close would be dropped by the stale-continuation guard.
+        # Cancel the now redundant resting stop-limits: left on the book they sit
+        # ahead of this close in submission order, so ``process_bar`` examines them
+        # first and they fill at their stale stop geometry while this close is still
+        # waiting to price at the bar's open — after which the stale-continuation
+        # guard drops it. That holds in BOTH latch states, which is why the scan
+        # reports both: a LATCHED one needs only a bar that makes its limit
+        # marketable, and an UN-ARMED one needs only a bar whose range crosses its
+        # stop, since ``stop_limit_triggered`` arms off the full high/low and the
+        # order can arm and fill on that same bar.
         # Binding alone cannot prevent this — it only retires the stop *after* the
         # position is gone, which is too late once the stop itself is what closed it.
         if ctx.resting_limit_stop_ids:
@@ -1062,18 +1068,16 @@ class _EngineExitDispatcher:
             deliberately preserved alongside its replacement — see
             ``_retire_superseded_stop_loss_fallbacks`` — so two competing
             stop-limits can rest at once, and cancelling only one would leave
-            the other ahead of the replacement in submission order. An entry-attached
-            child OF THIS MIGRATION — ``parent_order_id`` set *and* carrying
-            the ``engine_exit:stop_loss`` reason bound to this position's
-            entry — is reported only once it has LATCHED
-            (``stop_limit_armed``): before that it is the position's standing
-            protection rather than a competing close, and cancelling it would
-            leave the position unprotected. The narrowing is load-bearing, not
-            incidental: any OTHER attached child (a strategy-supplied
-            ``attached_stop_loss`` leg, say) is reported regardless of latch,
-            because the dispatcher has always relied on this id to notice it.
-            Keying the skip on ``parent_order_id`` alone would hide those —
-            see the per-order check below for the full rationale;
+            the other ahead of the replacement in submission order. Reported in BOTH
+            latch states, entry-attached children of this migration included:
+            the cancel fires only for a close that EMPTIES the position, and an
+            un-armed child left on the book there is examined before that close
+            in ``process_bar``'s submission-ordered snapshot, where it can arm
+            and fill off the bar's full range while the close prices at the open
+            — booking the stop's exit in place of the intended one. Cancelling
+            costs no protection: the cede is derived from
+            ``resting_stop_child_present``, so removing the child hands the rule
+            back to the bar-close evaluator — see the per-order check below;
           * ``entry_continuation_in_flight`` — ``True`` iff a scaled-take-profit
             spec has the position's own same-side, partially-filled entry
             continuation still resting (so the scaled deferral can read it without a
@@ -1091,7 +1095,7 @@ class _EngineExitDispatcher:
             ``engine_exit:stop_loss`` reason, bound to the position's entry).
             Covers both attached shapes — a plain ``STOP`` for a market-style
             rule, a ``STOP_LIMIT`` for a limit-style one — since it answers
-            whether protection EXISTS, not what order type it is. Unlike
+            whether protection EXISTS, not what order type it is. Like
             ``resting_limit_stop_ids`` it is NOT gated on the latch: an un-armed
             child still counts as protection present. ``_evaluate`` consumes it
             to make the rule cede per-position — the rule is handed to the
@@ -1157,51 +1161,49 @@ class _EngineExitDispatcher:
             if is_resting_migration_leg:
                 resting_stop_child_present = True
             if track_resting and po_req.order_type == OrderType.STOP_LIMIT:
-                # An ENTRY-ATTACHED stop-limit (``parent_order_id`` set — only
+                # EVERY opposite-side stop-limit resting against this position is
+                # reported, in BOTH latch states — including an entry-attached
+                # child of this migration (``parent_order_id`` set — only
                 # ``OrderBook.submit_attached`` can set it, and ``submit`` rejects
-                # it outright, so this is structural) counts here only once it has
-                # LATCHED. The two states are genuinely different orders to this
-                # dispatcher:
+                # it outright, so that marker is structural).
                 #
-                # * Un-armed — the stop level has never been breached, so the child
-                #   is the position's standing protection, placed proactively at
-                #   entry-fill by the resting-stop mechanism. Reporting it would
-                #   make ``maybe_emit`` cancel it the first time any other rule
-                #   fires, stripping that protection while the replacement close is
-                #   still only queued and leaving a participation-capped residual
-                #   naked until the rule next triggers. Its lifecycle belongs to the
-                #   fill simulator: it sits in the entry's OCO group and is bound to
-                #   the position, so an OCO sibling fill or the stale-continuation
-                #   guard retires it.
-                # * Latched (``stop_limit_armed``) — the stop HAS been breached and
-                #   the order is now a resting LIMIT that no longer needs the stop
-                #   re-crossed (see ``FillSimulator.process_bar``'s latch). It is a
-                #   live competing close, and it precedes any replacement close in
-                #   submission order, so on a recovery bar it would fill at its
-                #   stale limit and the intended close would be dropped by the
-                #   stale-continuation guard — exactly the race ``maybe_emit``'s
-                #   cancel exists to prevent. Cancelling it there is also strictly
-                #   safer than leaving it: the replacement is a GUARANTEED market
-                #   close, whereas this latched limit already failed to fill once.
+                # An earlier revision skipped this migration's own leg while
+                # un-armed, on the reasoning that an un-breached child is the
+                # position's standing protection rather than a competing close.
+                # That reasoning does not survive contact with the only place the
+                # ids are used to cancel: ``_retire_orders_against_closed_position``
+                # runs ONLY for a close that EMPTIES the position, never merely
+                # because "some other rule fired". At that point the child is
+                # protecting a position which a guaranteed market close will flatten
+                # at the next bar's OPEN, and leaving it on the book inverts the
+                # intrabar chronology:
                 #
-                # The skip is narrowed to THIS migration's own leg by reason, not
-                # to "has a parent": ``resolve_resting_stop_loss_attachment`` stamps
-                # the leg with the byte-stable ``ENGINE_EXIT_REASON_STOP_LOSS``
-                # literal, while every other attached stop child carries a
-                # different one (a bracket leg's ``engine_exit:bracket_sl``, a
-                # generic ``attached_exits`` leg's ``engine_exit:exit_leg_{idx}``).
-                # Keying on the parent alone would also hide a strategy-supplied
-                # ``attached_stop_loss`` STOP_LIMIT child — which this dispatcher
-                # does NOT own and has always relied on ``resting_limit_stop_ids``
-                # to notice — and the spec's own limit-style stop would then emit a
-                # SECOND full-size resting STOP_LIMIT against the same position.
+                #   ``process_bar`` walks a submission-ordered snapshot, so the
+                #   child — submitted back at entry-fill — is examined BEFORE the
+                #   replacement close queued only last bar. A STOP_LIMIT is armed by
+                #   ``stop_limit_triggered`` against the bar's full high/low range
+                #   and can arm AND fill on that same bar, whereas the MARKET close
+                #   prices at ``bar.open``. So on a bar that opens near the
+                #   take-profit and then dips through the stop, the child fills at
+                #   its stale stop geometry and the stale-continuation guard drops
+                #   the intended close — booking a stop-loss exit in place of the
+                #   take-profit, at a price the open had already bettered.
                 #
-                # A dispatcher-emitted stop-limit (no parent) is unaffected: it only
-                # exists because the bar-close evaluator already detected the
-                # breach, so it is post-trigger by construction and stays tracked
-                # from the moment it rests, exactly as before this migration.
-                if is_resting_migration_leg and not po.stop_limit_armed:
-                    continue
+                # Cancelling does NOT strip the position's protection, which is what
+                # the old skip was guarding against. The cede is derived per-bar from
+                # whether this migration's leg is actually on the book
+                # (``resting_stop_child_present`` below): cancelling the child makes
+                # the next scan report no protection, so ``exclude_rule_index`` stops
+                # applying and the bar-close evaluator resumes covering the stop rule
+                # for whatever residual a participation-capped close leaves open.
+                # The trade is one bar of INTRABAR cover on that residual — the
+                # pre-migration behavior — against mispricing the whole position's
+                # exit, so it is not close.
+                #
+                # The dispatcher's own trigger-time emission (no parent) is reported
+                # in either latch state, as it always was: it exists only because the
+                # bar-close evaluator already detected the breach, so it is
+                # post-trigger by construction.
                 resting_limit_stop_ids.append(po.order_id)
         return _PendingGateFacts(
             resting_limit_stop_ids=tuple(resting_limit_stop_ids),

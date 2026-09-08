@@ -264,12 +264,25 @@ def _entry_bar(close: float = 100.0) -> Bar:
     )
 
 
-def _rest_stop_child_on_book(order_book: OrderBook, *, entry_order_id: str) -> None:
+def _rest_stop_child_on_book(
+    order_book: OrderBook,
+    *,
+    entry_order_id: str,
+    order_type: OrderType = OrderType.STOP,
+    limit_price: float | None = None,
+) -> PendingOrder:
     """Put a resting stop-loss child on the book, shaped as
     ``FillSimulator._materialize_stop_child`` produces one: parent-attached,
     carrying the byte-stable ``engine_exit:stop_loss`` reason, and bound to the
     position it protects. That triple is what ``_scan_pending_for_gate``
     recognises as this migration's own protection for the position.
+
+    ``order_type`` selects the attached shape — a plain ``STOP`` for a
+    market-style rule (the default), a ``STOP_LIMIT`` (with ``limit_price``) for
+    a limit-style one. One construction site for both so the shape cannot drift
+    between the suites that assert on it.
+
+    Returns the resting child so callers can assert on its identity.
     """
     parent = order_book.submit(
         OrderRequest(
@@ -289,8 +302,9 @@ def _rest_stop_child_on_book(order_book: OrderBook, *, entry_order_id: str) -> N
             symbol="AAA",
             side=OrderSide.SHORT,
             qty=100.0,
-            order_type=OrderType.STOP,
+            order_type=order_type,
             stop_price=95.0,
+            limit_price=limit_price,
             reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
         ),
         submitted_at="2024-01-01",
@@ -299,6 +313,7 @@ def _rest_stop_child_on_book(order_book: OrderBook, *, entry_order_id: str) -> N
         oco_group_id=f"oco_{parent.order_id}",
     )
     child.working_against_entry_order_id = entry_order_id
+    return child
 
 
 @pytest.mark.parametrize("resting_enabled", [True, False])
@@ -609,12 +624,21 @@ def _scan_with_child(
     return scan.resting_limit_stop_ids[0] if scan.resting_limit_stop_ids else None
 
 
-def test_unarmed_entry_attached_stop_limit_is_not_reported_for_cancellation() -> None:
-    """An entry-attached child whose stop has never been breached is the
-    position's standing protection, not a competing close. Reporting it would
-    make ``maybe_emit`` cancel it the first time any other rule fires, leaving
-    the position unprotected while the replacement close is still only queued."""
-    assert _scan_with_child(armed=False, parent_order_id="entry-1") is None
+def test_unarmed_entry_attached_stop_limit_is_reported_for_cancellation() -> None:
+    """An entry-attached child must be reported in BOTH latch states.
+
+    An earlier revision skipped it while un-armed, reasoning that an un-breached
+    child is standing protection rather than a competing close. But the ids are
+    consumed by ``_retire_orders_against_closed_position``, which runs ONLY for a
+    close that EMPTIES the position — and there an un-armed child is still a
+    competing close, because ``stop_limit_triggered`` arms off the bar's full
+    high/low and the order can arm AND fill on the same bar. Since ``process_bar``
+    walks a submission-ordered snapshot, the child (submitted at entry-fill)
+    is examined before the close queued only last bar, so it fills at its stale
+    stop geometry and the stale-continuation guard drops the intended exit.
+    ``test_unarmed_attached_stop_limit_pre_empts_the_close_it_races`` drives that
+    outcome through the fill simulator."""
+    assert _scan_with_child(armed=False, parent_order_id="entry-1") == "po-1"
 
 
 def test_latched_entry_attached_stop_limit_is_reported_for_cancellation() -> None:
@@ -905,4 +929,72 @@ def test_scan_reports_every_competing_stop_limit_not_just_the_last() -> None:
     assert set(scan.resting_limit_stop_ids) == {"po-fallback", "po-child"}, (
         "both competing stop-limits must be reported, or the replacement close "
         "cancels one and races the other"
+    )
+
+
+def test_take_profit_close_cancels_the_unarmed_attached_stop_limit() -> None:
+    """A position-emptying close must clear this migration's leg in EITHER latch
+    state, or the leg races the close it was replaced by.
+
+    The stop rule is ceded to the resting mechanism, so the rule that fires here
+    is the take-profit — exactly the "different, market-style rule" the cancel
+    documents. Left on the book the un-armed child outranks that close in
+    ``process_bar``'s submission-ordered snapshot and can arm and fill off the
+    next bar's range, closing the position at the stop's geometry instead.
+    """
+    exits = _EngineExitDispatcher(
+        exit_rules=[_limit_stop_rule(), TakeProfitRule(pct=0.05)],
+        exclude_rule_index=0,
+    )
+    tracker = {
+        "AAA": _TrackedPosition(
+            side=OrderSide.LONG,
+            entry_price=100.0,
+            entry_order_id="o1",
+            just_opened=False,
+            high_since_entry=100.0,
+            low_since_entry=100.0,
+        )
+    }
+    portfolio = Portfolio(initial_capital=10_000_000.0)
+    portfolio.positions["AAA"] = Position(
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=100.0,
+        entry_price=100.0,
+        entry_bid_price=100.0,
+        entry_timestamp="2024-01-01",
+        entry_order_id="o1",
+        entry_client_order_id="c-o1",
+        original_qty=100.0,
+        entry_order_type="market",
+    )
+    order_book = OrderBook()
+    child = _rest_stop_child_on_book(
+        order_book,
+        entry_order_id="o1",
+        order_type=OrderType.STOP_LIMIT,
+        limit_price=94.05,
+    )
+    assert not child.stop_limit_armed, "fixture must start un-armed, or it proves the latched case"
+    assert child.order_id in order_book, "child must rest before the close is emitted"
+
+    pending_for_prev: list[OrderRequest] = []
+    exits.maybe_emit(
+        # 108 clears the 105 take-profit target and stays well above the 95 stop,
+        # so the take-profit is the only rule that fires.
+        cur_bar=_entry_bar(close=108.0),
+        position_tracker=tracker,
+        portfolio=portfolio,
+        pending_for_prev=pending_for_prev,
+        order_book=order_book,
+        result=TradingServiceResult(),
+    )
+
+    assert len(pending_for_prev) == 1, "the take-profit close must be emitted"
+    assert pending_for_prev[0].order_type == OrderType.MARKET
+    assert child.order_id not in order_book, (
+        "the un-armed attached stop-limit must be cancelled by the replacement "
+        "close; left resting it precedes that close in the fill loop and can "
+        "arm and fill off the same bar's range, pre-empting the exit"
     )
