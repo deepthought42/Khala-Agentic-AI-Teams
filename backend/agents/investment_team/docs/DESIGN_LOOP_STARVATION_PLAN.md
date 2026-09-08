@@ -332,28 +332,37 @@ in a step, so the decision list matches what the plan actually commits to.
 - [ ] **Step 2.1** — `_design_starvation_probe_enabled() -> bool`, returning
       `_env_flag("STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED")`, placed with
       the other flag helpers.
-- [ ] **Step 2.2** — `_starvation_probe_signature(spec) -> tuple`:
+- [ ] **Step 2.2** — `_starvation_probe_signature(spec, resolved_symbols) -> tuple`:
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
-      spec.asset_class, tuple(spec.target_symbols),
-      (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`.
+      spec.asset_class, tuple(resolved_symbols),
+      (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`,
+      where `resolved_symbols` is `market_data_service.resolve_strategy_symbols(spec)`
+      — the same call Step 1.1's seam makes.
 
       It extends synthesis's `(entry_rules, requires_custom_code)` key with
-      `asset_class`, `target_symbols` and `as_of`, because — unlike synthesis —
-      the design loop can change which bars the verdict is computed against
-      between rounds.
+      `asset_class`, the **resolved** symbols and `as_of`, because — unlike
+      synthesis — the design loop can change which bars the verdict is computed
+      against between rounds. That makes the correspondence with Step 1.1's bars
+      key element-for-element: resolved symbols, `asset_class`, `as_of`, plus
+      `config.start_date` / `config.end_date`, which are fixed for the attempt
+      and deliberately omitted.
 
-      Read that correspondence precisely, because it is not element-for-element
-      with Step 1.1's bars key. That key's members are the **resolved** symbols,
-      `asset_class`, `config.start_date`, `config.end_date` and `as_of`.
-      `target_symbols` is not one of them: it stands in for the resolved universe,
-      and does so soundly only because `resolve_strategy_symbols` is a pure
-      function of the spec — non-empty `target_symbols` verbatim, otherwise the
-      asset-class default truncated to `_max_universe_symbols()`. **That
-      determinism is an assumption this signature depends on**, so it is stated
-      here rather than left implicit: if symbol resolution ever gains a
-      non-spec input, this memo silently goes stale and the signature must gain
-      that input too. `config.start_date` / `config.end_date` are fixed for the
-      attempt and are deliberately omitted.
+      **Use the resolved universe, never `spec.target_symbols` as a proxy for it.**
+      An earlier revision took the proxy and documented the assumption it needed —
+      that `resolve_strategy_symbols` is a pure function of the spec. That
+      assumption is false today, not merely fragile: on the empty-`target_symbols`
+      path the asset-class default is truncated to `_max_universe_symbols()`,
+      which calls `os.getenv("STRATEGY_LAB_MAX_UNIVERSE_SYMBOLS")` on **every**
+      invocation. Change that variable mid-attempt and the universe changes while
+      a `target_symbols`-based signature does not, so Step 2.4's
+      "signature unchanged ⇒ `cache.findings`" short-circuit would serve a verdict
+      computed against the old universe.
+
+      Resolving is cheap — list selection and truncation, no I/O — so there is no
+      reason to prefer the proxy. The general lesson is worth more than the fix:
+      documenting an assumption is not the same as verifying it, and this one was
+      written down without being checked. Where an input can be *computed*
+      instead of *assumed*, compute it.
 
       `as_of` is in the signature even though
       `build_spec_from_dict` never sets `audit` and the snapshot id is expected
@@ -547,6 +556,7 @@ suddenly slows down is the signal it did not take.
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
+| A mid-attempt universe-cap change staling the memo | Signature carries the resolved universe, not `target_symbols` (Step 2.2) |
 | A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
