@@ -259,6 +259,15 @@ in a step, so the decision list matches what the plan actually commits to.
 - ≥ 90% line coverage on new/changed code.
 - No network in tests: the new fetch seam is stubbed by an autouse conftest
   fixture (Task 4).
+- **Never memoize an absence.** Every early `return None` / `return []` on this
+  path leaves its memo unwritten, so the next round retries. Review found this
+  same defect three separate times while the plan was being written — in the bars
+  memo, in the findings memo on the `None`-fetch path, and on the D9 suppression
+  path — because each looked like an independent decision. It is one rule:
+  caching "we couldn't tell" turns a transient fault into a permanent one, and
+  here that means one flaky symbol silently hiding a genuinely starved rule for
+  the rest of the attempt. Apply it to any early return added during
+  implementation, not only the three the plan already names.
 
 ---
 
