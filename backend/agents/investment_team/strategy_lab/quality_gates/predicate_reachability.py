@@ -270,6 +270,18 @@ class _RuleStarvation:
     is what keeps :attr:`verdict` from claiming a rule is never the selection
     when it demonstrably is.
 
+    Every ``warmup_*`` field is a per-bar tally, and the sweep behind it is
+    view-major (all of one symbol's bars, then the next): see
+    ``_sweep_statuses``. ``HistoricalReplayStream`` instead merges the symbols
+    into one timeline sorted by date, so with symbols whose histories start on
+    different dates a bar counted "on the prefix" here can replay AFTER a bar
+    counted in the steady-state window. Coverage is unaffected — it is decided
+    per bar, against the rules' status on that same bar — but no cross-symbol
+    ORDERING can be read out of these counters, which is why the finding says a
+    rule is selected while the earlier rules are warming rather than at the
+    start of the window. Each symbol's warmup bars are a prefix of ITS history;
+    the union of them is not a prefix of the replay.
+
     The prefix supplies the opposite evidence just as readily, and the other
     three fields carry it. A prefix fire that an earlier rule DOES cover is
     permanent shadowing: :attr:`warmup_covered_fires` counts it and
@@ -1092,13 +1104,14 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         f"earlier rule is still warming up: it fires on "
                         f"{v.warmup_independent_fires} warmup-prefix bar(s) that no earlier rule "
                         f"is satisfied on, but across the {v.evaluated} bar(s) where every "
-                        f"earlier rule is warm {steady_state}. So {_selection_clause(custom)} at "
-                        "the start of the window and never after — whether any given selection "
+                        f"earlier rule is warm {steady_state}. So {_selection_clause(custom)} "
+                        "while those earlier rules are still warming up, and never once they "
+                        "are warm — whether any given selection "
                         "becomes an order still depends on state this probe does not model (the "
                         "engine skips entry evaluation while the symbol holds a position or a "
                         "pending entry, and risk sizing can cap a matched entry to zero). Its "
-                        "window into the strategy is an artefact of the fetched window's left "
-                        "edge either way. How much of that "
+                        "window into the strategy is an artefact of where each symbol's fetched "
+                        "history begins, either way. How much of that "
                         "head start survives a paper run depends on the run's priming: paper "
                         "trading suppresses entries across its warm-up prefix, so a prime long "
                         "enough to warm the earlier rules removes the head start altogether, "

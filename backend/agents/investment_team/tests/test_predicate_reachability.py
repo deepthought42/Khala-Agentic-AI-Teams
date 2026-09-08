@@ -801,6 +801,20 @@ def test_warmup_only_finding_conditions_the_selection_claim_on_the_custom_path()
     assert "in THIS backtest it is the rule first-match priority selects" not in detail
 
 
+def test_warmup_only_finding_states_the_warmup_condition_not_a_position_in_time() -> None:
+    # The sweep is view-major (one symbol's bars, then the next) while
+    # HistoricalReplayStream merges symbols into one date-sorted timeline. With
+    # histories that begin on different dates, a bar counted on the prefix here
+    # can replay AFTER one counted in the steady-state window, so "at the start
+    # of the window" is a temporal claim these counters cannot support. What
+    # they do support is the condition: warming versus warm.
+    detail = _starvation(_warmup_shadowed_spec())[0].details
+    assert "while those earlier rules are still warming up" in detail
+    assert "never once they are warm" in detail
+    assert "at the start of the window" not in detail
+    assert "the fetched window's left edge" not in detail
+
+
 def test_warmup_only_finding_claims_selection_plainly_on_the_compiled_path() -> None:
     spec = _warmup_shadowed_spec()
     detail = _starvation(spec)[0].details
