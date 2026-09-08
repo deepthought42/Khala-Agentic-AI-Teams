@@ -29,6 +29,7 @@ from shared.hitl.status import pending_questions_from_raw
 from shared.run_thread_registry import RunThreadRegistry
 from software_engineering_team.api.models import (
     CurrentActivityEntry,
+    DefaultedQuestion,
     FailedTaskDetail,
     JobStatusResponse,
     TaskStateEntry,
@@ -250,7 +251,7 @@ def _coerce_progress(value: Any) -> Optional[int]:
     return coerce_progress(value)
 
 
-def _coerce_defaulted_questions(value: Any) -> List[Dict[str, Any]]:
+def _coerce_defaulted_questions(value: Any) -> List[DefaultedQuestion]:
     """Coerce a stored ``defaulted_questions`` value into a list of dicts.
 
     Postconditions: always returns a list. A missing key, a non-list, or a list
@@ -269,7 +270,26 @@ def _coerce_defaulted_questions(value: Any) -> List[Dict[str, Any]]:
     """
     if not isinstance(value, list):
         return []
-    return [entry for entry in value if isinstance(entry, dict)]
+    return [
+        DefaultedQuestion(
+            question_id=str(entry.get("question_id", "")),
+            question_text=_optional_str(entry.get("question_text")),
+            selected_option_id=_optional_str(entry.get("selected_option_id")),
+            selected_option_label=_optional_str(entry.get("selected_option_label")),
+        )
+        for entry in value
+        if isinstance(entry, dict)
+    ]
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    """Coerce a stored value to a str, or None.
+
+    Postconditions: ``None`` stays ``None``; anything else is stringified rather
+    than rejected, so a corrupt record renders as text instead of failing
+    validation on a field whose whole purpose is to be readable.
+    """
+    return None if value is None else str(value)
 
 
 def _coerce_current_activity(value: Any) -> Optional[CurrentActivityEntry]:
@@ -382,7 +402,9 @@ def build_job_status_response(job_id: str, data: Dict[str, Any]) -> JobStatusRes
         # Not cleared by answers_accepted, unlike the pause envelope above: a
         # default that was applied stays applied, and the record of it must outlive
         # the pause that produced it.
-        "defaulted_questions": _coerce_defaulted_questions(data.get("defaulted_questions")),
+        "defaulted_questions": [
+            dq.model_dump() for dq in _coerce_defaulted_questions(data.get("defaulted_questions"))
+        ],
         "resume_token": None if answers_accepted else resume_token,
         "planning_subprocess": data.get("planning_subprocess"),
         "planning_completed_phases": data.get("planning_completed_phases") or [],

@@ -3275,14 +3275,45 @@ Two details of that reporting are load-bearing and easy to get wrong:
   PRA reports `waiting_for_answers`, and PRA's review loop raises several unrelated rounds with
   fresh ids (§4.3's multi-round case). Under `allow_repause=False` nothing raises, so each round is
   defaulted in turn. A caller that overwrites its store on each call keeps only the last round.
-  `plan_project_activity` therefore accumulates, de-duplicating on **`question_id` AND
-  `question_text` together** — never the id alone, for the same positional-`q{index}` reason §4.3.1
-  already gives for retry reconciliation — and writes the whole accumulated list each time, which
-  keeps a Temporal retry idempotent.
+  `plan_project_activity` therefore accumulates, de-duplicating on **the whole audit record** —
+  `question_id`, `question_text`, `selected_option_id` and `selected_option_label` together — and
+  writes the whole accumulated list each time, which keeps a Temporal retry idempotent.
+
+  **Read risk 3 before narrowing that key.** An earlier revision of this addendum specified the
+  `(question_id, question_text)` pair and cited §4.3.1 as mandating it; that was the pair risk 3
+  explicitly withdrew in favour of the full canonical question shape. PRA's parser defaults both
+  fields identically across rounds, so the pair collapses two unrelated rounds that differ only in
+  their options. The audit record is a narrower object than the pending-question dict, so this key
+  is not the full canonical shape either, and risk 3's own conclusion carries over unchanged: with
+  no PRA-side round identifier, nothing distinguishes a re-presented question from a coincidentally
+  identical later round. De-duplication is still required — `_on_poll` re-presents an unanswered
+  batch on every poll — so the residual collision is accepted knowingly rather than closed.
+
+- **A terminal attempt clears the field before it runs.** The hook only ever writes, and the
+  activity is retryable; an attempt that records defaults and then fails leaves the pause envelope
+  consumed, so the retry replays Planning fresh. A replay that matches every question never fires
+  the hook, and without the clear the job would keep the failed attempt's records while shipping a
+  plan that was fully human-answered.
+
+- **A failed audit write must raise a type that survives three boundaries.** Leaving the hook
+  unguarded is not sufficient, and assuming it was is a mistake worth recording: `poll_until_terminal`
+  folds any `on_poll` exception outside its `passthrough_exceptions` into a failed status,
+  `DocumentProductionAgent.run` logs that and carries on producing a plan, and `run_workflow`'s broad
+  `except Exception` folds it again. `planning_team.exceptions.PlanningDefaultsNotRecorded` is passed
+  through by the poll loop and by `run_workflow` — the mirror image of `PlanningAnswerPauseSignal` —
+  so the failure reaches the activity and fails it, and Temporal retries against a cleared record.
+  The passthrough stays narrow: an ordinary callback error still folds into a failed status.
+
+- **The record proves the answers were chosen and submitted, not that they were applied.** The hook
+  fires before `_on_poll` POSTs the batch, and that POST's result is discarded, so a rejected
+  submission is indistinguishable from an accepted one — the pre-existing gap the team contract
+  tracks as deferred wiring work. The status field states the narrower claim rather than implying
+  the broader one.
 - **Each record carries the question text and the chosen option's label, not just ids.** The
   activity clears the pause envelope holding `pending_questions` before the replay, and a defaulted
   terminal batch never raises a pause that would persist the newly generated questions. A record of
-  bare, LLM-minted ids would name decisions no human made without saying what was decided. A hook that raises is not
+  bare, LLM-minted ids would name decisions no human made without saying what was
+  decided. A hook that raises is not
 caught — an unrecorded default is the failure this exists to prevent, and failing the round is the
 recoverable half of that trade.
 

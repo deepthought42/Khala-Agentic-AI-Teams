@@ -1412,7 +1412,7 @@ def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
         ),
     )
 
-    activities.plan_project_activity(
+    result = activities.plan_project_activity(
         "pp-stale",
         str(tmp_path),
         {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
@@ -1420,7 +1420,17 @@ def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
         allow_repause=False,
     )
 
-    assert js.get_job("pp-stale")["defaulted_questions"] == []
+    # Assert the activity actually succeeded before trusting the empty field, the
+    # same guard the sibling drifted-question test carries. Without it, a
+    # regression that cleared the field and then failed the job through the
+    # generic error handler -- or returned a paused outcome -- would pass this
+    # test green while the behaviour it protects was broken.
+    assert result.get("outcome") != "paused"
+    assert result["requirements_title"] == "Test"
+
+    job = js.get_job("pp-stale")
+    assert job["status"] != js.JOB_STATUS_FAILED
+    assert job["defaulted_questions"] == []
 
 
 def test_a_failed_audit_write_raises_a_passthrough_exception(tmp_path, patched_job_store) -> None:
@@ -1496,7 +1506,16 @@ def test_plan_project_status_surfaces_defaulted_questions(tmp_path, patched_job_
 
     response = build_job_status_response("pp-defaulted", js.get_job("pp-defaulted"))
 
-    assert response.defaulted_questions == [{"question_id": "q9", "selected_option_id": "opt-b"}]
+    # A typed field, so the response carries the full declared shape rather than
+    # echoing whatever the job record happened to store.
+    assert [dq.model_dump() for dq in response.defaulted_questions] == [
+        {
+            "question_id": "q9",
+            "question_text": None,
+            "selected_option_id": "opt-b",
+            "selected_option_label": None,
+        }
+    ]
 
 
 def test_plan_project_status_degrades_a_malformed_defaulted_questions_value(
@@ -1520,9 +1539,12 @@ def test_plan_project_status_degrades_a_malformed_defaulted_questions_value(
     )
 
     js.update_job("pp-garbled", defaulted_questions=[{"question_id": "q1"}, "junk", 7])
-    assert build_job_status_response(
-        "pp-garbled", js.get_job("pp-garbled")
-    ).defaulted_questions == [{"question_id": "q1"}]
+    kept = build_job_status_response("pp-garbled", js.get_job("pp-garbled")).defaulted_questions
+    assert [dq.question_id for dq in kept] == ["q1"]
+    # The surviving entry is filled out to the declared shape, not passed through:
+    # a stored dict missing keys must not yield a row missing fields.
+    assert kept[0].question_text is None
+    assert kept[0].selected_option_label is None
 
 
 def test_plan_project_activity_retry_reemits_persisted_pause_without_rerunning(

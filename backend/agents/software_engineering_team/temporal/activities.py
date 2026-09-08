@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from temporalio import activity
 
@@ -595,7 +595,12 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
     assert isinstance(job_id, str) and job_id, (
         "_record_defaulted_questions requires a non-empty job_id"
     )
-    accumulated: Dict[tuple, Dict[str, Any]] = {}
+    # Explicit arity: the key is the whole audit record, and every component comes
+    # from ``.get()`` so any of them can be None. A bare ``tuple`` would hide both
+    # facts, which the de-duplication contract above depends on.
+    accumulated: Dict[
+        Tuple[Optional[str], Optional[str], Optional[str], Optional[str]], Dict[str, Any]
+    ] = {}
 
     def _record(records: List[Dict[str, Any]]) -> None:
         from planning_team.exceptions import PlanningDefaultsNotRecorded

@@ -167,6 +167,34 @@ class CurrentActivityEntry(BaseModel):
     task_title: Optional[str] = Field(None, description="Title of that task.")
 
 
+class DefaultedQuestion(BaseModel):
+    """One clarification answer the system chose because nobody answered it.
+
+    Every field but ``question_id`` is optional, and deliberately so: the record is
+    assembled from LLM-parsed question dicts, and a question with no text or an
+    option with no label must still produce a row rather than break the status
+    endpoint. Degrade, never raise -- an audit record that 500s tells a reader
+    less than an incomplete one.
+    """
+
+    question_id: str = Field(
+        default="",
+        description="The clarification question's id, as minted by the analysis job.",
+    )
+    question_text: Optional[str] = Field(
+        default=None,
+        description="The question as asked, or null when it carried no text.",
+    )
+    selected_option_id: Optional[str] = Field(
+        default=None,
+        description="The option the system picked, or null when there was none to pick.",
+    )
+    selected_option_label: Optional[str] = Field(
+        default=None,
+        description="That option's human-readable label, or null when it carried none.",
+    )
+
+
 class JobStatusResponse(BaseModel):
     """Response from GET /run-team/{job_id}."""
 
@@ -210,7 +238,7 @@ class JobStatusResponse(BaseModel):
         default=False,
         description="True when job is blocked waiting for user to answer pending questions.",
     )
-    defaulted_questions: List[Dict[str, Any]] = Field(
+    defaulted_questions: List[DefaultedQuestion] = Field(
         default_factory=list,
         description=(
             "Clarification answers chosen and submitted by the system, not by a human. "
