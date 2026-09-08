@@ -415,8 +415,10 @@ it once and pass it, rather than recomputing and trusting agreement.
       `len(entry_rules) < 2`, so fetching the universe first to reach a
       guaranteed-empty verdict is pure waste on a common, valid spec shape —
       and the flag defaults on, so every review round of every single-rule spec
-      would pay it). Then, **inside the guard of detail 1**: resolve the
-      universe **once** —
+      would pay it). Everything from here on runs **inside an outer
+      `try` / `except Exception` guard** — see detail 1 for its exact extent and
+      why it starts here rather than at the fetch. Resolve the universe
+      **once** —
       `symbols = self.market_data_service.resolve_strategy_symbols(spec)`, empty
       ⇒ `[]` — build the signature from that same list, and only then compare it
       against `cache.signature`: unchanged ⇒ `cache.findings`. **That order is
@@ -432,6 +434,16 @@ it once and pass it, rather than recomputing and trusting agreement.
       the reviewer to return `ready=false`, which would hard-block a deliberate
       priority ordering), store on the cache, return.
       `"design"` is a valid `StrategyLabPhase` literal — no models change needed.
+
+      One consequence of that ordering, stated rather than left for an
+      implementer to discover and "fix": **the memo no longer short-circuits the
+      resolution, and must not be made to.** A cache hit still pays one
+      `resolve_strategy_symbols` call. That is not waste — it is what makes the
+      hit trustworthy, because the resolution is the only thing that can tell
+      this round's universe from the memoized one (D11). Resolving is list
+      selection and truncation with no I/O, so the cost is negligible; skipping
+      it to save that cost would restore exactly the wrong-answer path D11
+      exists to close.
 
       Two contract details this helper must get right, both of them easy to get
       wrong and both pinned by tests in Task 5:
