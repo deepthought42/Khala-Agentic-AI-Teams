@@ -188,10 +188,14 @@ def _render_covered_sections_section(
     Preconditions:
         - ``covered_sections`` is ``None`` or a list of plan section titles. Entries
           that are not strings, or that are empty or whitespace-only, are tolerated
-          (skipped) — matching the ``isinstance(s, str) and s.strip()`` filter below,
-          and ``_render_allowed_claims_section``'s handling of malformed claim
-          entries: a bad entry must not fail a draft. Skipping a whitespace-only
-          title also keeps it from surfacing as an empty name in the joined list.
+          (skipped) — matching ``_render_allowed_claims_section``'s handling of
+          malformed claim entries: a bad entry must not fail a draft. Skipping a
+          whitespace-only title also keeps it from surfacing as an empty name in the
+          joined list.
+        - A surviving title may contain any internal whitespace; it is collapsed to
+          single spaces. Titles come from parsed planning output, so an embedded
+          newline is possible, and left alone it would break the header line in two
+          and push the titles after it into the block's body text.
         - ``elicited_stories`` is the same value the caller renders into its
           AUTHOR'S PERSONAL STORIES block, so this function can tell whether that
           block actually reaches the model.
@@ -205,10 +209,12 @@ def _render_covered_sections_section(
           reaches the model would assert a story the model cannot find, which is the
           one input under which a suppression instruction could read as licence to
           invent one.
-        - Otherwise returns a ``---``-delimited block naming the usable titles,
-          de-duplicated and sorted. Sorting is required for a stable prompt: callers
-          derive this list from a ``set``, whose iteration order varies run to run
-          under hash randomization.
+        - Otherwise returns a ``---``-delimited block naming the usable titles on one
+          line, whitespace-collapsed, de-duplicated and sorted. Sorting is required
+          for a stable prompt: callers derive this list from a ``set``, whose
+          iteration order varies run to run under hash randomization. De-duplication
+          happens after collapsing, so titles differing only in internal whitespace
+          collapse to one entry.
         - The returned block is self-contained (like the allowed-claims block, so any
           prompt that embeds it verbatim gets consistent guidance): it states that
           sections it does not name keep the never-fabricate rules unchanged, and
@@ -218,7 +224,7 @@ def _render_covered_sections_section(
     if not elicited_stories or not elicited_stories.strip():
         return ""
     titles = sorted(
-        {s.strip() for s in (covered_sections or []) if isinstance(s, str) and s.strip()}
+        {" ".join(s.split()) for s in (covered_sections or []) if isinstance(s, str) and s.strip()}
     )
     if not titles:
         return ""

@@ -3,11 +3,12 @@
 The planning stage records which plan sections already received an author story, but
 the writer only stops emitting a redundant ``[Author: ...]`` placeholder for them if
 the draft stage reads that set off the context and hands it to every writer call.
-There are five such call sites, and coverage has to reach all of them: a later
+There are six such call sites, and coverage has to reach all of them: a later
 revision that dropped it would lose the suppression block and could reintroduce a
 placeholder for a section whose story is sitting in the same prompt. These tests pin
-each site — the two that run without a job store and the three that need the HITL
-flow — plus the ``set`` -> sorted-list normalization and the ``None``/empty no-ops.
+each site — the three that run without a job store (initial draft, copy-edit
+``ReviseWriterInput``, story-fill kwargs) and the three that need the HITL flow —
+plus the ``set`` -> sorted-list normalization and the ``None``/empty no-ops.
 
 Harness mirrors ``test_draft_stage_selected_title_threading.py``, which pins the same
 sites for ``selected_title``.
@@ -54,6 +55,7 @@ def _capturing_stub_writer_class(captured_inputs: list, *, uncertainty_questions
             return WriterOutput(draft="# Draft\n\nBody.")
 
         def revise(self, revise_input, *a, **kw):
+            captured_inputs.append(("revise", revise_input))
             return WriterOutput(draft="# Revised\n\nBody.")
 
         def revise_from_user_feedback(self, *a, covered_sections=None, **kw):
@@ -319,3 +321,45 @@ def test_draft_stage_treats_empty_covered_sections_as_a_no_op(monkeypatch) -> No
     runs = [inp for kind, inp in captured if kind == "run"]
     assert runs, "the initial draft was never generated"
     assert runs[0].covered_sections is None
+
+
+def test_draft_stage_threads_covered_sections_into_the_copy_edit_revision(monkeypatch) -> None:
+    """The copy-edit loop's ``ReviseWriterInput`` carries coverage too.
+
+    This one runs after the story fill and re-renders the whole draft, with no
+    placeholder scan behind it, so a placeholder it reintroduces for a covered section
+    would ship to the editor.
+    """
+    from agents.blogging.blog_copy_editor_agent.models import CopyEditorOutput, FeedbackItem
+
+    class _EditorRequestingOneRevision:
+        def __init__(self, *a, **kw):
+            self._calls = 0
+
+        def run(self, *a, **kw):
+            self._calls += 1
+            return CopyEditorOutput(
+                approved=self._calls > 1,
+                summary="revise" if self._calls == 1 else "ok",
+                feedback_items=[]
+                if self._calls > 1
+                else [
+                    FeedbackItem(
+                        category="style",
+                        severity="must_fix",
+                        issue="Needs work.",
+                        suggestion="Fix it.",
+                    )
+                ],
+            )
+
+    captured = _run_stage(
+        monkeypatch,
+        covered_sections=COVERED_SECTIONS,
+        editor_class=_EditorRequestingOneRevision,
+    )
+
+    revisions = [inp for kind, inp in captured if kind == "revise"]
+    assert revisions, "the copy-edit revision never fired"
+    for revise_input in revisions:
+        assert revise_input.covered_sections == EXPECTED_ORDER

@@ -60,9 +60,10 @@ def run_draft_stage(
           received an author story during planning, or ``None``. This stage sorts it
           into the list the writer takes and threads it into every writer call that
           also receives ``elicited_stories``: the initial-draft ``WriterInput``, the
-          ``draft_input_kwargs`` handed to ``_fill_story_placeholders``, and all three
+          ``draft_input_kwargs`` handed to ``_fill_story_placeholders``, the three
           ``revise_from_user_feedback`` rounds (uncertainty answers, author feedback,
-          copy-edit escalation). Coverage has to reach every one of them — a later
+          copy-edit escalation), and the copy-edit loop's ``ReviseWriterInput``.
+          Coverage has to reach every one of them — a later
           round that omitted it would drop the suppression block and could reintroduce
           an ``[Author: ...]`` placeholder for a section whose story is sitting in the
           same prompt. Empty or ``None`` is the documented no-op: the writer's prompts
@@ -686,6 +687,7 @@ def run_draft_stage(
                     length_guidance=build_draft_length_instruction(length_policy),
                     selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
+                    covered_sections=covered_sections,
                     allowed_claims=allowed_claims,
                 )
                 previous_feedback_items = feedback_tracker.get_capped_previous_feedback(

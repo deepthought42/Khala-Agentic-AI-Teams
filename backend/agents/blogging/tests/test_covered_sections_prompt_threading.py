@@ -115,7 +115,11 @@ def _suppression_line(text: str) -> str:
     "skipped" half of the renderer's contract testable: ``f"{HEADER} Intro" in text``
     also passes for ``f"{HEADER} Intro, None, 7"``.
     """
-    return next(line for line in text.splitlines() if line.startswith(SUPPRESSION_HEADER))
+    line = next((line for line in text.splitlines() if line.startswith(SUPPRESSION_HEADER)), None)
+    # Guarded rather than a bare next(): if the block vanishes entirely, the failure
+    # should name the missing header and show the text, not read "StopIteration".
+    assert line is not None, f"no {SUPPRESSION_HEADER!r} line found in:\n{text}"
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +157,22 @@ def test_render_skips_unusable_entries() -> None:
 
     out = _render_covered_sections_section(["Intro", "", "   ", None, 7], STORIES)
     assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro"
+
+
+def test_render_collapses_internal_whitespace_in_titles() -> None:
+    """A title carrying an embedded newline must not split the single-line header.
+
+    Titles come from parsed planning output, so a stray newline is possible; left
+    alone it would push every title after it into the block's body text, where the
+    model no longer reads them as covered sections.
+    """
+    from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
+
+    out = _render_covered_sections_section(["Why it\nbroke", "Intro"], STORIES)
+    assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+    # ...and collapsing happens before de-duplication, so whitespace variants merge.
+    merged = _render_covered_sections_section(["Why it\nbroke", "Why it  broke"], STORIES)
+    assert _suppression_line(merged) == f"{SUPPRESSION_HEADER} Why it broke"
 
 
 def test_render_returns_empty_for_absent_or_empty_sections() -> None:
@@ -289,5 +309,66 @@ def test_revise_from_user_feedback_omits_suppression_when_absent(monkeypatch) ->
 
 
 def test_revise_from_user_feedback_omits_suppression_without_stories(monkeypatch) -> None:
+    """Byte-identity, not just an absent header: the suite's stated standard for every
+    no-op case, and the only assertion that also catches the block's instruction or
+    fallback clauses leaking in without their header line."""
+    baseline = _capture_revise_prompt(monkeypatch)
     prompt = _capture_revise_prompt(monkeypatch, covered_sections=["Intro"])
+
+    assert prompt == baseline
     assert SUPPRESSION_HEADER not in prompt
+
+
+# ---------------------------------------------------------------------------
+# build_revise_all_items_prompt() — the copy-edit / gates batch-revise prompt
+# ---------------------------------------------------------------------------
+
+
+def _capture_batch_revise_prompt(**overrides) -> str:
+    """Build the batch-revise prompt directly, with any ``ReviseWriterInput`` override."""
+    from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
+    from agents.blogging.blog_writer_agent.revision import build_revise_all_items_prompt
+    from agents.blogging.shared.content_plan import ContentPlanSection
+
+    from ._content_plan_test_utils import make_content_plan
+
+    items = [
+        FeedbackItem(category="style", severity="must_fix", issue="Tighten.", suggestion="Cut.")
+    ]
+    kwargs = {
+        "draft": "# Draft\n\nBody.",
+        "feedback_items": items,
+        "content_plan": make_content_plan(
+            overarching_topic="Topic",
+            narrative_flow="flow",
+            sections=[ContentPlanSection(title="Intro", coverage_description="hook", order=0)],
+        ),
+    }
+    kwargs.update(overrides)
+    return build_revise_all_items_prompt(
+        kwargs["draft"], items, "plan text", ReviseWriterInput(**kwargs), llm=None
+    )
+
+
+def test_batch_revise_prompt_names_covered_sections() -> None:
+    """The copy-edit and gates rewrite loops run *after* the story fill, so this prompt
+    needs the block too: without it the stories are present but nothing says which
+    sections they satisfy, and the system prompt still asks for [Author: ...]."""
+    prompt = _capture_batch_revise_prompt(
+        elicited_stories=STORIES, covered_sections=["Why it broke", "Intro"]
+    )
+    assert _suppression_line(prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+    assert SUPPRESSION_INSTRUCTION in prompt
+
+
+def test_batch_revise_prompt_omits_suppression_when_absent() -> None:
+    baseline = _capture_batch_revise_prompt(elicited_stories=STORIES)
+    assert SUPPRESSION_HEADER not in baseline
+    assert _capture_batch_revise_prompt(elicited_stories=STORIES, covered_sections=[]) == baseline
+
+
+def test_batch_revise_prompt_omits_suppression_without_stories() -> None:
+    """The same safety gate as the other two prompts, pinned by byte-identity."""
+    baseline = _capture_batch_revise_prompt()
+    assert _capture_batch_revise_prompt(covered_sections=["Intro"]) == baseline

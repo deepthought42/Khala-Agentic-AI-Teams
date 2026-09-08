@@ -11,7 +11,10 @@ explicitly whenever it needs a different shape.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agents.blogging.blog_writer_agent.models import WriterInput
 
 from agents.blogging.shared.content_plan import (
     ContentPlan,
@@ -147,15 +150,17 @@ def make_writer_input(
     *,
     sections: list[ContentPlanSection] | None = None,
     **overrides: Any,
-):
+) -> "WriterInput":
     """Build a minimal valid ``WriterInput`` for the writer-prompt test suites.
 
     Shared so the prompt suites cannot drift into testing different inputs while
     claiming to cover the same writer.
 
     Preconditions:
-        - ``sections`` is ``None`` (use the single-``Intro`` default) or a non-empty
-          list of ``ContentPlanSection``.
+        - ``sections`` is ``None`` or a non-empty list of ``ContentPlanSection``.
+          ``None`` selects the single-``Intro`` default; an empty list is rejected
+          rather than silently substituting that default, so a caller that meant to
+          build a section-less plan is told instead of quietly testing another one.
         - ``overrides`` keys are valid ``WriterInput`` field names (e.g.
           ``allowed_claims``, ``covered_sections``, ``elicited_stories``).
     Postconditions:
@@ -165,6 +170,9 @@ def make_writer_input(
           ``content_plan`` included.
     """
     from agents.blogging.blog_writer_agent.models import WriterInput
+
+    if sections is not None and not sections:
+        raise ValueError("sections must be None or a non-empty list of ContentPlanSection")
 
     plan = make_content_plan(
         overarching_topic="Topic",

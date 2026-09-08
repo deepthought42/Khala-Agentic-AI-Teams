@@ -260,6 +260,20 @@ def build_revise_all_items_prompt(
                 + revise_input.elicited_stories,
             ]
         )
+    # Placed with the stories it refers to. This revision runs after the post-draft
+    # story fill, so without it the prompt would carry the stories but nothing saying
+    # which sections they already satisfy -- and the system prompt's standing
+    # instruction to insert [Author: ...] could put a placeholder back on a section
+    # whose story is in this very prompt.
+    # Imported here, not at module scope: agent.py does ``from . import revision``,
+    # so a module-level import back into it would be circular.
+    from .agent import _render_covered_sections_section
+
+    covered_sections_section = _render_covered_sections_section(
+        revise_input.covered_sections, revise_input.elicited_stories
+    )
+    if covered_sections_section:
+        prompt_parts.extend(["", covered_sections_section])
     if allowed_claims_section:
         prompt_parts.extend(["", allowed_claims_section])
     length_block = (
