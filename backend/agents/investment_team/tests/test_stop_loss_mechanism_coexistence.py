@@ -601,7 +601,12 @@ def _scan_with_child(
     )
     scan = exits._scan_pending_for_gate(tracked, pos, [po])
     assert scan is not None
-    return scan.resting_limit_stop_id
+    # The scan reports every competing stop-limit; these tests assert on which
+    # ONE is reported, so collapse — and assert the collapse is unambiguous,
+    # since a helper that silently took the first of several would hide exactly
+    # the multi-order case the plural exists for.
+    assert len(scan.resting_limit_stop_ids) <= 1, scan.resting_limit_stop_ids
+    return scan.resting_limit_stop_ids[0] if scan.resting_limit_stop_ids else None
 
 
 def test_unarmed_entry_attached_stop_limit_is_not_reported_for_cancellation() -> None:
@@ -834,3 +839,70 @@ def test_bar_close_stands_down_once_the_attached_child_exists(style: str) -> Non
     on the book, the rule IS ceded, so exactly one mechanism can act on a given
     trigger — never both, which is what the coexistence step exists to prevent."""
     assert _bar_close_fires(child_on_book=True, style=style) is False
+
+
+def test_scan_reports_every_competing_stop_limit_not_just_the_last() -> None:
+    """Two live stop-limits must BOTH be reported, so a replacement cancels both.
+
+    Preserving a working fallback alongside its replacement (see
+    ``_retire_superseded_stop_loss_fallbacks``) makes coexistence deliberate: an
+    armed dispatcher fallback can rest while this migration's entry-attached
+    child, having since armed too, rests as well. A single stored id is
+    last-write-wins, so the replacement close would cancel one and leave the
+    other ahead of it in submission order — free to fill on a recovery bar and
+    pre-empt the exit, which is the exact race that cancel exists to prevent.
+    """
+    exits = _EngineExitDispatcher(exit_rules=[_limit_stop_rule()], exclude_rule_index=0)
+
+    def _po(order_id: str, client_id: str, parent: str | None) -> PendingOrder:
+        po = PendingOrder(
+            order_id=order_id,
+            request=OrderRequest(
+                client_order_id=client_id,
+                symbol="AAA",
+                side=OrderSide.SHORT,
+                qty=10.0,
+                order_type=OrderType.STOP_LIMIT,
+                stop_price=95.0,
+                limit_price=94.05,
+                reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+            ).model_copy(update={"parent_order_id": parent}),
+            submitted_at="2024-01-02",
+            submitted_equity=1_000_000.0,
+        )
+        # BOTH armed: the fallback was preserved because it had already
+        # triggered, and the attached child has since triggered too.
+        po.stop_limit_armed = True
+        po.working_against_entry_order_id = "entry-1"
+        return po
+
+    fallback = _po("po-fallback", "sl-fallback", None)
+    child = _po("po-child", "sl-child", "entry-1")
+
+    tracked = _TrackedPosition(
+        side=OrderSide.LONG,
+        entry_price=100.0,
+        entry_order_id="entry-1",
+        just_opened=False,
+        high_since_entry=100.0,
+        low_since_entry=100.0,
+    )
+    pos = Position(
+        symbol="AAA",
+        side=OrderSide.LONG,
+        qty=10.0,
+        entry_price=100.0,
+        entry_bid_price=100.0,
+        entry_timestamp="2024-01-01",
+        entry_order_id="entry-1",
+        entry_client_order_id="c-entry-1",
+        original_qty=10.0,
+        entry_order_type="market",
+    )
+
+    scan = exits._scan_pending_for_gate(tracked, pos, [fallback, child])
+    assert scan is not None
+    assert set(scan.resting_limit_stop_ids) == {"po-fallback", "po-child"}, (
+        "both competing stop-limits must be reported, or the replacement close "
+        "cancels one and races the other"
+    )

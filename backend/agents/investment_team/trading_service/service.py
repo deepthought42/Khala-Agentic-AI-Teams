@@ -499,7 +499,7 @@ class _EvalGate(NamedTuple):
     """What :meth:`_EngineExitDispatcher._should_evaluate` found for one bar.
 
     A named result (vs. a bare tuple) so the per-position gate facts are
-    self-documenting and safe to extend. ``resting_limit_stop_id`` is the
+    self-documenting and safe to extend. ``resting_limit_stop_ids`` holds the
     ``order_id`` of an already-resting engine STOP_LIMIT (or ``None``);
     ``entry_continuation_in_flight`` is ``True`` when the position's own entry is
     still filling (a same-side partially-filled continuation rests);
@@ -512,7 +512,7 @@ class _EvalGate(NamedTuple):
 
     tracked: "_TrackedPosition"
     pos: Position
-    resting_limit_stop_id: Optional[str]
+    resting_limit_stop_ids: Tuple[str, ...]
     entry_continuation_in_flight: bool
     scaled_partial_in_flight: bool
     #: Whether the resting stop-loss migration's entry-attached leg is CURRENTLY
@@ -538,7 +538,7 @@ class _PendingGateFacts(NamedTuple):
     non-``None`` result always carries all four facts.
     """
 
-    resting_limit_stop_id: Optional[str]
+    resting_limit_stop_ids: Tuple[str, ...]
     entry_continuation_in_flight: bool
     scaled_partial_in_flight: bool
     resting_stop_child_present: bool
@@ -562,7 +562,7 @@ class _EmitContext:
     order_book: OrderBook
     cur_bar: Any
     result: "TradingServiceResult"
-    resting_limit_stop_id: Optional[str]
+    resting_limit_stop_ids: Tuple[str, ...]
     # The symbol's pending-order snapshot from ``_should_evaluate`` — reused by the
     # full-close path instead of re-querying the order book per helper.
     pending: List[PendingOrder]
@@ -700,10 +700,10 @@ class _EngineExitDispatcher:
         gate = self._should_evaluate(sym, position_tracker, portfolio, order_book)
         if gate is None:
             return
-        exclude_resting_limit_stop = gate.resting_limit_stop_id is not None
+        exclude_resting_limit_stop = bool(gate.resting_limit_stop_ids)
 
         # Resting structured exit: when a limit-style STOP_LIMIT already rests on
-        # the book (``resting_limit_stop_id`` set), the spec's (single — see
+        # the book (``resting_limit_stop_ids`` non-empty), the spec's (single — see
         # StrategySpec validation) limit-style stop is treated as in flight, so the
         # chosen intent excludes that stop rule. This both (a) suppresses a
         # duplicate stop-limit emission and (b) lets a lower-priority rule
@@ -744,7 +744,7 @@ class _EngineExitDispatcher:
             order_book=order_book,
             cur_bar=cur_bar,
             result=result,
-            resting_limit_stop_id=gate.resting_limit_stop_id,
+            resting_limit_stop_ids=gate.resting_limit_stop_ids,
             pending=gate.pending,
         )
         # A scaled-ladder rung and a full-position close have distinct emission
@@ -885,7 +885,7 @@ class _EngineExitDispatcher:
         the close qty just appended to ``ctx.pending_for_prev`` is ``>=`` the
         current ``pos.qty`` (``_emit_partial_scale_out`` guards on
         ``req.qty >= pos.qty``; ``_emit_full_close`` always closes the full qty).
-        ``intent.style != "limit"`` whenever ``ctx.resting_limit_stop_id`` is set
+        ``intent.style != "limit"`` whenever ``ctx.resting_limit_stop_ids`` is non-empty
         (guaranteed: a resting limit stop is excluded from evaluation, so the
         chosen intent is a different rule).
         Postconditions: binds competing opposite-side resting exits and same-bar
@@ -929,14 +929,21 @@ class _EngineExitDispatcher:
         # and the intended close would be dropped by the stale-continuation guard.
         # Binding alone cannot prevent this — it only retires the stop *after* the
         # position is gone, which is too late once the stop itself is what closed it.
-        if ctx.resting_limit_stop_id is not None:
+        if ctx.resting_limit_stop_ids:
             # A limit-style intent never reaches here (a resting limit stop is
             # excluded from evaluation, so the chosen rule is a different one) —
             # enforce it with a raise so the stop-cancel can't fire for a re-emitted
             # limit stop even under ``python -O``.
             if intent.style == "limit":  # pragma: no cover - excluded by _evaluate
                 raise ValueError("cannot cancel a resting limit stop for a limit-style intent")
-            order_book.cancel(ctx.resting_limit_stop_id)
+            # ALL of them, not just one: preserving a working fallback alongside
+            # its replacement (see ``_retire_superseded_stop_loss_fallbacks``)
+            # means two competing stop-limits can rest at once. Cancelling only
+            # the last one scanned leaves the other ahead of this close in
+            # submission order, where it can fill on a recovery bar and pre-empt
+            # the exit — the exact race this cancel exists to prevent.
+            for stop_id in ctx.resting_limit_stop_ids:
+                order_book.cancel(stop_id)
 
     # ------------------------------------------------------------------
     # Sub-steps. Kept as private methods so subclasses or sibling unit
@@ -1019,7 +1026,7 @@ class _EngineExitDispatcher:
         return _EvalGate(
             tracked=tracked,
             pos=pos,
-            resting_limit_stop_id=scan.resting_limit_stop_id,
+            resting_limit_stop_ids=scan.resting_limit_stop_ids,
             entry_continuation_in_flight=scan.entry_continuation_in_flight,
             scaled_partial_in_flight=scan.scaled_partial_in_flight,
             resting_stop_child_present=scan.resting_stop_child_present,
@@ -1047,10 +1054,15 @@ class _EngineExitDispatcher:
         in-flight *scaled-take-profit rung* market does NOT stand the bar down (see
         ``scaled_partial_in_flight`` below). Otherwise returns a
         :class:`_PendingGateFacts` carrying all four facts by name:
-          * ``resting_limit_stop_id`` — the ``order_id`` of an already-resting
-            limit-style STOP_LIMIT (or ``None``; a non-``None`` id means the chosen
-            intent must exclude that stop rule, and that ``maybe_emit`` cancels
-            the order when it emits a replacement close). An entry-attached
+          * ``resting_limit_stop_ids`` — the ``order_id`` of EVERY already-resting
+            limit-style STOP_LIMIT (empty when none rests; non-empty means the
+            chosen intent must exclude that stop rule, and that ``maybe_emit``
+            cancels them ALL when it emits a replacement close). A collection
+            rather than one id because a fallback that is already working is
+            deliberately preserved alongside its replacement — see
+            ``_retire_superseded_stop_loss_fallbacks`` — so two competing
+            stop-limits can rest at once, and cancelling only one would leave
+            the other ahead of the replacement in submission order. An entry-attached
             child OF THIS MIGRATION — ``parent_order_id`` set *and* carrying
             the ``engine_exit:stop_loss`` reason bound to this position's
             entry — is reported only once it has LATCHED
@@ -1080,7 +1092,7 @@ class _EngineExitDispatcher:
             Covers both attached shapes — a plain ``STOP`` for a market-style
             rule, a ``STOP_LIMIT`` for a limit-style one — since it answers
             whether protection EXISTS, not what order type it is. Unlike
-            ``resting_limit_stop_id`` it is NOT gated on the latch: an un-armed
+            ``resting_limit_stop_ids`` it is NOT gated on the latch: an un-armed
             child still counts as protection present. ``_evaluate`` consumes it
             to make the rule cede per-position — the rule is handed to the
             resting mechanism only while that mechanism actually holds
@@ -1089,7 +1101,7 @@ class _EngineExitDispatcher:
         """
         track_resting = self._has_limit_stop_rule
         track_continuation = self._has_scaled_take_profit_rule
-        resting_limit_stop_id: Optional[str] = None
+        resting_limit_stop_ids: List[str] = []
         entry_continuation_in_flight = False
         scaled_partial_in_flight = False
         resting_stop_child_present = False
@@ -1180,7 +1192,7 @@ class _EngineExitDispatcher:
                 # generic ``attached_exits`` leg's ``engine_exit:exit_leg_{idx}``).
                 # Keying on the parent alone would also hide a strategy-supplied
                 # ``attached_stop_loss`` STOP_LIMIT child — which this dispatcher
-                # does NOT own and has always relied on ``resting_limit_stop_id``
+                # does NOT own and has always relied on ``resting_limit_stop_ids``
                 # to notice — and the spec's own limit-style stop would then emit a
                 # SECOND full-size resting STOP_LIMIT against the same position.
                 #
@@ -1190,9 +1202,9 @@ class _EngineExitDispatcher:
                 # from the moment it rests, exactly as before this migration.
                 if is_resting_migration_leg and not po.stop_limit_armed:
                     continue
-                resting_limit_stop_id = po.order_id
+                resting_limit_stop_ids.append(po.order_id)
         return _PendingGateFacts(
-            resting_limit_stop_id=resting_limit_stop_id,
+            resting_limit_stop_ids=tuple(resting_limit_stop_ids),
             entry_continuation_in_flight=entry_continuation_in_flight,
             scaled_partial_in_flight=scaled_partial_in_flight,
             resting_stop_child_present=resting_stop_child_present,
