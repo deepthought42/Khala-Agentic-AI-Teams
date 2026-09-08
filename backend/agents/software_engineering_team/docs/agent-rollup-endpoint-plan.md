@@ -86,10 +86,22 @@ Split into two private helpers, each with its own `try`/`except`:
 
 ```python
 window = max(1.0, min(365.0, window_days))
-payload = _dora_payload(window)             # existing behavior, extracted verbatim
-payload["agent_rollup"] = _rollup_payload(window)
+cutoff = datetime.now(timezone.utc) - timedelta(days=window)   # ONE instant
+payload = _dora_payload(window, cutoff=cutoff)
+payload["agent_rollup"] = _rollup_payload(window, cutoff=cutoff)
 return payload
 ```
+
+**The cutoff is computed once, in the route, and threaded into both halves.**
+An earlier draft had each helper derive its own from `now()`, and called the
+result a "shared window" — which was true of the *value* and false of the
+*instant*. The two derivations are separated by however long the DORA half takes,
+so a trace written in that gap lands in the rollup and not in DORA, and rows near
+the lower boundary land in DORA and not in the rollup. The `window_days` field on
+both objects would report agreement the data does not have. This costs
+`compute_dora` one optional `cutoff` parameter defaulting to its current
+behaviour — additive, not a re-architecture — and is the only way the "same
+window" claim this plan makes is actually true.
 
 - `_dora_payload(window)` — unchanged logic, including the function-local import
   and the zeroed literal (which stays valid even if the metrics module fails to
@@ -97,10 +109,9 @@ return payload
 - `_rollup_payload(window)` — function-local import of the §4.1 aggregating read
   (`trace_store.fetch_trace_rollup_rows`), **not** `compute_agent_rollup`: that
   wrapper calls `fetch_traces_since` and materializes every matching row, which is
-  the exact risk §3.5 exists to remove. It derives `cutoff = now - window`
-  itself — from the already-clamped argument, never the raw `window_days` query
-  parameter, per the precondition below; the read takes a cutoff, not a window —
-  and shapes the three views onto
+  the exact risk §3.5 exists to remove. It receives the route's single `cutoff`
+  rather than deriving one — see the sketch above for why that matters — and
+  shapes the three views onto
   `AgentRollupMetrics`. Same function-local-import reasoning as `_dora_payload`; on
   any exception, logs and returns the empty-rollup literal
   `{"window_days": window, "computed_at": <now>, "by_agent": {}, "by_phase": {},
@@ -117,15 +128,22 @@ full is how the other half gets invented, so both are spelled out here:
   neither helper re-clamps, and neither accepts the raw `window_days` query
   parameter. One clamping site, named — otherwise an implementer can reasonably
   write a helper that re-clamps internally, and now the bound lives in two places
-  that can drift.
-- **Postconditions:** never raises; always returns a complete shape.
+  that can drift. `cutoff` is a **timezone-aware** datetime derived from that same
+  clamped `window`, computed once in the route; neither helper derives its own.
+- **Postconditions:** never raises; always returns a complete shape. Note this is
+  the *route helper's* contract, and it is stronger than the store read's: §4.1
+  raises `ValueError` on a naive cutoff, matching its neighbours. There is no
+  conflict, because the route constructs the cutoff itself with
+  `datetime.now(timezone.utc)` and cannot violate that precondition — the helper's
+  blanket `except` exists to keep a database failure from 500-ing the endpoint,
+  not to swallow a contract violation that cannot reach it.
 
 ### 3.4 No new query parameters
 
 The route keeps exactly one window knob: the existing `window_days: float =
 30.0`, clamped to `[1, 365]`, feeding both `compute_dora` and — via the
-`cutoff = now - window` derivation in `_rollup_payload` (on the clamped value,
-per §3.3's precondition) — the §4.1
+single `cutoff` the route derives from the clamped value and passes to both
+halves (§3.3) — the §4.1
 aggregating read. (Not `compute_agent_rollup`; see §3.3.) That satisfies "the same
 time-window parameter convention" with no new convention to document or clamp.
 
@@ -196,6 +214,26 @@ WHERE ts >= %s
   AND (%s::text IS NULL OR job_id = %s)
 GROUP BY GROUPING SETS ((agent_key), (phase), (agent_key, phase))
 ```
+
+**The population must match the DORA half, or the payload contradicts itself.**
+`fetch_cost_since` — the read behind the sibling `total_cost_usd` and
+`cost_by_job` — filters `WHERE ts >= %s AND job_id <> ''`
+(`shared/trace_store.py:188-189`). It has a good reason: it groups *by job*, and a
+row with no job has no bucket. The rollup groups by agent and phase, where
+untagged rows do have a bucket, so an unfiltered rollup would sum to **more** than
+the `total_cost_usd` printed beside it in the same response — two cost figures in
+one payload that do not reconcile, with nothing explaining the gap. Any dashboard
+rendering both reads that as a bug, and is right to.
+
+`job_id` is `NOT NULL DEFAULT ''`, so untagged traces are a real population (any
+call made outside a job context), not a theoretical one. **The endpoint therefore
+applies the same `job_id <> ''` rule**, so the two halves reconcile by
+construction; a test asserts that the rollup's summed `total_cost_usd` equals the
+DORA half's over the same window, with at least one untagged trace present so the
+assertion can fail. The store keeps the filter as an **explicit argument** rather
+than baking the rule in — an offline caller analysing all spend, tagged or not,
+is a legitimate use — but the route is not the place that choice gets made
+implicitly.
 
 **The `job_id` predicate is not optional garnish — §4.1's signature is
 `fetch_trace_rollup_rows(cutoff, *, job_id=None)`, and a query that omits it
@@ -374,11 +412,19 @@ decisions are recorded, because the second is as load-bearing as the first:
      > time**, not to `budget`. Acquisition plus execution therefore never exceeds
      > the clamped value.
 
-     Two consequences for §4.3's tests, both stated there: the exact-value
-     assertions (`5000`, `2500`, `1000`, `10000`) hold **under a stub pool that
-     acquires instantly**, where remaining ≈ budget — that is what makes them
-     deterministic; and a separate case must show a *slow* acquire reducing the
-     installed timeout, or the derivation is untested. The pool-exhaustion case
+     Two consequences for §4.3's tests, both stated there. First, the exact-value
+     assertions (`5000`, `2500`, `1000`, `10000`) require a **frozen monotonic
+     clock**, not merely a fast stub pool. An earlier draft said they hold under a
+     pool that "acquires instantly, where remaining ≈ budget" — and that `≈` is
+     the whole bug: a stub that returns immediately still consumes *some* time
+     between `deadline = now + budget` and the remaining-budget calculation, so
+     `int(remaining * 1000)` yields `4999`, not `5000`. Asserting the exact value
+     against a live clock is either flaky or forces the implementation to install
+     more than the deadline actually leaves. So the clamp cases mock the clock and
+     assert the configured value exactly; the elapsed-time derivation is a
+     *separate* case. Second, that separate case must show a *slow* acquire
+     reducing the installed timeout — asserting `installed < budget`, a strict
+     inequality that needs no exact arithmetic — or the derivation is untested. The pool-exhaustion case
      asserts the **total** wall time stays inside the budget and the read produces
      the empty three-view shape, not a 30s hang.
    - **The DORA half, which runs first and is unbounded.** See below.
@@ -567,8 +613,21 @@ inside `by_agent_phase` — and a test asserts the emitted key order against a
 shuffled input row set. Sorting in the adapter rather than adding `ORDER BY` keeps
 the guarantee in the same module that makes it, and costs nothing on tens of rows.
 
-Same best-effort contract as its neighbours — never raises, logs at DEBUG
-— but its empty value is the **same three-view shape as its success value**:
+**Validate the cutoff before the best-effort block, exactly as its neighbours
+do.** Both `fetch_cost_since` (`trace_store.py:180-181`) and `fetch_traces_since`
+(`229-230`) raise `ValueError("cutoff must be a timezone-aware datetime")` on a
+naive input, *outside* their `try`, and document it under `Raises:`. The new
+reader must too. Without it Postgres interprets a naive bound in the session
+timezone and silently shifts the aggregation window — wrong numbers, no error. And
+the check must sit **before** the swallowed-error block, not inside it: a
+programming error that degrades to an empty rollup is indistinguishable from a
+database outage, which is cause 4 in §4.4's list wearing a disguise.
+
+So "never raises" means **never raises on database failure**. A precondition
+violation is the caller's bug and is raised, per the repo's DbC rule that a
+contract failure is never swallowed. Same best-effort contract as its neighbours
+otherwise — logs at DEBUG
+— and its empty value is the **same three-view shape as its success value**:
 `{"by_agent": {}, "by_phase": {}, "by_agent_phase": {}}` on a disabled or failing
 Postgres, never a bare `[]`. A function whose success return is a three-view
 mapping must not change type on failure; the caller then needs no normalization
@@ -959,6 +1018,13 @@ python -m pytest unified_api/tests/test_job_proxy_routes.py -k se_metrics -v
 # Coverage on both modified source files. Two things this command must do
 # explicitly, neither of which it gets for free:
 #
+#   0. Measure all THREE modified modules. §4.1 moves the row → CallRollup
+#      conversion into metrics/agent_rollup.py (rollup_from_aggregate_rows), so
+#      that module now owns the sorting, grouping-tag dispatch, rounding and
+#      ratio branches. Omitting it from --cov leaves the newest and most
+#      arithmetic-dense code entirely unmeasured while the 90% gate passes on the
+#      other two — the same "floor over tests that never ran" failure as (1),
+#      one level up.
 #   1. Include the store suites. The timeout and cursor tests (§4.3) live in
 #      test_observability_stores*.py, and they exercise most branches of the
 #      modified trace_store reader. Measuring --cov=...shared.trace_store while
@@ -977,6 +1043,7 @@ python -m pytest agents/software_engineering_team/tests/test_api_metrics.py \
   agents/software_engineering_team/tests/test_observability_stores.py \
   --cov=software_engineering_team.api.routes.status \
   --cov=software_engineering_team.shared.trace_store \
+  --cov=software_engineering_team.metrics.agent_rollup \
   --cov-fail-under=90 --cov-report=term-missing
 
 # The SQL in §4.1 needs a real server — run the live-Postgres path for the
