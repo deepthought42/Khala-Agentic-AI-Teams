@@ -232,6 +232,18 @@ symbol that fetched once stays available, so a persistent shortfall is the
 exception. The synthesis gate still reports the coverage shortfall on the
 timeline that owns it.
 
+**D10 — Check the entry-rule count before fetching, not after.**
+`probe_starvation` returns `[]` for `len(entry_rules) < 2`, so a spec with a
+single entry rule has a guaranteed-empty verdict. Fetching the universe to reach
+it is pure waste on a common, valid spec shape, paid on every review round with
+the flag defaulting on. The count is therefore checked in
+`_design_starvation_findings` before the seam is called (Step 2.4).
+
+Unlike the signature memo, this check deliberately does **not** write the cache:
+it is O(1) to re-evaluate and costs nothing to repeat, so memoizing it would only
+add a way to be wrong. Recorded here as its own decision rather than living only
+in a step, so the decision list matches what the plan actually commits to.
+
 ---
 
 ## Global constraints
@@ -275,7 +287,12 @@ timeline that owns it.
     and synthesis's later fetch hits it;
   - memo on `(tuple(symbols), spec.asset_class, config.start_date, config.end_date, as_of)`
     in a lazily-created `self._design_probe_bars_cache`, mirroring
-    `_benchmark_bars_cache` (an exception is **not** cached);
+    `_benchmark_bars_cache`. **Only a complete, successful fetch is stored.**
+    Every `None` return — no resolvable symbols, a raised fetch, or the coverage
+    shortfall below — leaves the cache untouched, so the next round retries
+    rather than being served a remembered failure. This is the same rule Step 2.4
+    applies to the findings memo, and for the same reason: a memo that caches an
+    absence turns a transient fault into a permanent one;
   - after the fetch, apply D9's coverage check: if any symbol of the resolved
     request is missing from those that returned bars, return `None` — explicit
     `target_symbols` and the asset-class default universe alike. A partial fetch
@@ -305,16 +322,29 @@ timeline that owns it.
       spec.asset_class, tuple(spec.target_symbols),
       (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`.
 
-      It extends synthesis's `(entry_rules, requires_custom_code)` key with every
-      remaining component of Step 1.1's bars key, because — unlike synthesis —
+      It extends synthesis's `(entry_rules, requires_custom_code)` key with
+      `asset_class`, `target_symbols` and `as_of`, because — unlike synthesis —
       the design loop can change which bars the verdict is computed against
-      between rounds. That is why `as_of` is in the signature even though
+      between rounds.
+
+      Read that correspondence precisely, because it is not element-for-element
+      with Step 1.1's bars key. That key's members are the **resolved** symbols,
+      `asset_class`, `config.start_date`, `config.end_date` and `as_of`.
+      `target_symbols` is not one of them: it stands in for the resolved universe,
+      and does so soundly only because `resolve_strategy_symbols` is a pure
+      function of the spec — non-empty `target_symbols` verbatim, otherwise the
+      asset-class default truncated to `_max_universe_symbols()`. **That
+      determinism is an assumption this signature depends on**, so it is stated
+      here rather than left implicit: if symbol resolution ever gains a
+      non-spec input, this memo silently goes stale and the signature must gain
+      that input too. `config.start_date` / `config.end_date` are fixed for the
+      attempt and are deliberately omitted.
+
+      `as_of` is in the signature even though
       `build_spec_from_dict` never sets `audit` and the snapshot id is expected
       to be constant for the attempt: relying on that expectation would leave the
       memo correct only by an invariant this plan cannot prove, and the cost of
-      not relying on it is one tuple element. `config.start_date` /
-      `config.end_date` are the bars key's only other members and are fixed for
-      the attempt, so they are deliberately omitted.
+      not relying on it is one tuple element.
 
       The rule to carry forward: the probe signature must cover every input the
       verdict depends on — the rules *and* the bars they are judged against.
@@ -420,9 +450,9 @@ timeline that owns it.
 - [ ] **Step 5.4** — *Existing findings survive.* Assert the readiness findings and
       the hypothesis/rules finding are still present alongside the new one, and that
       `readiness_results` itself was not mutated (the fresh-merge invariant).
-- [ ] **Step 5.5** — *Memo.* Direct-call test: two rounds with a reachability-equivalent
-      spec probe once (count `_fetch_design_probe_bars` / `probe_starvation` calls);
-      changing `target_symbols` alone re-probes. Plus the negative: a round whose
+- [ ] **Step 5.5** — *Memo.* Direct-call test: two rounds with reachability-equivalent
+      specs ⇒ the probe runs exactly once (count `_fetch_design_probe_bars` and
+      `probe_starvation` calls); changing `target_symbols` alone ⇒ re-probes. Plus the negative: a round whose
       fetch returned `None` leaves the cache unwritten, so the next round with an
       unchanged signature probes again rather than serving a memoized empty
       (Step 2.4 detail 2).
@@ -487,7 +517,7 @@ suddenly slows down is the signal it did not take.
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
 | A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
-| Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (Step 2.4), pinned by Step 5.7 |
+| Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
 
