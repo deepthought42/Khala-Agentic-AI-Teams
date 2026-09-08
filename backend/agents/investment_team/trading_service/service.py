@@ -681,9 +681,14 @@ class _EngineExitDispatcher:
         Postconditions:
             - A no-op when the spec has no exit rules or the per-bar gate stands
               the bar down. Otherwise appends at most one engine close per open
-              position to ``pending_for_prev``, sized at the position's full
-              open quantity and tagged ``engine_exit:<rule_kind>``, and cancels
-              a superseded resting stop-limit when it emits a replacement.
+              position to ``pending_for_prev``, tagged
+              ``engine_exit:<rule_kind>``, and cancels a superseded resting
+              stop-limit when it emits a replacement. Sizing depends on the
+              dispatch: a FULL close is sized at the position's full open
+              quantity (the fill simulator clips it to what is actually open),
+              whereas a scaled-ladder rung is sized off the ORIGINAL entry qty
+              and deliberately leaves the rest open — see
+              :meth:`_emit_partial_scale_out`.
             - The rule ceded to the resting-order mechanism is excluded from
               evaluation only while that mechanism's leg is actually on the book
               for the position — never unconditionally.
@@ -2506,6 +2511,14 @@ class _EngineEntryDispatcher:
         something downstream stopped it, which is exactly what a zero-trade
         post-mortem needs to distinguish.
 
+        Two outcomes sit outside that split, so it should not be read as
+        exhaustive without them. A bar where no entry rule matches is the
+        dead-predicate baseline the counters exist to be measured against, and is
+        deliberately uncounted. And an order that is built but then fails
+        ``validate_prices`` is logged at error level and dropped — nothing
+        appended, no counter, no event — so a validation-rejected entry is
+        visible only in the logs, never in ``execution_diagnostics``.
+
         Preconditions:
             - called once per bar per symbol from the dispatcher loop;
               ``pending_for_prev`` is the caller's queue for the next bar. A no-op
@@ -2517,7 +2530,8 @@ class _EngineEntryDispatcher:
               ``OrderRequest`` is appended to ``pending_for_prev``,
               ``orders_emitted`` is incremented, and an "emitted" event recorded.
               On a counted skip the matching counter and event are recorded and
-              nothing is appended. On a silent skip nothing is touched at all.
+              nothing is appended. On a silent skip, on no match, and on a
+              ``validate_prices`` rejection, nothing is touched at all.
         """
         if not self._entry_emission_active:
             return

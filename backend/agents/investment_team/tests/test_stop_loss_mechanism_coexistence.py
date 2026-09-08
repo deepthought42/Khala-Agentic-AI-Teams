@@ -83,6 +83,8 @@ from investment_team.trading_service.strategy.contract import (
     OrderType,
 )
 
+from ._resting_stop_loss_fixtures import limit_stop_rule
+
 _NOOP_STRATEGY_CODE = "def on_bar(ctx, bar):\n    pass\n"
 
 
@@ -507,14 +509,9 @@ def test_resting_mechanism_alone_closes_the_position_exactly_once() -> None:
 # ---------------------------------------------------------------------------
 
 
-# NOTE: ``test_resting_stop_loss_attachment.py`` defines a same-named helper with
-# a DIFFERENT default (``pct=0.03``). The defaults are incidental — each suite
-# picks one that suits its price fixtures — but the rule SHAPE must stay in
-# lockstep, so change both together.
 def _limit_stop_rule(pct: float = 0.05, limit_offset_pct: float = 0.01) -> StopLossRule:
-    return StopLossRule(
-        pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
-    )
+    """This suite's default stop distance over the shared rule shape."""
+    return limit_stop_rule(pct=pct, limit_offset_pct=limit_offset_pct)
 
 
 @pytest.mark.parametrize("resting_enabled", [True, False])

@@ -94,6 +94,8 @@ from investment_team.trading_service.strategy.contract import (
     UnfilledPolicy,
 )
 
+from ._resting_stop_loss_fixtures import limit_stop_rule
+
 # ---------------------------------------------------------------------------
 # _is_resting_stop_loss: eligibility predicate
 # ---------------------------------------------------------------------------
@@ -965,14 +967,9 @@ def test_gap_through_resting_only_close_does_not_trip_conformance_gate_false_cri
 # ---------------------------------------------------------------------------
 
 
-# NOTE: ``test_stop_loss_mechanism_coexistence.py`` defines a same-named helper
-# with a DIFFERENT default (``pct=0.05``). The defaults are incidental — each
-# suite picks one that suits its price fixtures — but the rule SHAPE must stay
-# in lockstep, so change both together.
 def _limit_stop_rule(pct: float = 0.03, limit_offset_pct: float = 0.01) -> StopLossRule:
-    return StopLossRule(
-        pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
-    )
+    """This suite's default stop distance over the shared rule shape."""
+    return limit_stop_rule(pct=pct, limit_offset_pct=limit_offset_pct)
 
 
 def test_limit_style_leg_spec_translation_matches_bracket_shape() -> None:
@@ -1287,7 +1284,11 @@ def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
             client_order_id="e2",
             symbol="AAA",
             side=OrderSide.SHORT,
-            qty=100.0,
+            # Sized off the entry, matching the sibling fallback fixture, so the
+            # unrelated exit is a realistic full-position close rather than ~5%
+            # of the position. The predicate targets by reason, not size, so this
+            # is fidelity rather than correctness.
+            qty=req.qty,
             order_type=OrderType.LIMIT,
             limit_price=120.0,
             tif=TimeInForce.GTC,
@@ -1400,15 +1401,15 @@ def _partially_filled_day_entry(
     return req
 
 
-def _fallback_stop_limit(req: OrderRequest, submitted_at: str) -> OrderRequest:
+def _fallback_stop_limit(req: OrderRequest, submitted_at: str, symbol: str = "AAA") -> OrderRequest:
     """The bar-close fallback the evaluator emits while an entry is partial.
 
     Sized off the entry request so this is a FULL-position close, as a real
     bar-close fallback is; ``_fill_exit`` clips to the live qty.
     """
     return OrderRequest(
-        client_order_id=f"fallback-{submitted_at}",
-        symbol="AAA",
+        client_order_id=f"fallback-{symbol}-{submitted_at}",
+        symbol=symbol,
         side=OrderSide.SHORT,
         qty=req.qty,
         order_type=OrderType.STOP_LIMIT,
@@ -1520,6 +1521,7 @@ def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None
     fallback must still be on the book to take it.
     """
     sim, order_book, portfolio = _make_simulator()
+    fallbacks: dict[str, object] = {}
 
     # Two partially-filled DAY entries, one per symbol, each carrying the
     # limit-style resting stop and each with a bar-close fallback resting.
@@ -1533,18 +1535,8 @@ def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None
         )
         sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
         assert portfolio.positions[sym].original_qty < req.qty, "fixture must be PARTIAL"
-        order_book.submit(
-            OrderRequest(
-                client_order_id=f"fallback-{sym}",
-                symbol=sym,
-                side=OrderSide.SHORT,
-                qty=req.qty,
-                order_type=OrderType.STOP_LIMIT,
-                stop_price=99.0,
-                limit_price=98.0,
-                tif=TimeInForce.GTC,
-                reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
-            ),
+        fallbacks[sym] = order_book.submit(
+            _fallback_stop_limit(req, "2024-01-02", symbol=sym),
             submitted_at="2024-01-02",
             submitted_equity=10_000_000.0,
         )
@@ -1556,13 +1548,15 @@ def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None
     sim.expire_day_orders(aaa_bar)
     sim.process_bar(aaa_bar)
 
-    # AAA's own fallback is retired — its bar has been processed.
+    # Assert on the ORDER IDs the book handed back, not on a formatted
+    # client_order_id: the id scheme belongs to the helper, and keying on it
+    # would let a helper rename turn the first assertion below into a vacuous
+    # "no order has that string" while still reading as a real check.
     assert not any(
-        po.request.client_order_id == "fallback-AAA" for po in order_book.pending_for_symbol("AAA")
-    )
-    # BBB's must survive: its fill loop has not run yet.
+        po.order_id == fallbacks["AAA"].order_id for po in order_book.pending_for_symbol("AAA")
+    ), "this symbol's own fallback should be retired once its bar has run"
     assert any(
-        po.request.client_order_id == "fallback-BBB" for po in order_book.pending_for_symbol("BBB")
+        po.order_id == fallbacks["BBB"].order_id for po in order_book.pending_for_symbol("BBB")
     ), "another symbol's bar must not retire this symbol's fallback"
 
     # BBB's bar at the SAME timestamp crosses its fallback's stop and limit.
@@ -1648,3 +1642,43 @@ def test_retirement_spares_a_fallback_that_is_actually_working(
     assert still_pending is not expect_retired
     # The replacement is never retired by its own queue entry, in any state.
     assert any(po.order_id == keeper.order_id for po in order_book.pending_for_symbol("AAA"))
+
+
+def test_day_expiry_attach_credit_is_scoped_to_the_symbol_being_processed() -> None:
+    """An attach credit raised for one symbol must not land in another's outcome.
+
+    ``expire_day_orders`` runs order-book-WIDE, so one rollover can buffer
+    ``engine_exit_attached`` credits for several symbols before any of their bars
+    is processed. ``process_bar`` returns a ``FillOutcome`` for ONE symbol, and
+    its postcondition says the events it carries are that bar's. A flat buffer
+    would put BBB's credit in AAA's outcome — the same global-state-versus-per-
+    (symbol, bar) shape the retirement queue was fixed for, in the buffer sitting
+    three lines away from it.
+
+    Keyed by symbol at insertion, that misattribution is unrepresentable, which
+    is what this pins.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    for sym in ("AAA", "BBB"):
+        req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+        req = req.model_copy(update={"symbol": sym, "client_order_id": f"entry-{sym}"})
+        req.tif = TimeInForce.DAY
+        req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+        order_book.submit(
+            req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+        )
+        sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
+        assert portfolio.positions[sym].original_qty < req.qty, "fixture must be PARTIAL"
+
+    # One rollover expires BOTH parents and buffers BOTH credits.
+    sim.expire_day_orders(_bar("2024-01-03", open_price=100.0, symbol="AAA"))
+
+    aaa = sim.process_bar(_bar("2024-01-03", open_price=100.0, symbol="AAA"))
+    aaa_attached = [ev for ev in aaa.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert [ev.symbol for ev in aaa_attached] == ["AAA"], "AAA's bar must carry only AAA's credit"
+
+    bbb = sim.process_bar(_bar("2024-01-03", open_price=100.0, symbol="BBB"))
+    bbb_attached = [ev for ev in bbb.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert [ev.symbol for ev in bbb_attached] == ["BBB"], (
+        "BBB's credit must survive for its own bar"
+    )

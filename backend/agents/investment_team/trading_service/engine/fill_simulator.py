@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from ...execution.bar_safety import BarSafetyAssertion, _ts_le
 from ...execution.risk_filter import RiskFilter
@@ -166,9 +166,14 @@ class FillSimulator:
         self._deferred_stop_loss_retirements: List[_DeferredStopLossRetirement] = []
         #: ``engine_exit_attached`` events raised by ``expire_day_orders``, which
         #: the service calls between bars where no ``events`` list is in scope.
-        #: Flushed into the next ``process_bar``'s diagnostics — the same bar, so
-        #: the firing credit lands with the bar that actually attached the leg.
-        self._deferred_attach_events: List[FillDiagnosticEvent] = []
+        #: Flushed into the next ``process_bar`` FOR THE SAME SYMBOL, so the
+        #: firing credit lands with the bar that actually attached the leg.
+        #: Keyed by symbol at insertion rather than filtered on flush: like the
+        #: retirement queue this is global state consumed by a per-(symbol, bar)
+        #: method, and ``expire_day_orders`` runs order-book-wide, so a flat list
+        #: would let one symbol's rollover credits land in another symbol's
+        #: ``FillOutcome``. Keyed, that misattribution is unrepresentable.
+        self._deferred_attach_events: Dict[str, List[FillDiagnosticEvent]] = {}
         self.risk = risk_filter
         self.config = config
         # Engine-side exit-attribution reconciliation. ``None`` (default)
@@ -213,9 +218,15 @@ class FillSimulator:
               would corrupt the fill).
         Postconditions:
             - Returns a ``FillOutcome`` holding this bar's entry fills, exit
-              fills, closed trades and diagnostic events. The deferred
-              retirement queue holds no entry for ``bar.symbol`` at or before
-              ``bar.timestamp``; entries for other symbols are untouched.
+              fills, closed trades and diagnostic events — all for
+              ``bar.symbol``, including any attach credits deferred from
+              ``expire_day_orders`` for that symbol. The deferred retirement
+              queue holds no entry for ``bar.symbol`` at or before
+              ``bar.timestamp``, and the deferred attach buffer holds none for
+              it at all; entries for other symbols are untouched by both.
+            - On a raise, neither deferred structure is consumed for this bar,
+              so a caller that catches and keeps ticking loses no credit and no
+              retirement.
         """
         entry_fills: List[Fill] = []
         exit_fills: List[Fill] = []
@@ -241,15 +252,20 @@ class FillSimulator:
         # of it.
         self._drain_deferred_stop_loss_retirements(symbol=bar.symbol, before_bar=bar.timestamp)
 
-        # Attach events raised by ``expire_day_orders`` for THIS bar: it runs
+        # Attach events raised by ``expire_day_orders`` for THIS symbol: it runs
         # between bars with no ``events`` list in scope, so it buffers and this
         # flush carries them into the same bar's diagnostics. Without the credit
         # they carry, a resting-stop close on an abandoned entry reconciles
         # against zero firings and trips the conformance leak check as a false
-        # critical.
-        if self._deferred_attach_events:
-            events.extend(self._deferred_attach_events)
-            self._deferred_attach_events = []
+        # critical. Another symbol's credits stay queued for its own bar.
+        #
+        # Copied, NOT consumed: the buffer entry is dropped only once the bar has
+        # completed (below). ``events`` is local, so a mid-loop raise discards it
+        # — clearing here would lose the credit outright, which is the very
+        # false critical this flush exists to prevent. Leaving it queued means a
+        # caller that catches and keeps ticking delivers it on the next bar for
+        # this symbol instead.
+        events.extend(self._deferred_attach_events.get(bar.symbol, ()))
 
         # Work on a snapshot of pending orders for this symbol so cancels /
         # removes inside the loop don't mutate iteration.
@@ -656,6 +672,11 @@ class FillSimulator:
                                 reason=po.request.reason,
                             )
                         )
+
+        # The bar completed, so this symbol's flushed credits are safely inside
+        # the ``FillOutcome`` about to be returned and can leave the buffer. A
+        # raise above skips this, keeping them queued for the next bar.
+        self._deferred_attach_events.pop(bar.symbol, None)
 
         # Retire superseded stop-loss fallbacks only now, after every order in
         # this bar's snapshot has had its fill opportunity — including any
@@ -1562,12 +1583,14 @@ class FillSimulator:
         expired = self.order_book.expire_day_orders(bar.timestamp)
         for po in expired:
             if po.cumulative_filled_qty > 0:
-                # No ``events`` list exists here — the service calls this
-                # between bars, outside ``process_bar``. Buffer instead, so the
-                # attach event still reaches the diagnostics for THIS bar via
-                # ``process_bar``'s flush a moment from now.
+                # No CALLER-PROVIDED ``events`` list exists here — the service
+                # calls this between bars, outside ``process_bar`` — so buffer
+                # under the order's own symbol, and that symbol's next
+                # ``process_bar`` flushes it into the diagnostics.
                 self._maybe_materialize_brackets_on_abandon(
-                    po=po, bar=bar, events=self._deferred_attach_events
+                    po=po,
+                    bar=bar,
+                    events=self._deferred_attach_events.setdefault(po.request.symbol, []),
                 )
         return expired
 
