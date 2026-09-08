@@ -174,6 +174,10 @@ class FillSimulator:
         #: method, and ``expire_day_orders`` runs order-book-wide, so a flat list
         #: would let one symbol's rollover credits land in another symbol's
         #: ``FillOutcome``. Keyed, that misattribution is unrepresentable.
+        #: Same lifetime caveat as the retirement queue above: entries for a
+        #: symbol that never receives another bar stay buffered for the life of
+        #: the run and are dropped at the end of it. Harmless — these are
+        #: diagnostics-only events, moot once the run is over.
         self._deferred_attach_events: Dict[str, List[FillDiagnosticEvent]] = {}
         self.risk = risk_filter
         self.config = config
@@ -679,6 +683,12 @@ class FillSimulator:
         # raise above skips this, keeping them queued for the next bar.
         self._deferred_attach_events.pop(bar.symbol, None)
 
+        # SIBLING of the ``_deferred_attach_events`` pop above: both deferred
+        # per-(symbol, bar) structures are finalized in this block, by different
+        # idioms. Any future one belongs here too — a sibling left out of a
+        # scoping or cleanup fix is the most repeated defect on this surface,
+        # so keep the two in sync.
+        #
         # Retire superseded stop-loss fallbacks only now, after every order in
         # this bar's snapshot has had its fill opportunity — including any
         # fallback an attachment materialized above supersedes. Scoped to THIS

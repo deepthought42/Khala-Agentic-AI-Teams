@@ -940,7 +940,8 @@ def test_take_profit_close_cancels_the_unarmed_attached_stop_limit() -> None:
     is the take-profit — exactly the "different, market-style rule" the cancel
     documents. Left on the book the un-armed child outranks that close in
     ``process_bar``'s submission-ordered snapshot and can arm and fill off the
-    next bar's range, closing the position at the stop's geometry instead.
+    range of the bar whose fill loop examines that close — the bar after
+    emission — closing the position at the stop's geometry instead.
     """
     exits = _EngineExitDispatcher(
         exit_rules=[_limit_stop_rule(), TakeProfitRule(pct=0.05)],
@@ -995,6 +996,6 @@ def test_take_profit_close_cancels_the_unarmed_attached_stop_limit() -> None:
     assert pending_for_prev[0].order_type == OrderType.MARKET
     assert child.order_id not in order_book, (
         "the un-armed attached stop-limit must be cancelled by the replacement "
-        "close; left resting it precedes that close in the fill loop and can "
-        "arm and fill off the same bar's range, pre-empting the exit"
+        "close; left resting it precedes that close in that bar's fill loop and "
+        "can arm and fill off the same bar's range, pre-empting the exit"
     )

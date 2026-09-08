@@ -1401,15 +1401,22 @@ def _partially_filled_day_entry(
     return req
 
 
-def _fallback_stop_limit(req: OrderRequest, submitted_at: str, symbol: str = "AAA") -> OrderRequest:
+def _fallback_stop_limit(req: OrderRequest, submitted_at: str) -> OrderRequest:
     """The bar-close fallback the evaluator emits while an entry is partial.
 
     Sized off the entry request so this is a FULL-position close, as a real
     bar-close fallback is; ``_fill_exit`` clips to the live qty.
+
+    The symbol is DERIVED from ``req`` rather than passed. A separate parameter
+    made the entry and its fallback two sources of truth for one fact, so a
+    multi-symbol call site that forgot it would get a fallback labelled and
+    targeted at the default symbol while sized off another's ``req.qty``. That
+    hazard is not hypothetical here: parameterizing this helper by symbol is
+    what turned a sibling assertion vacuous earlier on this branch.
     """
     return OrderRequest(
-        client_order_id=f"fallback-{symbol}-{submitted_at}",
-        symbol=symbol,
+        client_order_id=f"fallback-{req.symbol}-{submitted_at}",
+        symbol=req.symbol,
         side=OrderSide.SHORT,
         qty=req.qty,
         order_type=OrderType.STOP_LIMIT,
@@ -1534,9 +1541,16 @@ def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None
             req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
         )
         sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
-        assert portfolio.positions[sym].original_qty < req.qty, "fixture must be PARTIAL"
+        # ``0 <`` matters as much as ``< req.qty``: a ZERO fill would satisfy a
+        # bare ``<`` while leaving the mechanism under test unexercised — the
+        # parent must stay live with a requeued remainder for
+        # ``expire_day_orders`` to abandon. Without it, engine or bar-data drift
+        # would surface as a bare list-comparison failure below instead of
+        # naming the fixture.
+        filled = portfolio.positions[sym].original_qty
+        assert 0 < filled < req.qty, "fixture must be PARTIAL (some, not all, of the entry)"
         fallbacks[sym] = order_book.submit(
-            _fallback_stop_limit(req, "2024-01-02", symbol=sym),
+            _fallback_stop_limit(req, "2024-01-02"),
             submitted_at="2024-01-02",
             submitted_equity=10_000_000.0,
         )
@@ -1671,7 +1685,14 @@ def test_day_expiry_attach_credit_is_scoped_to_the_symbol_being_processed() -> N
             req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
         )
         sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
-        assert portfolio.positions[sym].original_qty < req.qty, "fixture must be PARTIAL"
+        # ``0 <`` matters as much as ``< req.qty``: a ZERO fill would satisfy a
+        # bare ``<`` while leaving the mechanism under test unexercised — the
+        # parent must stay live with a requeued remainder for
+        # ``expire_day_orders`` to abandon. Without it, engine or bar-data drift
+        # would surface as a bare list-comparison failure below instead of
+        # naming the fixture.
+        filled = portfolio.positions[sym].original_qty
+        assert 0 < filled < req.qty, "fixture must be PARTIAL (some, not all, of the entry)"
 
     # One rollover expires BOTH parents and buffers BOTH credits.
     sim.expire_day_orders(_bar("2024-01-03", open_price=100.0, symbol="AAA"))
