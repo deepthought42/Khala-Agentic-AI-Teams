@@ -128,6 +128,52 @@ def _default_answer(question: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _defaulted_record(question: Dict[str, Any], answer: Dict[str, Any]) -> Dict[str, Any]:
+    """Pair a defaulted answer with enough of its question to be auditable.
+
+    A bare ``question_id`` is not an audit record. ``plan_project_activity``
+    clears ``pending_questions`` before the replay, and a defaulted terminal batch
+    never raises a pause, so nothing else persists the questions these ids refer
+    to -- and the ids are LLM-minted, so they are not stable across runs either. A
+    reader handed only ids would see identifiers for decisions no human made, with
+    no way to learn what was decided.
+
+    Preconditions:
+        - ``question`` is a well-formed pending-question dict (``id`` is a str;
+          the caller filters).
+        - ``answer`` is the matching output of :func:`_default_answer`.
+    Postconditions:
+        - Returns ``{"question_id", "question_text", "selected_option_id",
+          "selected_option_label"}``. Never raises: a question with no text, or a
+          chosen option carrying no label, yields ``None`` for that field rather
+          than failing a resumed activity over presentation detail.
+        - ``question_text`` accepts either the ``question_text`` or ``text``
+          spelling, matching what ``_structure_planning_questions`` emits and what
+          Planning's own question dicts carry.
+        - This shape is for the audit record ONLY. It is deliberately not what the
+          callback returns: PRA's answers route validates ``AnswerSubmission``, so
+          the returned batch must stay ``{question_id, selected_option_id,
+          other_text}`` or be rejected outright.
+    """
+    text = question.get("question_text") or question.get("text")
+    selected_id = answer.get("selected_option_id")
+    label: Optional[str] = None
+    if selected_id is not None:
+        options = question.get("options")
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict) and opt.get("id") == selected_id:
+                    raw_label = opt.get("label")
+                    label = raw_label if isinstance(raw_label, str) else None
+                    break
+    return {
+        "question_id": answer["question_id"],
+        "question_text": text if isinstance(text, str) else None,
+        "selected_option_id": selected_id,
+        "selected_option_label": label,
+    }
+
+
 def build_temporal_planning_answer_callback(
     resume_token: str,
     submitted_answers: Optional[List[Dict[str, Any]]] = None,
@@ -164,14 +210,27 @@ def build_temporal_planning_answer_callback(
           still preferable to answering a batch silently but leaves the two
           rounds sharing one token.
         - ``on_defaulted``, when given, is a one-argument callable accepting the
-          list of answers this callback FABRICATED on a terminal round (never
-          the human's own answers, and never the combined list). It is the
-          caller's hook for recording that fact somewhere durable -- a
-          ``logger.warning`` inside an activity worker is not a record anything
-          downstream can read, and a defaulted plan that looks fully
-          human-answered in the job record is the silent auto-answer this
-          callback exists to prevent, merely relocated. It must not swallow its
-          own failures; see the postcondition below.
+          audit records for the questions this callback FABRICATED answers to on
+          a terminal round (never the human's own answers, and never the combined
+          list) -- ``_defaulted_record``-shaped, carrying the question text and
+          the chosen option's label, not just ids. It is the caller's hook for
+          recording that fact somewhere durable: a ``logger.warning`` inside an
+          activity worker is not a record anything downstream can read, and a
+          defaulted plan that looks fully human-answered in the job record is the
+          silent auto-answer this callback exists to prevent, merely relocated.
+
+          **It can be called more than once for the same callback object.**
+          ``wait_for_product_analysis_completion``'s ``_on_poll`` invokes the
+          callback on every poll while PRA reports ``waiting_for_answers``, and
+          PRA's own review loop raises several unrelated clarification rounds
+          with fresh ids; with ``allow_repause=False`` nothing raises, so each
+          round is defaulted in turn. A caller that OVERWRITES its store on each
+          call therefore keeps only the last round -- it must accumulate, keyed on
+          question identity (``question_id`` AND ``question_text`` together, never
+          the id alone: PRA's parser falls back to a positional ``q{index}`` id,
+          so two unrelated rounds can reuse one).
+
+          It must not swallow its own failures; see the postcondition below.
         - ``allow_repause`` is a bool. ``False`` forbids a further pause: when
           ``submitted_answers`` is provided, the callback resolves whatever it is
           handed, defaulting any unmatched question. It does NOT make the
@@ -209,8 +268,10 @@ def build_temporal_planning_answer_callback(
         - When any well-formed question has no matching answer and ``allow_repause``
           is false, ``cb`` returns the matches plus a defaulted answer per unmatched
           question (see :func:`_default_answer`), logs a warning naming them, and --
-          when ``on_defaulted`` was given -- calls it exactly once with just those
-          fabricated answers, in ``missing`` order, before returning. An exception
+          when ``on_defaulted`` was given -- calls it once for THIS batch with the
+          audit records for just those fabricated answers, in ``missing`` order,
+          before returning. Once per batch is not once per callback: see the
+          precondition above. An exception
           raised by ``on_defaulted`` PROPAGATES: it is not caught, and the callback
           returns nothing. Swallowing it would produce the one outcome this whole
           mechanism rules out -- a plan built on fabricated answers with no surviving
@@ -314,10 +375,11 @@ def build_temporal_planning_answer_callback(
         )
         defaulted = [_default_answer(q) for q in missing]
         if on_defaulted is not None:
+            records = [_defaulted_record(q, a) for q, a in zip(missing, defaulted)]
             # Deliberately unguarded. A hook that fails silently leaves a plan
             # built on fabricated answers with nothing anywhere saying so --
             # exactly the failure the hook exists to close.
-            on_defaulted(defaulted)
+            on_defaulted(records)
         return matched + defaulted
 
     return _resolved_cb

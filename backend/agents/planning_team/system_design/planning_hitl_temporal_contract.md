@@ -145,6 +145,14 @@ token when `next_resume_token` was supplied, re-arming
 `wait_for_planning_answers` for the new batch. That covers both "the submitter
 skipped this one" and "the replay opened a question nobody has seen."
 
+On the terminal round (`allow_repause=False`) nothing raises, so this same
+multi-round behaviour means the callback defaults each round in turn and the
+`on_defaulted` hook fires **once per round, not once per callback**. A caller
+persisting those records must accumulate across calls, keyed on `question_id`
+*and* `question_text` together — PRA's parser falls back to a positional
+`q{index}` id, so two unrelated rounds can reuse one — rather than overwriting
+and keeping only the last round.
+
 **Re-pausing alone does not guarantee convergence**, which is why the terminal
 round exists. Planning's question IDs come straight from LLM output
 (`question_processing.parse_open_question`) and a resume replays Planning from

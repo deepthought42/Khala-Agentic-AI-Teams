@@ -783,8 +783,18 @@ def test_on_defaulted_reports_every_defaulted_answer_once() -> None:
 
     assert reported == [
         [
-            {"question_id": "q2", "selected_option_id": None, "other_text": None},
-            {"question_id": "q3", "selected_option_id": None, "other_text": None},
+            {
+                "question_id": "q2",
+                "question_text": None,
+                "selected_option_id": None,
+                "selected_option_label": None,
+            },
+            {
+                "question_id": "q3",
+                "question_text": None,
+                "selected_option_id": None,
+                "selected_option_label": None,
+            },
         ]
     ]
     # The human's own answer leads the return value and is absent from the report.
@@ -883,3 +893,121 @@ def test_callback_rejects_a_non_callable_on_defaulted(bad_value: object) -> None
         build_temporal_planning_answer_callback(
             "tok-1", submitted_answers=[], allow_repause=False, on_defaulted=bad_value
         )
+
+
+# --------------------------------------------------------------------------
+# on_defaulted across multiple PRA rounds, and the context it carries
+# --------------------------------------------------------------------------
+
+
+def test_on_defaulted_fires_once_per_round_not_once_per_callback() -> None:
+    """One terminal callback can default MORE than one batch.
+
+    ``wait_for_product_analysis_completion``'s ``_on_poll`` invokes the same
+    callback object on every poll while PRA reports ``waiting_for_answers``, and
+    PRA's own review loop raises several unrelated clarification rounds with
+    fresh ids. With ``allow_repause=False`` nothing raises, so each round is
+    defaulted in turn -- the hook fires per ROUND, and a caller that overwrites
+    on each call keeps only the last round's answers.
+    """
+    rounds: list = []
+    cb = build_temporal_planning_answer_callback(
+        "tok-1", submitted_answers=[], allow_repause=False, on_defaulted=rounds.append
+    )
+
+    cb([{"id": "q1", "question_text": "Which auth?"}])
+    cb([{"id": "q2", "question_text": "Which datastore?"}])
+
+    assert [r[0]["question_id"] for r in rounds] == ["q1", "q2"]
+
+
+def test_on_defaulted_record_carries_question_and_option_context() -> None:
+    """A record of bare ids is not auditable.
+
+    The activity clears ``pending_questions`` before the replay and a defaulted
+    terminal batch never raises a pause, so nothing else persists the questions
+    these ids refer to. Without the text and the chosen option's label alongside,
+    the status API would hand a human opaque identifiers for decisions no human
+    made.
+    """
+    reported: list = []
+    cb = build_temporal_planning_answer_callback(
+        "tok-1", submitted_answers=[], allow_repause=False, on_defaulted=reported.append
+    )
+
+    cb(
+        [
+            {
+                "id": "q1",
+                "question_text": "Which auth provider?",
+                "options": [
+                    {"id": "opt-a", "label": "Okta", "is_default": True},
+                    {"id": "opt-b", "label": "Auth0"},
+                ],
+            }
+        ]
+    )
+
+    assert reported == [
+        [
+            {
+                "question_id": "q1",
+                "question_text": "Which auth provider?",
+                "selected_option_id": "opt-a",
+                "selected_option_label": "Okta",
+            }
+        ]
+    ]
+
+
+def test_on_defaulted_record_tolerates_missing_text_and_label() -> None:
+    """A question with no text, or a chosen option with no label, still produces a
+    record rather than raising inside a resumed activity. ``text`` is accepted as
+    an alias for ``question_text`` because Planning's own question dicts use both
+    spellings (see ``_structure_planning_questions``).
+    """
+    reported: list = []
+    cb = build_temporal_planning_answer_callback(
+        "tok-1", submitted_answers=[], allow_repause=False, on_defaulted=reported.append
+    )
+
+    cb([{"id": "q1", "text": "Aliased spelling", "options": [{"id": "o1"}]}])
+    cb([{"id": "q2"}])
+
+    assert reported[0] == [
+        {
+            "question_id": "q1",
+            "question_text": "Aliased spelling",
+            "selected_option_id": "o1",
+            "selected_option_label": None,
+        }
+    ]
+    assert reported[1] == [
+        {
+            "question_id": "q2",
+            "question_text": None,
+            "selected_option_id": None,
+            "selected_option_label": None,
+        }
+    ]
+
+
+def test_returned_answers_stay_wire_shaped_while_the_record_is_enriched() -> None:
+    """The enriched context is for the audit record only. What the callback RETURNS
+    still goes to PRA's answers route, which validates ``AnswerSubmission`` --
+    extra keys there are a rejected batch, i.e. a silently dropped answer.
+    """
+    reported: list = []
+    cb = build_temporal_planning_answer_callback(
+        "tok-1", submitted_answers=[], allow_repause=False, on_defaulted=reported.append
+    )
+
+    result = cb([{"id": "q1", "question_text": "T", "options": [{"id": "o1", "label": "L"}]}])
+
+    assert result == [{"question_id": "q1", "selected_option_id": "o1", "other_text": None}]
+    assert set(reported[0][0]) == {
+        "question_id",
+        "question_text",
+        "selected_option_id",
+        "selected_option_label",
+    }

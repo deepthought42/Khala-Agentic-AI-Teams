@@ -1211,8 +1211,112 @@ def test_plan_project_activity_final_round_resolves_a_drifted_question_instead_o
     # downstream can read, so the activity records it on the job -- and
     # build_job_status_response surfaces it from there.
     assert job["defaulted_questions"] == [
-        {"question_id": "q1-regenerated", "selected_option_id": None, "other_text": None}
+        {
+            "question_id": "q1-regenerated",
+            "question_text": "Which auth provider?",
+            "selected_option_id": None,
+            "selected_option_label": None,
+        }
     ]
+
+
+def test_defaulted_questions_accumulate_across_pra_rounds(tmp_path, patched_job_store) -> None:
+    """The hook fires once per PRA clarification ROUND, not once per execution.
+
+    ``_on_poll`` re-invokes the same callback on every poll while PRA reports
+    waiting_for_answers, and PRA raises several unrelated rounds with fresh ids.
+    A plain overwrite would leave only the last round in the audit record,
+    silently discarding the evidence that earlier rounds were fabricated too.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-multi", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-multi")
+
+    record([{"question_id": "q1", "question_text": "Which auth?", "selected_option_id": "a"}])
+    record([{"question_id": "q2", "question_text": "Which store?", "selected_option_id": "b"}])
+
+    assert [r["question_id"] for r in js.get_job("pp-multi")["defaulted_questions"]] == [
+        "q1",
+        "q2",
+    ]
+
+
+def test_defaulted_questions_keep_rounds_that_reuse_a_question_id(
+    tmp_path, patched_job_store
+) -> None:
+    """Identity is (question_id, question_text), never the id alone.
+
+    PRA's parser falls back to a positional ``q{index}`` id, so two unrelated
+    rounds can both call their first question ``q0``. Keying on the id alone would
+    drop the second as a duplicate and lose a real fabricated answer.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-collide", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-collide")
+
+    record([{"question_id": "q0", "question_text": "Which auth?", "selected_option_id": "a"}])
+    record([{"question_id": "q0", "question_text": "Which region?", "selected_option_id": "b"}])
+
+    stored = js.get_job("pp-collide")["defaulted_questions"]
+    assert [r["question_text"] for r in stored] == ["Which auth?", "Which region?"]
+
+
+def test_defaulted_questions_do_not_double_on_a_repeated_record(
+    tmp_path, patched_job_store
+) -> None:
+    """A genuine repeat of the same question is one entry, last write winning.
+
+    ``_on_poll`` can present the same still-unanswered batch on consecutive polls;
+    each is defaulted again, and the audit record must not grow a duplicate row
+    per poll.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-repeat", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-repeat")
+
+    record([{"question_id": "q1", "question_text": "Same", "selected_option_id": "a"}])
+    record([{"question_id": "q1", "question_text": "Same", "selected_option_id": "b"}])
+
+    stored = js.get_job("pp-repeat")["defaulted_questions"]
+    assert len(stored) == 1
+    assert stored[0]["selected_option_id"] == "b"
+
+
+def test_a_retry_rebuilds_defaulted_questions_rather_than_doubling_them(
+    tmp_path, patched_job_store
+) -> None:
+    """A Temporal retry runs a fresh accumulator and rewrites the whole field.
+
+    Writing the accumulated list (rather than appending server-side) is what keeps
+    the retry idempotent -- the deterministic replay recomputes the same records
+    and overwrites, instead of stacking a second copy onto the first attempt's.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-retry", repo_path=str(tmp_path), job_type="run_team")
+    batch = [{"question_id": "q1", "question_text": "T", "selected_option_id": "a"}]
+
+    _record_defaulted_questions("pp-retry")(batch)
+    _record_defaulted_questions("pp-retry")(batch)  # the retry
+
+    assert js.get_job("pp-retry")["defaulted_questions"] == batch
+
+
+def test_record_defaulted_questions_requires_a_job_id() -> None:
+    """A blank job_id would silently write nowhere, leaving the terminal round's
+    fabrication unrecorded -- the one outcome this hook exists to rule out.
+    """
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    with pytest.raises(AssertionError, match="job_id"):
+        _record_defaulted_questions("")
 
 
 def test_plan_project_status_omits_defaults_when_a_human_answered_everything(

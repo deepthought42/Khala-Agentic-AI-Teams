@@ -527,6 +527,53 @@ def plan_project_activity(
         )
 
 
+def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]], None]:
+    """Build the ``on_defaulted`` hook that persists fabricated answers to the job.
+
+    Accumulates rather than overwrites, because the hook fires once per PRA
+    clarification ROUND, not once per activity execution:
+    ``wait_for_product_analysis_completion``'s ``_on_poll`` invokes the same
+    callback on every poll while PRA reports ``waiting_for_answers``, and PRA's own
+    review loop raises several unrelated rounds with fresh ids. Under
+    ``allow_repause=False`` nothing raises, so each round is defaulted in turn and a
+    plain overwrite would keep only the last one -- silently discarding the record
+    of every earlier round's fabricated answers, which is the failure this whole
+    hook exists to prevent.
+
+    Preconditions:
+        - ``job_id`` identifies an existing run-team job record.
+    Postconditions:
+        - Returns a one-argument callable suitable as ``on_defaulted``. Each call
+          merges its records into a per-execution accumulator and writes the whole
+          accumulated list to ``defaulted_questions``, so the job record always
+          carries every round defaulted so far, in the order they were defaulted.
+        - De-duplicates on ``(question_id, question_text)``, not ``question_id``
+          alone. PRA's parser falls back to a positional ``q{index}`` id
+          (``question_processing.parse_open_question``), so two unrelated rounds can
+          reuse one id; keying on the id alone would drop the second question's
+          record as a duplicate of the first. Last write wins for a genuine repeat
+          of the same question, which is the answer actually submitted most
+          recently.
+        - Writing the full accumulated list (rather than appending server-side)
+          keeps a Temporal retry idempotent: a retry runs a fresh accumulator and
+          rebuilds the field from scratch, so entries are never doubled.
+    Invariants:
+        - The accumulator is per-callable and therefore per-activity-execution; it
+          is never shared across jobs or retries.
+    """
+    assert isinstance(job_id, str) and job_id, (
+        "_record_defaulted_questions requires a non-empty job_id"
+    )
+    accumulated: Dict[tuple, Dict[str, Any]] = {}
+
+    def _record(records: List[Dict[str, Any]]) -> None:
+        for rec in records:
+            accumulated[(rec.get("question_id"), rec.get("question_text"))] = rec
+        update_job(job_id, defaulted_questions=list(accumulated.values()))
+
+    return _record
+
+
 def _plan_project_activity_body(
     job_id: str,
     repo_path: str,
@@ -565,7 +612,11 @@ def _plan_project_activity_body(
         logging a warning naming them AND recording them on the job record's
         ``defaulted_questions`` (surfaced by ``JobStatusResponse``), so a plan built
         partly on machine-chosen answers says so where a human reads it rather than
-        only in a worker log line. Defaulting is the load-bearing half: the answers
+        only in a worker log line. Each record carries the question text and the
+        chosen option's label, not just ids, since the pause envelope holding those
+        questions is cleared before the replay. Every PRA round that gets defaulted
+        accumulates (see ``_record_defaulted_questions``) -- the hook fires per
+        round, not per execution. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
         required, so resolving with only the matches would leave the sub-job waiting out its
         poll timeout instead of resuming. In the designed flow this returns a
@@ -626,11 +677,7 @@ def _plan_project_activity_body(
         # pause round needs its own token (mint_resume_token: never reused).
         next_resume_token=lambda: mint_resume_token(job_id),
         allow_repause=allow_repause,
-        # Overwrite, not append: the terminal round runs once per job, and this
-        # activity is retryable. Resolution is deterministic given the same
-        # submitted_answers and questions, so a retry recomputes the identical
-        # list -- appending would duplicate every entry instead.
-        on_defaulted=lambda defaulted: update_job(job_id, defaulted_questions=defaulted),
+        on_defaulted=_record_defaulted_questions(job_id),
     )
 
     try:

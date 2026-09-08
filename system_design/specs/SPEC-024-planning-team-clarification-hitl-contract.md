@@ -3266,7 +3266,23 @@ So the choice on the final round is not *guess vs. wait*. It is *guess vs. hang*
 The reporting half is what makes the exception acceptable, and is enforced in code rather than by
 convention: `on_defaulted` receives exactly the fabricated answers, `plan_project_activity` writes
 them to the job record's `defaulted_questions`, and `JobStatusResponse` returns them, so a plan
-built partly on machine-chosen answers says so where a human reads it. A hook that raises is not
+built partly on machine-chosen answers says so where a human reads it.
+
+Two details of that reporting are load-bearing and easy to get wrong:
+
+- **The hook fires once per PRA clarification ROUND, not once per activity execution.**
+  `wait_for_product_analysis_completion`'s `_on_poll` invokes the same callback on every poll while
+  PRA reports `waiting_for_answers`, and PRA's review loop raises several unrelated rounds with
+  fresh ids (§4.3's multi-round case). Under `allow_repause=False` nothing raises, so each round is
+  defaulted in turn. A caller that overwrites its store on each call keeps only the last round.
+  `plan_project_activity` therefore accumulates, de-duplicating on **`question_id` AND
+  `question_text` together** — never the id alone, for the same positional-`q{index}` reason §4.3.1
+  already gives for retry reconciliation — and writes the whole accumulated list each time, which
+  keeps a Temporal retry idempotent.
+- **Each record carries the question text and the chosen option's label, not just ids.** The
+  activity clears the pause envelope holding `pending_questions` before the replay, and a defaulted
+  terminal batch never raises a pause that would persist the newly generated questions. A record of
+  bare, LLM-minted ids would name decisions no human made without saying what was decided. A hook that raises is not
 caught — an unrecorded default is the failure this exists to prevent, and failing the round is the
 recoverable half of that trade.
 
