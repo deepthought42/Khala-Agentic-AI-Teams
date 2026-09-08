@@ -107,8 +107,16 @@ return payload
   carries.
 
 Both helpers get explicit `Preconditions:`/`Postconditions:` docstring sections
-per the repo's DbC mandate; the postcondition to state plainly is *never raises,
-always returns a complete shape*.
+per the repo's DbC mandate. Stating only one half of a contract the repo mandates in
+full is how the other half gets invented, so both are spelled out here:
+
+- **Preconditions:** `window` is the **already-clamped** value, in `[1, 365]`. The
+  route clamps exactly once, at the top of `metrics_dora` (see the sketch above);
+  neither helper re-clamps, and neither accepts the raw `window_days` query
+  parameter. One clamping site, named — otherwise an implementer can reasonably
+  write a helper that re-clamps internally, and now the bound lives in two places
+  that can drift.
+- **Postconditions:** never raises; always returns a complete shape.
 
 ### 3.4 No new query parameters
 
@@ -173,7 +181,8 @@ GROUP BY GROUPING SETS ((agent_key), (phase), (agent_key, phase))
 
 One query yields all three views; `GROUPING()` tags which set each row came from.
 
-**Parity with the `_stats` helpers — exact for the statistics, canonical-plus-tolerance for cost.**
+**Parity with the `_stats` helpers — exact for the statistics,
+canonical-plus-tolerance for cost.**
 The concern with moving math SQL-side is that the endpoint would report different
 numbers than the unit-tested helpers. For the percentiles and the integer sums it
 does not. For the cost sum it can, and the plan says so rather than overclaiming.
@@ -271,20 +280,37 @@ repo already has:
      two do not drift.
    - **Clamp to a positive floor** (`1s`): a configured `0` must not disable this
      read's bound, whatever it does elsewhere.
-   - **Ceiling `min(10s, SE_METRICS_ALIAS_TIMEOUT - 5s)`**, never a bare `10s`.
-     The alias timeout is operator-configurable (`unified_api/main.py:1603`,
-     default `15s`), so a fixed ceiling only holds at or above the default: an
-     operator setting it to `8s` would leave a `10s` query budget *above* the
-     client's patience, recreating precisely the failure this mitigation exists to
-     prevent — the client gives up first and the query keeps running. The `5s`
-     subtrahend is headroom for the DORA half and serialization. If the subtraction
-     lands below the `1s` floor, the floor wins and the mismatch is logged at
-     startup: an alias timeout under ~6s is a misconfiguration this read cannot
-     paper over, and it should be visible rather than silently absorbed.
+   - **Ceiling `10s`, fixed and SE-local** — *not* derived from
+     `SE_METRICS_ALIAS_TIMEOUT`, and the reason is worth stating because a previous
+     revision of this plan got it wrong in both directions.
 
-     (This plan was meticulous about `POSTGRES_STATEMENT_TIMEOUT_MS`'s
-     `0`-disables edge while hardcoding the other side of the same invariant.
-     Same class of error, one variable over.)
+     The relationship to the alias timeout is real: a query budget at or above the
+     client's patience means the client gives up first while the query runs on. So
+     an earlier revision specified `min(10s, SE_METRICS_ALIAS_TIMEOUT - 5s)`.
+     **That does not work, because the SE process cannot read that variable.**
+     Verified: `SE_METRICS_ALIAS_TIMEOUT` is read in exactly one place —
+     `unified_api/main.py:1603`, sizing the *unified API's* outbound httpx client —
+     and appears in no compose service environment and in no `docs/ENV_VARS.md`
+     entry. The unified API and the SE service are separate containers. An operator
+     lowering it would set it where it is consumed; the SE process would fall back
+     to the `15.0` default and derive a bare `10s` — the exact value the derivation
+     existed to avoid, in exactly the scenario it was written for.
+
+     So: a fixed `10s` ceiling, plus **an operator contract stated in the docs
+     rather than computed in the code**. §4.4 adds a `docs/ENV_VARS.md` entry for
+     `SE_METRICS_ALIAS_TIMEOUT` (it has none today) recording that lowering it below
+     ~15s requires lowering `POSTGRES_STATEMENT_TIMEOUT_MS` correspondingly, and
+     that **nothing enforces this across the process boundary**. A documented
+     contract that operators can violate is weaker than a computed bound — but it
+     is honest, whereas a computed bound reading an absent variable is a bound that
+     silently isn't there.
+
+     (For the record: this plan was meticulous about `POSTGRES_STATEMENT_TIMEOUT_MS`'s
+     `0`-disables edge while hardcoding the other side of the same invariant, then
+     "fixed" that by reaching for a variable in another process's environment. Two
+     rounds, two versions of the same mistake — assuming infrastructure exists
+     without reading it — which is why the risk table names that class rather than
+     any individual instance.)
 
    Note the `5s` budget and the `~5s` escalation threshold below are deliberately
    the same number: a query that routinely approaches its own timeout *is* the
@@ -403,7 +429,8 @@ an existing route" — it adds a store function, a row-shape adapter, the
 CI-wiring change so those tests actually run. It does **not** add a caching
 layer, a per-entry TTL to `shared.cache`, or an async conversion of the route:
 §3.5 defers all of that behind the measurement gate, after the speculative version
-of it produced four review findings before a line was written. Call it a 3, not a 2. The alternative is knowingly putting an
+of it produced four review findings before a line was written. Call it a 3, not a 2.
+The alternative is knowingly putting an
 unbounded, retention-window-wide scan behind an HTTP GET, which is not a
 trade worth making to protect a complexity score.
 
@@ -513,7 +540,7 @@ New tests:
 | Test | Asserts |
 |---|---|
 | Timeout is installed **before** the aggregate | the fake cursor records `SET LOCAL statement_timeout = <ms>` as the *first* statement, with a positive value inside `[1000, 10000]`, and the `GROUPING SETS` query strictly after it |
-| Cancellation degrades, not raises | the fake cursor raises psycopg's query-cancelled error on the aggregate; the read returns the empty three-view shape and logs at DEBUG |
+| Cancellation degrades, not raises | the fake cursor raises psycopg's query-cancelled error on the aggregate; the read returns the empty three-view shape and logs at **WARNING** (§4.1). Assert the level explicitly — `any(r.levelname == "WARNING" ... for r in caplog.records)`, not `caplog.at_level(logging.DEBUG)` — or the test passes against the silenced behaviour it exists to forbid |
 
 These are not optional garnish. §3.5's cache deferral makes `statement_timeout` the
 **only** remaining mitigation on this path, and none of the other planned tests
@@ -525,7 +552,8 @@ request behaviour this plan exists to prevent. Asserting statement *order* is th
 point — a timeout set after the query it was meant to bound is the failure that
 looks correct in a diff.
 
-Separately, in **`test_observability_stores_pg.py`** — a **parity test** asserting the §4.1 aggregating read and `compute_from_traces`
+Separately, in **`test_observability_stores_pg.py`** — a **parity test** asserting
+the §4.1 aggregating read and `compute_from_traces`
 agree over the same underlying rows: the guard that keeps §3.5's SQL/Python
 correspondence from drifting. It belongs there and not in `test_agent_rollup.py`
 because the SQL is the thing under test; a fake cursor would exercise none of
@@ -569,7 +597,8 @@ The sample count is easy to drop: it is not a natural SQL aggregate name, so an
 adapter that maps only the columns it sees leaves it at its dataclass default `0`
 while the percentiles beside it are real. `latency_ms` is `NOT NULL`, so every row
 in a group contributes a sample and the count equals `call_count` — the SQL names
-it explicitly (§3.5) and the test asserts it rather than trusting the mapping. `total_cost_usd` needs care,
+it explicitly (§3.5) and the test asserts it rather than trusting the mapping.
+`total_cost_usd` needs care,
 and the obvious formulation is wrong:
 
 **Compare the exposed values with a one-last-place tolerance (`1e-6`).** Neither
@@ -654,7 +683,10 @@ metrics module only as a line in the project-layout tree). It should cover:
      the requested window could see them.
 
   Order the operator's checks accordingly: confirm calls actually happened in the
-  window first, then the sink flag, then the DEBUG logs — not "assume the sink is
+  window first, then the sink flag, then the logs — **and note that one of these
+  five is visible at production log levels**: a `statement_timeout` cancellation
+  logs at WARNING (§4.1), so its absence is real evidence against cause 4. The
+  other failure modes remain DEBUG-only. Check in that order — not "assume the sink is
   broken". If distinguishing these from the response itself is ever wanted, that
   is a separate health/error-state surface, deliberately not in scope here (an
   error key on the payload would change the shape this story promises to leave
@@ -673,7 +705,13 @@ metrics module only as a line in the project-layout tree). It should cover:
   the README must state the assumption that route runs under: internal or trusted
   networks only. An undocumented trust assumption is the one that gets violated.
 
-**`docs/ENV_VARS.md`** — the `SE_TRACE_TO_POSTGRES` entry currently says the
+**`docs/ENV_VARS.md`** — two edits. First, **add a `SE_METRICS_ALIAS_TIMEOUT`
+entry**; it has none today despite being the operator-facing half of §3.5's timeout
+contract. It should state the default (`15s`), that it is read only by the unified
+API's alias handler, and that lowering it below ~15s requires lowering
+`POSTGRES_STATEMENT_TIMEOUT_MS` correspondingly — because the SE process cannot see
+this variable and will not adjust its own bound. Second, the `SE_TRACE_TO_POSTGRES`
+entry currently says the
 traces are "the substrate the metrics endpoint reads for per-job and total
 spend". Extend that sentence to name the per-agent/per-phase rollup as the second
 consumer and cross-reference the new README section, so the trace-sink variable
