@@ -81,8 +81,11 @@ fail-open tests need.
 `abstained_thin` so the *gate timeline* can distinguish "abstained" from
 "checked, nothing found". The reviewer prompt is a different consumer with a
 different requirement: *"a round with no starved rules delivers findings exactly
-as today."* Two extra `info` lines on every clean spec would violate that and
-dilute the prompt. Filter on `verdict == "starved"` (not on severity — severity
+as today."* Unfiltered, those `info`s reach the reviewer on any round that
+produced an abstention but no starved rule — a spec with none gains nothing,
+which is precisely why the quantifier matters: the violation is real but
+data-dependent, not universal. It would still break the promise and dilute the
+prompt on exactly the rounds it fires. Filter on `verdict == "starved"` (not on severity — severity
 is a compiled-vs-custom proxy; the verdict is the intent) before rendering.
 
 **D3 — Do not record the design-phase starvation findings on `all_gate_results`.**
@@ -551,9 +554,19 @@ suddenly slows down is the signal it did not take.
 
 ## Out of scope
 
-- Preserving the reviewer's adjudication / no-hard-block behaviour (step 2) —
-  a property that holds today by construction (D7) and gets its own test there.
-- The end-to-end integration test for a synthetic starved-rule spec (step 3).
-  Step 5.1 proves *delivery*; step 3 proves the loop *reconciles*.
-- The broader reachability-probe test suite.
-- Recording design-phase starvation findings on the gate timeline (D3).
+Everything below is **excluded from this plan**. The first two belong to the
+*sibling stories* that follow this one in the same series — not to any step of
+this document, which numbers its own work `Step N.M` throughout. Read "the
+adjudication story" and "the integration-test story" as separate units of work,
+each with its own branch and review.
+
+- **Preserving the reviewer's adjudication / no-hard-block behaviour** — the
+  adjudication story owns this. It holds today by construction (D7 as corrected,
+  and D8 is what keeps this plan from breaking it), and that story pins it with
+  its own test. Nothing in Tasks 1-6 here implements or tests it.
+- **The end-to-end test that the design loop *reconciles* a starved-rule spec** —
+  the integration-test story owns this. Step 5.1 here proves the reviewer
+  *receives* the finding; proving the loop then resolves it is a different
+  assertion over a full cycle, and is not attempted in this plan.
+- **The broader reachability-probe test suite.**
+- **Recording design-phase starvation findings on the gate timeline** (D3).
