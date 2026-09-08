@@ -54,9 +54,14 @@ origin:
 
 What is specific to this corpus, rather than to the format:
 
-- **Four cases record a substitution** in `note` on a real-sourced case, where
-  the fixture came from a different commit than the selection plan cited. They
-  are listed under *Substitutions from the selection plan* below.
+- **Four cases depart from the source the selection plan named**, and each
+  records why in its `note`. They split two ways. `CASE-0012` is still
+  real-sourced: only its origin commit changed, so the `note` sits on a
+  `sourcing: real` case. `CASE-0015`, `CASE-0020` and `CASE-0032` could not be
+  sourced from history at all — the planned commit does not invert to the
+  defect, or the defect it shows is contestable — so each is `sourcing:
+  invented` and its `note` records the commit it was modelled on. All four are
+  listed under *Substitutions from the selection plan* below.
 - **Two cases keep the whole inverse** rather than a reduced subset, because
   their defect has no coherent one. `CASE-0033`'s label is file-wide — a
   component with twelve subscriptions and no teardown. `CASE-0029` replaced an

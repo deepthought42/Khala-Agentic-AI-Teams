@@ -4,9 +4,11 @@
   severity: medium
   polarity: must_find
   file_path: app/api/routes/account.py
-  line: 14
-  line_end: 18
+  line: 33
+  line_end: 37
   description: >
-    The endpoint mutates account state, is authenticated purely by the session
-    cookie, and accepts a form-encoded body with no origin check and no CSRF
-    token, so any third-party page can drive it on a logged-in user's behalf.
+    The session cookie above is issued `SameSite=None`, so a browser sends it
+    on a cross-site POST. This endpoint mutates account state, authenticates
+    purely on that cookie, and accepts a form-encoded body with no origin
+    check and no CSRF token, so any third-party page can drive it on a
+    logged-in user's behalf.

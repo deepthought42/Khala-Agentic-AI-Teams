@@ -2,7 +2,7 @@ diff --git a/backend/agent_sandbox_runtime/tests/test_manifest_boot.py b/backend
 new file mode 100644
 --- /dev/null
 +++ b/backend/agent_sandbox_runtime/tests/test_manifest_boot.py
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,43 @@
 +"""Boot test for the sandbox runtime against an injected manifest.
 +
 +This package is team-agnostic platform infrastructure: its own import graph
@@ -22,10 +22,15 @@ new file mode 100644
 +
 +
 +@pytest.fixture()
-+def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
++def manifest():
++    """The manifest the sandbox is asked to boot against."""
++    return build_agent_manifest(team_id="probe_team", agent_name="probe")
++
++
++@pytest.fixture()
++def client(manifest, tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 +    """Boot the sandbox app against a manifest injected at provision time."""
 +    monkeypatch.setenv("LLM_PROVIDER", "dummy")
-+    manifest = build_agent_manifest(team_id="probe_team", agent_name="probe")
 +    manifest_path = tmp_path / "agent-manifest.json"
 +    manifest_path.write_text(json.dumps(manifest.model_dump(mode="json")), encoding="utf-8")
 +    monkeypatch.setenv("SANDBOX_AGENT_MANIFEST_FILE", str(manifest_path))
@@ -36,7 +41,8 @@ new file mode 100644
 +    return TestClient(_build_app())
 +
 +
-+def test_injected_manifest_is_bound(client: TestClient) -> None:
-+    """A booted container reports the injected agent on /health."""
++def test_injected_manifest_is_bound(client, manifest) -> None:
++    """A booted container reports the injected agent, not merely some agent."""
 +    response = client.get("/health")
 +    assert response.status_code == 200
++    assert response.json()["agent_id"] == manifest.id

@@ -2,18 +2,37 @@ diff --git a/app/api/routes/account.py b/app/api/routes/account.py
 new file mode 100644
 --- /dev/null
 +++ b/app/api/routes/account.py
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,46 @@
 +"""Account self-service endpoints."""
 +
 +from __future__ import annotations
 +
-+from fastapi import APIRouter, Depends, Form
++from fastapi import APIRouter, Depends, Form, Response
 +
-+from ..auth import current_user_from_session
++from ..auth import current_user_from_session, issue_session_token
 +from ..models.users import User
 +from ..services import account_service
 +
 +router = APIRouter(prefix="/account", tags=["account"])
++
++
++@router.post("/session")
++def open_session(response: Response, user_id: str = Form(...)) -> dict[str, str]:
++    """Issue the session cookie the account routes authenticate with.
++
++    Preconditions:
++        * ``user_id`` names an authenticated user.
++    Postconditions:
++        * The response carries the session cookie.
++    """
++    response.set_cookie(
++        "session",
++        issue_session_token(user_id),
++        httponly=True,
++        secure=True,
++        samesite="none",
++    )
++    return {"status": "ok"}
 +
 +
 +@router.post("/email")
