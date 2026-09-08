@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from pg_cursor_fake import FakeCursor, install_fake_cursor
 from software_engineering_team.shared import learnings_store, se_events, trace_store
 
-from ._observability_test_doubles import _FIELDS, _FakeCursor, install_fake_cursor
+from ._observability_test_doubles import _FIELDS
 from ._observability_test_doubles import TraceCallRecord as _Rec
 
 # --- se_events -------------------------------------------------------------
@@ -414,9 +415,9 @@ def test_prune_traces_noop(monkeypatch) -> None:
 # --- trace_store cache-token persistence (single-row + batch, no live Postgres) --------
 
 
-# _FakeCursor / _FakeCursorContractViolation now live in
-# _observability_test_doubles.py (shared with the rollup wrapper's SQL tests);
-# this file uses them via install_fake_cursor.
+# FakeCursor / FakeCursorContractViolation now live in the shared
+# pg_cursor_fake module (converged with llm_service's near-duplicate); this
+# file uses them via install_fake_cursor.
 @pytest.fixture
 def _fake_cursor(monkeypatch):
     """Enable tracing and swap trace_store.pg_cursor for a recording FakeCursor.
@@ -427,13 +428,13 @@ def _fake_cursor(monkeypatch):
     Postconditions:
         ``SE_TRACE_TO_POSTGRES`` is set for the duration of the test (the write
         path's own gate; the read path does not consult it). Returns a factory —
-        see :func:`_observability_test_doubles.install_fake_cursor` for the
+        see :func:`pg_cursor_fake.install_fake_cursor` for the
         ``raise_on_execute``/``rows`` arguments it forwards. Each call installs a
         fresh cursor and re-patches ``trace_store.pg_cursor`` to yield it.
     """
     monkeypatch.setenv("SE_TRACE_TO_POSTGRES", "true")
 
-    def _make(raise_on_execute: bool = False, rows=None) -> _FakeCursor:
+    def _make(raise_on_execute: bool = False, rows=None) -> FakeCursor:
         return install_fake_cursor(
             monkeypatch, trace_store, raise_on_execute=raise_on_execute, rows=rows
         )
