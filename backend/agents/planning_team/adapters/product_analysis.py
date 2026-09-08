@@ -102,6 +102,11 @@ def wait_for_product_analysis_completion(
         - ``'failed'`` does NOT stop the caller: ``DocumentProductionAgent.run`` logs it and
           produces a plan anyway (see the note under Raises). Anything that must actually
           halt the round has to be one of the two whitelisted exception types below.
+          That caller's behaviour is pinned by
+          ``test_document_production_agent_carries_on_past_a_failed_pra``
+          (``planning_team/tests/test_agents.py``), so a change to its fallback breaks a
+          test rather than silently invalidating this paragraph -- the usual hazard of a
+          contract that describes another component's internals.
         - ``answer_callback`` is invoked once per poll on which the job reports
           ``waiting_for_answers`` — not once per run, and not once per distinct question.
 

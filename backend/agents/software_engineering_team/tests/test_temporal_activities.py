@@ -1246,7 +1246,13 @@ def test_defaulted_questions_accumulate_across_pra_rounds(tmp_path, patched_job_
 def test_defaulted_questions_keep_rounds_that_reuse_a_question_id(
     tmp_path, patched_job_store
 ) -> None:
-    """Identity is (question_id, question_text), never the id alone.
+    """A reused question id alone does not collapse two rounds.
+
+    Identity is ultimately the WHOLE record, not this pair -- see
+    ``test_rounds_that_match_on_id_and_text_but_differ_in_selection_both_survive``
+    below. An earlier draft keyed on ``(question_id, question_text)`` and this
+    docstring outlived it; the assertions here were always correct under
+    whole-record keying, but the sentence taught the superseded model.
 
     PRA's parser falls back to a positional ``q{index}`` id, so two unrelated
     rounds can both call their first question ``q0``. Keying on the id alone would
@@ -1512,7 +1518,7 @@ def test_record_defaulted_questions_requires_a_job_id() -> None:
         _record_defaulted_questions("")
 
 
-def test_plan_project_status_omits_defaults_when_a_human_answered_everything(
+def test_plan_project_status_reports_an_empty_list_when_nothing_was_defaulted(
     tmp_path, patched_job_store
 ) -> None:
     """An empty ``defaulted_questions`` is a claim, not an absence: every answer

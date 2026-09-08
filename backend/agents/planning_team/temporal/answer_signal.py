@@ -41,6 +41,7 @@ from typing import Any, Callable, Dict, List, Optional
 from temporalio import workflow
 
 from planning_team.exceptions import PlanningAnswerPauseSignal
+from shared.hitl.models import DefaultedQuestion
 
 __all__ = [
     "SUBMIT_PLANNING_ANSWERS_SIGNAL",
@@ -154,10 +155,14 @@ def _defaulted_record(question: Dict[str, Any], answer: Dict[str, Any]) -> Dict[
           the caller filters).
         - ``answer`` is the matching output of :func:`_default_answer`.
     Postconditions:
-        - Returns ``{"question_id", "question_text", "selected_option_id",
-          "selected_option_label"}``. Never raises: a question with no text, or a
-          chosen option carrying no label, yields ``None`` for that field rather
-          than failing a resumed activity over presentation detail.
+        - Returns a ``shared.hitl.models.DefaultedQuestion`` dumped to a dict:
+          ``{"question_id", "question_text", "selected_option_id",
+          "selected_option_label"}``. A dict, not the model, because the value is
+          persisted to the job store and must stay JSON-shaped; the model is what
+          guarantees the keys match what the consumer materializes. Never raises:
+          a question with no text, or a chosen option carrying no label, yields
+          ``None`` for that field rather than failing a resumed activity over
+          presentation detail.
         - ``question_text`` accepts either the ``question_text`` or ``text``
           spelling, matching what ``_structure_planning_questions`` emits and what
           Planning's own question dicts carry.
@@ -177,12 +182,20 @@ def _defaulted_record(question: Dict[str, Any], answer: Dict[str, Any]) -> Dict[
                     raw_label = opt.get("label")
                     label = raw_label if isinstance(raw_label, str) else None
                     break
-    return {
-        "question_id": answer["question_id"],
-        "question_text": text if isinstance(text, str) else None,
-        "selected_option_id": selected_id,
-        "selected_option_label": label,
-    }
+    # Built through the shared model rather than as a bare dict literal: this
+    # record crosses a team boundary (Planning writes it, the SE status API and UI
+    # read it), and `shared/hitl` is the designated single owner of exactly that
+    # class of contract -- its README records that per-team copies of HITL shapes
+    # previously "drifted into genuinely different behavior". A literal here would
+    # be a second definition of the same shape, kept in sync only by prose, and the
+    # consumer's coercion degrades an unknown key to None silently, so the drift
+    # would surface as an audit record that quietly loses its text.
+    return DefaultedQuestion(
+        question_id=answer["question_id"],
+        question_text=text if isinstance(text, str) else None,
+        selected_option_id=selected_id,
+        selected_option_label=label,
+    ).model_dump()
 
 
 def build_temporal_planning_answer_callback(

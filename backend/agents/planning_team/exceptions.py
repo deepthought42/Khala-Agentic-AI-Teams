@@ -72,6 +72,16 @@ class PlanningDefaultsNotRecorded(Exception):
         assert isinstance(job_id, str) and job_id, (
             "PlanningDefaultsNotRecorded requires a non-empty job_id"
         )
+        # The Invariants block above says this type never signals "nothing to
+        # record". Documenting that without enforcing it left the one invariant
+        # that constitutes this exception's reason for existing checkable only by
+        # reading -- and a raise site reaching here with an empty accumulation is
+        # an upstream bug producing zero fabricated answers, which is the silent
+        # class of failure this type exists to make loud.
+        assert isinstance(record_count, int) and record_count > 0, (
+            "PlanningDefaultsNotRecorded never signals 'nothing to record': "
+            f"record_count must be a positive integer, got {record_count!r}"
+        )
         self.job_id = job_id
         self.record_count = record_count
         super().__init__(

@@ -587,7 +587,12 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
           ``update_job`` in this function has the same exposure -- this field is one
           more passenger on an existing hazard, not the cause of it -- so the fix is
           to make the activity heartbeat (as ``execute_coding_team_activity`` does)
-          rather than to fence this one write. Recorded here instead of being
+          rather than to fence this one write. **That fix must land before
+          ``use_product_analysis`` is flipped to True**: while the gate is closed
+          this path never executes, so the hazard is theoretical; the moment it
+          opens, a Planning run over five minutes can silently erase the audit for
+          the plan that ships, which is the exact failure this field exists to
+          prevent. Recorded here instead of being
           papered over by an idempotency claim that only holds when the attempts
           never overlap.
         - Records answers the system CHOSE AND SUBMITTED, not answers the

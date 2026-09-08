@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 # adopt, so these are field-identical to the previous local definitions.
 from shared.hitl.models import (  # noqa: F401
     AnswerSubmission,
+    DefaultedQuestion,
     PendingQuestion,
     QuestionOption,
     SubmitAnswersRequest,
@@ -165,34 +166,6 @@ class CurrentActivityEntry(BaseModel):
     )
     task_id: Optional[str] = Field(None, description="Task the sub-agent is working on.")
     task_title: Optional[str] = Field(None, description="Title of that task.")
-
-
-class DefaultedQuestion(BaseModel):
-    """One clarification answer the system chose because nobody answered it.
-
-    Every field but ``question_id`` is optional, and deliberately so: the record is
-    assembled from LLM-parsed question dicts, and a question with no text or an
-    option with no label must still produce a row rather than break the status
-    endpoint. Degrade, never raise -- an audit record that 500s tells a reader
-    less than an incomplete one.
-    """
-
-    question_id: str = Field(
-        default="",
-        description="The clarification question's id, as minted by the analysis job.",
-    )
-    question_text: Optional[str] = Field(
-        default=None,
-        description="The question as asked, or null when it carried no text.",
-    )
-    selected_option_id: Optional[str] = Field(
-        default=None,
-        description="The option the system picked, or null when there was none to pick.",
-    )
-    selected_option_label: Optional[str] = Field(
-        default=None,
-        description="That option's human-readable label, or null when it carried none.",
-    )
 
 
 class JobStatusResponse(BaseModel):

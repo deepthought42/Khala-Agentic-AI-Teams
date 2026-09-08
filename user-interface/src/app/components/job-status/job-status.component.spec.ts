@@ -165,9 +165,9 @@ describe('JobStatusComponent', () => {
 
     const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
     expect(panel).not.toBeNull();
-    expect(panel.textContent).toContain('Answers chosen by the system (1)');
-    expect(panel.textContent).toContain('Which auth provider?');
-    expect(panel.textContent).toContain('Okta');
+    expect(panel!.textContent).toContain('Answers chosen by the system (1)');
+    expect(panel!.textContent).toContain('Which auth provider?');
+    expect(panel!.textContent).toContain('Okta');
   });
 
   it('falls back to ids, and says so, when a defaulted question carries no text or option', () => {
@@ -190,9 +190,40 @@ describe('JobStatusComponent', () => {
     fixture.detectChanges();
 
     const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
-    expect(panel.textContent).toContain('q9');
-    expect(panel.textContent).toContain('no option available');
-    expect(panel.textContent).not.toContain('null');
+    // Assert presence before dereferencing: without it a regression that stopped
+    // rendering the panel fails with "Cannot read properties of null" instead of
+    // naming what broke, and `panel` stays Element | null for any future typecheck.
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('q9');
+    expect(panel!.textContent).toContain('no option available');
+    expect(panel!.textContent).not.toContain('null');
+  });
+
+  it('shows the option id when the option carried no label', () => {
+    // The middle branch of `label || id || 'no option available'`. It is reachable —
+    // the record tolerates a missing label alongside a present id — and it is the one
+    // a future template edit is most likely to collapse, because both neighbours are
+    // pinned and this one was not. An LLM-minted id is poor reading, but it beats
+    // claiming no option was available when one was chosen.
+    component.jobId = 'j1';
+    fixture.detectChanges();
+    component.status = {
+      ...component.status!,
+      defaulted_questions: [
+        {
+          question_id: 'q2',
+          question_text: 'Cache backend?',
+          selected_option_id: 'opt_redis',
+          selected_option_label: null,
+        },
+      ],
+    };
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('opt_redis');
+    expect(panel!.textContent).not.toContain('no option available');
   });
 
   it('hides the panel entirely for a plan every answer behind which came from a person', () => {

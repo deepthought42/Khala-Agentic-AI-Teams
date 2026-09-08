@@ -348,8 +348,6 @@ def test_defaults_not_recorded_escapes_the_pra_poll_loop() -> None:
     answers with no record of them, the exact failure the audit hook exists to
     prevent. Only a passthrough type actually stops the round.
     """
-    from unittest.mock import patch
-
     from planning_team.adapters.product_analysis import wait_for_product_analysis_completion
     from planning_team.exceptions import PlanningDefaultsNotRecorded
 
@@ -385,8 +383,6 @@ def test_an_ordinary_callback_error_still_folds_into_a_failed_status() -> None:
     Keeping the passthrough narrow is a decision not to disturb that long-standing
     fallback, not a claim that the fallback catches anything.
     """
-    from unittest.mock import patch
-
     from planning_team.adapters.product_analysis import wait_for_product_analysis_completion
 
     def _cb(pending):

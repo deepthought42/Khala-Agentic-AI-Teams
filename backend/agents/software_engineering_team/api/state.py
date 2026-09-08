@@ -18,18 +18,17 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 from shared.concurrency import BackgroundHeartbeat
 from shared.hitl.progress import coerce_progress
-from shared.hitl.status import pending_questions_from_raw
+from shared.hitl.status import defaulted_questions_from_raw, pending_questions_from_raw
 from shared.run_thread_registry import RunThreadRegistry
 from software_engineering_team.api.models import (
     CurrentActivityEntry,
-    DefaultedQuestion,
     FailedTaskDetail,
     JobStatusResponse,
     TaskStateEntry,
@@ -251,47 +250,6 @@ def _coerce_progress(value: Any) -> Optional[int]:
     return coerce_progress(value)
 
 
-def _coerce_defaulted_questions(value: Any) -> List[DefaultedQuestion]:
-    """Coerce a stored ``defaulted_questions`` value into a list of dicts.
-
-    Postconditions: always returns a list. A missing key, a non-list, or a list
-    with non-dict entries degrades to the entries that are usable (an empty list
-    when none are), never a 500 and never a ``None`` the response model would
-    reject. The field is written by
-    ``build_temporal_planning_answer_callback``'s ``on_defaulted`` hook, but this
-    reads the job store, where an older record predating the field, or one
-    written by a future caller, is equally possible.
-
-    An empty result is meaningful and not merely an absence: it is the claim that
-    every answer behind this plan came from a person. That is why a malformed
-    stored value degrades to empty rather than raising -- a status endpoint that
-    500s tells the user nothing, while an empty list matches what a job that never
-    defaulted anything reports, which is the overwhelmingly common case.
-    """
-    if not isinstance(value, list):
-        return []
-    return [
-        DefaultedQuestion(
-            question_id=str(entry.get("question_id", "")),
-            question_text=_optional_str(entry.get("question_text")),
-            selected_option_id=_optional_str(entry.get("selected_option_id")),
-            selected_option_label=_optional_str(entry.get("selected_option_label")),
-        )
-        for entry in value
-        if isinstance(entry, dict)
-    ]
-
-
-def _optional_str(value: Any) -> Optional[str]:
-    """Coerce a stored value to a str, or None.
-
-    Postconditions: ``None`` stays ``None``; anything else is stringified rather
-    than rejected, so a corrupt record renders as text instead of failing
-    validation on a field whose whole purpose is to be readable.
-    """
-    return None if value is None else str(value)
-
-
 def _coerce_current_activity(value: Any) -> Optional[CurrentActivityEntry]:
     """Coerce a stored current_activity value into the response model, or None.
 
@@ -403,7 +361,7 @@ def build_job_status_response(job_id: str, data: Dict[str, Any]) -> JobStatusRes
         # default that was applied stays applied, and the record of it must outlive
         # the pause that produced it.
         "defaulted_questions": [
-            dq.model_dump() for dq in _coerce_defaulted_questions(data.get("defaulted_questions"))
+            dq.model_dump() for dq in defaulted_questions_from_raw(data.get("defaulted_questions"))
         ],
         "resume_token": None if answers_accepted else resume_token,
         "planning_subprocess": data.get("planning_subprocess"),

@@ -1133,6 +1133,31 @@ describe('RunTeamTrackingComponent sub-agent activity and staleness', () => {
     expect(panel?.textContent).not.toContain('null');
   });
 
+  it('shows the option id when the option carried no label', () => {
+    // The middle branch of `label || id || 'no option available'`, unpinned on both run
+    // surfaces until now. Reachable: the record tolerates a missing label alongside a
+    // present id. A raw LLM-minted id is poor reading, but it beats telling the user no
+    // option was available when one was in fact chosen.
+    const el = render(
+      activityStatus({
+        defaulted_questions: [
+          {
+            question_id: 'q3',
+            question_text: 'Which cache?',
+            selected_option_id: 'redis',
+            selected_option_label: null,
+          },
+        ],
+      }),
+    );
+
+    const panel = el.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toContain('redis');
+    expect(panel?.textContent).not.toContain('no option available');
+    expect(panel?.textContent).not.toContain('null');
+  });
+
   it('hides the panel entirely for a plan every answer behind which came from a person', () => {
     // An always-visible "0 defaulted" panel trains readers to ignore it — the one
     // failure mode this panel cannot afford.

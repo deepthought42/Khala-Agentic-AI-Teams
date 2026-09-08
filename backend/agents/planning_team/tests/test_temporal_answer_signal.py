@@ -805,6 +805,15 @@ def test_on_defaulted_reports_every_defaulted_answer_once() -> None:
     ]
     # The human's own answer leads the return value and is absent from the report.
     assert result[0] == {"question_id": "q1", "selected_option_id": "opt-a"}
+    # The tail matters as much as the head: a regression that dropped, doubled or
+    # reordered the fabricated entries would leave the reported batch above intact
+    # while the batch actually SUBMITTED to PRA went wrong. Pinning only result[0]
+    # checks the audit record and not the thing it is a record of.
+    assert len(result) == 3
+    assert result[1:] == [
+        {"question_id": "q2", "selected_option_id": None, "other_text": None},
+        {"question_id": "q3", "selected_option_id": None, "other_text": None},
+    ]
 
 
 def test_on_defaulted_is_not_called_when_every_question_was_answered() -> None:

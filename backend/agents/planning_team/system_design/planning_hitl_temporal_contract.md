@@ -148,10 +148,25 @@ skipped this one" and "the replay opened a question nobody has seen."
 On the terminal round (`allow_repause=False`) nothing raises, so this same
 multi-round behaviour means the callback defaults each round in turn and the
 `on_defaulted` hook fires **once per round, not once per callback**. A caller
-persisting those records must accumulate across calls, keyed on `question_id`
-*and* `question_text` together — PRA's parser falls back to a positional
-`q{index}` id, so two unrelated rounds can reuse one — rather than overwriting
-and keeping only the last round.
+persisting those records must accumulate across calls rather than overwriting and
+keeping only the last round, and must de-duplicate on the **whole audit record** —
+`question_id`, `question_text`, `selected_option_id` and `selected_option_label`
+together.
+
+Not on the id alone: PRA's parser falls back to a positional `q{index}` id, so two
+unrelated rounds can both call their first question `q0`. But not on the
+`(question_id, question_text)` pair either, which an earlier revision of this
+paragraph prescribed — that pair came from a draft SPEC-024 itself withdrew. PRA's
+parser defaults *both* fields identically across rounds, so the pair collapses two
+rounds that differ only in their options, discarding a real audit event. The shipped
+test suite pins the case the pair would break: two rounds matching on id and text but
+differing in selection must both survive.
+
+The whole record is not collision-free either, and SPEC-024 risk 3 says why: without
+a PRA-side round identifier, nothing distinguishes a re-presented question from a
+coincidentally identical later round. De-duplication is still required — `_on_poll`
+re-presents an unanswered batch on every poll, so one question would otherwise inflate
+into a row per poll — so that residual collision is accepted knowingly.
 
 **Re-pausing alone does not guarantee convergence**, which is why the terminal
 round exists. Planning's question IDs come straight from LLM output
