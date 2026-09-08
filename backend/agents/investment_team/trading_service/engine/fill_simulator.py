@@ -2140,8 +2140,11 @@ class FillSimulator:
               submitted; ``child_side`` is the position-closing side.
         Postconditions:
             - every pending same-symbol, same-side, parentless
-              ``engine_exit:stop_loss`` order is cancelled. No-op in the common case
-              where the entry filled in one slice and no fallback was ever emitted.
+              ``engine_exit:stop_loss`` order that is neither partially filled nor
+              armed is cancelled; one that is either is left on the book, because
+              the replacement cannot assume its remainder or its latch. No-op in
+              the common case where the entry filled in one slice and no fallback
+              was ever emitted.
         """
         for other in self.order_book.pending_for_symbol(symbol):
             # Re-read the book rather than trusting a snapshot: the fallback may
@@ -2155,6 +2158,23 @@ class FillSimulator:
             if other_req.parent_order_id is not None:
                 continue
             if (other_req.reason or "") != ENGINE_EXIT_REASON_STOP_LOSS:
+                continue
+            # A fallback that is mid-execution or has already triggered is not
+            # a duplicate of the replacement — it is the order actually doing
+            # the work, and the replacement cannot take over from it:
+            #   * ``cumulative_filled_qty > 0`` — it closed part of the position
+            #     and requeued the rest. Cancelling drops that remainder.
+            #   * ``stop_limit_armed`` — the stop level was already crossed, so
+            #     it rests as a marketable LIMIT. The replacement is UNARMED and
+            #     needs the level crossed again, which a recovery that never
+            #     revisits it will never do.
+            # Either way the bar-close evaluator has ceded the rule (the leg IS
+            # on the book), so cancelling here would leave the residual position
+            # open through a stop that had already fired. Keeping both is safe:
+            # ``_fill_exit`` clips every exit to ``pos.qty``, so the survivor
+            # cannot over-close, and whichever fills first closes the position
+            # and the other is dropped by the stale-continuation guard.
+            if other.cumulative_filled_qty > 0 or other.stop_limit_armed:
                 continue
             self.order_book.cancel(other.order_id)
 

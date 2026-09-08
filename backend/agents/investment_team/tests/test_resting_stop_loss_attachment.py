@@ -1575,3 +1575,76 @@ def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None
     assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
     assert trade.exit_price == pytest.approx(98.0)
     assert "BBB" not in portfolio.positions
+
+
+@pytest.mark.parametrize(
+    "state, expect_retired",
+    [
+        ("idle", True),
+        ("armed", False),
+        ("partially_filled", False),
+    ],
+    ids=["idle_fallback_is_retired", "armed_survives", "partially_filled_survives"],
+)
+def test_retirement_spares_a_fallback_that_is_actually_working(
+    state: str, expect_retired: bool
+) -> None:
+    """Retirement removes a DUPLICATE fallback, not one that is doing the work.
+
+    An idle fallback is redundant once the correctly-anchored attachment exists,
+    and is retired. But a fallback that has already triggered (``stop_limit_armed``
+    — resting as a marketable LIMIT) or already closed part of the position
+    (``cumulative_filled_qty > 0``, remainder requeued) is not a duplicate. The
+    replacement cannot take over from either: it is UNARMED, so it needs the stop
+    level crossed *again*, which a recovery that never revisits the level will not
+    do — and by then the bar-close evaluator has ceded the rule, because the leg is
+    on the book. Cancelling would leave the residual open through a stop that had
+    already fired.
+
+    Keeping both is safe: ``_fill_exit`` clips every exit to ``pos.qty``, so the
+    survivor cannot over-close.
+
+    Driven against the predicate directly rather than through ``process_bar``: an
+    armed fallback is a marketable limit, so any bar that lets the entry fill also
+    fills it, and the fill mechanics would mask exactly what is under test here.
+
+    The ``idle`` case is the control — without it this would still pass if the
+    predicate degenerated into never retiring anything.
+    """
+    sim, order_book, _portfolio = _make_simulator()
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    fallback = order_book.submit(
+        _fallback_stop_limit(req, "2024-01-01"),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    keeper = order_book.submit(
+        OrderRequest(
+            client_order_id="keeper",
+            symbol="AAA",
+            side=OrderSide.SHORT,
+            qty=req.qty,
+            order_type=OrderType.STOP_LIMIT,
+            stop_price=95.0,
+            limit_price=94.05,
+            tif=TimeInForce.GTC,
+            reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+        ),
+        submitted_at="2024-01-01",
+        submitted_equity=10_000_000.0,
+    )
+    if state == "armed":
+        fallback.stop_limit_armed = True
+    elif state == "partially_filled":
+        fallback.cumulative_filled_qty = req.qty / 4.0
+
+    sim._retire_superseded_stop_loss_fallbacks(
+        symbol="AAA", child_side=OrderSide.SHORT, keep_order_id=keeper.order_id
+    )
+
+    still_pending = any(
+        po.order_id == fallback.order_id for po in order_book.pending_for_symbol("AAA")
+    )
+    assert still_pending is not expect_retired
+    # The replacement is never retired by its own queue entry, in any state.
+    assert any(po.order_id == keeper.order_id for po in order_book.pending_for_symbol("AAA"))
