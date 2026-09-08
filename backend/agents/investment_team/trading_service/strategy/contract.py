@@ -418,6 +418,18 @@ class OrderRequest(BaseModel):
         ``NotImplementedError`` (which propagates as a structured
         ``unsupported_feature`` failure), not a generic ``ValueError`` that
         the broad ``except`` in ``TradingService`` would silently log-and-drop.
+
+        Preconditions:
+            - Called at submission time, before the request reaches the book, so
+              a violation is a caller bug rather than mid-run engine state.
+        Postconditions:
+            - Returns ``None`` when every order-type / TIF / policy / attachment
+              constraint holds. Otherwise raises: ``NotImplementedError`` for a
+              schema field the engine does not yet honour, ``ValueError`` for a
+              shape inconsistency — including a re-anchoring STOP_LIMIT leg whose
+              two prices would end up on different anchors, which is rejected
+              from BOTH directions so the mixed-anchor state is unconstructible
+              rather than merely undocumented.
         """
         # Runtime-support gates. The schema fields below land in #383 so
         # callers and Pydantic models compile, but the execution engine

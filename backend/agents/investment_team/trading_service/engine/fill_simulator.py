@@ -111,11 +111,15 @@ class _DeferredStopLossRetirement(NamedTuple):
     loop carries that bar's timestamp; one queued by ``expire_day_orders``
     — which the service calls BEFORE ``process_bar(cur_bar)`` — carries the
     CURRENT bar's timestamp while that bar's loop has not run yet. Only the
-    former has already spent the fallback's fill opportunity, so only the
-    former may be drained ahead of a bar.
+    former's replacement child is already unblocked by the time a later bar's
+    pre-loop drain runs, so only the former may be drained ahead of a bar. (The
+    gate is the replacement's eligibility, not whether the fallback spent a fill
+    turn — a mid-loop raise can strand an entry whose fallback was never
+    examined, and retiring that one is still safe.)
 
-    Invariants: ``keep_order_id`` is the replacement child (never retired by
-    its own queue entry); ``queued_for_bar`` is an ISO-8601 bar timestamp.
+    Invariants:
+        - ``keep_order_id`` is the replacement child (never retired by
+          its own queue entry); ``queued_for_bar`` is an ISO-8601 bar timestamp.
     """
 
     symbol: str
@@ -189,6 +193,30 @@ class FillSimulator:
     # ------------------------------------------------------------------
 
     def process_bar(self, bar: Bar, next_bar: Optional[Bar] = None) -> FillOutcome:
+        """Advance the book one bar for ONE symbol and report what happened.
+
+        Per (symbol, bar), not per bar: a multi-symbol run calls this once for
+        each symbol's bar at a given timestamp. Anything the simulator defers
+        across calls is therefore scoped by symbol as well as by bar — see
+        ``_drain_deferred_stop_loss_retirements``.
+
+        The fill loop iterates a SNAPSHOT of the symbol's pending orders and
+        skips any order that has since left the book, so a cancel issued from
+        inside the loop removes that order's fill opportunity for this bar.
+        That is why retirements are queued rather than applied inline.
+
+        Preconditions:
+            - ``bar`` is the next bar for its symbol, not earlier than any bar
+              already processed for it; ``next_bar``, when given, is the
+              following bar for the SAME symbol (the realistic execution model
+              reads it for adverse selection, and another symbol's price move
+              would corrupt the fill).
+        Postconditions:
+            - Returns a ``FillOutcome`` holding this bar's entry fills, exit
+              fills, closed trades and diagnostic events. The deferred
+              retirement queue holds no entry for ``bar.symbol`` at or before
+              ``bar.timestamp``; entries for other symbols are untouched.
+        """
         entry_fills: List[Fill] = []
         exit_fills: List[Fill] = []
         closed: List[TradeRecord] = []
@@ -200,9 +228,14 @@ class FillSimulator:
         # bar's snapshot — keeps the documented invariant ("a superseded fallback
         # never outlives the bar that replaced it by more than the raise that
         # interrupted it") true for any caller that catches and keeps ticking.
-        # Retiring one bar late is safe for those: the fallback's fill chance was
-        # spent on the bar that raised. ``before_bar`` is what keeps that "one bar
-        # late" claim honest — it holds back anything queued FOR this bar by
+        # Retiring one bar late is safe for those, though NOT because the
+        # fallback had its turn — a raise can abort the loop before the fallback's
+        # position in the snapshot, so it may never have been examined. The reason
+        # is the replacement: it was materialized and stamped with that earlier
+        # bar, so from this bar on the same-bar guard no longer skips it and it
+        # holds the protection. The fallback is redundant either way.
+        # ``before_bar`` is what keeps the "one bar late" claim honest — it holds
+        # back anything queued FOR this bar by
         # ``expire_day_orders`` (which the service calls just before this), whose
         # fallback is about to enter the snapshot below with its turn still ahead
         # of it.
@@ -1519,10 +1552,12 @@ class FillSimulator:
         drain: the fallback it supersedes has not had that bar's fill
         opportunity yet.
 
-        Preconditions: ``bar`` is the bar about to be processed.
-        Postconditions: returns the expired orders; every partially-filled
-        parent among them has its protective legs on the book, with any
-        attach event buffered for the next ``process_bar`` to record.
+        Preconditions:
+            - ``bar`` is the bar about to be processed.
+        Postconditions:
+            - returns the expired orders; every partially-filled
+              parent among them has its protective legs on the book, with any
+              attach event buffered for the next ``process_bar`` to record.
         """
         expired = self.order_book.expire_day_orders(bar.timestamp)
         for po in expired:
@@ -1615,7 +1650,11 @@ class FillSimulator:
         *,
         po: PendingOrder,
         bar: Bar,
-        events: Optional[List[FillDiagnosticEvent]] = None,
+        # Required, not Optional: after this change every caller has a list to
+        # pass (``expire_day_orders`` passes the deferred buffer), and a default
+        # would let a future call site silently drop the firing credit — the
+        # exact failure this hook was wired up to fix.
+        events: List[FillDiagnosticEvent],
     ) -> None:
         """Materialize protective legs when ``_continue_entry`` abandons an
         already-filled bracket parent (risk-gate or insufficient-capital
@@ -1629,9 +1668,8 @@ class FillSimulator:
         Sized to the existing position's cumulative entry-filled qty so
         the legs cover everything that was actually opened.
 
-        ``events`` must be supplied by every caller that has a list in scope, so
-        a resting stop-loss leg attached here still records its
-        ``engine_exit_attached`` firing credit. A leg attached WITHOUT that
+        ``events`` is required, so a resting stop-loss leg attached here always
+        records its ``engine_exit_attached`` firing credit. A leg attached WITHOUT that
         credit closes the position as ``engine_exit:stop_loss`` against a zero
         firing count, which the conformance leak check reads as a stop that
         never fired — a false critical on a position that was in fact protected.
@@ -1640,11 +1678,14 @@ class FillSimulator:
         ``_deferred_attach_events`` instead, which ``process_bar`` flushes into
         the same bar's diagnostics.
 
-        Preconditions: ``po`` was removed with ``was_filled=True`` (its id is
-        still registered as an eligible attachment parent).
-        Postconditions: when ``po`` carries attachments and a position is open,
-        its protective legs rest on the book sized to that position; any
-        attach event is appended to ``events`` when one was supplied.
+        Preconditions:
+            - ``po`` was removed with ``was_filled=True`` (its id is
+              still registered as an eligible attachment parent); ``events`` is a list
+              the caller will drain into the bar's diagnostics.
+        Postconditions:
+            - when ``po`` carries attachments and a position is open,
+              its protective legs rest on the book sized to that position, and any
+              attach event has been appended to ``events``.
         """
         req = po.request
         if not req.has_attached_exits:
@@ -2013,8 +2054,13 @@ class FillSimulator:
         * ``None`` (the post-loop call) drains everything. Every entry present
           was queued for this bar, and the loop it was waiting on is done.
         * A bar timestamp (the pre-loop call) drains only entries queued for a
-          STRICTLY EARLIER bar — retirements a mid-loop raise stranded, whose
-          fallback already had and spent its fill turn. Entries queued for this
+          STRICTLY EARLIER bar — retirements a mid-loop raise stranded. Note the
+          reason this is safe is NOT that the fallback had its turn: the raise can
+          abort the loop before the fallback's place in the snapshot. It is that
+          the replacement child's ``submitted_at`` is now strictly earlier, so the
+          same-bar guard no longer skips it and it protects the position from this
+          bar on — the fallback is redundant whether or not it was examined, and
+          the aborted bar was lost to the raise regardless. Entries queued for this
           bar are held back: ``expire_day_orders`` runs before
           ``process_bar(cur_bar)``, so its retirement targets a fallback that is
           about to appear in this bar's snapshot and has NOT had its turn.
@@ -2023,13 +2069,15 @@ class FillSimulator:
           same-bar guard until the next one — the position left open through a
           stop it had already triggered.
 
-        Preconditions: ``symbol`` is the symbol of the bar being processed;
-        ``before_bar``, when given, is the timestamp of the bar about to be
-        processed.
-        Postconditions: every retirement for ``symbol`` in temporal scope has
-        been applied against the CURRENT book state and removed from the queue;
-        every other entry remains queued, in order, for the drain of its own
-        symbol and bar.
+        Preconditions:
+            - ``symbol`` is the symbol of the bar being processed;
+              ``before_bar``, when given, is the timestamp of the bar about to be
+              processed.
+        Postconditions:
+            - every retirement for ``symbol`` in temporal scope has
+              been applied against the CURRENT book state and removed from the queue;
+              every other entry remains queued, in order, for the drain of its own
+              symbol and bar.
         """
         if not self._deferred_stop_loss_retirements:
             return
@@ -2086,12 +2134,14 @@ class FillSimulator:
         attached child has one — so no sibling leg, bracket child, or this leg
         itself can be caught by it.
 
-        Preconditions: called only for the resting stop-loss migration's own leg
-        (``sl.entry_price_pct`` set); ``keep_order_id`` is the child just
-        submitted; ``child_side`` is the position-closing side.
-        Postconditions: every pending same-symbol, same-side, parentless
-        ``engine_exit:stop_loss`` order is cancelled. No-op in the common case
-        where the entry filled in one slice and no fallback was ever emitted.
+        Preconditions:
+            - called only for the resting stop-loss migration's own leg
+              (``sl.entry_price_pct`` set); ``keep_order_id`` is the child just
+              submitted; ``child_side`` is the position-closing side.
+        Postconditions:
+            - every pending same-symbol, same-side, parentless
+              ``engine_exit:stop_loss`` order is cancelled. No-op in the common case
+              where the entry filled in one slice and no fallback was ever emitted.
         """
         for other in self.order_book.pending_for_symbol(symbol):
             # Re-read the book rather than trusting a snapshot: the fallback may

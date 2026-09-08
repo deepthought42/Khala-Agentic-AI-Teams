@@ -1373,8 +1373,9 @@ def _partially_filled_day_entry(
     is DAY-TIF, so the next date change routes it through ``expire_day_orders``
     — the path that materializes protective legs OUTSIDE ``process_bar``.
 
-    Postconditions: a position is open on AAA for less than the request's full
-    ``qty``; the DAY parent is still pending with a requeued remainder.
+    Postconditions:
+        - a position is open on AAA for less than the request's full
+          ``qty``; the DAY parent is still pending with a requeued remainder.
     """
     req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
     req.tif = TimeInForce.DAY
@@ -1386,6 +1387,16 @@ def _partially_filled_day_entry(
     sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0))
     pos = portfolio.positions["AAA"]
     assert pos.original_qty < req.qty, "fixture must leave the entry PARTIALLY filled"
+    # The second postcondition, asserted rather than merely declared: the whole
+    # point of the fixture is a DAY parent still pending, since expire_day_orders
+    # can only queue the retirement its consumers exercise if one is there to
+    # expire. Were REQUEUE_NEXT_BAR semantics ever to drop the remainder instead,
+    # the partial-fill check above would still pass and the fixture would go on
+    # silently producing a state its docstring does not describe.
+    assert any(
+        po.request.client_order_id == req.client_order_id
+        for po in order_book.pending_for_symbol("AAA")
+    ), "fixture must leave the DAY parent pending with its requeued remainder"
     return req
 
 

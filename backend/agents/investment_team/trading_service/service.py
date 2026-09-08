@@ -671,6 +671,22 @@ class _EngineExitDispatcher:
         Engine-emitted orders carry ``reason="engine_exit:<rule_kind>"``
         so the conformance gate can count them off the
         order-lifecycle event stream.
+
+        Preconditions:
+            - Called once per bar per symbol, AFTER the strategy's own orders
+              for this bar are already queued in ``pending_for_prev`` (engine
+              closes must sit behind them in submission order).
+            - ``position_tracker`` and ``order_book`` reflect post-fill state
+              for ``cur_bar``.
+        Postconditions:
+            - A no-op when the spec has no exit rules or the per-bar gate stands
+              the bar down. Otherwise appends at most one engine close per open
+              position to ``pending_for_prev``, sized at the position's full
+              open quantity and tagged ``engine_exit:<rule_kind>``, and cancels
+              a superseded resting stop-limit when it emits a replacement.
+            - The rule ceded to the resting-order mechanism is excluded from
+              evaluation only while that mechanism's leg is actually on the book
+              for the position — never unconditionally.
         """
         if not self.exit_rules:
             return
@@ -2167,13 +2183,15 @@ def _engine_entry_emission_active(entry_rules: Sequence[Any], sizing: Any) -> bo
     entry order actually carried the leg) rather than a run-level flag, which is
     a larger change than this migration step.
 
-    Preconditions: ``entry_rules`` is the run's entry-rule sequence — possibly
-    empty, or ``None`` on the custom-code path; both are falsy, and both are
-    load-bearing inputs this guard exists for rather than domain violations.
-    ``sizing`` is the run's sizing config or ``None``.
-    Postconditions: ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
-    not ``None`` — byte-for-byte the FIRST of ``maybe_emit``'s early returns (see
-    the known gap above for the second).
+    Preconditions:
+        - ``entry_rules`` is the run's entry-rule sequence — possibly
+          empty, or ``None`` on the custom-code path; both are falsy, and both are
+          load-bearing inputs this guard exists for rather than domain violations.
+          ``sizing`` is the run's sizing config or ``None``.
+    Postconditions:
+        - ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
+          not ``None`` — byte-for-byte the FIRST of ``maybe_emit``'s early returns (see
+          the known gap above for the second).
     """
     return bool(entry_rules) and sizing is not None
 
@@ -2200,17 +2218,19 @@ def _first_resting_stop_loss_index(exit_rules: Sequence[Any]) -> Optional[int]:
 def _stop_loss_rule_to_leg_specs(rule: StopLossRule) -> List[ExitLegSpec]:
     """Translate a resting-eligible ``StopLossRule`` into a generic exit leg.
 
-    Preconditions: ``_is_resting_stop_loss(rule)`` is True.
-    Postconditions: returns a single-element list holding
-    ``ExitLegSpec(kind=STOP, pct=rule.pct)`` for a market-style rule, or
-    ``ExitLegSpec(kind=STOP_LIMIT, pct=rule.pct,
-    limit_offset_pct=rule.limit_offset_pct)`` for a limit-style one — the same
-    two shapes :func:`_bracket_to_leg_specs` builds for a bracket stop leg,
-    selected by the same ``style == "limit"`` test, so
-    :func:`resolve_exit_leg_attachments` resolves identical price math for
-    both sources (see ``rule_compiler.stop_loss_level``, which the stop level
-    mirrors: ``ref_price * (1 ∓ pct)``, and ``spec_dsl.protective_limit_price``,
-    which the limit side mirrors).
+    Preconditions:
+        - ``_is_resting_stop_loss(rule)`` is True.
+    Postconditions:
+        - returns a single-element list holding
+          ``ExitLegSpec(kind=STOP, pct=rule.pct)`` for a market-style rule, or
+          ``ExitLegSpec(kind=STOP_LIMIT, pct=rule.pct,
+          limit_offset_pct=rule.limit_offset_pct)`` for a limit-style one — the same
+          two shapes :func:`_bracket_to_leg_specs` builds for a bracket stop leg,
+          selected by the same ``style == "limit"`` test, so
+          :func:`resolve_exit_leg_attachments` resolves identical price math for
+          both sources (see ``rule_compiler.stop_loss_level``, which the stop level
+          mirrors: ``ref_price * (1 ∓ pct)``, and ``spec_dsl.protective_limit_price``,
+          which the limit side mirrors).
     """
     # Explicit raise (not assert, which ``python -O`` strips) so the contract
     # stays enforced in optimized production runs — the same posture
@@ -2253,30 +2273,32 @@ def resolve_resting_stop_loss_attachment(
     :func:`resolve_exit_leg_attachments` for the shared price-resolution
     contract (anchoring, sign convention, and raises).
 
-    Preconditions: ``_is_resting_stop_loss(rule)`` is True; ``ref_price`` is
-    a finite number ``> 0``; ``side`` is the entry's ``OrderSide``.
-    Postconditions: returns a :class:`StopAttachment` whose ``stop_price``
-    is finite, strictly positive, and strictly on the protective side of
-    ``ref_price`` (a preview only — see ``entry_price_pct`` below), and
-    whose ``entry_price_pct == rule.pct`` so materialization re-anchors
-    ``stop_price`` to the entry's actual fill price rather than trusting
-    this ``ref_price``-anchored preview verbatim (``ref_price`` is the
-    signal bar's close, which can gap away from where the entry actually
-    fills — see :class:`StopAttachment`'s ``entry_price_pct`` field for why
-    that matters here specifically). For a limit-style rule the attachment
-    is additionally a STOP_LIMIT leg (``limit_offset`` set) carrying
-    ``entry_price_limit_offset_pct == rule.limit_offset_pct``, so the limit
-    re-anchors off the SAME re-derived stop the ``entry_price_pct`` re-anchor
-    produces — without it the stop would follow the real fill while the
-    limit offset stayed pinned to the pre-gap preview, leaving the leg's two
-    prices anchored to different reference prices. Also carries
-    ``reason == ENGINE_EXIT_REASON_STOP_LOSS`` — the same named constant
-    :meth:`_EngineExitDispatcher._build_close_order` stamps for a
-    ``StopLossRule`` close on the bar-close path — so materialization (see
-    :class:`StopAttachment`'s ``reason`` field) tags the resting fill with
-    the same, gate-relied-upon attribution regardless of which path actually
-    closes the position, instead of the generic ``exit_leg_{idx}`` label the
-    rule-agnostic ``attached_exits`` plumbing would otherwise derive.
+    Preconditions:
+        - ``_is_resting_stop_loss(rule)`` is True; ``ref_price`` is
+          a finite number ``> 0``; ``side`` is the entry's ``OrderSide``.
+    Postconditions:
+        - returns a :class:`StopAttachment` whose ``stop_price``
+          is finite, strictly positive, and strictly on the protective side of
+          ``ref_price`` (a preview only — see ``entry_price_pct`` below), and
+          whose ``entry_price_pct == rule.pct`` so materialization re-anchors
+          ``stop_price`` to the entry's actual fill price rather than trusting
+          this ``ref_price``-anchored preview verbatim (``ref_price`` is the
+          signal bar's close, which can gap away from where the entry actually
+          fills — see :class:`StopAttachment`'s ``entry_price_pct`` field for why
+          that matters here specifically). For a limit-style rule the attachment
+          is additionally a STOP_LIMIT leg (``limit_offset`` set) carrying
+          ``entry_price_limit_offset_pct == rule.limit_offset_pct``, so the limit
+          re-anchors off the SAME re-derived stop the ``entry_price_pct`` re-anchor
+          produces — without it the stop would follow the real fill while the
+          limit offset stayed pinned to the pre-gap preview, leaving the leg's two
+          prices anchored to different reference prices. Also carries
+          ``reason == ENGINE_EXIT_REASON_STOP_LOSS`` — the same named constant
+          :meth:`_EngineExitDispatcher._build_close_order` stamps for a
+          ``StopLossRule`` close on the bar-close path — so materialization (see
+          :class:`StopAttachment`'s ``reason`` field) tags the resting fill with
+          the same, gate-relied-upon attribution regardless of which path actually
+          closes the position, instead of the generic ``exit_leg_{idx}`` label the
+          rule-agnostic ``attached_exits`` plumbing would otherwise derive.
 
     Raises:
         ValueError: if ``rule`` is not resting-eligible (via
@@ -2466,6 +2488,37 @@ class _EngineEntryDispatcher:
         views: Dict[str, StreamingHistoryView],
         result: "TradingServiceResult",
     ) -> None:
+        """Emit at most one engine-managed entry for ``cur_bar``'s symbol.
+
+        Mutates TWO caller-owned structures, which is why the contract is worth
+        stating rather than leaving to the inline comments below: it appends to
+        ``pending_for_prev`` and bumps counters/events on
+        ``result.execution_diagnostics``.
+
+        The skips are deliberately of two kinds. **Silent** (diagnostics
+        untouched): emission is inactive, the symbol is outside
+        ``target_symbols``, a pending LONG/SHORT entry already exists for it, or
+        the history view is empty — none of these say anything about the entry
+        predicate, so counting them would blur the "dead predicate" signal.
+        **Counted** (a counter AND an event): an open position
+        (``already_in_position_skips``) and a risk-gate rejection
+        (``risk_capped_entries``) — both mean the predicate DID fire and
+        something downstream stopped it, which is exactly what a zero-trade
+        post-mortem needs to distinguish.
+
+        Preconditions:
+            - called once per bar per symbol from the dispatcher loop;
+              ``pending_for_prev`` is the caller's queue for the next bar. A no-op
+              unless ``self._entry_emission_active`` — the custom-code path
+              (``entry_rules=None``) must never emit here, because nothing can attach
+              and so the stop-loss cede can never be earned.
+        Postconditions:
+            - on success exactly one price-validated, presized
+              ``OrderRequest`` is appended to ``pending_for_prev``,
+              ``orders_emitted`` is incremented, and an "emitted" event recorded.
+              On a counted skip the matching counter and event are recorded and
+              nothing is appended. On a silent skip nothing is touched at all.
+        """
         if not self._entry_emission_active:
             return
         if self.target_symbols and cur_bar.symbol not in self.target_symbols:
