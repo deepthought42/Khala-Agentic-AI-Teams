@@ -115,7 +115,7 @@ tests in `test_strategy_lab_design_review_helpers.py` keep working unchanged.
 This is the same accepted-`None`-for-test-invocation pattern
 `_validate_and_memoize_readiness` uses for `pinned_asset_class`.
 
-**D7 — No behavioural change to the reviewer's verdict in this step.**
+**D7 — No change to the mechanical verdict path; the finding acts through the prompt.**
 The merged finding travels `reviewer_findings` → `DesignReviewAgent.run` →
 `_format_readiness` → the prompt's readiness block, and is snapshotted onto
 `SpecCritique.readiness_findings`.
@@ -205,7 +205,10 @@ to its own story — not this one.
 The rule is therefore simple and source-agnostic: compare the symbols that came
 back with bars against the **full resolved request** — whatever
 `resolve_strategy_symbols` returned — and on any shortfall return `None`: no
-bars, no probe, no finding, cache untouched, next round retries.
+bars, no probe, no finding, **the starvation/probe-signature memo left
+unwritten**, next round retries. The durable content-hashed data cache is a
+different cache and is deliberately untouched by this rule — it keeps whatever
+symbols did fetch, which is what makes the retry cheap.
 
 An earlier draft of this decision suppressed only when an explicitly requested
 `target_symbols` entry was missing, on the grounds that
@@ -410,7 +413,11 @@ in a step, so the decision list matches what the plan actually commits to.
       `starvation_cache = _StarvationProbeCache()` beside `last_readiness_signature`
       and pass it plus `config` into the `_review_and_handle_critique` call.
       Extend the method's `Post:` contract to record that the reviewer's findings
-      include the starvation finding when the probe is enabled and bars are available.
+      include the starvation finding when the probe is enabled **and the fetch
+      returned bars for the full resolved request** — any shortfall suppresses
+      the probe (D9), so "bars are available" would overstate what the
+      implementation delivers, and a `Post:` copied from a looser wording would
+      be a docstring this plan's own contract rules forbid.
 
 ### Task 4: Keep the suite hermetic
 
@@ -461,7 +468,11 @@ in a step, so the decision list matches what the plan actually commits to.
       exception escapes, cycle completes — the seam's own `except` cannot catch
       this, only the helper's can. *Inner:* `market_data_service.fetch_multi_symbol_range`
       raising through the real seam ⇒ `None` ⇒ `[]`. *Probe:* `probe_starvation`
-      raising ⇒ `[]`. All three leave the reviewer's findings exactly as today.
+      raising ⇒ `[]`. *Gate mapping:* `to_starvation_gate_results` monkeypatched
+      to raise on a compiled-path spec ⇒ `[]` — Step 2.4 names it explicitly as a
+      failure the guard must absorb, and it is the one case where the probe
+      succeeded and only the rendering failed. All four leave the reviewer's
+      findings exactly as today.
 - [ ] **Step 5.7** — *No fetch when starvation is impossible* (Step 2.4). A
       readiness-clean single-entry-rule spec must not invoke the seam at all:
       patch `_fetch_design_probe_bars` with a `_must_not_run` raiser, like the
@@ -474,6 +485,14 @@ in a step, so the decision list matches what the plan actually commits to.
       behave identically. A test that pinned only the explicit case would pin the
       bug. Plus the positive control: a complete fetch of the same universe does
       probe.
+
+      **And assert the memo stays unwritten after the suppressed round**, then
+      run a following round with an unchanged signature and a *complete* fetch
+      and assert it probes rather than serving `cache.findings`. Step 5.5 pins
+      this for the `None`-fetch path; the suppression path reaches the same
+      `return []` and carries the identical hazard, and it is the worse one — an
+      implementation that wrote the signature here would let a single flaky
+      symbol hide a genuinely starved rule for the rest of the attempt.
 
 ### Task 6: Docs
 
