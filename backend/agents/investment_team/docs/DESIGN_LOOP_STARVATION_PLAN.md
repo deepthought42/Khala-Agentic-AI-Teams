@@ -252,6 +252,28 @@ it is O(1) to re-evaluate and costs nothing to repeat, so memoizing it would onl
 add a way to be wrong. Recorded here as its own decision rather than living only
 in a step, so the decision list matches what the plan actually commits to.
 
+**D11 — Resolve the universe once per round, and pass it everywhere.**
+D10 and Step 2.2 removed the `target_symbols` proxy in favour of the resolved
+universe, because `_max_universe_symbols()` reads its ceiling from the
+environment on every call. That fix was incomplete: it left the signature and
+the fetch seam each calling `resolve_strategy_symbols` independently, so the
+hazard moved rather than closing. If the cap changes between those two calls,
+the memo labels findings computed over universe B with a signature describing
+universe A — and if the cap later reverts to A, the "signature unchanged"
+short-circuit serves B's verdict for a round whose universe is A, without
+fetching. That is worse than staleness: it is a wrong answer with no way to
+notice.
+
+So the universe is resolved exactly once, in `_design_starvation_findings`, and
+the same list is handed to `_starvation_probe_signature` and to
+`_fetch_design_probe_bars` (which no longer resolves at all). One call, one
+list, no window.
+
+The lesson generalises past this call: **computing an environment-dependent
+value twice is the same defect as assuming it is stable** — the second read is
+just a shorter race. Wherever a value must agree across two consumers, compute
+it once and pass it, rather than recomputing and trusting agreement.
+
 ---
 
 ## Global constraints
@@ -294,11 +316,14 @@ in a step, so the decision list matches what the plan actually commits to.
 **File:** `backend/agents/investment_team/strategy_lab/orchestrator_design.py`
 (both steps — the seam is `DesignMixin`'s, per D1)
 
-- [ ] **Step 1.1** — Add `_fetch_design_probe_bars(self, spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`
+- [ ] **Step 1.1** — Add `_fetch_design_probe_bars(self, spec, config, symbols) -> Optional[Dict[str, List[OHLCVBar]]]`
       to `DesignMixin`, modelled on `orchestrator.py`'s `_fetch_market_data`
       but keeping only what the probe needs:
-  - resolve symbols via `self.market_data_service.resolve_strategy_symbols(spec)`;
-    empty ⇒ `None`;
+  - **`symbols` is passed in, already resolved — this seam never calls
+    `resolve_strategy_symbols` itself.** Step 2.4 resolves once and hands the
+    same list to both the signature and this fetch, so there is exactly one
+    resolution per round and no window in which the two could disagree. See D11
+    for why that matters more than it looks;
   - `as_of = (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None`
     — byte-identical to `_fetch_market_data`, so the durable cache key matches
     and synthesis's later fetch hits it;
@@ -310,9 +335,10 @@ in a step, so the decision list matches what the plan actually commits to.
     rather than being served a remembered failure. This is the same rule Step 2.4
     applies to the findings memo, and for the same reason: a memo that caches an
     absence turns a transient fault into a permanent one;
-  - after the fetch, apply D9's coverage check: if any symbol of the resolved
-    request is missing from those that returned bars, return `None` — explicit
-    `target_symbols` and the asset-class default universe alike. A partial fetch
+  - after the fetch, apply D9's coverage check against **the `symbols` list it
+    was given** — not a freshly resolved one: if any of them is missing from
+    those that returned bars, return `None`, explicit `target_symbols` and the
+    asset-class default universe alike. A partial fetch
     is silent (no exception reaches the guard below) and probing one would
     fabricate starvation;
   - wrap the fetch in `try` / `except Exception` → `logger.debug(...)` → `None`.
@@ -338,8 +364,9 @@ in a step, so the decision list matches what the plan actually commits to.
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
       spec.asset_class, tuple(resolved_symbols),
       (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`,
-      where `resolved_symbols` is `market_data_service.resolve_strategy_symbols(spec)`
-      — the same call Step 1.1's seam makes.
+      where `resolved_symbols` is the list Step 2.4 resolved **once** for this
+      round and also passed to the fetch seam — literally the same object, not a
+      second call that happens to agree (D11).
 
       It extends synthesis's `(entry_rules, requires_custom_code)` key with
       `asset_class`, the **resolved** symbols and `as_of`, because — unlike
@@ -385,7 +412,10 @@ in a step, so the decision list matches what the plan actually commits to.
       guaranteed-empty verdict is pure waste on a common, valid spec shape —
       and the flag defaults on, so every review round of every single-rule spec
       would pay it); signature unchanged ⇒
-      `cache.findings`; otherwise fetch bars, `probe_starvation`, filter to
+      `cache.findings`; otherwise **resolve the universe once** —
+      `symbols = self.market_data_service.resolve_strategy_symbols(spec)`, empty
+      ⇒ `[]` — and use that one list for both the signature and the fetch call
+      (D11); then fetch bars, `probe_starvation`, filter to
       `verdict == "starved"` (D2), render with
       `to_starvation_gate_results(..., phase="design")`, **demote any `critical`
       result to `warning`** (D8 — a `critical` deterministic finding instructs
@@ -496,6 +526,12 @@ in a step, so the decision list matches what the plan actually commits to.
       failure the guard must absorb, and it is the one case where the probe
       succeeded and only the rendering failed. All four leave the reviewer's
       findings exactly as today.
+- [ ] **Step 5.9** — *One resolution per round* (D11). Count
+      `resolve_strategy_symbols` calls across a probing round and assert exactly
+      one; and with `_fetch_design_probe_bars` asserting on the `symbols` it
+      receives, assert it is the same list the signature was built from. A test
+      that only checked the signature's contents would pass even with two
+      resolutions racing.
 - [ ] **Step 5.7** — *No fetch when starvation is impossible* (Step 2.4). A
       readiness-clean single-entry-rule spec must not invoke the seam at all:
       patch `_fetch_design_probe_bars` with a `_must_not_run` raiser, like the
@@ -558,7 +594,7 @@ suddenly slows down is the signal it did not take.
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
-| A mid-attempt universe-cap change staling the memo | Signature carries the resolved universe, not `target_symbols` (Step 2.2) |
+| A mid-attempt universe-cap change staling the memo, or mislabelling one universe's findings with another's signature | Universe resolved once per round and passed to both the signature and the fetch (D11) |
 | A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
