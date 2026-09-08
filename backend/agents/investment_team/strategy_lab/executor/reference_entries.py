@@ -253,9 +253,12 @@ def replay_entry_rules(
             rule, rule_idx = match
             fill = fill_entry_at(symbol, symbol_bars, i, rule.side, rule_idx)
             if fill is None:
-                # Either the final-bar rule (the outer loop ends next anyway,
-                # so continuing vs. breaking here are equivalent) or the
-                # fill-bar-open guard (keep scanning for a later trigger).
+                # Either the nonpositive/non-finite trigger-close gate (the
+                # trigger itself is degenerate; keep scanning for a later,
+                # valid trigger), the final-bar rule (the outer loop ends
+                # next anyway, so continuing vs. breaking here are
+                # equivalent), or the fill-bar-open guard (keep scanning for
+                # a later trigger).
                 continue
             out.append(fill)
             break  # suppression: never re-open a symbol once filled

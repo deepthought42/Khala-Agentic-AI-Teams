@@ -208,12 +208,14 @@ def test_scaled_take_profit_single_rung_closes_and_records_its_level():
 
 
 def test_signal_exit_fills_at_next_bar_open():
+    """A signal exit's fill is deferred to the bar after its trigger, at that
+    bar's open."""
     d = _dates(5)
     bars = [
         _bar(99, 99, 99, 99, d[0]),
         _bar(101, 102, 100, 101, d[1]),
         _bar(101, 101, 101, 101, d[2]),  # entry fill @101
-        _bar(101, 101, 101, 90, d[3]),  # trigger: close < 95
+        _bar(101, 101, 89, 90, d[3]),  # trigger: close < 95
         _bar(80, 80, 80, 80, d[4]),  # fill bar: signal closes at THIS bar's open
     ]
     spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=95.0))])
@@ -229,7 +231,7 @@ def test_signal_exit_is_eligible_on_the_entry_bar_itself():
     bars = [
         _bar(99, 99, 99, 99, d[0]),
         _bar(101, 102, 100, 101, d[1]),
-        _bar(101, 101, 101, 90, d[2]),  # entry fill @101 AND close<95 fires the signal same bar
+        _bar(101, 101, 89, 90, d[2]),  # entry fill @101 AND close<95 fires the signal same bar
         _bar(80, 80, 80, 80, d[3]),  # fill bar
     ]
     spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=95.0))])
@@ -248,7 +250,7 @@ def test_signal_exit_with_a_nonpositive_fill_bar_open_does_not_fire():
     bars = [
         _bar(99, 99, 99, 99, d[0]),
         _bar(101, 102, 100, 101, d[1]),
-        _bar(101, 101, 101, 90, d[2]),  # entry fill @101; close<95 fires the signal
+        _bar(101, 101, 89, 90, d[2]),  # entry fill @101; close<95 fires the signal
         _bar(0.0, 0.0, 0.0, 0.0, d[3]),  # fill bar's open is nonpositive
     ]
     spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=95.0))])
@@ -284,7 +286,7 @@ def test_signal_only_spec_does_not_crash_on_an_entry_price_that_would_zero_the_a
     d = _dates(3)
     bars = [
         _bar(0.00001, 0.00001, 0.00001, 0.00001, d[0]),
-        _bar(0.00001, 0.00001, 0.00001, 101, d[1]),  # trigger: close > 100
+        _bar(0.00001, 101, 0.00001, 101, d[1]),  # trigger: close > 100
         _bar(0.00001, 0.00001, 0.00001, 0.00001, d[2]),  # entry fill @0.00001 -- rounds to 0
     ]
     spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=0.0))])
@@ -321,7 +323,7 @@ def test_an_entry_price_that_would_round_to_zero_opens_no_position():
     bars = [
         _bar(99, 99, 99, 99, d[0]),
         _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
-        _bar(0.00004, 0.00004, 0.00004, 50, d[2]),  # entry fill @0.00004 (rounds to 0);
+        _bar(0.00004, 50, 0.00004, 50, d[2]),  # entry fill @0.00004 (rounds to 0);
         # also a signal trigger (close < 100), eligible on entry_bar itself
         _bar(90, 90, 90, 90, d[3]),  # would-be signal-exit fill, if a position had opened
     ]
@@ -531,6 +533,7 @@ def test_resting_order_beats_a_queued_signal_exit_on_the_same_fill_bar():
     [trade] = simulate(spec, {"AAA": bars})
     assert trade.exit_rule_kind == "stop_loss"
     assert trade.exit_bar == 4
+    assert trade.exit_price == 95.95
 
 
 def test_limit_style_stop_is_retired_the_moment_a_signal_exit_is_queued():
@@ -588,6 +591,7 @@ def test_a_failed_signal_fill_restores_a_retired_limit_stop():
     [trade] = simulate(spec, {"AAA": bars})
     assert trade.exit_rule_kind == "stop_loss"
     assert trade.exit_bar == 5
+    assert trade.exit_price == 93.1
 
 
 def test_a_partial_rung_does_not_retire_a_resting_limit_stop():
@@ -610,6 +614,9 @@ def test_a_partial_rung_does_not_retire_a_resting_limit_stop():
     [trade] = simulate(spec, {"AAA": bars})
     assert trade.exit_rule_kind == "stop_loss"
     assert trade.exit_bar == 4
+    # Blended, not the raw stop price alone: the rung already closed half the
+    # position at 105.0 before the limit stop (93.1) closes the remainder.
+    assert trade.exit_price == 0.5 * 105.0 + 0.5 * 93.1
 
 
 def test_ladder_rungs_then_stop_loss_closes_the_remainder_with_a_blended_price():
@@ -814,13 +821,23 @@ def test_simulate_rejects_out_of_range_or_nonfinite_slippage(bps):
 def test_simulate_accepts_slippage_just_under_the_upper_bound():
     """Pins the ``[0, 10_000)`` contract from the acceptance side too, not
     just the rejection side above -- a tightened valid range would silently
-    pass a rejection-only test suite."""
-    spec = _spec([StopLossRule(pct=0.05)])
-    simulate(
-        spec,
-        {"AAA": [_bar(99, 99, 99, 99, "2024-01-01T00:00:00")]},
-        entry_slippage_bps=9_999.0,
-    )  # must not raise
+    pass a rejection-only test suite. Asserts a trade was actually produced,
+    not merely that ``simulate()`` didn't raise -- a regression that silently
+    dropped the extreme-slippage fill would still pass a no-raise-only check.
+    Uses a ``SignalExitRule`` rather than a stop/take-profit, since its
+    trigger and fill are provably independent of slippage (see
+    ``resolve_signal_exit``'s own docstring), so this test needs no
+    reasoning about how a ~2x anchor shift moves a stop level."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger: close > 100
+        _bar(101, 101, 89, 90, d[2]),  # entry fill @101; close<95 also fires the signal
+        _bar(85, 85, 85, 85, d[3]),  # signal fills here @ open
+    ]
+    spec = _spec([SignalExitRule(when=Predicate(lhs="bar.close", op="<", rhs=95.0))])
+    trades = simulate(spec, {"AAA": bars}, entry_slippage_bps=9_999.0)
+    assert len(trades) == 1
 
 
 def test_simulate_rejects_empty_bars_for_a_symbol():
@@ -1061,6 +1078,7 @@ def test_module_imports_no_forbidden_engine_module():
         "    for m in sys.modules\n"
         "    if m.endswith('trading_service.service')\n"
         "    or m.endswith('trading_service.engine')\n"
+        "    or '.trading_service.service.' in m\n"
         "    or '.trading_service.engine.' in m\n"
         "]\n"
         "print(sorted(hits))\n"

@@ -395,9 +395,15 @@ class ReferenceSignalExit:
 def decimals_for(reference_price: float) -> int:
     """Production's price-rounding bucket: 4 decimals below $10, else 2.
 
-    Preconditions: ``reference_price`` is finite.
+    Preconditions: ``reference_price`` is finite — enforced, since this
+    module's other helpers now call this from outside this module too (the
+    combined simulator in ``reference_simulator.py``), so the precondition is
+    a cross-module contract this function must not leave to caller
+    discipline alone.
     Postconditions: returns ``4`` when ``reference_price < 10``, else ``2``.
     """
+    if not math.isfinite(reference_price):
+        raise ValueError(f"reference_price must be finite, got {reference_price!r}")
     return 4 if reference_price < 10 else 2
 
 
@@ -410,14 +416,18 @@ def round_reference_price(price: float) -> float:
     this would show every single trade as a spurious mismatch against
     production's own rounded field.
 
-    Preconditions: ``price`` is finite (callers apply the finite-and-positive
-    guard first).
+    Preconditions: ``price`` is a positive finite number — enforced, since
+    this is now a cross-module helper (called by ``reference_simulator.py``
+    as well as this module's own resolvers), not merely a private one whose
+    every caller is visible in this file.
     Postconditions: returns ``price`` rounded to the bucket ``price`` itself
     selects. Callers whose bucket is set by a DIFFERENT price than the one
     being rounded — the post-slippage anchor, whose bucket comes from the raw
     pre-slippage open — must not use this helper; see
     :func:`entry_price_basis`.
     """
+    if not (price > 0 and math.isfinite(price)):
+        raise ValueError(f"price must be a positive finite number, got {price!r}")
     return round(price, decimals_for(price))
 
 
@@ -663,6 +673,7 @@ class RestingStopLoss:
         self._low_water = anchor
         self._armed: Set[int] = set()
         self._retired: Set[int] = set()
+        self._last_advanced_timestamp: Optional[str] = None
 
     def _position(self) -> PositionState:
         """Snapshot the position as the shared evaluator expects to see it.
@@ -779,7 +790,14 @@ class RestingStopLoss:
         the position's entry bar, and this is called at most once per bar
         before :meth:`advance` is called for that same bar (though it may be
         called MULTIPLE times for that same bar with a growing ``skip``, to
-        retry past a candidate a caller has already rejected).
+        retry past a candidate a caller has already rejected). ENFORCED:
+        ``bar.timestamp`` must not be earlier than the last bar
+        :meth:`advance` ratcheted the watermark with — violating this would
+        silently evaluate a trigger decision against a watermark extended
+        past this bar's own extremes. Equal timestamps are allowed (a bar not
+        yet advanced, or two same-timestamp fixture bars in a unit test that
+        never calls :meth:`advance` between them), since only a genuine
+        step BACKWARD in time is the dangerous case this guards against.
         Postconditions: returns ``(exit_rule_index, unrounded_fill_price)`` for
         the winning rule NOT in ``skip``, or ``None`` when no such rule fills
         on this bar — the SAME tie-break as :meth:`step` (ascending spec
@@ -792,6 +810,7 @@ class RestingStopLoss:
         Calling this twice for the same bar and ``skip`` with no intervening
         state change returns the same result both times.
         """
+        self._check_not_before_last_advanced(bar)
         winner: Optional[Tuple[int, float]] = None
         for idx, rule in self._rules:
             if idx in self._retired or idx in skip:
@@ -829,10 +848,38 @@ class RestingStopLoss:
 
         Preconditions: ``bar`` is the same bar :meth:`peek` was (or would have
         been) called for; called exactly once per bar, after :meth:`peek`.
+        ENFORCED: ``bar.timestamp`` must not be earlier than the last bar
+        this method itself already advanced past — see :meth:`peek`'s own
+        docstring for why equal timestamps are tolerated rather than
+        rejected.
         Postconditions: delegates to :meth:`_extend_watermarks` — same
-        watermark evolution as :meth:`step`'s trailing side effect.
+        watermark evolution as :meth:`step`'s trailing side effect. Records
+        ``bar.timestamp`` as the new floor for this check and :meth:`peek`'s
+        own.
         """
+        self._check_not_before_last_advanced(bar)
         self._extend_watermarks(bar)
+        self._last_advanced_timestamp = bar.timestamp
+
+    def _check_not_before_last_advanced(self, bar: "Bar") -> None:
+        """Reject a bar earlier than the last one :meth:`advance` ratcheted with.
+
+        Preconditions: none. Postconditions: raises ``ValueError`` when
+        ``self._last_advanced_timestamp`` is not ``None`` and
+        ``bar.timestamp`` sorts strictly before it; otherwise returns
+        normally. A caller that has never called :meth:`advance` on this
+        object faces no constraint yet — every bar is "not before" an
+        unset floor.
+        """
+        if (
+            self._last_advanced_timestamp is not None
+            and bar.timestamp < self._last_advanced_timestamp
+        ):
+            raise ValueError(
+                f"bar.timestamp {bar.timestamp!r} is earlier than the last advanced bar "
+                f"{self._last_advanced_timestamp!r} — peek()/advance() must be called in "
+                "non-decreasing bar order"
+            )
 
     def retire_limit_style_rules(self) -> None:
         """Exclude every ``style="limit"`` rule from candidates until restored.
@@ -1475,7 +1522,11 @@ class RestingTakeProfitFamily:
         ``commit``/``peek`` call on this object in between (a candidate
         carries no bar identity of its own to check this against — that
         discipline is the caller's, exactly as :meth:`step`'s own
-        peek-then-commit composition below observes it).
+        peek-then-commit composition below observes it). ENFORCED regardless
+        of that discipline: ``candidate.price`` is a positive finite number
+        and ``candidate.qty`` is positive — every ``peek()``-sourced
+        candidate already satisfies both, so this only ever fires for one
+        constructed directly, bypassing ``peek()``.
         Postconditions: when this candidate would be the position's FINAL
         closing fill (its ``qty`` leaves ``_remaining_qty`` within
         :data:`_FILL_QTY_REL_TOL` of zero) and the resulting quantity-weighted
@@ -1496,6 +1547,12 @@ class RestingTakeProfitFamily:
         :data:`_FILL_QTY_REL_TOL` of zero, else ``None`` (rung fired, position
         still open).
         """
+        if not (candidate.price > 0 and math.isfinite(candidate.price)):
+            raise ValueError(
+                f"candidate.price must be a positive finite number, got {candidate.price!r}"
+            )
+        if not candidate.qty > 0:
+            raise ValueError(f"candidate.qty must be > 0, got {candidate.qty!r}")
         terminal = self._prospective_terminal(candidate.qty, candidate.price)
         if terminal is not None:
             weighted_price, terminal_price = terminal

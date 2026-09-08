@@ -23,6 +23,7 @@ from investment_team.strategy_lab.executor.reference_exits import (
     RestingStopLoss,
     RestingTakeProfitFamily,
     TakeProfitCandidate,
+    decimals_for,
     entry_price_basis,
     replay_signal_exits,
     replay_stop_loss_exits,
@@ -30,6 +31,7 @@ from investment_team.strategy_lab.executor.reference_exits import (
     resolve_signal_exit,
     resolve_stop_loss_exit,
     resolve_take_profit_family_exit,
+    round_reference_price,
     scaled_take_profit_rules,
     signal_exit_rules,
     stop_loss_rules_for_side,
@@ -181,6 +183,25 @@ def test_anchor_rejects_nonpositive_or_nonfinite_open(raw_open):
 def test_anchor_rejects_bad_side():
     with pytest.raises(ValueError, match="side"):
         entry_price_basis(100.0, "sideways", 0.0)
+
+
+# ---------------------------------------------------------------------------
+# decimals_for / round_reference_price — now cross-module public helpers,
+# so their documented preconditions are enforced rather than left to caller
+# discipline alone.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reference_price", [float("nan"), float("inf"), float("-inf")])
+def test_decimals_for_rejects_a_non_finite_price(reference_price):
+    with pytest.raises(ValueError, match="reference_price"):
+        decimals_for(reference_price)
+
+
+@pytest.mark.parametrize("price", [0.0, -1.0, float("nan"), float("inf")])
+def test_round_reference_price_rejects_a_nonpositive_or_non_finite_price(price):
+    with pytest.raises(ValueError, match="price"):
+        round_reference_price(price)
 
 
 @pytest.mark.parametrize(
@@ -701,6 +722,32 @@ def test_peek_skip_excludes_an_index_and_returns_the_next_reachable_stop():
     assert book.peek(bar, skip=frozenset({0})) == pytest.approx((1, 0.00009))
 
 
+def test_advance_rejects_a_bar_earlier_than_the_last_advanced_bar():
+    book = _stop_book()
+    book.advance(_bar(100.0, 100.0, 100.0, 100.0, "2024-01-02T00:00:00"))
+    with pytest.raises(ValueError, match="earlier"):
+        book.advance(_bar(100.0, 100.0, 100.0, 100.0, "2024-01-01T00:00:00"))
+
+
+def test_peek_rejects_a_bar_earlier_than_the_last_advanced_bar():
+    book = _stop_book()
+    book.advance(_bar(100.0, 100.0, 100.0, 100.0, "2024-01-02T00:00:00"))
+    with pytest.raises(ValueError, match="earlier"):
+        book.peek(_bar(100.0, 100.0, 100.0, 100.0, "2024-01-01T00:00:00"))
+
+
+def test_peek_and_advance_tolerate_equal_timestamps():
+    """Equal timestamps are allowed -- only a genuine step BACKWARD in time
+    is rejected -- since a bar not yet advanced past, or a same-bar retry
+    (the ``skip`` protocol, or a unit test that never calls ``advance``), are
+    both legitimate and must not be mistaken for the dangerous case."""
+    book = _stop_book()
+    same_ts_bar = _bar(100.0, 100.0, 94.0, 95.0, "2024-01-01T00:00:00")
+    book.advance(same_ts_bar)
+    assert book.peek(same_ts_bar) is not None
+    book.advance(same_ts_bar)  # equal timestamp again: still allowed
+
+
 def test_peek_alone_does_not_ratchet_the_watermark():
     """Calling ``peek`` twice for the same bar, with no ``advance`` in
     between, must return the same result both times — the watermark check
@@ -1062,6 +1109,7 @@ def test_module_imports_no_forbidden_engine_module():
         "    for m in sys.modules\n"
         "    if m.endswith('trading_service.service')\n"
         "    or m.endswith('trading_service.engine')\n"
+        "    or '.trading_service.service.' in m\n"
         "    or '.trading_service.engine.' in m\n"
         "]\n"
         "print(sorted(hits))\n"
@@ -1622,6 +1670,48 @@ def test_commit_refuses_a_terminal_close_that_rounds_to_zero_without_mutating_st
 
     assert fired is None
     assert family.remaining_qty == 1.0  # untouched -- the commit never happened
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.0, float("nan"), float("inf")])
+def test_commit_rejects_a_nonpositive_or_non_finite_candidate_price_on_the_non_terminal_path(
+    bad_price,
+):
+    """White-box test: a directly-constructed, non-terminal candidate (one
+    that would only partially close the position) bypasses the terminal
+    refusal above entirely -- this pins that ``commit`` validates the price
+    BEFORE ever appending to ``_fills``, not only when the candidate happens
+    to be the final fill."""
+    ladder = ScaledTakeProfitRule(levels=[TakeProfitLevel(pct=0.05, qty_fraction=0.5)])
+    family = RestingTakeProfitFamily(side="long", symbol="AAA", anchor=100.0, rules=[ladder])
+    candidate = TakeProfitCandidate(
+        exit_rule_index=0,
+        exit_rule_kind="scaled_take_profit",
+        qty=0.5,  # a genuine partial -- leaves remaining_qty at 0.5, not terminal
+        price=bad_price,
+        level_index=0,
+        ladder_rule_index=0,
+    )
+
+    with pytest.raises(ValueError, match="price"):
+        family.commit(candidate)
+    assert family.remaining_qty == 1.0  # untouched -- rejected before any mutation
+
+
+def test_commit_rejects_a_nonpositive_candidate_qty():
+    rules = [TakeProfitRule(pct=0.05)]
+    family = RestingTakeProfitFamily(side="long", symbol="AAA", anchor=100.0, rules=rules)
+    candidate = TakeProfitCandidate(
+        exit_rule_index=0,
+        exit_rule_kind="take_profit",
+        qty=0.0,
+        price=105.0,
+        level_index=None,
+        ladder_rule_index=None,
+    )
+
+    with pytest.raises(ValueError, match="qty"):
+        family.commit(candidate)
+    assert family.remaining_qty == 1.0  # untouched -- rejected before any mutation
 
 
 def test_peek_rescans_past_a_terminal_candidate_that_would_round_to_zero():
