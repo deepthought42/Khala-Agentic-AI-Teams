@@ -91,6 +91,7 @@ from investment_team.trading_service.strategy.contract import (
     OrderType,
     StopAttachment,
     TimeInForce,
+    UnfilledPolicy,
 )
 
 # ---------------------------------------------------------------------------
@@ -1345,3 +1346,129 @@ def test_fallback_still_fills_on_the_bar_its_replacement_materializes() -> None:
     [trade] = outcome.closed_trades
     assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
     assert "AAA" not in portfolio.positions
+
+
+def _partially_filled_day_entry(
+    sim: FillSimulator, order_book: OrderBook, portfolio: Portfolio
+) -> OrderRequest:
+    """Open a partially-filled DAY entry carrying a limit-style resting stop.
+
+    A thin-volume bar clips the 2000-share entry against the 10% participation
+    cap, so the position opens partially and the remainder requeues. The parent
+    is DAY-TIF, so the next date change routes it through ``expire_day_orders``
+    — the path that materializes protective legs OUTSIDE ``process_bar``.
+
+    Postconditions: a position is open on AAA for less than the request's full
+    ``qty``; the DAY parent is still pending with a requeued remainder.
+    """
+    req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+    req.tif = TimeInForce.DAY
+    req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+    order_book.submit(
+        req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+    )
+    # 10% of 10_000 shares of volume = 1_000 fillable against a ~2_000 request.
+    sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0))
+    pos = portfolio.positions["AAA"]
+    assert pos.original_qty < req.qty, "fixture must leave the entry PARTIALLY filled"
+    return req
+
+
+def _fallback_stop_limit(req: OrderRequest, submitted_at: str) -> OrderRequest:
+    """The bar-close fallback the evaluator emits while an entry is partial.
+
+    Sized off the entry request so this is a FULL-position close, as a real
+    bar-close fallback is; ``_fill_exit`` clips to the live qty.
+    """
+    return OrderRequest(
+        client_order_id=f"fallback-{submitted_at}",
+        symbol="AAA",
+        side=OrderSide.SHORT,
+        qty=req.qty,
+        order_type=OrderType.STOP_LIMIT,
+        stop_price=99.0,
+        limit_price=98.0,
+        tif=TimeInForce.GTC,
+        reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+    )
+
+
+def test_day_expiry_retirement_leaves_the_fallback_its_fill_turn() -> None:
+    """A retirement queued by ``expire_day_orders`` must survive the next bar's
+    PRE-LOOP drain.
+
+    The pre-loop drain exists for retirements a mid-loop raise stranded, whose
+    fallback already spent its fill turn. ``expire_day_orders`` breaks that
+    assumption: the service calls it BETWEEN bars, so a retirement it queues
+    targets a fallback that has not yet reached the coming bar's snapshot.
+    Draining it ahead of the loop would cancel the fallback unfilled while the
+    replacement child — stamped with this bar's timestamp — is skipped by the
+    engine-internal same-bar guard until the next one, leaving the position open
+    through a stop it had already triggered.
+
+    Here the bar that expires the DAY parent also trades down through the
+    fallback's stop (99) and limit (98) to 97, so the fallback is marketable on
+    exactly the bar the handoff happens. It must fill and close the position.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    req = _partially_filled_day_entry(sim, order_book, portfolio)
+    order_book.submit(
+        _fallback_stop_limit(req, "2024-01-02"),
+        submitted_at="2024-01-02",
+        submitted_equity=10_000_000.0,
+    )
+
+    # Date change: expire_day_orders materializes the attachment (queueing a
+    # retirement stamped for THIS bar), then process_bar runs against it.
+    cur = _bar("2024-01-03", open_price=100.0, high=100.5, low=97.0, close=97.5)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    [trade] = outcome.closed_trades
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert "AAA" not in portfolio.positions
+
+
+def test_day_expiry_attachment_records_its_firing_credit() -> None:
+    """A leg attached on the DAY-expiry path still reports ``engine_exit_attached``.
+
+    ``expire_day_orders`` runs between bars with no ``events`` list in scope, so
+    the attachment buffers its event for ``process_bar`` to flush. Without that
+    credit the leg's eventual close reconciles against a zero firing count and
+    the conformance leak check reports a false critical on a position that was
+    in fact protected — so the event, not just the order, is the contract here.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    _partially_filled_day_entry(sim, order_book, portfolio)
+
+    cur = _bar("2024-01-03", open_price=100.0)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    attached = [ev for ev in outcome.diagnostic_events if ev.kind == "engine_exit_attached"]
+    assert len(attached) == 1, "the DAY-expiry attachment must report its firing credit"
+    assert attached[0].reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert attached[0].order_type == OrderType.STOP_LIMIT.value
+    # Stamped with the bar that attached it, not the bar that flushed it — they
+    # are the same bar, which is the point of flushing at the top of process_bar.
+    assert attached[0].timestamp == "2024-01-03"
+
+
+def test_day_expiry_firing_credit_reaches_the_conformance_counters() -> None:
+    """The buffered event increments the same counters a bar-close emission does.
+
+    This is the end the false critical actually reads: ``_check_stop_loss``
+    reconciles below-floor trades against ``exit_rule_firings_by_symbol``, so the
+    event only helps if it lands there.
+    """
+    sim, order_book, portfolio = _make_simulator()
+    _partially_filled_day_entry(sim, order_book, portfolio)
+
+    cur = _bar("2024-01-03", open_price=100.0)
+    sim.expire_day_orders(cur)
+    outcome = sim.process_bar(cur)
+
+    diagnostics = BacktestExecutionDiagnostics()
+    _apply_fill_outcome_events(diagnostics, outcome)
+    assert diagnostics.exit_rule_firings.get("stop_loss") == 1
+    assert diagnostics.exit_rule_firings_by_symbol.get("AAA", {}).get("stop_loss") == 1
