@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Proposed — pre-implementation plan, no code changes in this document |
+| **Status** | Decided and implemented — the decision below is settled and the tasks have been carried out; this document remains the record of what was changed and why |
 | **Created** | 2026-09-08 |
-| **Scope** | `planning_team/temporal/answer_signal.py` and its one production call site in `software_engineering_team/temporal/activities.py` |
+| **Scope** | Eight files — see the File map. Production code: `planning_team/temporal/answer_signal.py`, `software_engineering_team/temporal/activities.py`, and `software_engineering_team/api/models.py` + `api/state.py` (the status surface, without which the audit record never leaves the job store) |
 | **Supersedes** | Nothing. Corrects two stale claims in `planning_hitl_temporal_contract.md` (see Task 3) |
 
 Tasks below use checkbox (`- [ ]`) syntax so an implementer can track them in order.
@@ -238,7 +238,7 @@ justification for keeping the default fails. The status API is therefore in scop
 *rendering* it in the Angular UI is the follow-on.
 
 - [ ] **Step 1: Write the failing tests** — (a) a `plan_project_activity` call with `allow_repause=False` and a partially-answered batch leaves `defaulted_questions` on the job record, carrying each defaulted `question_id` and `selected_option_id`; (b) `build_job_status_response` echoes that value, and returns an empty list (not `None`, not a missing key) for a job that defaulted nothing.
-- [ ] **Step 2:** Pass `on_defaulted=lambda answers: update_job(job_id, defaulted_questions=answers)` at the `build_temporal_planning_answer_callback` call site. Append rather than overwrite if a prior round could already have written the field — verify against `update_job`'s semantics before choosing.
+- [ ] **Step 2:** Pass `on_defaulted=lambda answers: update_job(job_id, defaulted_questions=answers)` at the `build_temporal_planning_answer_callback` call site, with **overwrite** semantics (`update_job` merges top-level, so assigning the key replaces its value). This is settled by Task 2's own invariant, not a judgement call to make at implementation time: the hook fires at most once per activity execution — only the terminal round defaults, and a re-pausing round raises before the hook runs — so no earlier round within an execution can have written the field. The one re-write case is a Temporal retry of the same terminal round, where the inputs and therefore the resolution are identical: overwrite is idempotent, while append would write the same entries twice and leave a reader unable to tell one defaulted round from a retried write — corrupting the very audit record this task exists to create. If accumulation across *separate* planning runs on one job is ever wanted, that is merge-with-dedup and needs its own test; do not get it by accident from append.
 - [ ] **Step 3:** Add `defaulted_questions` to `JobStatusResponse` (defaulting to an empty list, so every existing caller keeps deserializing) and populate it in `build_job_status_response` from the job record. Follow how `pending_questions` is already threaded through both.
 - [ ] **Step 4:** Update the `plan_project_activity` docstring's Postconditions to state that a terminal round records its defaults on the job record, and note on `JobStatusResponse` what a non-empty `defaulted_questions` means: these answers were chosen by the system, not by a human.
 - [ ] **Step 5:** Run `make lint` and the full `planning_team` + `software_engineering_team` Temporal and API test suites.
@@ -274,4 +274,5 @@ justification for keeping the default fails. The status API is therefore in scop
 | Reviewer prefers strict compliance (Option B) | The swap is scoped in "The one open decision" above; Tasks 1 and 3 hold either way |
 | `on_defaulted` raising inside a resumed activity fails the round | Deliberate — a silent reporting failure is the bug being fixed. The hook does one `update_job` call; the activity's existing exception path already handles a failed write |
 | `defaulted_questions` collides with an existing job-record field | Grep the job-service schema before Step 2 of Task 4; rename to `auto_defaulted_questions` if taken |
+| An activity retry re-writes `defaulted_questions` and duplicates the audit entries | Overwrite, never append (Task 4 Step 2). The terminal round's resolution is deterministic given the same inputs, so a retry recomputes an identical list and the write is idempotent |
 | The sibling test story is already satisfied by this module's 46 tests | Say so explicitly in the PR body so it is closed knowingly rather than left open against work that exists |
