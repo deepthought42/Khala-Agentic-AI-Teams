@@ -3,9 +3,9 @@
   defect_class: architecture
   severity: high
   polarity: must_find
-  file_path: backend/agents/agent_platform/sandbox/agent_sandbox_runtime/tests/test_entrypoint.py
+  file_path: backend/agent_sandbox_runtime/tests/test_manifest_boot.py
   line: 14
-  line_end: 14
+  line_end: 16
   description: >
     This suite belongs to team-agnostic platform infrastructure, which imports
     only `agent_platform` and `shared.*`. Importing a domain team package
