@@ -689,7 +689,8 @@ class BlogWriterAgent(_BlogAgentBase):
               an author story and telling the model to omit the ``[Author: ...]``
               placeholder for those sections only. It is omitted entirely — leaving
               the prompt byte-identical to one built without ``covered_sections`` —
-              when that field is absent or empty, and also whenever
+              when that field is absent, empty, or yields no usable title (every
+              entry non-string, empty, or whitespace-only), and also whenever
               ``elicited_stories`` is absent or blank, so the prompt never claims a
               story it did not also supply.
             - The suppression section narrows placeholder emission and nothing else.

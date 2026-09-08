@@ -31,7 +31,8 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
         ctx: The shared ``PipelineContext``. Reads ``brief``, ``work_dir``,
             ``llm_client``, ``length_policy``, ``job_updater``,
             ``max_rewrite_iterations``, ``run_gates``, ``plan``,
-            ``elicited_stories_text``, ``selected_title``, and ``draft_result``;
+            ``elicited_stories_text``, ``covered_sections``, ``selected_title``,
+            and ``draft_result``;
             writes the final ``draft_result`` and ``status``.
     Preconditions:
         - The draft stage populated ``ctx.draft_result``/``ctx.plan``/

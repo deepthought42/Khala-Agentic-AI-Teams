@@ -21,7 +21,12 @@ could assert on the revise prompt's text.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .conftest import make_writer_agent
+
+if TYPE_CHECKING:
+    from agents.blogging.blog_writer_agent.models import WriterInput
 
 STORIES = (
     "[Story for section: Intro]\nI once shipped a migration at 2am and it took the site down.\n\n"
@@ -48,7 +53,7 @@ SUPPRESSION_HEADER = "SECTIONS ALREADY COVERED BY AN AUTHOR STORY:"
 SUPPRESSION_INSTRUCTION = "do not emit an [Author: ...] placeholder for those sections"
 
 
-def _writer_input(**overrides):
+def _writer_input(**overrides) -> "WriterInput":
     """A ``WriterInput`` over a three-section plan, via the shared builder.
 
     The third section ("What we changed") deliberately never has a story, so the
@@ -238,6 +243,17 @@ def test_run_prompt_is_byte_identical_when_covered_sections_empty(monkeypatch) -
     assert with_empty == baseline
 
 
+def test_run_prompt_is_byte_identical_when_no_entry_is_usable(monkeypatch) -> None:
+    """The third omission case, and the one a reader is least likely to predict: a
+    present, non-empty ``covered_sections`` whose every entry is unusable renders
+    nothing, exactly as ``None`` and ``[]`` do."""
+    baseline = _capture_run_prompt(monkeypatch, elicited_stories=STORIES)
+    all_unusable = _capture_run_prompt(
+        monkeypatch, elicited_stories=STORIES, covered_sections=["", "   ", "\n"]
+    )
+    assert all_unusable == baseline
+
+
 def test_run_omits_suppression_without_elicited_stories(monkeypatch) -> None:
     """Covered sections with no stories block renders nothing, and the never-fabricate
     instructions stay intact — this is the input under which a suppression instruction
@@ -276,6 +292,10 @@ def test_run_suppression_precedes_the_quality_checklist(monkeypatch) -> None:
     the prompt, and it must sit with the stories it refers to rather than inside the
     checklist it narrows."""
     prompt = _capture_run_prompt(monkeypatch, elicited_stories=STORIES, covered_sections=["Intro"])
+    # Presence first, ordering second: a regression that drops either landmark should
+    # name the missing one, not surface as "ValueError: substring not found".
+    _suppression_line(prompt)
+    assert NEVER_FABRICATE_HOOK in prompt, f"checklist hook missing from:\n{prompt}"
     assert prompt.index("AUTHOR'S PERSONAL STORIES") < prompt.index(SUPPRESSION_HEADER)
     assert prompt.index(SUPPRESSION_HEADER) < prompt.index(NEVER_FABRICATE_HOOK)
 
@@ -346,8 +366,15 @@ def _capture_batch_revise_prompt(**overrides) -> str:
         ),
     }
     kwargs.update(overrides)
+    # Every argument is re-read from kwargs after the update: passing ``items`` directly
+    # would let an override of ``feedback_items`` build the prompt from one list and the
+    # model from another.
     return build_revise_all_items_prompt(
-        kwargs["draft"], items, "plan text", ReviseWriterInput(**kwargs), llm=None
+        kwargs["draft"],
+        kwargs["feedback_items"],
+        "plan text",
+        ReviseWriterInput(**kwargs),
+        llm=None,
     )
 
 
@@ -363,6 +390,9 @@ def test_batch_revise_prompt_names_covered_sections() -> None:
 
 
 def test_batch_revise_prompt_omits_suppression_when_absent() -> None:
+    """Stories without ``covered_sections`` leave the prompt untouched. Absence of the
+    header is pinned directly — that is what would catch a renderer emitting the block
+    unconditionally — and the empty-list case by byte-identity against the same baseline."""
     baseline = _capture_batch_revise_prompt(elicited_stories=STORIES)
     assert SUPPRESSION_HEADER not in baseline
     assert _capture_batch_revise_prompt(elicited_stories=STORIES, covered_sections=[]) == baseline
