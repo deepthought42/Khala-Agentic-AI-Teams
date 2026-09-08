@@ -5,9 +5,10 @@
   polarity: must_find
   file_path: backend/agents/investment_team/api/main.py
   line: 1418
-  line_end: 1420
+  line_end: 1462
   description: >
-    The cancellation check and the status write are two separate operations. A
-    cancel landing between them is silently overwritten, leaving a cancelled
-    job in a non-cancelled state; the check and the write need to be one
-    conditional update.
+    The cancellation check and the status write are two separate operations,
+    repeated at every transition in this function — RUNNING, COMPLETED and
+    both FAILED paths. A cancel landing between a check and its write is
+    silently overwritten, leaving a cancelled job in a non-cancelled state;
+    each check and write need to be one conditional update.

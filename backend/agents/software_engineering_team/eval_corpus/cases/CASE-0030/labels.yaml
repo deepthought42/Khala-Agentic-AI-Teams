@@ -4,9 +4,10 @@
   severity: high
   polarity: must_find
   file_path: backend/agents/investment_team/api/main.py
-  line: 4445
-  line_end: 4445
+  line: 4437
+  line_end: 4467
   description: >
     Sessions are enumerated under the lock, the lock is dropped, and the
-    recovered records are written back afterwards. A concurrent writer between
-    the two phases has its update overwritten by this stale snapshot.
+    recovered records are written back afterwards under a fresh per-item lock.
+    A concurrent writer between the two phases has its update overwritten by
+    this stale snapshot; the whole read-modify-write pass needs one lock.
