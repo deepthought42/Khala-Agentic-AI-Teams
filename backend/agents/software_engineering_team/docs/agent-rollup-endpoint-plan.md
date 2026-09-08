@@ -201,8 +201,11 @@ guarantee, so do not write one that implies it.
 
 Resolution: **`compute_from_traces` is the canonical definition of
 `total_cost_usd`.** The parity test asserts the percentiles, token sums and counts
-are *equal*, and that the two cost sums agree within a tolerance well under the
-6-decimal reporting granularity (`1e-9` absolute is ample). The README says the
+are *equal*, and that the two cost sums agree **within one unit in the last
+reported decimal place (`1e-6` absolute)** — see §4.3 for why no tighter bound is
+available: both sides round to 6 decimals internally, so the rounded values are the
+only ones that exist to compare, and near a boundary they may legitimately differ
+by exactly that unit. The README says the
 figure is a sum of float-stored per-call costs and is not to be reconciled to the
 cent against an external ledger — which was always true and is now stated.
 
@@ -268,11 +271,20 @@ repo already has:
      two do not drift.
    - **Clamp to a positive floor** (`1s`): a configured `0` must not disable this
      read's bound, whatever it does elsewhere.
-   - **Ceiling `10s`**, strictly under `SE_METRICS_ALIAS_TIMEOUT` (default `15s`,
-     `unified_api/main.py:1603`), leaving headroom for the DORA half and
-     serialization. A budget at or above the alias timeout is the failure this
-     mitigation exists to prevent: the client gives up first and the query keeps
-     running.
+   - **Ceiling `min(10s, SE_METRICS_ALIAS_TIMEOUT - 5s)`**, never a bare `10s`.
+     The alias timeout is operator-configurable (`unified_api/main.py:1603`,
+     default `15s`), so a fixed ceiling only holds at or above the default: an
+     operator setting it to `8s` would leave a `10s` query budget *above* the
+     client's patience, recreating precisely the failure this mitigation exists to
+     prevent — the client gives up first and the query keeps running. The `5s`
+     subtrahend is headroom for the DORA half and serialization. If the subtraction
+     lands below the `1s` floor, the floor wins and the mismatch is logged at
+     startup: an alias timeout under ~6s is a misconfiguration this read cannot
+     paper over, and it should be visible rather than silently absorbed.
+
+     (This plan was meticulous about `POSTGRES_STATEMENT_TIMEOUT_MS`'s
+     `0`-disables edge while hardcoding the other side of the same invariant.
+     Same class of error, one variable over.)
 
    Note the `5s` budget and the `~5s` escalation threshold below are deliberately
    the same number: a query that routinely approaches its own timeout *is* the
@@ -353,21 +365,42 @@ one — but record it properly: **one execution cannot produce a p95.** A single
 is dominated by whether the buffer cache happened to be warm and what else the
 server was doing, which is exactly the variance the threshold needs to see through.
 
-So: **20 executions** against the largest available `se_agent_traces` at the default
-30-day window, discarding the first (cold-cache) run, taken while the install is
-under representative load rather than idle. Report the median and the p95 of the
-remaining 19 in the implementing PR. **If the p95 exceeds `5s`** — a third of the
-alias budget, and the same number as the query's own timeout above — that is the
+**Run the benchmark with the `5s` timeout OFF** (raw query, or the budget raised
+for the measurement). This is not a detail — with the timeout active the
+measurement cannot produce the statistic the gate tests. Every run that would
+exceed `5s` is cancelled server-side at ~`5s`, so durations are **censored at the
+threshold**: record the cancelled call's wall time and p95 ≈ `5s`, which does not
+*exceed* `5s`; discard cancelled runs and p95 < `5s` by construction. Either way the
+trigger can never fire from measured durations — the same class of statistical
+defect as measuring a p95 from one sample.
+
+So: **20 executions**, timeout off, against the largest available `se_agent_traces`
+at the default 30-day window, discarding the first (cold-cache) run, taken while the
+install is under representative load rather than idle. Report the median and the p95
+of the remaining 19 in the implementing PR. **If the p95 exceeds `5s`** — a third of
+the alias budget, and the same number as the query's own timeout above — that is the
 trigger to open the summary-table story, with the sample attached rather than a
 single anecdote.
+
+Note that 19 samples makes nearest-rank p95 the sample *maximum*, so it is maximally
+sensitive to the outlier variance this protocol otherwise guards against. Report the
+median alongside it and treat a p95 driven by a single run as a prompt to re-measure,
+not as an automatic trigger.
+
+**Once the timeout ships, durations stop being the signal.** In production the
+observable is the **cancellation rate** — how often the read degrades to empty
+because it hit its bound — not query latency, which is censored by construction.
+That is the ongoing version of this gate, and it is why the cancellation deserves a
+log level someone will actually see (§4.1).
 
 If 20 runs are impractical against the only available data, say so and state the
 threshold as a single-run bound instead. An honestly-labelled single measurement is
 useful; a single measurement labelled "p95" is not.
 
 **Scope honesty.** This makes the story larger than "wire an existing function to
-an existing route" — it adds a store function, a row-shape adapter, parity tests,
-and a CI-wiring change so those tests actually run. It does **not** add a caching
+an existing route" — it adds a store function, a row-shape adapter, the
+`statement_timeout` clamp and its two fake-cursor tests, parity tests, and a
+CI-wiring change so those tests actually run. It does **not** add a caching
 layer, a per-entry TTL to `shared.cache`, or an async conversion of the route:
 §3.5 defers all of that behind the measurement gate, after the speculative version
 of it produced four review findings before a line was written. Call it a 3, not a 2. The alternative is knowingly putting an
@@ -393,6 +426,16 @@ Run it under a transaction-local `statement_timeout` per §3.5, following
 `shared.postgres.client.probe_cursor`'s pattern, so a pathological window is
 cancelled server-side rather than pinning a pooled connection; a timeout returns
 empty like any other failure, preserving the best-effort contract.
+
+**One exception to the neighbours' DEBUG-only convention: log a query cancellation
+(psycopg's query-cancelled error, SQLSTATE `57014`) at WARNING.** The return
+contract is unchanged — still empty, still never raises — but the log level is not
+a detail here. This timeout is the only remaining bound on this path, a fired
+cancellation is the sole evidence a pathological window was actually hit, and the
+resulting empty rollup is (per §4.4) ambiguous with four benign causes. At DEBUG it
+is invisible at production log levels, which would leave the one signal that matters
+indistinguishable from an idle install. Every other failure on this path stays at
+DEBUG.
 
 `fetch_traces_since` stays — it is still the right read for a caller that wants
 raw rows, and `compute_from_traces` still consumes them. Correct its docstring's
@@ -552,10 +595,19 @@ unrounded delta  -> 1e-12      (comfortably inside 1e-9)
 rounded delta    -> 1e-6       (1000x outside 1e-9)
 ```
 
-So the assertion must be made against the pre-rounding values, with the
-last-place difference in the reported figure accepted as expected rather than
-treated as drift. Assert both explicitly, since only one of them is the number
-users actually see.
+So the assertion is made against the **exposed, already-rounded values** with the
+`1e-6` tolerance, exactly as prescribed above. The counterexample is why no tighter
+bound is possible — not an argument for a second, pre-rounding assertion: the
+unrounded sums are not exposed on either side, and adding a raw-sum seam to
+`compute_from_traces` was considered and rejected above. **One assertion, one
+tolerance, against the number users actually see.**
+
+(An earlier revision of this section concluded the opposite here — "assert against
+the pre-rounding values… assert both" — a leftover from the retracted `1e-9`
+formulation that survived the rewrite of the paragraphs above it. It contradicted
+its own section and named no second quantity to assert. Recorded rather than
+silently deleted, because "a rewrite applied to some dependent statements but not
+all" is this document's most persistent defect class.)
 
 Patching note: the route resolves the aggregating read through a function-local
 import of `trace_store`, so `monkeypatch.setattr(trace_store,
@@ -631,7 +683,11 @@ and the endpoint that surfaces it point at each other in both directions.
 
 The model's docstring claims it mirrors `DoraMetrics.to_dict()`; after this
 change that is no longer the whole payload. Add `AgentCallRollup` and
-`AgentRollup` interfaces and an **optional** `agent_rollup?: AgentRollup` field.
+`AgentRollup` interfaces and an **optional** `agent_rollup?: AgentRollup` field —
+**and update that docstring** to say the model mirrors the full `GET /dora`
+payload: `DoraMetrics.to_dict()` plus the optional `agent_rollup`. Diagnosing a
+stale comment and then not prescribing its fix is how it survives the change that
+made it stale.
 
 Type declarations only — no component, template, service, or chart changes (a
 frontend dashboard is explicitly out of scope). Optional because existing specs
@@ -686,7 +742,7 @@ check. That is the claim
 | A partial fix that reads as a complete one | This plan has now twice specified CI wiring that would not have run the test it protects — first an invocation missing its marker, then an invocation on a job that SE changes never trigger. Both looked done. §4.3 now requires *observing* the parity test fail on an SE-only diff before the wiring counts as verified |
 | A speculative mitigation growing its own defect surface | The poll-collapsing cache produced four correct review findings (no per-entry TTL in `shared.cache`; single-flight needed; unbounded key growth on an unauthenticated route; process-global state leaking between tests) before any of it was written. It is deferred behind the measurement gate, with those four findings recorded as its requirements list if it is ever built |
 | A mitigation assumed to exist in shared infrastructure that does not | This plan made that mistake three times — `shared.cache` per-entry TTL, percentiles-in-SQL, and the parity suite's CI wiring were each asserted from plausibility rather than read. Every infrastructure claim in §3.5 and §4.1 now cites what was verified in the module or workflow. Treat an unverified claim about existing code as a defect, not a detail |
-| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-9` |
+| SQL-side math diverges from the unit-tested `_stats` helpers | §3.5's parity table. Percentiles, token sums and counts are exact; `total_cost_usd` is **not** — the `float8 → numeric` cast is a different arithmetic domain than `math.fsum`, so `compute_from_traces` is canonical and the parity test compares cost within `1e-6` — one unit in the last reported place, matching §3.5, §4.3 and §5 |
 | Operators misread an empty rollup as a broken sink | §4.4 documents all five causes and the order to check them; the response genuinely cannot distinguish them |
 | The empty-rollup literal drifts from `AgentRollupMetrics` | Drift-guard test, mirroring the one that already protects the DORA literal |
 | A consumer reads `agent_rollup` as absent-when-empty | The key is always present; empty is three empty dicts, never `null` or missing. Stated in the route docstring, the README, and asserted in tests |
