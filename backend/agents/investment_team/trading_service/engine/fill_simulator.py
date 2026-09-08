@@ -206,7 +206,7 @@ class FillSimulator:
         # ``expire_day_orders`` (which the service calls just before this), whose
         # fallback is about to enter the snapshot below with its turn still ahead
         # of it.
-        self._drain_deferred_stop_loss_retirements(before_bar=bar.timestamp)
+        self._drain_deferred_stop_loss_retirements(symbol=bar.symbol, before_bar=bar.timestamp)
 
         # Attach events raised by ``expire_day_orders`` for THIS bar: it runs
         # between bars with no ``events`` list in scope, so it buffers and this
@@ -626,8 +626,11 @@ class FillSimulator:
 
         # Retire superseded stop-loss fallbacks only now, after every order in
         # this bar's snapshot has had its fill opportunity — including any
-        # fallback an attachment materialized above supersedes.
-        self._drain_deferred_stop_loss_retirements()
+        # fallback an attachment materialized above supersedes. Scoped to THIS
+        # symbol: ``expire_day_orders`` expires order-book-wide, so at a DAY
+        # rollover the queue also holds entries for symbols whose own
+        # ``process_bar`` has not run yet on this timestamp.
+        self._drain_deferred_stop_loss_retirements(symbol=bar.symbol)
 
         return FillOutcome(
             entry_fills=entry_fills,
@@ -1963,7 +1966,9 @@ class FillSimulator:
                 else entry_fill_price + offset
             )
 
-    def _drain_deferred_stop_loss_retirements(self, *, before_bar: Optional[str] = None) -> None:
+    def _drain_deferred_stop_loss_retirements(
+        self, *, symbol: str, before_bar: Optional[str] = None
+    ) -> None:
         """Run queued stop-loss fallback retirements.
 
         The invariant is not "after the fill loop" but the narrower **never
@@ -1985,8 +1990,25 @@ class FillSimulator:
         if it did not fill, it is retired and the correctly-anchored attachment
         takes over from the next bar.
 
-        ``before_bar`` scopes WHICH queued retirements run, and exists because
-        the queue has two producers on opposite sides of a bar's fill loop:
+        Two scopes decide WHICH queued retirements run, because the queue is
+        global while the thing that grants a fill opportunity — ``process_bar``
+        — is per (symbol, bar).
+
+        ``symbol`` is the hard one. ``expire_day_orders`` expires DAY orders
+        order-book-WIDE and materializes a replacement for every partially
+        filled parent it finds, so at a rollover it can queue retirements for
+        several symbols at once, before ANY of their fill loops have run. A
+        drain that ignored symbol would let the first symbol processed cancel
+        the others' fallbacks; worse, those replacements carry the FIRST
+        symbol's bar timestamp, so when a same-timestamp bar for one of them
+        arrives its child is skipped by the same-bar guard too — fallback gone,
+        replacement ineligible, position open through a triggered stop. So a
+        retirement is applied only inside its own symbol's ``process_bar``.
+        (An entry whose symbol never gets another bar simply stays queued; the
+        orders it would cancel are moot once the run ends.)
+
+        ``before_bar`` is the temporal scope, and exists because the queue has
+        two producers on opposite sides of a bar's fill loop:
 
         * ``None`` (the post-loop call) drains everything. Every entry present
           was queued for this bar, and the loop it was waiting on is done.
@@ -2001,28 +2023,27 @@ class FillSimulator:
           same-bar guard until the next one — the position left open through a
           stop it had already triggered.
 
-        Preconditions: ``before_bar``, when given, is the timestamp of the bar
-        about to be processed.
-        Postconditions: every retirement in scope has been applied against the
-        CURRENT book state and removed from the queue; out-of-scope entries
-        remain queued, in order, for the post-loop drain.
+        Preconditions: ``symbol`` is the symbol of the bar being processed;
+        ``before_bar``, when given, is the timestamp of the bar about to be
+        processed.
+        Postconditions: every retirement for ``symbol`` in temporal scope has
+        been applied against the CURRENT book state and removed from the queue;
+        every other entry remains queued, in order, for the drain of its own
+        symbol and bar.
         """
         if not self._deferred_stop_loss_retirements:
             return
-        if before_bar is None:
-            queued = self._deferred_stop_loss_retirements
-            held: List[_DeferredStopLossRetirement] = []
-        else:
-            queued = [
-                q
-                for q in self._deferred_stop_loss_retirements
-                if not _ts_le(before_bar, q.queued_for_bar)
-            ]
-            held = [
-                q
-                for q in self._deferred_stop_loss_retirements
-                if _ts_le(before_bar, q.queued_for_bar)
-            ]
+
+        def _in_scope(q: _DeferredStopLossRetirement) -> bool:
+            # Symbol first: the queue is global but ``process_bar`` is per-symbol,
+            # so another symbol's entry has not had its fill loop yet whatever its
+            # timestamp says.
+            if q.symbol != symbol:
+                return False
+            return before_bar is None or not _ts_le(before_bar, q.queued_for_bar)
+
+        queued = [q for q in self._deferred_stop_loss_retirements if _in_scope(q)]
+        held = [q for q in self._deferred_stop_loss_retirements if not _in_scope(q)]
         # Reassigned before running so a queue entry can never be applied twice,
         # and so an unexpected raise cannot strand stale entries into the next bar.
         self._deferred_stop_loss_retirements = held

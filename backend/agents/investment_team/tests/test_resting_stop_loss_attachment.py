@@ -508,13 +508,14 @@ def _bar(
     low: float | None = None,
     close: float | None = None,
     volume: float = 1_000_000.0,
+    symbol: str = "AAA",
 ) -> Bar:
-    """Build an OHLC-valid ``Bar`` for AAA; ``high``/``low`` default to
+    """Build an OHLC-valid ``Bar``; ``high``/``low`` default to
     brackets around ``open``/``close`` so ``BarSafetyAssertion`` never rejects
     a bar where only ``close`` was overridden."""
     resolved_close = close if close is not None else open_price
     return Bar(
-        symbol="AAA",
+        symbol=symbol,
         timestamp=ts,
         timeframe="1d",
         open=open_price,
@@ -1486,3 +1487,80 @@ def test_day_expiry_firing_credit_reaches_the_conformance_counters() -> None:
     _apply_fill_outcome_events(diagnostics, outcome)
     assert diagnostics.exit_rule_firings.get("stop_loss") == 1
     assert diagnostics.exit_rule_firings_by_symbol.get("AAA", {}).get("stop_loss") == 1
+
+
+def test_day_expiry_retirement_is_scoped_to_the_symbol_being_processed() -> None:
+    """A retirement queued for one symbol must not be applied during another's bar.
+
+    ``expire_day_orders`` expires DAY orders order-book-WIDE, so one rollover can
+    materialize replacements and queue retirements for several symbols at once —
+    before ANY of their fill loops have run. ``process_bar``, by contrast, is per
+    (symbol, bar). A drain that ignored symbol would let whichever symbol happens
+    to be processed first cancel the others' fallbacks.
+
+    That is not merely early, it is unrecoverable for the bar: those replacements
+    carry the FIRST symbol's bar timestamp, so when the same-timestamp bar for
+    another symbol arrives its child is skipped by the engine-internal same-bar
+    guard as well. Fallback cancelled, replacement ineligible, position open
+    through a stop that had already triggered.
+
+    Here AAA is processed first on a quiet bar; BBB's bar at the same timestamp
+    then trades down through its fallback's stop (99) and limit (98) to 97. BBB's
+    fallback must still be on the book to take it.
+    """
+    sim, order_book, portfolio = _make_simulator()
+
+    # Two partially-filled DAY entries, one per symbol, each carrying the
+    # limit-style resting stop and each with a bar-close fallback resting.
+    for sym in ("AAA", "BBB"):
+        req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
+        req = req.model_copy(update={"symbol": sym, "client_order_id": f"entry-{sym}"})
+        req.tif = TimeInForce.DAY
+        req.unfilled_policy = UnfilledPolicy.REQUEUE_NEXT_BAR
+        order_book.submit(
+            req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
+        )
+        sim.process_bar(_bar("2024-01-02", open_price=100.0, volume=10_000.0, symbol=sym))
+        assert portfolio.positions[sym].original_qty < req.qty, "fixture must be PARTIAL"
+        order_book.submit(
+            OrderRequest(
+                client_order_id=f"fallback-{sym}",
+                symbol=sym,
+                side=OrderSide.SHORT,
+                qty=req.qty,
+                order_type=OrderType.STOP_LIMIT,
+                stop_price=99.0,
+                limit_price=98.0,
+                tif=TimeInForce.GTC,
+                reason=f"{ENGINE_EXIT_REASON_PREFIX}stop_loss",
+            ),
+            submitted_at="2024-01-02",
+            submitted_equity=10_000_000.0,
+        )
+
+    # Date change. The service calls this once, on the first symbol's bar of the
+    # new day — and it expires BOTH symbols' parents, queueing both retirements
+    # stamped with AAA's bar.
+    aaa_bar = _bar("2024-01-03", open_price=100.0, symbol="AAA")
+    sim.expire_day_orders(aaa_bar)
+    sim.process_bar(aaa_bar)
+
+    # AAA's own fallback is retired — its bar has been processed.
+    assert not any(
+        po.request.client_order_id == "fallback-AAA" for po in order_book.pending_for_symbol("AAA")
+    )
+    # BBB's must survive: its fill loop has not run yet.
+    assert any(
+        po.request.client_order_id == "fallback-BBB" for po in order_book.pending_for_symbol("BBB")
+    ), "another symbol's bar must not retire this symbol's fallback"
+
+    # BBB's bar at the SAME timestamp crosses its fallback's stop and limit.
+    outcome = sim.process_bar(
+        _bar("2024-01-03", open_price=100.0, high=100.5, low=97.0, close=97.5, symbol="BBB")
+    )
+
+    [trade] = outcome.closed_trades
+    assert trade.symbol == "BBB"
+    assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    assert trade.exit_price == pytest.approx(98.0)
+    assert "BBB" not in portfolio.positions
