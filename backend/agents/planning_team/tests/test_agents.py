@@ -263,6 +263,40 @@ def test_document_production_agent_pra_completed_path(tmp_path):
     assert hp.prd_path.endswith("product_requirements_document.md")
 
 
+def test_document_production_agent_carries_on_past_a_failed_pra(tmp_path):
+    """A failed PRA status does not stop the run -- it is fail-open, and that is deliberate.
+
+    This is the far end of the answer-callback passthrough decision. Every callback error
+    except the two whitelisted types is folded into a failed PRA status by
+    ``poll_until_terminal``; this is what that status then buys, which is nothing: the
+    agent logs it and produces a plan from the original, unvalidated spec. Pinned
+    explicitly so the fallback is a documented property rather than something a reader
+    infers from the absence of a test -- and so that anyone tempted to describe the
+    narrow passthrough as "fail-closed" has this sitting next to it.
+    """
+    out = DocumentProductionAgent().run(
+        DocumentProductionInput(
+            repo_path=str(tmp_path),
+            client_context=ClientContext(client_name="Acme"),
+            spec_content="# Spec",
+            use_product_analysis=True,
+        ),
+        run_pra=lambda **kw: "job1",
+        wait_pra=lambda **kw: {"status": "failed", "error": "callback blew up"},
+    )
+
+    # The plan ships. It does not even fall back to the initial spec: the
+    # `else: validated_spec_path = initial_spec_path` branch belongs to
+    # use_product_analysis=False, so a PRA that was requested and failed leaves both
+    # paths None while the run carries on regardless. Asserted rather than described,
+    # because "the fallback is a null" is the part a reader would not guess.
+    hp = out.handoff_package
+    assert hp.validated_spec_path is None
+    assert hp.prd_path is None
+    # Still a real handoff package -- the run produced a plan on a failed PRA.
+    assert out.artifacts["initial_spec_path"].endswith("initial_spec.md")
+
+
 def test_document_production_agent_runs_architecture_step(tmp_path):
     captured = {}
 

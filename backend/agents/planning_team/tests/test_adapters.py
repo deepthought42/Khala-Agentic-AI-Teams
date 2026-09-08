@@ -374,9 +374,16 @@ def test_defaults_not_recorded_escapes_the_pra_poll_loop() -> None:
 
 
 def test_an_ordinary_callback_error_still_folds_into_a_failed_status() -> None:
-    """The passthrough is narrow on purpose: everything else stays fail-closed,
-    so widening it for the audit case does not turn every callback bug into an
-    escaping exception.
+    """The passthrough is narrow on purpose, but "narrow" is not "fail-closed".
+
+    Widening it for the audit case must not turn every callback bug into an escaping
+    exception -- that is what this pins. What the folding does NOT do is stop anything:
+    ``DocumentProductionAgent.run`` logs a failed PRA status and carries on producing a
+    plan from the original spec, so an ordinary callback error is fail-OPEN at the system
+    level. See ``test_document_production_agent_carries_on_past_a_failed_pra`` in
+    test_agents.py, which pins that consequence rather than leaving it implied here.
+    Keeping the passthrough narrow is a decision not to disturb that long-standing
+    fallback, not a claim that the fallback catches anything.
     """
     from unittest.mock import patch
 

@@ -574,8 +574,22 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
           Last write wins for a genuine repeat, which is the answer most recently
           submitted.
         - Writing the full accumulated list (rather than appending server-side)
-          keeps a Temporal retry idempotent: a retry runs a fresh accumulator and
-          rebuilds the field from scratch, so entries are never doubled.
+          keeps a SERIALIZED Temporal retry idempotent: a retry runs a fresh
+          accumulator and rebuilds the field from scratch, so entries are never
+          doubled. It does NOT make the field safe against two attempts running at
+          once, and this activity can produce that: the workflow schedules it with
+          ``heartbeat_timeout=5m`` while nothing here ever calls
+          ``activity.heartbeat()``, so a Planning run longer than five minutes is
+          timed out server-side and retried while the original synchronous attempt
+          keeps going, unable to observe the cancellation. Two attempts then hold
+          independent accumulators, and the loser's clear-and-rewrite can land last
+          and erase the audit belonging to the plan Temporal accepts. Every other
+          ``update_job`` in this function has the same exposure -- this field is one
+          more passenger on an existing hazard, not the cause of it -- so the fix is
+          to make the activity heartbeat (as ``execute_coding_team_activity`` does)
+          rather than to fence this one write. Recorded here instead of being
+          papered over by an idempotency claim that only holds when the attempts
+          never overlap.
         - Records answers the system CHOSE AND SUBMITTED, not answers the
           product-analysis job confirmed it applied. The hook fires from inside
           ``_resolved_cb``, before ``_on_poll`` POSTs the returned batch, and
