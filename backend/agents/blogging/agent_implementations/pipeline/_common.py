@@ -918,6 +918,7 @@ class _DraftAgent(Protocol):
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
+        covered_sections: Optional[list[str]] = None,
         allowed_claims: Optional[dict[str, Any]] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
@@ -975,7 +976,18 @@ def _fill_story_placeholders(
         draft_input_kwargs: Base kwargs (``audience``, ``tone_or_purpose``,
             ``selected_title``, ``allowed_claims``, ``target_word_count``,
             ``length_guidance``) forwarded to ``revise_from_user_feedback``;
-            must not include ``elicited_stories``.
+            must not include ``elicited_stories``. May also carry the optional
+            ``covered_sections`` (plan sections that already had an author story
+            before this fill), forwarded so the revision does not re-introduce a
+            placeholder for one of them; omitting it suppresses nothing. It is
+            forwarded unchanged and never extended with the sections filled here:
+            a gap on this path is identified by the ``[Author: ...]`` placeholder's
+            topic text (``StoryGap.section_title`` is that topic truncated to 80
+            chars), which is a description of the story wanted rather than a plan
+            section title. Adding one would name a non-section, often mid-word, in a
+            block whose whole job is to state exactly which plan sections are
+            covered. Stories collected here reach later prompts through
+            ``elicited_stories_text`` instead.
         work_dir: Optional directory for draft artifacts. If ``None``, no draft
             artifact is persisted.
         iteration: Current draft iteration number.
@@ -994,7 +1006,9 @@ def _fill_story_placeholders(
           ``_REQUIRED_DRAFT_INPUT_KEYS`` (``audience``, ``tone_or_purpose``,
           ``selected_title``, ``allowed_claims``, ``target_word_count``,
           ``length_guidance``) — unchecked when there are no placeholders,
-          since ``draft_input_kwargs`` then goes unused.
+          since ``draft_input_kwargs`` then goes unused. ``covered_sections`` is
+          deliberately NOT among the required keys: it is read with ``.get()`` so a
+          caller without coverage data behaves exactly as before.
     Postconditions:
         - Returns ``(updated_draft_result, updated_elicited_stories_text)``.
         - When placeholders exist, the collected narratives and skip
@@ -1219,6 +1233,11 @@ def _fill_story_placeholders(
             tone_or_purpose=draft_input_kwargs["tone_or_purpose"],
             selected_title=draft_input_kwargs["selected_title"],
             elicited_stories=elicited_stories_text or None,
+            # .get(), unlike the subscripts around it: this key is optional, so a
+            # caller predating it (or one with no coverage data) still works, and it
+            # stays out of _REQUIRED_DRAFT_INPUT_KEYS. Absent means "suppress nothing",
+            # which is the pre-existing behavior.
+            covered_sections=draft_input_kwargs.get("covered_sections"),
             allowed_claims=draft_input_kwargs["allowed_claims"],
             target_word_count=draft_input_kwargs["target_word_count"],
             length_guidance=draft_input_kwargs["length_guidance"],
@@ -1419,6 +1438,30 @@ def _run_title_selection(
     except Exception as e:
         logger.warning("Title selection phase error (skipping): %s", e)
     return None
+
+
+def normalize_covered_sections(covered_sections: Optional[set[str]]) -> Optional[list[str]]:
+    """Normalize ``PipelineContext.covered_sections`` for a writer input.
+
+    Shared rather than written per stage: the draft prompt and the gate-driven rewrite
+    must name the same sections in the same order, and two copies of this expression
+    could drift — a later change that also trimmed or lower-cased titles in one stage
+    would silently diverge the two prompt paths, with no test failing.
+
+    Preconditions:
+        - ``covered_sections`` is the context field: a ``set[str]`` of plan section
+          titles, an empty set, or ``None`` (its value in Temporal mode, where
+          planning's set does not yet cross the activity boundary).
+    Postconditions:
+        - Returns a lexicographically sorted ``list[str]`` for a non-empty set, which
+          both normalizes it to the type ``WriterInput``/``ReviseWriterInput`` take and
+          pins a stable order (set iteration varies run to run under hash
+          randomization).
+        - Returns ``None`` for an empty set or ``None``, the documented no-op: the
+          renderer emits nothing for it, leaving the prompt byte-identical to one
+          built without the field.
+    """
+    return sorted(covered_sections) if covered_sections else None
 
 
 def _load_required_guidelines(action: str, *, phase: str = "draft") -> Tuple[str, str]:

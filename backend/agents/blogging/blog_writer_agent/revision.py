@@ -49,7 +49,12 @@ COMPACT_OUTLINE_CHARS = 200_000
 
 
 def build_revision_plan_prompt(
-    draft: str, feedback_items: list[Any], revise_input: ReviseWriterInput, *, llm: Any
+    draft: str,
+    feedback_items: list[Any],
+    revise_input: ReviseWriterInput,
+    *,
+    llm: Any,
+    covered_sections_section: str = "",
 ) -> str:
     """Build a prompt that asks the LLM for a structured revision plan.
 
@@ -63,12 +68,29 @@ def build_revision_plan_prompt(
         - ``llm`` is the ``LLMClient`` passed to ``compact_text`` when the
           content plan exceeds ``COMPACT_OUTLINE_CHARS`` (e.g. an agent's
           ``self._model``).
+        - ``covered_sections_section`` is the caller's already-rendered
+          placeholder-suppression block (e.g. via
+          ``agent._render_covered_sections_section``), or ``""``. Caller-rendered
+          for the same reason as in ``build_revise_all_items_prompt``: ``agent``
+          imports this module, so rendering it here would close an import cycle.
     Postconditions:
         - Returns a prompt string that instructs the model to return JSON
           matching the ``RevisionPlan`` schema (``summary``, ordered
           ``changes`` with ``section`` / ``feedback_ids`` / ``action`` /
           ``rationale``, and ``risks``), with feedback referenced by
           1-based index and ``must_fix`` severity prioritized.
+        - When ``revise_input.elicited_stories`` is non-blank it is appended as its
+          own ``AUTHOR'S PERSONAL STORIES`` section before the draft, followed by
+          ``covered_sections_section`` when that is non-empty. This is the *planning*
+          prompt, and it runs under ``WRITING_SYSTEM_PROMPT`` — whose standing rule
+          turns an unsupported first-person passage into an ``[Author: ...]``
+          placeholder — so without the stories the planner cannot tell a supplied
+          anecdote from an invented one and can prescribe deleting a real one. The
+          execution prompt is then told to follow that plan, so its own copy of the
+          block arrives too late to help. A prompt instruction, not an enforced
+          guarantee.
+        - When both are absent the prompt is byte-identical to one built without
+          them; the block never travels without the stories it refers to.
     """
     feedback_lines = [
         format_feedback_item_line(item, i) for i, item in enumerate(feedback_items, start=1)
@@ -102,12 +124,26 @@ def build_revision_plan_prompt(
         "FEEDBACK ITEMS:",
         "---",
         "\n\n".join(feedback_lines),
-        "",
-        "---",
-        "CURRENT DRAFT:",
-        "---",
-        draft,
     ]
+    if revise_input.elicited_stories and revise_input.elicited_stories.strip():
+        parts.extend(
+            [
+                "",
+                "---",
+                "AUTHOR'S PERSONAL STORIES:\n" + revise_input.elicited_stories,
+            ]
+        )
+        if covered_sections_section:
+            parts.extend(["", covered_sections_section])
+    parts.extend(
+        [
+            "",
+            "---",
+            "CURRENT DRAFT:",
+            "---",
+            draft,
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -119,6 +155,7 @@ def build_revise_all_items_prompt(
     *,
     llm: Any,
     allowed_claims_section: str = "",
+    covered_sections_section: str = "",
 ) -> str:
     """Build one revision prompt that applies every copy-editor feedback item.
 
@@ -135,6 +172,13 @@ def build_revise_all_items_prompt(
           allowed-claims prompt block (e.g. via
           ``agent._render_allowed_claims_section(revise_input.allowed_claims)``),
           or ``""`` when no allowed-claims artifact was supplied.
+        - ``covered_sections_section`` is the caller's already-rendered
+          placeholder-suppression block (e.g. via
+          ``agent._render_covered_sections_section(revise_input.covered_sections,
+          revise_input.elicited_stories)``), or ``""``. Caller-rendered for the same
+          reason as ``allowed_claims_section``, and so this module keeps the
+          independence its own docstring claims: ``agent`` imports it, so rendering
+          the block here would mean importing back into ``agent`` and closing a cycle.
     Postconditions:
         - Returns a prompt string embedding ``REVISION_TASK_INSTRUCTIONS``, the
           content plan, every feedback item formatted via
@@ -147,8 +191,14 @@ def build_revise_all_items_prompt(
           (capped at ``MAX_PREVIOUS_FEEDBACK_ITEMS``) is inserted after it;
           ``selected_title`` and ``elicited_stories`` are each appended as
           their own labeled section near the end (title before stories);
+          ``covered_sections_section`` is appended as its own section after
+          ``elicited_stories`` when non-empty, naming the sections that already
+          have an author story so the rewrite is instructed not to re-introduce an
+          ``[Author: ...]`` placeholder for one (a prompt instruction, not an enforced
+          guarantee);
           ``allowed_claims_section`` is appended as its own section after
-          ``elicited_stories`` when non-empty; and ``tone_or_purpose`` /
+          ``elicited_stories`` and after the covered-sections block when both are
+          present, when non-empty; and ``tone_or_purpose`` /
           ``audience`` are each prepended as a single labeled line at the
           very front (tone_or_purpose before audience). Absent fields are
           omitted rather than left blank.
@@ -260,6 +310,13 @@ def build_revise_all_items_prompt(
                 + revise_input.elicited_stories,
             ]
         )
+    # Placed with the stories it refers to. This revision runs after the post-draft
+    # story fill, so without it the prompt would carry the stories but nothing saying
+    # which sections they already satisfy -- and the system prompt's standing
+    # instruction to insert [Author: ...] could put a placeholder back on a section
+    # whose story is in this very prompt.
+    if covered_sections_section:
+        prompt_parts.extend(["", covered_sections_section])
     if allowed_claims_section:
         prompt_parts.extend(["", allowed_claims_section])
     length_block = (
@@ -292,6 +349,7 @@ def generate_revision_plan(
     call_json: CallJson,
     call_text: CallText,
     llm: Any = None,
+    covered_sections_section: str = "",
 ) -> RevisionPlan:
     """Build a structured revision plan, with a plain-text fallback.
 
@@ -308,10 +366,28 @@ def generate_revision_plan(
           output, or raises an ``LLMError`` subclass on failure.
         - ``llm`` is the ``LLMClient`` forwarded to ``compact_text`` inside
           ``build_revision_plan_prompt`` (e.g. an agent's ``self._model``).
+        - ``covered_sections_section`` is the caller's already-rendered
+          placeholder-suppression block, or ``""``; forwarded unchanged to
+          ``build_revision_plan_prompt``. A non-empty block must have been produced by
+          ``_render_covered_sections_section`` from this same ``revise_input``, and must
+          never be supplied when ``revise_input.elicited_stories`` is blank: the block
+          names an ``AUTHOR'S PERSONAL STORIES`` section, and a suppression instruction
+          without the stories it names is the one input under which it could read as
+          licence to invent one. ``build_revision_plan_prompt`` appends the block only
+          alongside those stories, but nothing re-checks a block handed in from
+          elsewhere.
     Postconditions:
         - Returns a ``RevisionPlan``; never returns ``None``.
+        - Both the JSON path and the plain-text fallback plan from the same prompt,
+          so the author-story context reaches the planner on either route.
     """
-    prompt = build_revision_plan_prompt(draft, feedback_items, revise_input, llm=llm)
+    prompt = build_revision_plan_prompt(
+        draft,
+        feedback_items,
+        revise_input,
+        llm=llm,
+        covered_sections_section=covered_sections_section,
+    )
     try:
         data = call_json(prompt, WRITING_SYSTEM_PROMPT)
         if data is None or not isinstance(data, dict):

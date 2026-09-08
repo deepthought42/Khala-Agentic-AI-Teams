@@ -335,7 +335,9 @@ def test_draft_stage_real_writer_emits_author_chosen_title_prompts(monkeypatch) 
     monkeypatch.setattr(BlogWriterAgent, "_call_text", fake_call_text)
     monkeypatch.setattr(BlogWriterAgent, "_call_agent_json", fake_call_agent_json)
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
     # Neutralize the two side-methods unrelated to the prompt branches under test —
     # both call the LLM for a different purpose than run()/revise()/

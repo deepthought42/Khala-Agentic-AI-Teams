@@ -34,6 +34,7 @@ from ._common import (
     _load_required_guidelines,
     _make_update,
     _wait_for_hitl,
+    normalize_covered_sections,
 )
 from .constants import COPY_EDIT_ESCALATION_THRESHOLD, STYLE_GUIDE_PATH
 from .context import PipelineContext, PipelineStatus
@@ -56,6 +57,29 @@ def run_draft_stage(
           ``None`` when planning skipped title selection, e.g. no job store; see
           ``PipelineContext``'s invariants). At ``None`` the writer is free to
           choose its own title.
+        - ``ctx.covered_sections`` is the set of plan section titles that already
+          received an author story during planning, or ``None``. This stage sorts it
+          into the list the writer takes and threads it into every writer call that
+          also receives ``elicited_stories``: the initial-draft ``WriterInput``, the
+          ``draft_input_kwargs`` handed to ``_fill_story_placeholders``, the three
+          ``revise_from_user_feedback`` rounds (uncertainty answers, author feedback,
+          copy-edit escalation), and the copy-edit loop's ``ReviseWriterInput``.
+          Coverage has to reach every one of them — a later
+          round that omitted it would drop the suppression block and could reintroduce
+          an ``[Author: ...]`` placeholder for a section whose story is sitting in the
+          same prompt. The set is planning-time only and does not grow: a story
+          collected later by ``_fill_story_placeholders`` is appended to
+          ``elicited_stories_text`` but adds no entry here, because that path
+          identifies a gap by the ``[Author: ...]`` placeholder's topic text rather
+          than by a plan section, so it has no section title to contribute. Those
+          sections stay unnamed by the suppression block and rely on the story text
+          itself, as they did before this field existed.
+          Empty or ``None`` is the documented no-op: the writer's prompts
+          are then exactly what they were before the field existed. It is ``None`` in
+          Temporal mode today — ``PlanningStageResult`` does not carry it and neither
+          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seeds it — so
+          suppression is thread-mode-only until that plumbing lands, unlike
+          ``selected_title`` above, whose own plumbing has since landed.
         - The human-in-the-loop steps (story-placeholder filling and the interactive
           draft-review loop with uncertainty questions / author feedback / guideline
           updates) require a job store: they run only when BOTH ``ctx.job_id`` and
@@ -118,6 +142,9 @@ def run_draft_stage(
     planning_phase_result = ctx.planning_phase_result
     plan = ctx.plan
     elicited_stories_text = ctx.elicited_stories_text
+    # Shared with the gates stage so the draft prompt and the gate-driven rewrite cannot
+    # name different sections; see the helper for what it guarantees.
+    covered_sections = normalize_covered_sections(ctx.covered_sections)
     selected_title = ctx.selected_title
     _update = _make_update(job_updater)
 
@@ -129,6 +156,46 @@ def run_draft_stage(
     # having populated one), is a no-op, matching the fact-check/validator
     # gates' handling of the same artifact.
     allowed_claims = load_allowed_claims_for_brief(work_dir, brief.brief)
+
+    def revise_base_kwargs() -> dict:
+        """The field set every ``revise_from_user_feedback`` round shares.
+
+        One definition for all three rounds — uncertainty answers, author feedback and
+        copy-edit escalation — which differ only in the draft revised, the feedback text,
+        the output path, and (for escalation) the progress phase. Hand-maintained parallel
+        kwargs lists are how ``covered_sections`` reached only some rounds in the first
+        place, and a round that silently loses a field drops the suppression block for
+        that revision.
+
+        A function rather than a dict built once, because ``elicited_stories_text`` is
+        **not** fixed for the stage: ``_fill_story_placeholders`` rebinds it with the
+        stories collected after the first draft. A snapshot taken before that call would
+        hand every later round the pre-fill text — omitting the narratives the author had
+        just supplied, which the writer's standing never-fabricate rule would then turn
+        back into ``[Author: ...]`` placeholders. Reading it here defers to call time.
+
+        ``draft_agent`` is deliberately not included: the escalation path rebuilds it, and
+        every call resolves the name itself.
+
+        Preconditions:
+            - Called from within ``run_draft_stage``, after ``plan``/``brief``/
+              ``length_policy`` are bound.
+        Postconditions:
+            - Returns a fresh dict carrying the current ``elicited_stories_text`` and
+              ``covered_sections``; mutating it does not affect later calls.
+        """
+        return dict(
+            content_plan_text=content_plan_to_outline_markdown(plan),
+            audience=brief.audience,
+            tone_or_purpose=brief.tone_or_purpose,
+            selected_title=selected_title,
+            elicited_stories=elicited_stories_text or None,
+            covered_sections=covered_sections,
+            allowed_claims=allowed_claims,
+            target_word_count=length_policy.target_word_count,
+            length_guidance=build_draft_length_instruction(length_policy),
+            on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
+        )
 
     # Draft + Copy Editor loop (load style and brand spec as raw text for draft/editor agents)
     writing_style_content, brand_spec_content = _load_required_guidelines("start drafting")
@@ -164,16 +231,27 @@ def run_draft_stage(
                 draft_iterations=iteration,
             )
 
+            # One authoritative field set for both the initial draft and the
+            # post-elicitation redraft, so a field added later cannot reach one and
+            # miss the other — which would silently make the regenerated draft's
+            # inputs diverge from the first draft's. ``elicited_stories`` is
+            # deliberately absent: _fill_story_placeholders rejects it here and
+            # supplies the freshly extended text through its own parameter.
+            draft_input_kwargs = dict(
+                content_plan=plan,
+                audience=brief.audience,
+                tone_or_purpose=brief.tone_or_purpose,
+                target_word_count=length_policy.target_word_count,
+                length_guidance=build_draft_length_instruction(length_policy),
+                selected_title=selected_title,
+                covered_sections=covered_sections,
+                allowed_claims=allowed_claims,
+            )
+
             try:
                 draft_input = WriterInput(
-                    content_plan=plan,
-                    audience=brief.audience,
-                    tone_or_purpose=brief.tone_or_purpose,
-                    target_word_count=length_policy.target_word_count,
-                    length_guidance=build_draft_length_instruction(length_policy),
-                    selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
-                    allowed_claims=allowed_claims,
+                    **draft_input_kwargs,
                 )
                 draft_output_path = (
                     (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
@@ -223,15 +301,7 @@ def run_draft_stage(
                     job_updater=job_updater,
                     elicited_stories_text=elicited_stories_text,
                     draft_agent=draft_agent,
-                    draft_input_kwargs=dict(
-                        content_plan=plan,
-                        audience=brief.audience,
-                        tone_or_purpose=brief.tone_or_purpose,
-                        target_word_count=length_policy.target_word_count,
-                        length_guidance=build_draft_length_instruction(length_policy),
-                        selected_title=selected_title,
-                        allowed_claims=allowed_claims,
-                    ),
+                    draft_input_kwargs=draft_input_kwargs,
                     work_dir=work_dir,
                     iteration=iteration,
                 )
@@ -319,18 +389,8 @@ def run_draft_stage(
                             draft_result = draft_agent.revise_from_user_feedback(
                                 draft=draft_result.draft,
                                 user_feedback=answer_feedback,
-                                content_plan_text=content_plan_text,
-                                audience=brief.audience,
-                                tone_or_purpose=brief.tone_or_purpose,
-                                selected_title=selected_title,
-                                elicited_stories=elicited_stories_text or None,
-                                allowed_claims=allowed_claims,
-                                target_word_count=length_policy.target_word_count,
-                                length_guidance=build_draft_length_instruction(length_policy),
-                                on_llm_request=lambda msg: _update(
-                                    BlogPhase.DRAFT_REVIEW, status_text=msg
-                                ),
                                 draft_output_path=draft_output_path,
+                                **revise_base_kwargs(),
                             )
 
                 # ── Step 3: Present draft for editor review ───────────────
@@ -422,16 +482,8 @@ def run_draft_stage(
                     draft_result = draft_agent.revise_from_user_feedback(
                         draft=draft_result.draft,
                         user_feedback=user_feedback_text,
-                        content_plan_text=content_plan_text,
-                        audience=brief.audience,
-                        tone_or_purpose=brief.tone_or_purpose,
-                        selected_title=selected_title,
-                        elicited_stories=elicited_stories_text or None,
-                        allowed_claims=allowed_claims,
-                        target_word_count=length_policy.target_word_count,
-                        length_guidance=build_draft_length_instruction(length_policy),
-                        on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
                         draft_output_path=draft_output_path,
+                        **revise_base_kwargs(),
                     )
 
                     # Present revised draft for another round of review
@@ -612,7 +664,6 @@ def run_draft_stage(
                                 record_guideline_updates(job_id, update_dicts)
 
                         # Revise based on user feedback before continuing the loop
-                        content_plan_text = content_plan_to_outline_markdown(plan)
                         draft_output_path = (
                             (Path(work_dir) / f"draft_v{iteration}_esc.md")
                             if work_dir is not None
@@ -621,18 +672,15 @@ def run_draft_stage(
                         draft_result = draft_agent.revise_from_user_feedback(
                             draft=draft_result.draft,
                             user_feedback=esc_feedback_text,
-                            content_plan_text=content_plan_text,
-                            audience=brief.audience,
-                            tone_or_purpose=brief.tone_or_purpose,
-                            selected_title=selected_title,
-                            elicited_stories=elicited_stories_text or None,
-                            allowed_claims=allowed_claims,
-                            target_word_count=length_policy.target_word_count,
-                            length_guidance=build_draft_length_instruction(length_policy),
-                            on_llm_request=lambda msg: _update(
-                                BlogPhase.COPY_EDIT_LOOP, status_text=msg
-                            ),
                             draft_output_path=draft_output_path,
+                            # Only the progress phase differs from the shared set: this
+                            # round reports under the copy-edit loop, not draft review.
+                            **{
+                                **revise_base_kwargs(),
+                                "on_llm_request": lambda msg: _update(
+                                    BlogPhase.COPY_EDIT_LOOP, status_text=msg
+                                ),
+                            },
                         )
                         # Continue copy-edit loop with revised draft
                         continue
@@ -660,6 +708,7 @@ def run_draft_stage(
                     length_guidance=build_draft_length_instruction(length_policy),
                     selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
+                    covered_sections=covered_sections,
                     allowed_claims=allowed_claims,
                 )
                 previous_feedback_items = feedback_tracker.get_capped_previous_feedback(

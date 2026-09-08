@@ -35,12 +35,25 @@ class PipelineContext:
           already received an author narrative (a fresh interview or a story-bank
           hit). It is populated by the planning stage in thread mode: it is
           ``None`` before the planning stage runs and a ``set[str]`` (possibly
-          empty) afterward. Consumption by the draft stage and threading it
-          across the Temporal activity boundary are both follow-ups —
-          ``PlanningStageResult`` doesn't carry it yet and neither
-          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seed it
-          (unlike ``elicited_stories_text``, which both do) — so today nothing
-          reads this field in either execution mode.
+          empty) afterward. **Both** later stages read it, through the shared
+          ``normalize_covered_sections`` so they cannot name different sections. The
+          draft stage threads the sorted list into every writer call that also
+          receives ``elicited_stories`` — the initial draft, the post-fill revision,
+          and the uncertainty-answer, author-feedback, copy-edit escalation and
+          copy-edit batch rounds; the gates stage threads the same list into its
+          gate-driven rewrite. Those prompts then omit the ``[Author: ...]``
+          placeholder for the named sections instead of re-interviewing the author
+          for a story planning already collected. Enumerated in full deliberately:
+          this is the field's canonical lifecycle contract, and a consumer left out
+          of it is a consumer a later change can forget to feed — the gate-driven
+          rewrite most of all, since nothing downstream re-scans for placeholders,
+          so one reintroduced there ships. An empty set suppresses nothing,
+          reproducing the pre-existing prompts exactly.
+          Threading it across the Temporal activity boundary is still a follow-up —
+          ``PlanningStageResult`` doesn't carry it and neither
+          ``draft_stage_activity`` nor ``gates_stage_activity`` re-seed it (unlike
+          ``elicited_stories_text``, which both do) — so in Temporal mode it stays at
+          its ``None`` default and no suppression happens.
         - ``selected_title`` is populated exactly once, by the planning stage,
           after outline approval (``_run_title_selection``, a no-op without a
           configured job store). The draft stage reads it and threads it into the

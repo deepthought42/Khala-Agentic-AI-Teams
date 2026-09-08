@@ -85,7 +85,24 @@ class DraftReviewResult(BaseModel):
 
 
 class WriterInput(BaseModel):
-    """Input for the blog writer agent: approved content plan and writing context."""
+    """Input for the blog writer agent: approved content plan and writing context.
+
+    Invariants:
+        - ``covered_sections`` names plan sections that already have an author story
+          inside ``elicited_stories``. It only ever *narrows* where the draft prompt
+          asks for a story: a named section gets no ``[Author: ...]`` placeholder
+          because one is already supplied, while every section not named keeps the
+          never-fabricate rule unchanged. It is therefore safe to leave unset —
+          ``None``, ``[]``, and a list whose every entry is empty or whitespace-only
+          all produce a
+          prompt byte-identical to one built without ``covered_sections`` — and it
+          never licenses invented first-person
+          detail for any section, including a named one whose story cannot be found
+          in ``elicited_stories``.
+        - ``covered_sections`` is meaningful only alongside a non-blank
+          ``elicited_stories``; set without it, the writer ignores it rather than
+          asserting a story the model cannot find.
+    """
 
     content_plan: ContentPlan = Field(
         ...,
@@ -118,6 +135,16 @@ class WriterInput(BaseModel):
         description=(
             "First-person story narratives elicited by the ghost writer agent. "
             "Incorporate these into the relevant sections to personalise the post."
+        ),
+    )
+    covered_sections: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Plan section titles that already have an author story in elicited_stories. "
+            "The draft prompt names them and suppresses the [Author: ...] placeholder for "
+            "those sections only; every other section keeps the never-fabricate rule "
+            "unchanged. Absent, empty, or containing no usable title (empty and whitespace-only entries are skipped; the ``List[str]`` type rejects non-string entries at validation, so the renderer's own skip of those is unreachable through this model) renders nothing, leaving the prompt "
+            "byte-identical to one built without this field."
         ),
     )
     allowed_claims: Optional[Dict[str, Any]] = Field(
@@ -183,7 +210,22 @@ class RevisionPlan(BaseModel):
 
 
 class ReviseWriterInput(BaseModel):
-    """Input for revising a draft based on copy editor or compliance feedback."""
+    """Input for revising a draft based on copy editor or compliance feedback.
+
+    Invariants:
+        - ``covered_sections`` carries the same contract as ``WriterInput``'s field of
+          the same name, and matters here for the same reason: this revision runs
+          *after* the post-draft story fill, re-rendering the draft with the stories
+          block present. Without the coverage list the revision prompt would carry the
+          stories but no suppression block, and the system prompt's standing
+          instruction to insert ``[Author: ...]`` when no story was supplied could
+          reintroduce a placeholder for a section whose story is in that very prompt.
+        - As on ``WriterInput``, it only narrows where placeholders appear: unnamed
+          sections keep the never-fabricate rule, ``None``/``[]``/a list whose entries
+          are all empty or whitespace-only leave the prompt byte-identical to one built
+          without the field, and it is ignored without a non-blank
+          ``elicited_stories``.
+    """
 
     draft: str = Field(..., description="The current draft to revise.")
     feedback_items: List[FeedbackItem] = Field(
@@ -225,6 +267,16 @@ class ReviseWriterInput(BaseModel):
     elicited_stories: Optional[str] = Field(
         None,
         description="First-person story narratives elicited by the ghost writer agent; preserve in revision.",
+    )
+    covered_sections: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Plan section titles that already have an author story in elicited_stories. "
+            "The revision prompt names them and suppresses the [Author: ...] placeholder for "
+            "those sections only; every other section keeps the never-fabricate rule "
+            "unchanged. Absent, empty, or containing no usable title (empty and whitespace-only entries are skipped; the ``List[str]`` type rejects non-string entries at validation, so the renderer's own skip of those is unreachable through this model) renders nothing, leaving the prompt "
+            "byte-identical to one built without this field."
+        ),
     )
     allowed_claims: Optional[Dict[str, Any]] = Field(
         None,

@@ -17,7 +17,7 @@ from temporalio.exceptions import CancelledError
 from llm_service.interface import LLMRateLimitError, LLMTemporaryError
 from shared.concurrency import parallel_map
 
-from ._common import _load_required_guidelines, _make_update
+from ._common import _load_required_guidelines, _make_update, normalize_covered_sections
 from .constants import BRAND_SPEC_PROMPT_PATH
 from .context import PipelineContext, PipelineStatus
 
@@ -31,7 +31,8 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
         ctx: The shared ``PipelineContext``. Reads ``brief``, ``work_dir``,
             ``llm_client``, ``length_policy``, ``job_updater``,
             ``max_rewrite_iterations``, ``run_gates``, ``plan``,
-            ``elicited_stories_text``, ``selected_title``, and ``draft_result``;
+            ``elicited_stories_text``, ``covered_sections``, ``selected_title``,
+            and ``draft_result``;
             writes the final ``draft_result`` and ``status``.
     Preconditions:
         - The draft stage populated ``ctx.draft_result``/``ctx.plan``/
@@ -39,6 +40,16 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
           produced by the planning stage's title-selection round — so a gate-driven
           rewrite preserves the author's chosen title and the finalized publishing
           pack reflects it.
+        - ``ctx.covered_sections`` (planning's set of plan sections that already have
+          an author story, or ``None``) is read and sorted into the list
+          ``ReviseWriterInput`` takes, so a gate-driven rewrite carries the same
+          placeholder-suppression block the draft did. Without it the rewrite would
+          re-render the whole draft with the stories block present but nothing saying
+          which sections they satisfy, and the system prompt's standing instruction to
+          insert ``[Author: ...]`` could put a placeholder back on a covered section —
+          after the story fill has already run, with nothing downstream to catch it.
+          Empty or ``None`` is the documented no-op, and is what Temporal mode sees
+          today since the field does not yet cross the activity boundary.
     Postconditions:
         - Sets ``ctx.draft_result`` (final) and ``ctx.status`` (PASS or
           NEEDS_HUMAN_REVIEW). Always returns None (no early aborts).
@@ -99,6 +110,8 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
     run_gates = ctx.run_gates
     plan = ctx.plan
     elicited_stories_text = ctx.elicited_stories_text
+    # The same helper the draft stage calls, so the two prompt paths cannot drift.
+    covered_sections = normalize_covered_sections(ctx.covered_sections)
     selected_title = ctx.selected_title
     draft_result = ctx.draft_result
     _update = _make_update(job_updater)
@@ -476,6 +489,7 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
                     length_guidance=build_draft_length_instruction(length_policy),
                     selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
+                    covered_sections=covered_sections,
                     allowed_claims=allowed_claims,
                 )
                 draft_output_path = Path(work_dir) / f"draft_rewrite_{rewrite_iter + 1}.md"

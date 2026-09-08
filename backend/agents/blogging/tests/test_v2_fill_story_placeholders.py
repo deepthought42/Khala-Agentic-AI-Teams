@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 from agents.blogging.blog_writer_agent.models import WriterOutput
@@ -558,3 +559,60 @@ def test_fill_story_placeholders_rejects_draft_agent_without_revise_from_user_fe
 
     with pytest.raises(TypeError, match="callable revise_from_user_feedback"):
         _fill_story_placeholders(**_valid_fill_kwargs(draft_agent=object()))  # type: ignore[arg-type]
+
+
+def _capture_revision_kwargs(
+    monkeypatch, tmp_path, draft_input_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Drive the helper's placeholder path once and return the revision call's kwargs."""
+    import agents.blogging.agent_implementations.blog_writing_process_v2 as v2
+    import agents.blogging.ghost_writer_agent as gw
+    from agents.blogging.shared import blog_job_store as bjs
+
+    job_id = str(uuid.uuid4())[:8]
+    bjs.create_blog_job(job_id, "brief")
+    monkeypatch.setattr(
+        gw,
+        "GhostWriterElicitationAgent",
+        _make_stub_ghost(narrative="I once debugged a production outage.", rounds_used=2),
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent:
+        def revise_from_user_feedback(self, **kw):
+            captured["kwargs"] = kw
+            return WriterOutput(draft="# Redraft with stories\nNarrative incorporated.")
+
+    v2._fill_story_placeholders(
+        draft_text="# Draft\n[Author: a debug story]\nBody.",
+        plan=_plan(),
+        llm_client=object(),
+        job_id=job_id,
+        job_updater=lambda **kw: None,
+        elicited_stories_text=None,
+        draft_agent=_StubAgent(),
+        draft_input_kwargs=draft_input_kwargs,
+        work_dir=tmp_path,
+        iteration=1,
+    )
+    # Guarded rather than a bare subscript: if a regression skips the revision call
+    # entirely, the caller should read why, not a KeyError.
+    assert "kwargs" in captured, "revise_from_user_feedback was never called by the helper"
+    return captured["kwargs"]
+
+
+def test_fill_story_placeholders_forwards_covered_sections(monkeypatch, tmp_path) -> None:
+    """``covered_sections`` reaches the revision call, so the post-fill revision does not
+    re-introduce an ``[Author: ...]`` placeholder for a section planning already covered."""
+    kwargs = _capture_revision_kwargs(
+        monkeypatch, tmp_path, _full_draft_input_kwargs(covered_sections=["Intro"])
+    )
+    assert kwargs["covered_sections"] == ["Intro"]
+
+
+def test_fill_story_placeholders_covered_sections_is_optional(monkeypatch, tmp_path) -> None:
+    """It is read with ``.get()``, not a subscript: a caller that supplies no coverage data
+    (every caller predating the field) still works and simply suppresses nothing."""
+    kwargs = _capture_revision_kwargs(monkeypatch, tmp_path, _full_draft_input_kwargs())
+    assert kwargs["covered_sections"] is None
