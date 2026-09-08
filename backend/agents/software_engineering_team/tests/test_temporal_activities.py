@@ -1206,6 +1206,391 @@ def test_plan_project_activity_final_round_resolves_a_drifted_question_instead_o
     assert job["pending_questions"] == []
     assert job["resume_token"] is None
 
+    # The whole justification for defaulting rather than hanging is that the
+    # choice is announced. A worker log line is not an announcement anything
+    # downstream can read, so the activity records it on the job -- and
+    # build_job_status_response surfaces it from there.
+    assert job["defaulted_questions"] == [
+        {
+            "question_id": "q1-regenerated",
+            "question_text": "Which auth provider?",
+            "selected_option_id": None,
+            "selected_option_label": None,
+        }
+    ]
+
+
+def test_defaulted_questions_accumulate_across_pra_rounds(tmp_path, patched_job_store) -> None:
+    """The hook fires once per PRA clarification ROUND, not once per execution.
+
+    ``_on_poll`` re-invokes the same callback on every poll while PRA reports
+    waiting_for_answers, and PRA raises several unrelated rounds with fresh ids.
+    A plain overwrite would leave only the last round in the audit record,
+    silently discarding the evidence that earlier rounds were fabricated too.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-multi", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-multi")
+
+    record([{"question_id": "q1", "question_text": "Which auth?", "selected_option_id": "a"}])
+    record([{"question_id": "q2", "question_text": "Which store?", "selected_option_id": "b"}])
+
+    assert [r["question_id"] for r in js.get_job("pp-multi")["defaulted_questions"]] == [
+        "q1",
+        "q2",
+    ]
+
+
+def test_defaulted_questions_keep_rounds_that_reuse_a_question_id(
+    tmp_path, patched_job_store
+) -> None:
+    """A reused question id alone does not collapse two rounds.
+
+    Identity is ultimately the WHOLE record, not this pair -- see
+    ``test_rounds_that_match_on_id_and_text_but_differ_in_selection_both_survive``
+    below. An earlier draft keyed on ``(question_id, question_text)`` and this
+    docstring outlived it; the assertions here were always correct under
+    whole-record keying, but the sentence taught the superseded model.
+
+    PRA's parser falls back to a positional ``q{index}`` id, so two unrelated
+    rounds can both call their first question ``q0``. Keying on the id alone would
+    drop the second as a duplicate and lose a real fabricated answer.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-collide", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-collide")
+
+    record([{"question_id": "q0", "question_text": "Which auth?", "selected_option_id": "a"}])
+    record([{"question_id": "q0", "question_text": "Which region?", "selected_option_id": "b"}])
+
+    stored = js.get_job("pp-collide")["defaulted_questions"]
+    assert [r["question_text"] for r in stored] == ["Which auth?", "Which region?"]
+
+
+def test_defaulted_questions_do_not_double_on_a_repeated_poll(tmp_path, patched_job_store) -> None:
+    """A poll-repeat of the same question is one entry, not one row per poll.
+
+    ``_on_poll`` re-presents a still-unanswered batch on every poll and each is
+    defaulted again. ``_default_answer`` is deterministic for a given question, so
+    a genuine repeat produces an IDENTICAL record -- which is what the key
+    collapses. Without this, one question inflates into a row per poll.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-repeat", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-repeat")
+
+    batch = [
+        {
+            "question_id": "q1",
+            "question_text": "Same",
+            "selected_option_id": "a",
+            "selected_option_label": "A",
+        }
+    ]
+    record(batch)
+    record(batch)
+
+    assert js.get_job("pp-repeat")["defaulted_questions"] == batch
+
+
+def test_rounds_that_match_on_id_and_text_but_differ_in_selection_both_survive(
+    tmp_path, patched_job_store
+) -> None:
+    """Identity is the whole record, not the ``(id, question_text)`` pair.
+
+    PRA's parser defaults both ``id`` and ``question_text`` identically across
+    separate rounds, so two unrelated rounds can coincide on that pair while
+    offering different options -- and collapsing them would discard a real audit
+    event. SPEC-024 risk 3 makes this correction explicitly, superseding an earlier
+    draft that specified the pair.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-differ", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-differ")
+
+    record(
+        [
+            {
+                "question_id": "q0",
+                "question_text": "Pick one",
+                "selected_option_id": "a",
+                "selected_option_label": "Postgres",
+            }
+        ]
+    )
+    record(
+        [
+            {
+                "question_id": "q0",
+                "question_text": "Pick one",
+                "selected_option_id": "b",
+                "selected_option_label": "Redis",
+            }
+        ]
+    )
+
+    stored = js.get_job("pp-differ")["defaulted_questions"]
+    assert [r["selected_option_label"] for r in stored] == ["Postgres", "Redis"]
+
+
+def test_a_retry_rebuilds_defaulted_questions_rather_than_doubling_them(
+    tmp_path, patched_job_store
+) -> None:
+    """A Temporal retry runs a fresh accumulator and rewrites the whole field.
+
+    Writing the accumulated list (rather than appending server-side) is what keeps
+    the retry idempotent -- the deterministic replay recomputes the same records
+    and overwrites, instead of stacking a second copy onto the first attempt's.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-retry", repo_path=str(tmp_path), job_type="run_team")
+    batch = [{"question_id": "q1", "question_text": "T", "selected_option_id": "a"}]
+
+    _record_defaulted_questions("pp-retry")(batch)
+    _record_defaulted_questions("pp-retry")(batch)  # the retry
+
+    assert js.get_job("pp-retry")["defaulted_questions"] == batch
+
+
+def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """A retried terminal attempt must not inherit the previous attempt's records.
+
+    The hook only ever writes. This activity is retryable and the pause envelope is
+    consumed on the first attempt, so a retry replays Planning from scratch; if that
+    replay matches every question the hook never fires. Without a clear, the job
+    would report machine-chosen answers for a plan that shipped fully
+    human-answered -- over-reporting, but still a reason to distrust the field.
+    """
+    from unittest.mock import MagicMock
+
+    from shared.dev_models.models import ProductRequirements
+    from software_engineering_team.planning_adapter import PlanningAdapterResult
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-stale", repo_path=str(tmp_path), job_type="run_team")
+    # The failed attempt's leftovers.
+    js.update_job(
+        "pp-stale",
+        defaulted_questions=[
+            {"question_id": "old", "question_text": "Stale", "selected_option_id": "x"}
+        ],
+    )
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents",
+        lambda: {"architecture": MagicMock()},
+    )
+
+    def _fake_run_workflow(*args, **kwargs):
+        # This replay matches everything, so the callback defaults nothing.
+        kwargs["answer_callback"]([{"id": "q1", "question_text": "Which auth provider?"}])
+        return {
+            "success": True,
+            "summary": "done",
+            "handoff_package": {"summary": "Build a widget API."},
+            "open_questions": [],
+            "resolved_questions": [],
+        }
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _fake_run_workflow)
+    monkeypatch.setattr(
+        "software_engineering_team.planning_adapter.adapt_planning_result",
+        lambda *a, **kw: PlanningAdapterResult(
+            requirements=ProductRequirements(
+                title="Test", description="D", acceptance_criteria=["Ship"], constraints=[]
+            ),
+            project_overview={"goals": "Ship", "features_and_functionality_doc": "API"},
+            open_questions=[],
+            assumptions=[],
+        ),
+    )
+
+    result = activities.plan_project_activity(
+        "pp-stale",
+        str(tmp_path),
+        {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+        submitted_answers=[{"question_id": "q1", "selected_option_id": "okta"}],
+        allow_repause=False,
+    )
+
+    # Assert the activity actually succeeded before trusting the empty field, the
+    # same guard the sibling drifted-question test carries. Without it, a
+    # regression that cleared the field and then failed the job through the
+    # generic error handler -- or returned a paused outcome -- would pass this
+    # test green while the behaviour it protects was broken.
+    assert result.get("outcome") != "paused"
+    assert result["requirements_title"] == "Test"
+
+    job = js.get_job("pp-stale")
+    assert job["status"] != js.JOB_STATUS_FAILED
+    assert job["defaulted_questions"] == []
+
+
+def test_a_failing_terminal_clear_fails_the_job_rather_than_escaping(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The terminal clear is a job-store write, so it lives under the error boundary.
+
+    Sitting above the ``try`` it would escape uncaught: on the final Temporal attempt
+    the workflow would exhaust its retries while the status API still reported the
+    job running, because the handler that writes ``status=failed`` never ran. The
+    write is no more reliable than any other in the body -- it gets the same
+    treatment.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-clearfail", repo_path=str(tmp_path), job_type="run_team")
+    real_update_job = activities.update_job
+
+    def _update_job(job_id, **kwargs):
+        if kwargs.get("defaulted_questions") == []:
+            raise RuntimeError("job store unavailable")
+        return real_update_job(job_id, **kwargs)
+
+    monkeypatch.setattr(activities, "update_job", _update_job)
+
+    # No activity context, so is_last_attempt() is True -- the terminal branch.
+    with pytest.raises(RuntimeError, match="job store unavailable"):
+        activities.plan_project_activity(
+            "pp-clearfail",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+            submitted_answers=[{"question_id": "q1", "selected_option_id": "okta"}],
+            allow_repause=False,
+        )
+
+    job = js.get_job("pp-clearfail")
+    assert job["status"] == js.JOB_STATUS_FAILED
+    assert "job store unavailable" in job["error"]
+
+
+def test_a_failed_audit_write_raises_a_passthrough_exception(tmp_path, patched_job_store) -> None:
+    """The hook must fail the round, and only one exception type actually does.
+
+    ``poll_until_terminal`` folds an ordinary ``on_poll`` exception into a failed
+    status and ``DocumentProductionAgent.run`` logs that and carries on, so a plain
+    raise would ship fabricated answers with no record of them. Both boundaries pass
+    ``PlanningDefaultsNotRecorded`` through instead.
+    """
+    from unittest.mock import patch
+
+    from planning_team.exceptions import PlanningDefaultsNotRecorded
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-writefail", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-writefail")
+
+    with patch(
+        "software_engineering_team.temporal.activities.update_job",
+        side_effect=RuntimeError("job store down"),
+    ):
+        with pytest.raises(PlanningDefaultsNotRecorded) as exc:
+            record([{"question_id": "q1", "question_text": "T", "selected_option_id": "a"}])
+
+    assert exc.value.job_id == "pp-writefail"
+    assert exc.value.record_count == 1
+    # The original failure is preserved for whoever debugs the retry.
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
+def test_record_defaulted_questions_requires_a_job_id() -> None:
+    """A blank job_id would silently write nowhere, leaving the terminal round's
+    fabrication unrecorded -- the one outcome this hook exists to rule out.
+    """
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    with pytest.raises(AssertionError, match="job_id"):
+        _record_defaulted_questions("")
+
+
+def test_plan_project_status_reports_an_empty_list_when_nothing_was_defaulted(
+    tmp_path, patched_job_store
+) -> None:
+    """An empty ``defaulted_questions`` is a claim, not an absence: every answer
+    behind this plan came from a person. It must be an empty list rather than a
+    missing key or None, so a client can read it without special-casing the
+    common path.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-clean", repo_path=str(tmp_path), job_type="run_team")
+
+    assert build_job_status_response("pp-clean", js.get_job("pp-clean")).defaulted_questions == []
+
+
+def test_plan_project_status_surfaces_defaulted_questions(tmp_path, patched_job_store) -> None:
+    """The persisted record has to reach the client. ``build_job_status_response``
+    assembles an explicit payload dict, so a field absent from it is dropped
+    silently -- the audit trail would stop at the job record and the UI would show
+    a plan that looks fully human-answered.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-defaulted", repo_path=str(tmp_path), job_type="run_team")
+    js.update_job(
+        "pp-defaulted",
+        defaulted_questions=[{"question_id": "q9", "selected_option_id": "opt-b"}],
+    )
+
+    response = build_job_status_response("pp-defaulted", js.get_job("pp-defaulted"))
+
+    # A typed field, so the response carries the full declared shape rather than
+    # echoing whatever the job record happened to store.
+    assert [dq.model_dump() for dq in response.defaulted_questions] == [
+        {
+            "question_id": "q9",
+            "question_text": None,
+            "selected_option_id": "opt-b",
+            "selected_option_label": None,
+        }
+    ]
+
+
+def test_plan_project_status_degrades_a_malformed_defaulted_questions_value(
+    tmp_path, patched_job_store
+) -> None:
+    """A status endpoint that 500s on a corrupt record tells the user nothing.
+
+    The two cases degrade differently, and deliberately so: a non-list carries no
+    salvageable entry, so it becomes the empty list a job that defaulted nothing
+    reports; non-dict entries inside a list are dropped while the valid dicts are
+    kept, because discarding a real record alongside the junk would under-report
+    fabricated answers -- the failure direction this feature exists to close.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-garbled", repo_path=str(tmp_path), job_type="run_team")
+    js.update_job("pp-garbled", defaulted_questions="not-a-list")
+    assert (
+        build_job_status_response("pp-garbled", js.get_job("pp-garbled")).defaulted_questions == []
+    )
+
+    js.update_job("pp-garbled", defaulted_questions=[{"question_id": "q1"}, "junk", 7])
+    kept = build_job_status_response("pp-garbled", js.get_job("pp-garbled")).defaulted_questions
+    assert [dq.question_id for dq in kept] == ["q1"]
+    # The surviving entry is filled out to the declared shape, not passed through:
+    # a stored dict missing keys must not yield a row missing fields.
+    assert kept[0].question_text is None
+    assert kept[0].selected_option_label is None
+
 
 def test_plan_project_activity_retry_reemits_persisted_pause_without_rerunning(
     monkeypatch, tmp_path, patched_job_store

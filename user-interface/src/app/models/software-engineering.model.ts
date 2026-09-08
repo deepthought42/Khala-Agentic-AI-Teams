@@ -32,6 +32,24 @@ export interface FailedTaskDetail {
   reason?: string;
 }
 
+/**
+ * A clarification answer the system chose because nobody answered it.
+ *
+ * Planning's pause budget is bounded; the terminal round resolves whatever is left
+ * by picking a default rather than hanging the run. Every field but `question_id`
+ * can be absent: the option fields are null when the question offered nothing to
+ * default to, and `question_text` is null when the question carried none. The text
+ * and label are carried alongside the ids because the pause envelope holding the
+ * original questions is cleared before the plan ships, so bare ids would be
+ * unresolvable by the time anyone reads this.
+ */
+export interface DefaultedQuestion {
+  question_id: string;
+  question_text?: string | null;
+  selected_option_id?: string | null;
+  selected_option_label?: string | null;
+}
+
 /** Per-task execution state for tracking panel / graph. */
 export interface TaskStateEntry {
   status: string;
@@ -179,6 +197,13 @@ export interface JobStatusResponse {
   progress?: number;
   error?: string;
   failed_tasks: FailedTaskDetail[];
+  /**
+   * Clarification answers chosen by the system, not by a human. Non-empty only when
+   * Planning exhausted its bounded pause budget and a terminal round defaulted the
+   * questions nobody answered. An empty list means every answer behind this plan
+   * came from a person.
+   */
+  defaulted_questions?: DefaultedQuestion[];
   /** Job-level phase: planning, execution, or completed. */
   phase?: string;
   /** Per-task state for execution tracking graph. */

@@ -52,7 +52,10 @@ def resolve_pra_answers(
     Preconditions:
         - ``questions`` is the PRA pending-question list (dicts with id/options).
     Postconditions:
-        - If ``answer_callback`` is supplied, returns its result (user-supplied answers).
+        - If ``answer_callback`` is supplied, returns its result. Normally those are the
+          user's own answers, but a callback is permitted to default a question the caller
+          has explicitly declared terminal -- see ``run_workflow``'s contract below for the
+          bounded rule and what a caller owes in exchange.
         - Else if ``auto_answer_questions`` is True, auto-selects each question's is_default/first
           option and logs a WARNING (never silent).
         - Else (gated, no callback) RAISES — decisions must be made by the user, never auto-decided.
@@ -102,8 +105,14 @@ def run_workflow(
     {question_id, selected_option_id?, other_text?}.
 
     answer_callback / auto_answer_questions contract:
-        - If ``answer_callback`` is supplied it is always used (and must return user-supplied
-          answers — it must never fabricate a default).
+        - If ``answer_callback`` is supplied it is always used. It must not fabricate an answer
+          while another round of asking the user remains available. It MAY default the questions
+          left unanswered on a round its own caller has explicitly declared terminal -- the
+          durable-HITL adapter does exactly this, because a bounded pause loop has to end with a
+          plan rather than a hang. The price of that permission is that every defaulted answer is
+          reported to the caller for persistence, so a plan built partly on machine-chosen answers
+          says so where a human reads it. A callback that defaults silently is the thing this
+          contract forbids; a callback that defaults on a terminal round and records it is not.
         - Else if ``auto_answer_questions`` is True (default, standalone behavior), the workflow
           auto-selects each question's default/first option and logs a WARNING (so the auto-answer
           is never silent).
@@ -116,6 +125,23 @@ def run_workflow(
     keys — the actual discovery questions, distinct from handoff_package's own copies
     of those fields (which are deliberately left empty; see the inline comment where
     they're set, a few lines below where document production populates the handoff).
+
+    Preconditions:
+        - ``repo_path`` names a directory this process may create and write under.
+        - At least one of ``spec_content`` / ``initial_brief`` carries the work to plan;
+          with neither, document production falls back to a placeholder spec.
+        - ``answer_callback``, when supplied, honours the contract above.
+    Postconditions:
+        - Returns a dict that always carries ``success``; on success also
+          ``handoff_package``, ``summary``, ``open_questions`` and ``resolved_questions``,
+          and on failure ``failure_reason`` and the ``current_phase`` it stopped in.
+        - Ordinary phase failures are folded into ``success=False`` rather than raised —
+          the broad ``except`` below is what does that. Two exception types are re-raised
+          instead, because folding them would destroy the signal they exist to carry:
+          ``PlanningAnswerPauseSignal`` (a durable pause the caller must act on) and
+          ``PlanningDefaultsNotRecorded`` (a defaulted answer that could not be recorded,
+          which must fail the round rather than ship unlogged).
+        - ``job_updater`` may be called any number of times, including zero.
     """
     from planning_team.adapters import (
         market_research_to_evidence,
@@ -125,7 +151,7 @@ def run_workflow(
         wait_for_ai_systems_build_completion,
         wait_for_product_analysis_completion,
     )
-    from planning_team.exceptions import PlanningAnswerPauseSignal
+    from planning_team.exceptions import PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded
     from planning_team.phases import (
         run_discovery,
         run_document_production,
@@ -246,6 +272,12 @@ def run_workflow(
         # raises this as its "no answer yet" control-flow signal — it must reach the
         # caller (an activity boundary) unconverted, not be folded into a normal
         # success=False failure result like every other exception here.
+        raise
+    except PlanningDefaultsNotRecorded:
+        # Same reasoning, opposite case: the terminal round DID fabricate answers and
+        # could not record that it did. Folding it into a success=False result would
+        # report a generic planning failure; re-raising fails the activity, which
+        # Temporal retries against a record the terminal attempt already cleared.
         raise
     except Exception as e:
         logger.exception("Planning workflow failed")

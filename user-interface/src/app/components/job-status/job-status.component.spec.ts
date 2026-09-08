@@ -144,4 +144,97 @@ describe('JobStatusComponent', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.stalled-warning')).toBeNull();
   });
+  it('renders the answers the system chose for itself, labelled as such', () => {
+    // The whole justification for letting Planning default an unanswered question is
+    // that the user can see it happened. A job record and a status field the UI never
+    // renders leaves that promise unkept at the last hop.
+    component.jobId = 'j1';
+    fixture.detectChanges();
+    component.status = {
+      ...component.status!,
+      defaulted_questions: [
+        {
+          question_id: 'q1',
+          question_text: 'Which auth provider?',
+          selected_option_id: 'okta',
+          selected_option_label: 'Okta',
+        },
+      ],
+    };
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('Answers chosen by the system (1)');
+    expect(panel!.textContent).toContain('Which auth provider?');
+    expect(panel!.textContent).toContain('Okta');
+  });
+
+  it('falls back to ids, and says so, when a defaulted question carries no text or option', () => {
+    // Every field but question_id is nullable: the option fields are null when the
+    // question offered nothing to pick, question_text when the question carried none.
+    // Rendering a bare "null" there would read as a real answer.
+    component.jobId = 'j1';
+    fixture.detectChanges();
+    component.status = {
+      ...component.status!,
+      defaulted_questions: [
+        {
+          question_id: 'q9',
+          question_text: null,
+          selected_option_id: null,
+          selected_option_label: null,
+        },
+      ],
+    };
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
+    // Assert presence before dereferencing: without it a regression that stopped
+    // rendering the panel fails with "Cannot read properties of null" instead of
+    // naming what broke, and `panel` stays Element | null for any future typecheck.
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('q9');
+    expect(panel!.textContent).toContain('no option available');
+    expect(panel!.textContent).not.toContain('null');
+  });
+
+  it('shows the option id when the option carried no label', () => {
+    // The middle branch of `label || id || 'no option available'`. It is reachable —
+    // the record tolerates a missing label alongside a present id — and it is the one
+    // a future template edit is most likely to collapse, because both neighbours are
+    // pinned and this one was not. An LLM-minted id is poor reading, but it beats
+    // claiming no option was available when one was chosen.
+    component.jobId = 'j1';
+    fixture.detectChanges();
+    component.status = {
+      ...component.status!,
+      defaulted_questions: [
+        {
+          question_id: 'q2',
+          question_text: 'Cache backend?',
+          selected_option_id: 'opt_redis',
+          selected_option_label: null,
+        },
+      ],
+    };
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('opt_redis');
+    expect(panel!.textContent).not.toContain('no option available');
+  });
+
+  it('hides the panel entirely for a plan every answer behind which came from a person', () => {
+    // An always-visible "0 defaulted" panel would train readers to ignore it, which is
+    // the one failure mode this panel cannot afford.
+    component.jobId = 'j1';
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.defaulted-questions-panel')).toBeNull();
+
+    component.status = { ...component.status!, defaulted_questions: [] };
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.defaulted-questions-panel')).toBeNull();
+  });
 });

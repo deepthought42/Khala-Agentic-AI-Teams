@@ -1082,4 +1082,88 @@ describe('RunTeamTrackingComponent sub-agent activity and staleness', () => {
     const el = render(activityStatus({ status: 'interrupted' }));
     expect(el.querySelector('.current-activity-section')).toBeNull();
   });
+  it('renders the answers the system chose for itself, labelled as such', () => {
+    // This is the surface a user watches a run on. The audit trail that starts at the
+    // adapter's on_defaulted hook ends here or it does not end anywhere a person looks.
+    const el = render(
+      activityStatus({
+        defaulted_questions: [
+          {
+            question_id: 'q1',
+            question_text: 'Which auth provider?',
+            selected_option_id: 'okta',
+            selected_option_label: 'Okta',
+          },
+          {
+            question_id: 'q2',
+            question_text: 'Which datastore?',
+            selected_option_id: 'pg',
+            selected_option_label: 'Postgres',
+          },
+        ],
+      }),
+    );
+
+    const panel = el.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toContain('Answers chosen by the system (2)');
+    expect(panel?.textContent).toContain('Which auth provider?');
+    expect(panel?.textContent).toContain('Okta');
+    expect(panel?.textContent).toContain('Postgres');
+  });
+
+  it('falls back to ids, and says so, when a defaulted question carries no text or option', () => {
+    // Every field but question_id is nullable; a bare "null" here would read as an answer.
+    const el = render(
+      activityStatus({
+        defaulted_questions: [
+          {
+            question_id: 'q9',
+            question_text: null,
+            selected_option_id: null,
+            selected_option_label: null,
+          },
+        ],
+      }),
+    );
+
+    const panel = el.querySelector('.defaulted-questions-panel');
+    expect(panel?.textContent).toContain('q9');
+    expect(panel?.textContent).toContain('no option available');
+    expect(panel?.textContent).not.toContain('null');
+  });
+
+  it('shows the option id when the option carried no label', () => {
+    // The middle branch of `label || id || 'no option available'`, unpinned on both run
+    // surfaces until now. Reachable: the record tolerates a missing label alongside a
+    // present id. A raw LLM-minted id is poor reading, but it beats telling the user no
+    // option was available when one was in fact chosen.
+    const el = render(
+      activityStatus({
+        defaulted_questions: [
+          {
+            question_id: 'q3',
+            question_text: 'Which cache?',
+            selected_option_id: 'redis',
+            selected_option_label: null,
+          },
+        ],
+      }),
+    );
+
+    const panel = el.querySelector('.defaulted-questions-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toContain('redis');
+    expect(panel?.textContent).not.toContain('no option available');
+    expect(panel?.textContent).not.toContain('null');
+  });
+
+  it('hides the panel entirely for a plan every answer behind which came from a person', () => {
+    // An always-visible "0 defaulted" panel trains readers to ignore it — the one
+    // failure mode this panel cannot afford.
+    expect(render(activityStatus()).querySelector('.defaulted-questions-panel')).toBeNull();
+    expect(
+      render(activityStatus({ defaulted_questions: [] })).querySelector('.defaulted-questions-panel'),
+    ).toBeNull();
+  });
 });

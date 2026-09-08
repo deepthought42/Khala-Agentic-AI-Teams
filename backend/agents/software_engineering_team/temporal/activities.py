@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from temporalio import activity
 
@@ -527,6 +527,127 @@ def plan_project_activity(
         )
 
 
+def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]], None]:
+    """Build the ``on_defaulted`` hook that persists fabricated answers to the job.
+
+    Accumulates rather than overwrites, because the hook fires once per PRA
+    clarification ROUND, not once per activity execution:
+    ``wait_for_product_analysis_completion``'s ``_on_poll`` invokes the same
+    callback on every poll while PRA reports ``waiting_for_answers``, and PRA's own
+    review loop raises several unrelated rounds with fresh ids. Under
+    ``allow_repause=False`` nothing raises, so each round is defaulted in turn and a
+    plain overwrite would keep only the last one -- silently discarding the record
+    of every earlier round's fabricated answers, which is the failure this whole
+    hook exists to prevent.
+
+    Preconditions:
+        - ``job_id`` identifies an existing run-team job record.
+    Postconditions:
+        - Returns a one-argument callable suitable as ``on_defaulted``. Each call
+          merges its records into a per-execution accumulator and writes the whole
+          accumulated list to ``defaulted_questions``, so the job record always
+          carries every round defaulted so far, in the order they were defaulted.
+        - De-duplicates on the WHOLE record -- ``question_id``, ``question_text``,
+          ``selected_option_id`` and ``selected_option_label`` together -- rather
+          than on the id, or on the ``(id, question_text)`` pair. PRA's parser
+          defaults both ``id`` and ``question_text`` identically across separate
+          rounds (``question_processing.parse_open_question``), so either narrower
+          key discards a real audit event whenever two unrelated rounds coincide on
+          it while differing in their options.
+
+          SPEC-024 risk 3 is the authority here, and it is worth reading before
+          narrowing this again: it requires the full canonical question shape for
+          retry reconciliation and says so *in correction of* an earlier draft that
+          specified the ``(id, question_text)`` pair. This key is not that full
+          shape -- it is everything the audit record actually holds, which is a
+          narrower object than the pending-question dict -- and the two operations
+          differ, but the direction of the correction applies to both.
+
+          **Residual limitation, per that same risk:** no comparison over
+          PRA-reported fields distinguishes "the same question re-presented on the
+          next poll" from "an unrelated later round that coincides on every field
+          this record carries" with certainty; only a PRA-side round identifier
+          would, and that is outside this boundary. De-duplication is still
+          required -- ``_on_poll`` re-presents an unanswered batch on every poll,
+          so without it one question inflates into a row per poll -- so the
+          collision is accepted knowingly and narrowed as far as the record allows.
+          Last write wins for a genuine repeat, which is the answer most recently
+          submitted.
+        - Writing the full accumulated list (rather than appending server-side)
+          keeps a SERIALIZED Temporal retry idempotent: a retry runs a fresh
+          accumulator and rebuilds the field from scratch, so entries are never
+          doubled. It does NOT make the field safe against two attempts running at
+          once, and this activity can produce that: the workflow schedules it with
+          ``heartbeat_timeout=5m`` while nothing here ever calls
+          ``activity.heartbeat()``, so a Planning run longer than five minutes is
+          timed out server-side and retried while the original synchronous attempt
+          keeps going, unable to observe the cancellation. Two attempts then hold
+          independent accumulators, and the loser's clear-and-rewrite can land last
+          and erase the audit belonging to the plan Temporal accepts. Every other
+          ``update_job`` in this function has the same exposure -- this field is one
+          more passenger on an existing hazard, not the cause of it -- so the fix is
+          to make the activity heartbeat (as ``execute_coding_team_activity`` does)
+          rather than to fence this one write. **That fix must land before
+          ``use_product_analysis`` is flipped to True**: while the gate is closed
+          this path never executes, so the hazard is theoretical; the moment it
+          opens, a Planning run over five minutes can silently erase the audit for
+          the plan that ships, which is the exact failure this field exists to
+          prevent. Recorded here instead of being
+          papered over by an idempotency claim that only holds when the attempts
+          never overlap.
+        - Records answers the system CHOSE AND SUBMITTED, not answers the
+          product-analysis job confirmed it applied. The hook fires from inside
+          ``_resolved_cb``, before ``_on_poll`` POSTs the returned batch, and
+          ``_on_poll`` ignores that POST's result -- a rejected submission is
+          currently indistinguishable from an applied one
+          (``planning_hitl_temporal_contract.md``, "a rejected submission looks the
+          same as success"). Coordinating the record with a confirmed submission
+          means checking that return value and re-raising, which is the deferred
+          wiring work that open problem already covers; doing it here would widen
+          this hook into a problem it did not create. Until then the field's own
+          description states the narrower claim rather than implying the broader
+          one.
+    Invariants:
+        - The accumulator is per-callable and therefore per-activity-execution; it
+          is never shared across jobs or retries.
+    """
+    assert isinstance(job_id, str) and job_id, (
+        "_record_defaulted_questions requires a non-empty job_id"
+    )
+    # Explicit arity: the key is the whole audit record, and every component comes
+    # from ``.get()`` so any of them can be None. A bare ``tuple`` would hide both
+    # facts, which the de-duplication contract above depends on.
+    accumulated: Dict[
+        Tuple[Optional[str], Optional[str], Optional[str], Optional[str]], Dict[str, Any]
+    ] = {}
+
+    def _record(records: List[Dict[str, Any]]) -> None:
+        from planning_team.exceptions import PlanningDefaultsNotRecorded
+
+        for rec in records:
+            accumulated[
+                (
+                    rec.get("question_id"),
+                    rec.get("question_text"),
+                    rec.get("selected_option_id"),
+                    rec.get("selected_option_label"),
+                )
+            ] = rec
+        try:
+            update_job(job_id, defaulted_questions=list(accumulated.values()))
+        except Exception as exc:
+            # Re-raised as a passthrough type, not left as-is: poll_until_terminal
+            # folds an ordinary on_poll exception into a failed status and
+            # DocumentProductionAgent.run logs that and carries on, so a plain
+            # raise here would produce a successful activity with fabricated
+            # answers and no record of them -- the exact failure this hook exists
+            # to prevent. PlanningDefaultsNotRecorded is passed through both
+            # boundaries and fails the activity, which Temporal then retries.
+            raise PlanningDefaultsNotRecorded(job_id, len(records), exc) from exc
+
+    return _record
+
+
 def _plan_project_activity_body(
     job_id: str,
     repo_path: str,
@@ -562,7 +683,20 @@ def _plan_project_activity_body(
         ``allow_repause=False`` suppresses a *further* pause on a resume: the callback then
         resolves every batch with whatever answers match AND defaults every question left
         unanswered (see ``build_temporal_planning_answer_callback``'s ``_default_answer``),
-        logging a warning naming them. Defaulting is the load-bearing half: the answers
+        logging a warning naming them AND recording them on the job record's
+        ``defaulted_questions`` (surfaced by ``JobStatusResponse``), so a plan built
+        partly on machine-chosen answers says so where a human reads it rather than
+        only in a worker log line. Each record carries the question text and the
+        chosen option's label, not just ids, since the pause envelope holding those
+        questions is cleared before the replay. Every PRA round that gets defaulted
+        accumulates (see ``_record_defaulted_questions``) -- the hook fires per
+        round, not per execution. A terminal attempt clears the field before it runs,
+        so a retry whose replay needs no defaults does not inherit the previous
+        attempt's records; that clear sits inside this function's error boundary,
+        so a job-store failure there marks the job FAILED on a terminal attempt
+        like any other body failure instead of escaping unrecorded. A failed audit write raises ``PlanningDefaultsNotRecorded``,
+        which both the PRA poll loop and ``run_workflow`` pass through, so it fails
+        this activity rather than degrading into a warning. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
         required, so resolving with only the matches would leave the sub-job waiting out its
         poll timeout instead of resuming. In the designed flow this returns a
@@ -623,9 +757,27 @@ def _plan_project_activity_body(
         # pause round needs its own token (mint_resume_token: never reused).
         next_resume_token=lambda: mint_resume_token(job_id),
         allow_repause=allow_repause,
+        on_defaulted=_record_defaulted_questions(job_id),
     )
 
     try:
+        if not allow_repause:
+            # Clear before the terminal attempt runs, because the hook only ever WRITES.
+            # This activity is retryable and the pause envelope was consumed on the first
+            # attempt, so a retry replays Planning from scratch; if that replay happens to
+            # match every question (the same LLM id-drift that makes the terminal round
+            # necessary cuts both ways) the hook never fires, and without this the job
+            # would keep the failed attempt's records while shipping a plan that was in
+            # fact fully human-answered. Over-reporting fabricated answers is the gentler
+            # error, but it still breaks the "says so where a human reads it" guarantee
+            # this field exists to provide -- in the direction that teaches readers to
+            # distrust it.
+            #
+            # Inside the try, not above it: this is a job-store write like any other in
+            # the body, and on the terminal attempt an escape past the error boundary
+            # would exhaust the workflow while the status API still reported "running".
+            update_job(job_id, defaulted_questions=[])
+
         from software_engineering_team.orchestrator import _check_cancellation, _get_agents
 
         spec_data = SpecParseResult.model_validate(spec_parse_result)

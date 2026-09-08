@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from planning_team.adapters._base import BaseAdapter
-from planning_team.exceptions import PlanningAnswerPauseSignal
+from planning_team.exceptions import PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded
 from shared.http.job_polling import get_json, poll_until_terminal, post_json
 
 logger = logging.getLogger(__name__)
@@ -89,15 +89,46 @@ def wait_for_product_analysis_completion(
     is provided, call answer_callback(pending_questions) and submit answers then resume.
     Returns final status dict; status key is 'completed' or 'failed'.
 
+    Preconditions:
+        - ``job_id`` identifies a product-analysis job that has been started.
+        - ``poll_interval`` and ``max_wait`` are positive; ``max_wait`` bounds the wait.
+        - ``answer_callback``, when supplied, returns either a complete answer set for the
+          questions it was handed or nothing at all — the answers route rejects a batch
+          missing any required question, and every PRA question is required.
+    Postconditions:
+        - Returns the final status dict, whose ``status`` is ``'completed'`` or ``'failed'``.
+          A timeout, a polling error, and an ordinary ``answer_callback`` exception all
+          arrive as ``'failed'``; the caller cannot tell them apart from the status alone.
+        - ``'failed'`` does NOT stop the caller: ``DocumentProductionAgent.run`` logs it and
+          produces a plan anyway (see the note under Raises). Anything that must actually
+          halt the round has to be one of the two whitelisted exception types below.
+          That caller's behaviour is pinned by
+          ``test_document_production_agent_carries_on_past_a_failed_pra``
+          (``planning_team/tests/test_agents.py``), so a change to its fallback breaks a
+          test rather than silently invalidating this paragraph -- the usual hazard of a
+          contract that describes another component's internals.
+        - ``answer_callback`` is invoked once per poll on which the job reports
+          ``waiting_for_answers`` — not once per run, and not once per distinct question.
+
     Raises:
+        PlanningDefaultsNotRecorded: when a terminal-round ``answer_callback`` fabricated
+            answers but its audit hook could not persist them. Whitelisted through
+            ``poll_until_terminal`` for the same reason as the pause signal: folded into
+            a failed status it would surface only as a warning while the plan ships,
+            leaving fabricated answers unrecorded.
         PlanningAnswerPauseSignal: when a durable-HITL ``answer_callback`` signals that
             no answer is available yet. It is whitelisted through ``poll_until_terminal``
             deliberately, for a Temporal activity boundary to catch and translate into a
             paused result -- folding it into a failed status here is what left the whole
             pause feature inert. A caller that does not handle it must not pass such a
             callback. Every OTHER callback error is still folded into a failed status by
-            ``poll_until_terminal`` (fail-closed), so this is the only exception that
-            escapes.
+            ``poll_until_terminal``, so these two are the only exceptions that escape.
+            Note what that folding does and does not buy: ``DocumentProductionAgent.run``
+            logs a failed PRA status and carries on producing a plan from the original
+            spec, so an ordinary callback error is fail-OPEN at the system level -- the
+            run proceeds without PRA. Narrowing the passthrough is therefore a choice not
+            to change that long-standing fallback, not a claim that the fallback stops
+            anything. Only these two types reach a caller that acts on them.
     """
 
     def _on_poll(status: Dict[str, Any]) -> None:
@@ -121,6 +152,11 @@ def wait_for_product_analysis_completion(
         # Temporal activity boundary to translate into a paused result. Without
         # this it would be swallowed into a failed status here and the pause would
         # never happen -- the whole feature inert, silently.
-        passthrough_exceptions=(PlanningAnswerPauseSignal,),
+        # PlanningDefaultsNotRecorded joins it for the mirror-image reason: the
+        # terminal round fabricated answers and could not record that it did.
+        # Folded into a failed status it would become a logged warning while the
+        # plan ships anyway -- fabricated answers with no surviving record, which
+        # is the failure the audit hook exists to prevent.
+        passthrough_exceptions=(PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded),
         log_context="product analysis",
     )

@@ -3233,3 +3233,124 @@ resolved by the round-advancement proxy above; #7445-B inherits it knowingly.
   (`test_workflow_pauses_then_resumes_to_completion_via_signal`,
   `test_workflow_survives_worker_restart_while_paused_with_buffered_signal`,
   `test_workflow_resumes_via_early_signal_buffered_before_pause_processed`).
+
+---
+
+## 7. Addendum — 2026-09-08: what actually shipped
+
+This section is appended, not merged into the sections above, so the record shows where the
+implementation departed from the design and why. **Where this addendum and an earlier section
+disagree, this addendum describes the code.**
+
+### 7.1 The never-fabricate rule is bounded to non-terminal rounds
+
+§3 and §5 frame the primitive around never proceeding without a real answer. The shipped
+`build_temporal_planning_answer_callback` honours that while another pause round remains, and
+deliberately does **not** on a round the caller declares terminal via `allow_repause=False`: it
+defaults every unanswered question and returns a complete set.
+
+The reason is a convergence problem this spec did not anticipate. Planning's question ids come
+straight from LLM output (`product_requirements_analysis_agent.question_processing.parse_open_question`)
+and a resume replays Planning from scratch, so a re-run can mint fresh ids for questions the user
+has already answered. An unbounded pause loop therefore never converges — every round pauses on a
+newly-minted batch — and PRA's sub-job waits out its own `total_timeout` while nobody is left to
+answer it. `RunTeamWorkflowV2` bounds the loop at `MAX_PLANNING_PAUSE_ROUNDS` and spends its last
+round with `allow_repause=False`; that flag is the loop's termination proof, not an optimisation.
+
+So the choice on the final round is not *guess vs. wait*. It is *guess vs. hang*. The amended rule:
+
+> The adapter never fabricates an answer while another pause round remains. It defaults only on a
+> round the caller has explicitly declared terminal, and every defaulted question is reported to
+> the caller for persistence.
+
+The reporting half is what makes the exception acceptable, and is enforced in code rather than by
+convention: `on_defaulted` receives exactly the fabricated answers, `plan_project_activity` writes
+them to the job record's `defaulted_questions`, and `JobStatusResponse` returns them, so a plan
+built partly on machine-chosen answers says so where a human reads it.
+
+Two details of that reporting are load-bearing and easy to get wrong:
+
+- **The hook fires once per PRA clarification ROUND, not once per activity execution.**
+  `wait_for_product_analysis_completion`'s `_on_poll` invokes the same callback on every poll while
+  PRA reports `waiting_for_answers`, and PRA's review loop raises several unrelated rounds with
+  fresh ids (§4.3's multi-round case). Under `allow_repause=False` nothing raises, so each round is
+  defaulted in turn. A caller that overwrites its store on each call keeps only the last round.
+  `plan_project_activity` therefore accumulates, de-duplicating on **the whole audit record** —
+  `question_id`, `question_text`, `selected_option_id` and `selected_option_label` together — and
+  writes the whole accumulated list each time, which keeps a Temporal retry idempotent.
+
+  **Read risk 3 before narrowing that key.** An earlier revision of this addendum specified the
+  `(question_id, question_text)` pair and cited §4.3.1 as mandating it; that was the pair risk 3
+  explicitly withdrew in favour of the full canonical question shape. PRA's parser defaults both
+  fields identically across rounds, so the pair collapses two unrelated rounds that differ only in
+  their options. The audit record is a narrower object than the pending-question dict, so this key
+  is not the full canonical shape either, and risk 3's own conclusion carries over unchanged: with
+  no PRA-side round identifier, nothing distinguishes a re-presented question from a coincidentally
+  identical later round. De-duplication is still required — `_on_poll` re-presents an unanswered
+  batch on every poll — so the residual collision is accepted knowingly rather than closed.
+
+- **A terminal attempt clears the field before it runs.** The hook only ever writes, and the
+  activity is retryable; an attempt that records defaults and then fails leaves the pause envelope
+  consumed, so the retry replays Planning fresh. A replay that matches every question never fires
+  the hook, and without the clear the job would keep the failed attempt's records while shipping a
+  plan that was fully human-answered.
+
+- **A failed audit write must raise a type that survives three boundaries.** Leaving the hook
+  unguarded is not sufficient, and assuming it was is a mistake worth recording: `poll_until_terminal`
+  folds any `on_poll` exception outside its `passthrough_exceptions` into a failed status,
+  `DocumentProductionAgent.run` logs that and carries on producing a plan, and `run_workflow`'s broad
+  `except Exception` folds it again. `planning_team.exceptions.PlanningDefaultsNotRecorded` is passed
+  through by the poll loop and by `run_workflow` — the mirror image of `PlanningAnswerPauseSignal` —
+  so the failure reaches the activity and fails it, and Temporal retries against a cleared record.
+  The passthrough stays narrow: an ordinary callback error still folds into a failed status.
+
+- **The record proves the answers were chosen and submitted, not that they were applied.** The hook
+  fires before `_on_poll` POSTs the batch, and that POST's result is discarded, so a rejected
+  submission is indistinguishable from an accepted one — the pre-existing gap the team contract
+  tracks as deferred wiring work. The status field states the narrower claim rather than implying
+  the broader one.
+- **Each record carries the question text and the chosen option's label, not just ids.** The
+  activity clears the pause envelope holding `pending_questions` before the replay, and a defaulted
+  terminal batch never raises a pause that would persist the newly generated questions. A record of
+  bare, LLM-minted ids would name decisions no human made without saying what was
+  decided. A hook that raises is not
+caught — an unrecorded default is the failure this exists to prevent, and failing the round is the
+recoverable half of that trade.
+
+### 7.2 The wire contract diverged from §4.1 — read this before wiring any answers route
+
+§4.1 mandates `@workflow.signal(name="submit_answers")` and extends the payload with
+`selected_option_ids: List[str]` for `allow_multiple=True` questions. **Neither shipped.** What
+exists today:
+
+| Registration | Signal name | State |
+|---|---|---|
+| `RunTeamWorkflowV2` via `PlanningAnswerSignalMixin` | `submit_planning_answers` | Live — drives the pause loop; `software_engineering_team/api/routes/hitl.py::submit_pending_answers` signals this name |
+| `PlanningWorkflow` via `shared/hitl/temporal_signal.py::HitlAnswerSignalMixin` | `submit_answers` | Registered but dormant — `run()` never awaits `wait_for_answers`, so no phase arms a pause |
+| §4.1 as written | `submit_answers` + `selected_option_ids` | Unimplemented — `shared/hitl/models.py::AnswerSubmission` still carries only `question_id`/`selected_option_id`/`other_text` |
+
+**Consequence.** An implementer who builds a Planning answers route from §4.1 as written will
+signal `submit_answers` at a workflow that registers only `submit_planning_answers`. Temporal
+records the signal and delivers it to no handler — precisely the silent-undeliverable failure §4.3
+warns about — and the pause never resolves. `PlanningWorkflow` does register `submit_answers`, but
+nothing behind it arms a pause, so signalling that workflow type resolves nothing either.
+
+Converging the names — and the three copies of the state machine: `CodingTeamWorkflow`'s inline one,
+`PlanningAnswerSignalMixin`, and the shared `HitlAnswerSignalMixin` — is deferred, not resolved here.
+It needs a `workflow.patched` migration for histories already recorded against the live name.
+
+**Where that deferral is recorded**, since this addendum deliberately carries no ticket number (see
+the project rule against issue references in documentation): `backend/shared/hitl/temporal_signal.py`'s
+module docstring is the source of record. It names all three copies, states that migrating
+`CodingTeamWorkflow` onto the shared mixin and reconciling `PlanningAnswerSignalMixin` are
+"deliberately deferred, not implicitly completed by this module's existence," and forbids composing
+both mixins on one workflow class. A reader wanting to pick the work up should start there rather
+than from this paragraph. Until it happens, **the shipped name is the one to signal.**
+
+### 7.3 The Planning path is gated off
+
+`plan_project_activity` passes `use_product_analysis=False` on the same `run_planning_workflow`
+call that supplies the callback, and `DocumentProductionAgent.run` reaches `answer_callback` only
+inside its `if use_product_analysis and run_pra and wait_pra:` branch. The pause loop, the re-pause
+path, and the terminal default are implemented and tested, but unreachable in production until that
+gate opens. Nothing here describes behaviour users are currently experiencing.

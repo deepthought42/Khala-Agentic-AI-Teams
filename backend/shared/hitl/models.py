@@ -77,6 +77,46 @@ class AnswerSubmission(BaseModel):
     other_text: Optional[str] = Field(None, description="Custom text when 'other' is selected.")
 
 
+class DefaultedQuestion(BaseModel):
+    """One clarification answer the system chose because nobody answered it.
+
+    The cross-team audit record for a fabricated answer: produced by Planning's
+    terminal-round answer callback and consumed by the SE status API and UI. It
+    lives here, with the rest of the HITL contract, because the producer and the
+    consumer sit in different teams — the exact shape this package exists to keep
+    from being defined twice and drifting apart.
+
+    Deliberately NOT the wire shape a callback returns to an answers route: that
+    is ``AnswerSubmission`` (``question_id``/``selected_option_id``/``other_text``).
+    This record carries the question's text and the chosen option's LABEL because
+    the pause envelope holding the original questions is cleared before the plan
+    ships, and the ids are LLM-minted — bare ids would name decisions no human
+    made without saying what was decided.
+
+    Invariants:
+        - ``question_id`` is never null. A record with no usable id degrades to
+          the empty string rather than raising: a status endpoint that 500s on a
+          corrupt record tells the user nothing.
+        - The three descriptive fields are nullable, and null is meaningful —
+          the option fields when the question offered nothing to default to,
+          ``question_text`` when the question carried none.
+    """
+
+    question_id: str = Field(
+        default="",
+        description="Id of the question that was defaulted; empty when the record carries none.",
+    )
+    question_text: Optional[str] = Field(
+        default=None, description="The question as asked, or None when it carried no text."
+    )
+    selected_option_id: Optional[str] = Field(
+        default=None, description="Id of the option chosen, or None when there was none to choose."
+    )
+    selected_option_label: Optional[str] = Field(
+        default=None, description="Human-readable label of the chosen option, or None."
+    )
+
+
 class SubmitAnswersRequest(BaseModel):
     """Request body for submitting answers to a job's pending questions.
 

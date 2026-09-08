@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from shared.concurrency import BackgroundHeartbeat
 from shared.hitl.progress import coerce_progress
-from shared.hitl.status import pending_questions_from_raw
+from shared.hitl.status import defaulted_questions_from_raw, pending_questions_from_raw
 from shared.run_thread_registry import RunThreadRegistry
 from software_engineering_team.api.models import (
     CurrentActivityEntry,
@@ -357,6 +357,12 @@ def build_job_status_response(job_id: str, data: Dict[str, Any]) -> JobStatusRes
         "waiting_for_answers": (
             False if answers_accepted else bool(data.get("waiting_for_answers", False))
         ),
+        # Not cleared by answers_accepted, unlike the pause envelope above: a
+        # default that was applied stays applied, and the record of it must outlive
+        # the pause that produced it.
+        "defaulted_questions": [
+            dq.model_dump() for dq in defaulted_questions_from_raw(data.get("defaulted_questions"))
+        ],
         "resume_token": None if answers_accepted else resume_token,
         "planning_subprocess": data.get("planning_subprocess"),
         "planning_completed_phases": data.get("planning_completed_phases") or [],
