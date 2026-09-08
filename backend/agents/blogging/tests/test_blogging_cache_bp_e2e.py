@@ -256,7 +256,15 @@ def test_non_caching_client_flattens_cache_breakpoint_identically_to_plain_text(
     observable: the model receives exactly the text it would if the
     identical guideline content had been passed as a plain string instead of
     a ``CacheBreakpoint`` -- the documented degrade-to-plain-text contract in
-    ``strands_adapter.stream``."""
+    ``strands_adapter.stream``.
+
+    The capturing client is wrapped in ``LLMClientModel`` (production's own
+    wrapper around a raw ``LLMClient``) rather than passed directly as
+    ``llm_client``: ``DummyLLMClient`` implements Strands' ``Model`` ABC
+    itself, so an unwrapped instance would make Strands call its ``stream()``
+    directly and never reach ``strands_adapter.LLMClientModel.stream``'s
+    caching-vs-flatten branch at all -- the very code path this test exists
+    to exercise."""
 
     class _SystemCapturingLLM(DummyLLMClient):
         def __init__(self) -> None:
@@ -267,18 +275,19 @@ def test_non_caching_client_flattens_cache_breakpoint_identically_to_plain_text(
             self.system_prompts.append(system_prompt)
             return {"approved": True, "summary": "ok", "feedback_items": []}
 
-    llm = _SystemCapturingLLM()
-    assert llm.supports_prompt_caching() is False
+    raw_llm = _SystemCapturingLLM()
+    model = LLMClientModel(raw_llm, agent_key="blogging_copy_editor")
+    assert model.supports_prompt_caching() is False
     editor = BlogCopyEditorAgent(
-        llm_client=llm,
+        llm_client=model,
         brand_spec_content="Acme voice: bold and direct.",
         writing_style_guide_content="Use short sentences.",
     )
 
     editor.run(CopyEditorInput(draft="A draft body long enough to review."))
 
-    assert len(llm.system_prompts) == 1
-    flattened = llm.system_prompts[0]
+    assert len(raw_llm.system_prompts) == 1
+    flattened = raw_llm.system_prompts[0]
     assert isinstance(flattened, str)
     assert "Acme voice: bold and direct." in flattened
     assert "Use short sentences." in flattened
@@ -288,10 +297,11 @@ def test_non_caching_client_flattens_cache_breakpoint_identically_to_plain_text(
     plain_equivalent = build_system_prompt_with_content(
         COPY_EDITOR_PROMPT, [breakpoint_segment.text]
     )
-    llm_control = _SystemCapturingLLM()
-    Agent(model=llm_control, system_prompt=plain_equivalent)("hello")
+    raw_llm_control = _SystemCapturingLLM()
+    model_control = LLMClientModel(raw_llm_control, agent_key="blogging_copy_editor")
+    Agent(model=model_control, system_prompt=plain_equivalent)("hello")
 
-    assert llm_control.system_prompts[0] == flattened
+    assert raw_llm_control.system_prompts[0] == flattened
 
 
 # ---------------------------------------------------------------------------
