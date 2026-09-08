@@ -616,7 +616,9 @@ def _plan_project_activity_body(
         chosen option's label, not just ids, since the pause envelope holding those
         questions is cleared before the replay. Every PRA round that gets defaulted
         accumulates (see ``_record_defaulted_questions``) -- the hook fires per
-        round, not per execution. Defaulting is the load-bearing half: the answers
+        round, not per execution. A terminal attempt clears the field before it runs,
+        so a retry whose replay needs no defaults does not inherit the previous
+        attempt's records. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
         required, so resolving with only the matches would leave the sub-job waiting out its
         poll timeout instead of resuming. In the designed flow this returns a
@@ -679,6 +681,19 @@ def _plan_project_activity_body(
         allow_repause=allow_repause,
         on_defaulted=_record_defaulted_questions(job_id),
     )
+
+    if not allow_repause:
+        # Clear before the terminal attempt runs, because the hook only ever WRITES.
+        # This activity is retryable and the pause envelope was consumed on the first
+        # attempt, so a retry replays Planning from scratch; if that replay happens to
+        # match every question (the same LLM id-drift that makes the terminal round
+        # necessary cuts both ways) the hook never fires, and without this the job
+        # would keep the failed attempt's records while shipping a plan that was in
+        # fact fully human-answered. Over-reporting fabricated answers is the gentler
+        # error, but it still breaks the "says so where a human reads it" guarantee
+        # this field exists to provide -- in the direction that teaches readers to
+        # distrust it.
+        update_job(job_id, defaulted_questions=[])
 
     try:
         from software_engineering_team.orchestrator import _check_cancellation, _get_agents

@@ -3304,10 +3304,17 @@ records the signal and delivers it to no handler — precisely the silent-undeli
 warns about — and the pause never resolves. `PlanningWorkflow` does register `submit_answers`, but
 nothing behind it arms a pause, so signalling that workflow type resolves nothing either.
 
-Converging the names (and the three copies of the state machine: `CodingTeamWorkflow`'s inline one,
-`PlanningAnswerSignalMixin`, and the shared `HitlAnswerSignalMixin`) is tracked follow-up work, not
-resolved here — it needs a `workflow.patched` migration for histories already recorded against the
-live name. Until then, **the shipped name is the one to signal.**
+Converging the names — and the three copies of the state machine: `CodingTeamWorkflow`'s inline one,
+`PlanningAnswerSignalMixin`, and the shared `HitlAnswerSignalMixin` — is deferred, not resolved here.
+It needs a `workflow.patched` migration for histories already recorded against the live name.
+
+**Where that deferral is recorded**, since this addendum deliberately carries no ticket number (see
+the project rule against issue references in documentation): `backend/shared/hitl/temporal_signal.py`'s
+module docstring is the source of record. It names all three copies, states that migrating
+`CodingTeamWorkflow` onto the shared mixin and reconciling `PlanningAnswerSignalMixin` are
+"deliberately deferred, not implicitly completed by this module's existence," and forbids composing
+both mixins on one workflow class. A reader wanting to pick the work up should start there rather
+than from this paragraph. Until it happens, **the shipped name is the one to signal.**
 
 ### 7.3 The Planning path is gated off
 

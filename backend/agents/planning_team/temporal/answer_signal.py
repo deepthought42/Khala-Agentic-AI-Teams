@@ -277,16 +277,16 @@ def build_temporal_planning_answer_callback(
           mechanism rules out -- a plan built on fabricated answers with no surviving
           record that they were fabricated. Failing the round is recoverable; an
           unrecorded default is not.
-        - ``on_defaulted`` is never called on any other path: not on the initial
-          pause callback, not on a round that resolves fully, and not on one that
-          re-pauses. Nothing was fabricated on those paths, and a caller must be
-          able to treat a call as proof that it was.
           The pause budget is spent, so the choice is between a defaulted answer and
           a sub-job that waits until it times out; a default that is announced beats
           a hang. The option it picks follows the same policy
           ``user_communication.get_default_option`` applies on the thread-mode
           auto-answer path -- is_default, else highest confidence -- so the two
           runtime modes default a given question identically.
+        - ``on_defaulted`` is never called on any other path: not on the initial
+          pause callback, not on a round that resolves fully, and not on one that
+          re-pauses. Nothing was fabricated on those paths, and a caller must be
+          able to treat a call as proof that it was.
         - A malformed question entry (non-dict, or an ``id`` that is not a str)
           carries nothing a submitter could ever answer and nothing the route would
           accept, so it neither matches, blocks, nor gets a default -- it is skipped

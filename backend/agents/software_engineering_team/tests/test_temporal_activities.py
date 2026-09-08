@@ -1309,6 +1309,73 @@ def test_a_retry_rebuilds_defaulted_questions_rather_than_doubling_them(
     assert js.get_job("pp-retry")["defaulted_questions"] == batch
 
 
+def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """A retried terminal attempt must not inherit the previous attempt's records.
+
+    The hook only ever writes. This activity is retryable and the pause envelope is
+    consumed on the first attempt, so a retry replays Planning from scratch; if that
+    replay matches every question the hook never fires. Without a clear, the job
+    would report machine-chosen answers for a plan that shipped fully
+    human-answered -- over-reporting, but still a reason to distrust the field.
+    """
+    from unittest.mock import MagicMock
+
+    from shared.dev_models.models import ProductRequirements
+    from software_engineering_team.planning_adapter import PlanningAdapterResult
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-stale", repo_path=str(tmp_path), job_type="run_team")
+    # The failed attempt's leftovers.
+    js.update_job(
+        "pp-stale",
+        defaulted_questions=[
+            {"question_id": "old", "question_text": "Stale", "selected_option_id": "x"}
+        ],
+    )
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents",
+        lambda: {"architecture": MagicMock()},
+    )
+
+    def _fake_run_workflow(*args, **kwargs):
+        # This replay matches everything, so the callback defaults nothing.
+        kwargs["answer_callback"]([{"id": "q1", "question_text": "Which auth provider?"}])
+        return {
+            "success": True,
+            "summary": "done",
+            "handoff_package": {"summary": "Build a widget API."},
+            "open_questions": [],
+            "resolved_questions": [],
+        }
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _fake_run_workflow)
+    monkeypatch.setattr(
+        "software_engineering_team.planning_adapter.adapt_planning_result",
+        lambda *a, **kw: PlanningAdapterResult(
+            requirements=ProductRequirements(
+                title="Test", description="D", acceptance_criteria=["Ship"], constraints=[]
+            ),
+            project_overview={"goals": "Ship", "features_and_functionality_doc": "API"},
+            open_questions=[],
+            assumptions=[],
+        ),
+    )
+
+    activities.plan_project_activity(
+        "pp-stale",
+        str(tmp_path),
+        {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+        submitted_answers=[{"question_id": "q1", "selected_option_id": "okta"}],
+        allow_repause=False,
+    )
+
+    assert js.get_job("pp-stale")["defaulted_questions"] == []
+
+
 def test_record_defaulted_questions_requires_a_job_id() -> None:
     """A blank job_id would silently write nowhere, leaving the terminal round's
     fabrication unrecorded -- the one outcome this hook exists to rule out.
@@ -1359,8 +1426,12 @@ def test_plan_project_status_degrades_a_malformed_defaulted_questions_value(
     tmp_path, patched_job_store
 ) -> None:
     """A status endpoint that 500s on a corrupt record tells the user nothing.
-    A non-list, and non-dict entries inside a list, degrade to what a job that
-    defaulted nothing reports.
+
+    The two cases degrade differently, and deliberately so: a non-list carries no
+    salvageable entry, so it becomes the empty list a job that defaulted nothing
+    reports; non-dict entries inside a list are dropped while the valid dicts are
+    kept, because discarding a real record alongside the junk would under-report
+    fabricated answers -- the failure direction this feature exists to close.
     """
     from software_engineering_team.api.state import build_job_status_response
     from software_engineering_team.shared import job_store as js

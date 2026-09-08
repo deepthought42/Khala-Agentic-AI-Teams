@@ -214,10 +214,12 @@ class JobStatusResponse(BaseModel):
         default_factory=list,
         description=(
             "Clarification answers chosen by the system, not by a human. Non-empty only when "
-            "Planning exhausted its bounded pause budget and the final round defaulted the "
-            "questions nobody answered; each entry carries the question_id and the "
-            "selected_option_id that was picked. An empty list means every answer behind this "
-            "plan came from a person."
+            "Planning exhausted its bounded pause budget and its terminal round(s) defaulted "
+            "the questions nobody answered. Each entry carries question_id, question_text, "
+            "selected_option_id and selected_option_label; the two option fields are null "
+            "when the question offered nothing to default to, and question_text is null when "
+            "the question carried none. An empty list means every answer behind this plan "
+            "came from a person."
         ),
     )
     resume_token: Optional[str] = Field(
