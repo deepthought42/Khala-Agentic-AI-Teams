@@ -2,12 +2,19 @@
 driver that joins entry and exit replay into complete ``ReferenceTrade``
 records over a full backtest window.
 
-``test_reference_entries.py``/``test_reference_exits.py`` already cover each
-rule kind's own fill mechanics exhaustively at the per-resolver level; the
-tests here instead exercise what only the JOINED driver can produce: a
-complete entry-plus-exit record, cross-kind competition on one bar, ladder
-blending across a foreign closing rule, re-entry, end-of-series handling, and
-cross-symbol emission order.
+``test_reference_entries.py``/``test_reference_exits.py`` cover each rule
+kind's own fill mechanics exhaustively at the per-resolver level; everything
+here is about what only the JOINED driver can produce.
+
+The first section takes each exit rule kind in isolation and proves the
+complete entry-plus-exit record it reconstructs, on the minimal bar series
+that exercises its case -- so a failure names one rule kind, and so the
+section reads as the definition of what that kind's reference semantics are.
+Every expected trade in it is derived by hand from the bar series in the
+comments, never from the simulator's own output. Later sections cover what
+needs more than one kind or more than one position: cross-kind competition on
+one bar, ladder blending across a foreign closing rule, re-entry,
+end-of-series handling, and cross-symbol emission order.
 """
 
 from __future__ import annotations
@@ -114,7 +121,16 @@ def _dates(n: int, start_day: int = 1) -> "list[str]":
 
 # ---------------------------------------------------------------------------
 # Per-kind, joined-record tests
+#
+# One subsection per exit rule kind: the minimal bar series that exercises that
+# kind's fill semantics, with the expected trade derived by hand from the bars in
+# the comments. Read together, they are the definition of what each kind's
+# reference semantics are meant to be. Cross-kind competition lives in the next
+# section, deliberately, so a failure here names one rule kind.
 # ---------------------------------------------------------------------------
+
+
+# --- StopLossRule ---
 
 
 def test_stop_loss_through_bar_produces_a_complete_trade():
@@ -173,6 +189,81 @@ def test_stop_loss_short_side_through_bar():
     assert trade.exit_price == round(100 * 1.05, 2)
 
 
+def test_trailing_high_stop_ratchets_before_it_closes_the_trade():
+    """A ``trailing_high`` basis re-anchors the stop to the running high, so
+    the level that finally closes the trade is one no ``entry_price`` stop on
+    the same spec could ever reach.
+
+    The watermark is read as of the PRIOR bar and only then extended with the
+    current one, which is what keeps bar 3's own wide range from reading as a
+    stop-out against the level its own high just set.
+    """
+    d = _dates(5)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 -> anchor 100
+        _bar(100, 110, 99, 109, d[3]),  # floor is still 100*0.95=95; low 99 > 95, no fire.
+        # Watermark then extends to this bar's high, 110.
+        _bar(106, 107, 100, 101, d[4]),  # floor 110*0.95=104.5; low 100 <= 104.5 -> through-bar,
+        # fill min(open 106, 104.5) = 104.5
+    ]
+    spec = _spec([StopLossRule(pct=0.05, basis="trailing_high")])
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.entry_bar, trade.exit_bar) == (2, 4)
+    assert trade.exit_price == 104.5  # the ratcheted floor, not the 95.00 entry-price floor
+    assert (trade.exit_rule_kind, trade.exit_rule_index, trade.level_index) == (
+        "stop_loss",
+        0,
+        None,
+    )
+
+
+def test_limit_style_stop_arms_on_one_bar_and_fills_at_the_limit_on_a_later_one():
+    """A ``style="limit"`` stop is armed by a breach of its stop price but
+    fills only at its own protective limit -- so a bar that breaches without
+    reaching the limit leaves the position open, and the arm latch survives to
+    a later bar that does reach it.
+
+    This is the defining trade-off of a stop-limit: it never fills worse than
+    its limit, at the cost of possibly not filling at all.
+    """
+    d = _dates(5)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 -> stop 95.00, limit 95*0.98 = 93.10
+        _bar(93, 93, 91, 92, d[3]),  # low 91 <= 95.00 arms it, but the whole range gapped
+        # past the limit (high 93 < 93.10) -> no fill, the position stays open
+        _bar(93.5, 95, 93, 94, d[4]),  # high 95 >= 93.10 -> fills at exactly the limit
+    ]
+    spec = _spec([StopLossRule(pct=0.05, style="limit", limit_offset_pct=0.02)])
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_bar, trade.exit_price) == (4, 93.1)
+    assert trade.exit_rule_kind == "stop_loss"
+
+
+# --- TakeProfitRule ---
+
+
+def test_take_profit_through_bar_fills_at_the_exact_target():
+    """A take-profit rests as a limit: on a bar whose range simply covers the
+    target it fills AT the target, the same price the gap case below records.
+    The pair together is what pins the price to the target rather than to
+    anything about the bar that reached it."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),
+        _bar(101, 101, 101, 101, d[2]),  # entry fill @101
+        _bar(105, 112, 104, 110, d[3]),  # opens below the 111.10 target, high covers it
+    ]
+    spec = _spec([TakeProfitRule(pct=0.10)])
+    [trade] = simulate(spec, {"AAA": bars})
+    assert (trade.exit_bar, trade.exit_price) == (3, round(101 * 1.10, 2))
+    assert (trade.exit_rule_kind, trade.level_index) == ("take_profit", None)
+
+
 def test_take_profit_gap_through_still_fills_at_the_exact_target():
     d = _dates(4)
     bars = [
@@ -186,6 +277,40 @@ def test_take_profit_gap_through_still_fills_at_the_exact_target():
     assert trade.exit_rule_kind == "take_profit"
     assert trade.exit_price == round(101 * 1.10, 2)
     assert trade.level_index is None
+
+
+def test_short_take_profit_fills_at_the_exact_target_below_entry():
+    """On a short the target sits BELOW the anchor (``anchor * (1 - pct)``) and
+    is reached by the bar's low, but the fill price rule is the same exact-target
+    one as the long side."""
+    d = _dates(4)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 -> short anchor 100
+        _bar(96, 97, 89, 90, d[3]),  # target 100*0.90 = 90.00; low 89 reaches it
+    ]
+    spec = _spec([TakeProfitRule(pct=0.10)], entry_side="short")
+    [trade] = simulate(spec, {"AAA": bars})
+    assert trade.side == "short"
+    assert (trade.exit_bar, trade.exit_price) == (3, 90.0)
+    # The short-side safety stop working_exit_rules() appends sits at index 1 with
+    # a level of 100*(1+1.0) = 200.00, so it cannot compete for this close.
+    assert (trade.exit_rule_kind, trade.exit_rule_index) == ("take_profit", 0)
+
+
+# --- ScaledTakeProfitRule ---
+
+
+def _two_rung_ladder() -> ScaledTakeProfitRule:
+    """The ladder every multi-rung test below shares: two rungs splitting the
+    position 40/60, at 5% and 10% from the anchor."""
+    return ScaledTakeProfitRule(
+        levels=[
+            TakeProfitLevel(pct=0.05, qty_fraction=0.4),
+            TakeProfitLevel(pct=0.10, qty_fraction=0.6),
+        ]
+    )
 
 
 def test_scaled_take_profit_single_rung_closes_and_records_its_level():
@@ -205,6 +330,142 @@ def test_scaled_take_profit_single_rung_closes_and_records_its_level():
     assert trade.exit_rule_kind == "scaled_take_profit"
     assert trade.level_index == 0
     assert trade.exit_price == round(target, 2)
+
+
+def test_a_two_rung_ladder_blends_both_rungs_into_one_trade():
+    """A laddered position emits ONE trade when its last rung closes it, whose
+    exit_price is the quantity-weighted average of every rung's fill -- not the
+    closing rung's own price -- while qty stays the original entry quantity."""
+    d = _dates(5)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(101, 101, 101, 101, d[2]),  # entry fill @101 -> rungs at 106.05 and 111.10
+        _bar(102, 107, 101, 106, d[3]),  # high 107 >= 106.05 -> rung 0 fills 0.4 @106.05
+        _bar(106, 112, 105, 111, d[4]),  # high 112 >= 111.10 -> rung 1 fills 0.6 @111.10, terminal
+    ]
+    [trade] = simulate(_spec([_two_rung_ladder()]), {"AAA": bars})
+    # 0.4*106.05 + 0.6*111.10 = 42.42 + 66.66 = 109.08, rounded at the final
+    # slice's own bucket (111.10 >= 10 -> 2dp).
+    assert trade.exit_price == 109.08
+    assert trade.qty == 1.0  # the original entry quantity, not the closing slice's 0.6
+    assert (trade.entry_bar, trade.exit_bar) == (2, 4)
+    assert (trade.entry_date, trade.exit_date) == ("2024-01-03", "2024-01-05")
+    assert (trade.exit_rule_kind, trade.exit_rule_index, trade.level_index) == (
+        "scaled_take_profit",
+        0,
+        1,
+    )
+
+
+def test_a_short_two_rung_ladder_blends_from_the_target_nearest_entry():
+    """On a short the rungs sit below the anchor, but "nearest entry" still
+    means the SMALLEST pct -- so rung 0 (95.00) fires before rung 1 (90.00),
+    not the other way round because 90.00 is the lower price."""
+    d = _dates(5)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(100, 100, 100, 100, d[2]),  # entry fill @100 -> rungs at 95.00 and 90.00
+        _bar(96, 97, 94, 95, d[3]),  # low 94 <= 95.00 -> rung 0 fills 0.4 @95.00
+        _bar(92, 93, 89, 90, d[4]),  # low 89 <= 90.00 -> rung 1 fills 0.6 @90.00, terminal
+    ]
+    [trade] = simulate(_spec([_two_rung_ladder()], entry_side="short"), {"AAA": bars})
+    assert trade.side == "short"
+    # 0.4*95.00 + 0.6*90.00 = 38.00 + 54.00 = 92.00
+    assert trade.exit_price == 92.0
+    assert (trade.exit_bar, trade.level_index) == (4, 1)
+
+
+def test_a_bar_clearing_two_rungs_at_once_fires_only_the_nearer_one():
+    """At most one rung fires per position per bar. A single bar whose range
+    clears both targets scales out only the nearer one; with no later bar
+    reaching the far rung, the position never fully closes and emits nothing."""
+    d = _dates(5)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(101, 101, 101, 101, d[2]),  # entry fill @101 -> rungs at 106.05 and 111.10
+        _bar(102, 120, 101, 118, d[3]),  # clears BOTH targets -- only rung 0 may fire
+        _bar(105, 106, 104, 105, d[4]),  # never reaches 111.10, so rung 1 stays unfilled
+    ]
+    assert simulate(_spec([_two_rung_ladder()]), {"AAA": bars}) == []
+
+
+def test_an_earlier_spike_does_not_authorize_a_rung_fill_on_a_bar_that_never_traded_there():
+    """A rung is filled on the bar whose OWN range reaches its target, never on
+    the strength of an earlier bar having already spiked past it. The exact-price
+    fill rule would otherwise fabricate a fill on a bar that never traded at the
+    level."""
+    d = _dates(6)
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(101, 101, 101, 101, d[2]),  # entry fill @101 -> rungs at 106.05 and 111.10
+        _bar(102, 120, 101, 118, d[3]),  # spike past both; only rung 0 fires @106.05
+        _bar(105, 106, 104, 105, d[4]),  # price retraced -- rung 1 must NOT fill here
+        _bar(108, 112, 107, 111, d[5]),  # high 112 >= 111.10 -> rung 1 fills here, terminal
+    ]
+    [trade] = simulate(_spec([_two_rung_ladder()]), {"AAA": bars})
+    assert trade.exit_bar == 5  # the bar that actually traded at the level, not the spike bar
+    assert trade.exit_price == 109.08  # 0.4*106.05 + 0.6*111.10
+
+
+def test_a_ladder_whose_fractions_fall_short_of_one_never_closes_the_position():
+    """Rung quantities are fractions of the ORIGINAL entry quantity, so a ladder
+    whose fractions sum below 1.0 leaves a residual after every rung has fired.
+    That residual is far larger than the relative closure tolerance, so the
+    position stays open and emits no trade -- exactly as production leaves it."""
+    d = _dates(5)
+    ladder = ScaledTakeProfitRule(
+        levels=[
+            TakeProfitLevel(pct=0.05, qty_fraction=0.5),
+            TakeProfitLevel(pct=0.10, qty_fraction=0.4),  # 0.5 + 0.4 leaves 0.1 open
+        ]
+    )
+    bars = [
+        _bar(99, 99, 99, 99, d[0]),
+        _bar(101, 102, 100, 101, d[1]),  # trigger
+        _bar(101, 101, 101, 101, d[2]),  # entry fill @101 -> rungs at 106.05 and 111.10
+        _bar(102, 107, 101, 106, d[3]),  # rung 0 fills 0.5
+        _bar(106, 112, 105, 111, d[4]),  # rung 1 fills 0.4; 0.1 still open
+    ]
+    assert simulate(_spec([ladder]), {"AAA": bars}) == []
+
+
+def test_the_blended_exit_price_takes_its_decimal_bucket_from_the_final_slice():
+    """The blended exit_price is rounded ONCE, at the bucket the FINAL slice's
+    own price selects -- not at the bucket the blend itself would select, and
+    not per slice. A ladder whose rungs straddle the $10 boundary is the only
+    shape that can tell the two apart."""
+    d = _dates(5)
+    ladder = ScaledTakeProfitRule(
+        levels=[
+            TakeProfitLevel(pct=0.0505, qty_fraction=0.5),
+            TakeProfitLevel(pct=0.25, qty_fraction=0.5),
+        ]
+    )
+    bars = [
+        _bar(7.0, 7.0, 7.0, 7.0, d[0]),
+        _bar(8.5, 8.6, 8.4, 8.5, d[1]),  # trigger: close > 8
+        _bar(9.0, 9.0, 9.0, 9.0, d[2]),  # entry fill @9.00 -> rungs at 9.4545 and 11.25
+        _bar(9.1, 9.5, 9.0, 9.4, d[3]),  # high 9.5 >= 9.4545 -> rung 0 fills 0.5 @9.4545
+        _bar(10.0, 11.3, 9.9, 11.2, d[4]),  # high 11.3 >= 11.25 -> rung 1 fills 0.5, terminal
+    ]
+    spec = _spec(
+        [ladder],
+        entry_rules=[EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=8.0))],
+    )
+    [trade] = simulate(spec, {"AAA": bars})
+    assert trade.entry_price == 9.0
+    # (9.4545 + 11.25) / 2 = 10.35225. The final slice is 11.25 (>= 10), so the
+    # bucket is 2dp -> 10.35. The sub-$10 bucket the first rung would have
+    # selected gives 10.3523 (or 10.3522), so this assertion discriminates.
+    assert trade.exit_price == 10.35
+    assert (trade.exit_bar, trade.level_index) == (4, 1)
+
+
+# --- SignalExitRule ---
 
 
 def test_signal_exit_fills_at_next_bar_open():
@@ -238,6 +499,9 @@ def test_signal_exit_is_eligible_on_the_entry_bar_itself():
     [trade] = simulate(spec, {"AAA": bars})
     assert (trade.entry_bar, trade.exit_bar) == (2, 3)
     assert trade.exit_price == 80.0
+
+
+# --- Degenerate references, rounding, and entry guards ---
 
 
 def test_signal_exit_with_a_nonpositive_fill_bar_open_does_not_fire():
