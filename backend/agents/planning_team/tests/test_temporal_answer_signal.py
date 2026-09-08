@@ -540,6 +540,12 @@ def test_default_answer_matches_get_default_option_on_the_same_question() -> Non
     ``convert_to_pending_questions`` emits here -- so nothing but a test stops
     them drifting apart again.
     """
+    # The thread-mode helper this pins parity against pulls in llm_service, which
+    # imports strands. It is pinned in requirements.txt so CI always has it; a
+    # minimal local env should report a clean skip rather than an error that looks
+    # like a real failure.
+    pytest.importorskip("strands", reason="strands-agents not installed in this environment")
+
     from software_engineering_team.product_requirements_analysis_agent.models import (
         OpenQuestion,
         QuestionOption,

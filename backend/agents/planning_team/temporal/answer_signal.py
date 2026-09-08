@@ -14,11 +14,22 @@ Modeled directly on the coding team's ``submit_answers`` signal
 (``software_engineering_team/pause_cycle.py``). Full contract/rationale in
 ``system_design/planning_hitl_temporal_contract.md``.
 
-This module deliberately stops short of wiring into a concrete workflow or
-activity (``planning_team/temporal/activities.py``) — that is separate,
-follow-on work. ``PlanningAnswerSignalMixin`` is a plain mixin any
-``@workflow.defn`` class can inherit; nothing here assumes which workflow
-class will use it.
+``PlanningAnswerSignalMixin`` is a plain mixin any ``@workflow.defn`` class can
+inherit; nothing here assumes which workflow class will use it.
+
+**Where it is used, and what is still unwired.** An earlier version of this
+docstring said the module "deliberately stops short of wiring into a concrete
+workflow or activity"; that stopped being true and is corrected here rather than
+left to mislead. ``software_engineering_team``'s ``RunTeamWorkflowV2`` mixes this
+in and drives a bounded pause loop against ``plan_project_activity``, which builds
+the callback and unwinds ``PlanningAnswerPauseSignal`` into a paused result. What
+remains genuinely unwired is ``planning_team``'s OWN
+``temporal/activities.py``/``PlanningWorkflow`` path.
+
+Note also that the SE-team path is gated off: ``plan_project_activity`` passes
+``use_product_analysis=False``, and ``DocumentProductionAgent.run`` reaches
+``answer_callback`` only inside its ``use_product_analysis`` branch, so the
+callback is currently built, passed, and never invoked in production.
 """
 
 from __future__ import annotations
