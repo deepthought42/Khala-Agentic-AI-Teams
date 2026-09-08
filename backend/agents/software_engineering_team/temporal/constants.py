@@ -26,3 +26,12 @@ ACTIVITY_PRODUCT_ANALYSIS = "run_product_analysis"
 STANDALONE_TYPE_FRONTEND = "frontend-code-v2"
 STANDALONE_TYPE_BACKEND = "backend-code-v2"
 STANDALONE_TYPE_PRODUCT_ANALYSIS = "product-analysis"
+
+# Heartbeat timeouts for the RunTeamWorkflowV2 phase activities (seconds). Declared
+# here rather than inline in workflows.py so each activity's background beater can
+# size its interval against the SAME number the workflow schedules with: a beater
+# whose interval drifts above its own heartbeat timeout is exactly the failure this
+# pairing exists to prevent (Temporal times the attempt out and retries it while the
+# original keeps running and writing).
+PHASE_HEARTBEAT_TIMEOUT_S = 300.0
+CODING_HEARTBEAT_TIMEOUT_S = 600.0

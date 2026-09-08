@@ -18,6 +18,8 @@ with workflow.unsafe.imports_passed_through():
     from planning_team.temporal.answer_signal import PlanningAnswerSignalMixin
     from software_engineering_team.temporal import activities as _activities
     from software_engineering_team.temporal.constants import (
+        CODING_HEARTBEAT_TIMEOUT_S,
+        PHASE_HEARTBEAT_TIMEOUT_S,
         STANDALONE_TYPE_BACKEND,
         STANDALONE_TYPE_FRONTEND,
         STANDALONE_TYPE_PRODUCT_ANALYSIS,
@@ -110,7 +112,7 @@ class RunTeamWorkflowV2(PlanningAnswerSignalMixin):
             args=[job_id, repo_path, spec_content_override, trace_id, sprint_id],
             task_queue=TASK_QUEUE,
             schedule_to_close_timeout=timedelta(hours=4),
-            heartbeat_timeout=timedelta(minutes=5),
+            heartbeat_timeout=timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
             retry_policy=DEFAULT_RETRY_POLICY,
         )
 
@@ -124,7 +126,7 @@ class RunTeamWorkflowV2(PlanningAnswerSignalMixin):
             args=[job_id, repo_path, spec_result, trace_id],
             task_queue=TASK_QUEUE,
             schedule_to_close_timeout=timedelta(hours=4),
-            heartbeat_timeout=timedelta(minutes=5),
+            heartbeat_timeout=timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         # ``collected_answers`` ACCUMULATES across pause rounds, because the
@@ -175,7 +177,7 @@ class RunTeamWorkflowV2(PlanningAnswerSignalMixin):
                 ],
                 task_queue=TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(hours=4),
-                heartbeat_timeout=timedelta(minutes=5),
+                heartbeat_timeout=timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
                 retry_policy=DEFAULT_RETRY_POLICY,
             )
 
@@ -188,7 +190,7 @@ class RunTeamWorkflowV2(PlanningAnswerSignalMixin):
             args=[job_id, repo_path, plan_result, resolved_questions_override, trace_id],
             task_queue=TASK_QUEUE,
             schedule_to_close_timeout=timedelta(hours=36),
-            heartbeat_timeout=timedelta(minutes=10),
+            heartbeat_timeout=timedelta(seconds=CODING_HEARTBEAT_TIMEOUT_S),
             retry_policy=DEFAULT_RETRY_POLICY,
         )
 

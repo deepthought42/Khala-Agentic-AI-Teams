@@ -77,9 +77,31 @@ beater) is driven by the shared `BackgroundHeartbeat` helper in the
 **`shared.concurrency`** package (it is Temporal-agnostic and also used by
 non-Temporal callers). See `backend/shared/concurrency/README.md`.
 
-The coding-team activity's beater interval is set by
-`CODING_TEAM_HEARTBEAT_INTERVAL_S` (seconds; blank/garbage/non-positive falls
-back to `30`).
+Every activity scheduled with a `heartbeat_timeout` must run one: a declared
+timeout that nothing honours is worse than none at all, because Temporal times
+the attempt out and retries it while the original attempt keeps running and
+writing the same job record.
+
+The SE team's beater intervals are each capped at a third of the timeout the
+workflow schedules the activity with (`PHASE_HEARTBEAT_TIMEOUT_S` /
+`CODING_HEARTBEAT_TIMEOUT_S` in `software_engineering_team/temporal/constants.py`),
+so a mis-set override can never re-open that gap:
+
+- `SE_PHASE_HEARTBEAT_INTERVAL_S` — `parse_spec_activity` / `plan_project_activity`
+  (seconds; blank/garbage/non-finite falls back to `30`, then clamped to
+  `[1, PHASE_HEARTBEAT_TIMEOUT_S / 3]`).
+- `CODING_TEAM_HEARTBEAT_INTERVAL_S` — `execute_coding_team_activity` (seconds;
+  blank/garbage/non-positive/non-finite falls back to `30`, then capped at
+  `CODING_HEARTBEAT_TIMEOUT_S / 3`).
+- `GITHUB_ISSUE_GROOMING_HEARTBEAT_INTERVAL_S` — `run_issue_grooming_activity`
+  (seconds; blank/garbage falls back to `30`, floor `0.1`).
+
+Because these are *synchronous* activities, the beater is also what delivers
+cancellation: `activity.is_cancelled()` only ever flips because a beat carried
+the server's cancellation back. That is why the SE phase activities pair the
+beater with `shared.temporal.activity_utils.is_cancelled` guards on every
+job-record write — a superseded attempt must stop writing rather than race the
+live one to the finish.
 
 ## Environment
 
