@@ -287,11 +287,11 @@ class _RuleStarvation:
     permanent shadowing: :attr:`warmup_covered_fires` counts it and
     :attr:`warmup_coverage` attributes it, feeding :attr:`covered_fires` and
     :attr:`combined_coverage`. :attr:`warmup_conclusive_bars` is what makes
-    that judgeable at all — the prefix bars a satisfied earlier rule settles
-    whatever is still warming there — and feeds :attr:`judged_bars`. The two
-    windows have different denominators, so no clause may pair a count from one
-    with a window or a coverage set from the other; each property above states
-    which window it spans.
+    that judgeable at all — the prefix bars on which a satisfied earlier rule
+    settles the outcome regardless of what is still warming there — and feeds
+    :attr:`judged_bars`. The two windows have different denominators, so no
+    clause may pair a count from one with a window or a coverage set from the
+    other; each property above states which window it spans.
 
     Selection is the most this can prove, and the most the finding claims.
     ``_EngineEntryDispatcher.maybe_emit`` returns before evaluating entry rules
