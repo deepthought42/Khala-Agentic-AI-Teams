@@ -144,6 +144,14 @@ actually shipped from a plausible construction, without leaving the case file:
   the surviving code still prevents, or carries both copies of the moved code.
   Where a defect has no coherent subset, the case keeps the whole inverse.
 
+  **A `sourcing: real` case is always `mode: diff`.** The construction above is
+  defined in terms of a patch, and there is no files-mode equivalent: a plain
+  tree of full file contents taken from a fix commit's parent carries every
+  defect that commit repaired, not only the labeled one, which is the reason
+  the parent is ruled out as a diff base too. A real fix can still be the
+  *model* for a files-mode case, but that case is `sourcing: invented` and says
+  so in its `note`.
+
   **`commit` must be quoted.** An all-digit short SHA is an integer to a YAML
   1.2 parser, and octal to PyYAML when every digit is below 8 — either way the
   leading zero is lost and a comparison against `git rev-parse --short` fails.
