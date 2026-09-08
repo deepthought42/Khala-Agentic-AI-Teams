@@ -1746,3 +1746,41 @@ def test_parse_spec_activity_runs_pra_and_returns_validated_spec(
     job = js.get_job("ps-pra-ok")
     assert job["analysis_subprocess"] == "spec_cleanup"
     assert job["status"] != js.JOB_STATUS_FAILED
+
+
+def test_parse_spec_activity_uncancelled_pra_failure_still_marks_failed(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The cancellation guard must not swallow a genuine PRA failure.
+
+    Same branch as the cancelled case above, with the attempt still live: the job is
+    marked FAILED and a bare SpecParseResult comes back, so the workflow does not
+    barrel into Phase 2 on an unvalidated spec.
+    """
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-failed", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+    _fake_pra(
+        monkeypatch,
+        lambda **kw: AnalysisWorkflowResult(success=False, failure_reason="spec too thin"),
+    )
+
+    result = activities.parse_spec_activity(
+        "ps-pra-failed", str(tmp_path), spec_content_override="spec"
+    )
+
+    assert result["spec_content"] == "spec"
+    assert not result.get("validated_spec")
+    job = js.get_job("ps-pra-failed")
+    assert job["status"] == js.JOB_STATUS_FAILED
+    assert job["error"] == "spec too thin"
+    assert job["phase"] == "completed"
