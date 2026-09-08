@@ -1433,6 +1433,45 @@ def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
     assert job["defaulted_questions"] == []
 
 
+def test_a_failing_terminal_clear_fails_the_job_rather_than_escaping(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The terminal clear is a job-store write, so it lives under the error boundary.
+
+    Sitting above the ``try`` it would escape uncaught: on the final Temporal attempt
+    the workflow would exhaust its retries while the status API still reported the
+    job running, because the handler that writes ``status=failed`` never ran. The
+    write is no more reliable than any other in the body -- it gets the same
+    treatment.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-clearfail", repo_path=str(tmp_path), job_type="run_team")
+    real_update_job = activities.update_job
+
+    def _update_job(job_id, **kwargs):
+        if kwargs.get("defaulted_questions") == []:
+            raise RuntimeError("job store unavailable")
+        return real_update_job(job_id, **kwargs)
+
+    monkeypatch.setattr(activities, "update_job", _update_job)
+
+    # No activity context, so is_last_attempt() is True -- the terminal branch.
+    with pytest.raises(RuntimeError, match="job store unavailable"):
+        activities.plan_project_activity(
+            "pp-clearfail",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+            submitted_answers=[{"question_id": "q1", "selected_option_id": "okta"}],
+            allow_repause=False,
+        )
+
+    job = js.get_job("pp-clearfail")
+    assert job["status"] == js.JOB_STATUS_FAILED
+    assert "job store unavailable" in job["error"]
+
+
 def test_a_failed_audit_write_raises_a_passthrough_exception(tmp_path, patched_job_store) -> None:
     """The hook must fail the round, and only one exception type actually does.
 

@@ -673,7 +673,9 @@ def _plan_project_activity_body(
         accumulates (see ``_record_defaulted_questions``) -- the hook fires per
         round, not per execution. A terminal attempt clears the field before it runs,
         so a retry whose replay needs no defaults does not inherit the previous
-        attempt's records. A failed audit write raises ``PlanningDefaultsNotRecorded``,
+        attempt's records; that clear sits inside this function's error boundary,
+        so a job-store failure there marks the job FAILED on a terminal attempt
+        like any other body failure instead of escaping unrecorded. A failed audit write raises ``PlanningDefaultsNotRecorded``,
         which both the PRA poll loop and ``run_workflow`` pass through, so it fails
         this activity rather than degrading into a warning. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
@@ -739,20 +741,24 @@ def _plan_project_activity_body(
         on_defaulted=_record_defaulted_questions(job_id),
     )
 
-    if not allow_repause:
-        # Clear before the terminal attempt runs, because the hook only ever WRITES.
-        # This activity is retryable and the pause envelope was consumed on the first
-        # attempt, so a retry replays Planning from scratch; if that replay happens to
-        # match every question (the same LLM id-drift that makes the terminal round
-        # necessary cuts both ways) the hook never fires, and without this the job
-        # would keep the failed attempt's records while shipping a plan that was in
-        # fact fully human-answered. Over-reporting fabricated answers is the gentler
-        # error, but it still breaks the "says so where a human reads it" guarantee
-        # this field exists to provide -- in the direction that teaches readers to
-        # distrust it.
-        update_job(job_id, defaulted_questions=[])
-
     try:
+        if not allow_repause:
+            # Clear before the terminal attempt runs, because the hook only ever WRITES.
+            # This activity is retryable and the pause envelope was consumed on the first
+            # attempt, so a retry replays Planning from scratch; if that replay happens to
+            # match every question (the same LLM id-drift that makes the terminal round
+            # necessary cuts both ways) the hook never fires, and without this the job
+            # would keep the failed attempt's records while shipping a plan that was in
+            # fact fully human-answered. Over-reporting fabricated answers is the gentler
+            # error, but it still breaks the "says so where a human reads it" guarantee
+            # this field exists to provide -- in the direction that teaches readers to
+            # distrust it.
+            #
+            # Inside the try, not above it: this is a job-store write like any other in
+            # the body, and on the terminal attempt an escape past the error boundary
+            # would exhaust the workflow while the status API still reported "running".
+            update_job(job_id, defaulted_questions=[])
+
         from software_engineering_team.orchestrator import _check_cancellation, _get_agents
 
         spec_data = SpecParseResult.model_validate(spec_parse_result)
