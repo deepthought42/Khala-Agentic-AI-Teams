@@ -234,6 +234,7 @@ def fix_deterministic_violations(
     violations: list[str],
     call_text: CallText,
     allowed_claims_section: str = "",
+    stories_section: str = "",
 ) -> str:
     """Call the LLM once to fix deterministic violations. Returns cleaned draft.
 
@@ -250,7 +251,20 @@ def fix_deterministic_violations(
           when claims are listed, no tags at all when the artifact is present but
           empty — is never contradicted by a blanket "preserve everything"
           instruction layered on top.
+        - ``stories_section`` is the caller's already-rendered author-stories context
+          (e.g. via ``agent._render_self_review_stories_context``), or ``""`` when the
+          draft was written without author stories. Its text is embedded unmodified,
+          for the same reason as ``allowed_claims_section``.
     Postconditions:
+        - When ``stories_section`` is non-empty, the fix prompt carries the author's
+          stories, so this rewrite runs under ``WRITING_SYSTEM_PROMPT`` — whose standing
+          rule is to substitute an ``[Author: ...]`` placeholder wherever no story was
+          supplied — with the evidence that those stories *were* supplied. Without it a
+          mechanical fix can replace a real story with the placeholder the draft prompt
+          just suppressed. Like the claims block, this is a prompt instruction, not an
+          enforced guarantee.
+        - When ``stories_section`` is empty the prompt is byte-identical to one built
+          without the parameter.
         - On success with extractable fixed draft, returns that stripped draft.
         - When ``allowed_claims_section`` is non-empty, the fix prompt includes its
           text unmodified (as its own paragraph, surrounded by blank-line spacing),
@@ -266,11 +280,13 @@ def fix_deterministic_violations(
     """
     checklist = "\n".join(f"- {v}" for v in violations)
     claims_block = f"\n\n{allowed_claims_section}\n" if allowed_claims_section else ""
+    stories_block = f"\n\n{stories_section}\n" if stories_section else ""
     prompt = (
         "Fix ONLY these specific issues in the draft below. Do not change anything else.\n\n"
         f"ISSUES TO FIX:\n{checklist}\n\n"
         "---\nCURRENT DRAFT:\n---\n"
         f"{draft}\n"
+        f"{stories_block}"
         f"{claims_block}\n"
         '---\nUse this format: first line {{"draft": 0}}, then ---DRAFT---, '
         "then the full fixed blog post in Markdown."
@@ -298,6 +314,7 @@ def llm_self_review(
     draft: str,
     call_text: CallText,
     allowed_claims_section: str = "",
+    stories_section: str = "",
 ) -> str:
     """Run a focused LLM self-review for subjective violations. Returns cleaned draft.
 
@@ -311,7 +328,22 @@ def llm_self_review(
           unmodified (surrounded only by blank-line spacing, no added wrapper
           *text*) so its own self-contained guidance is never contradicted by a
           blanket "preserve everything" instruction layered on top.
+        - ``stories_section`` is the caller's already-rendered author-stories context
+          (e.g. via ``agent._render_self_review_stories_context``), or ``""`` when the
+          draft was written without author stories. Its text is embedded unmodified.
     Postconditions:
+        - When ``stories_section`` is non-empty it is carried by **both** LLM calls,
+          which is what makes this review sound on a draft built from author stories:
+          ``SELF_REVIEW_PROMPT``'s first check flags first-person narrative "that wasn't
+          provided in the AUTHOR'S PERSONAL STORIES section", so a checker that never
+          receives that section reads every genuine story as fabricated; and the fixer
+          runs under ``WRITING_SYSTEM_PROMPT``, whose standing rule is to substitute an
+          ``[Author: ...]`` placeholder wherever no story was supplied. Without the
+          stories, this pass can convert a real, author-supplied story back into the
+          placeholder the draft prompt just suppressed. Like the claims block, this is a
+          prompt instruction, not an enforced guarantee.
+        - When ``stories_section`` is empty both prompts are byte-identical to ones
+          built without the parameter.
         - On success, returns the reviewed/fixed draft or the original when no issues.
         - When issues are found and ``allowed_claims_section`` is non-empty, the fix
           prompt includes its text unmodified (as its own paragraph, surrounded by
@@ -338,7 +370,8 @@ def llm_self_review(
         - Unexpected exceptions propagate unchanged.
     """
     try:
-        raw = call_text(f"Review this draft:\n\n{draft}", SELF_REVIEW_PROMPT)
+        review_context = f"\n\n{stories_section}\n" if stories_section else ""
+        raw = call_text(f"Review this draft:\n\n{draft}{review_context}", SELF_REVIEW_PROMPT)
         cleaned = raw.strip()
         # Prefer the shared extractor for fenced / whole-response JSON. It can
         # raise (extraction fails entirely) or, on success, return a non-list
@@ -384,7 +417,7 @@ def llm_self_review(
         fix_prompt = (
             "Fix ONLY these issues found during self-review. Do not change anything else.\n\n"
             "ISSUES:\n" + "\n\n".join(issue_lines) + "\n\n"
-            "---\nCURRENT DRAFT:\n---\n" + draft + "\n" + claims_block + "\n"
+            "---\nCURRENT DRAFT:\n---\n" + draft + "\n" + review_context + claims_block + "\n"
             '---\nUse this format: first line {{"draft": 0}}, then ---DRAFT---, '
             "then the full fixed blog post in Markdown."
         )
@@ -406,7 +439,12 @@ def llm_self_review(
     return draft
 
 
-def self_review(draft: str, call_text: CallText, allowed_claims_section: str = "") -> str:
+def self_review(
+    draft: str,
+    call_text: CallText,
+    allowed_claims_section: str = "",
+    stories_section: str = "",
+) -> str:
     """Run deterministic check then LLM self-review. Returns cleaned draft.
 
     Both sub-steps (``fix_deterministic_violations``, ``llm_self_review``)
@@ -420,6 +458,9 @@ def self_review(draft: str, call_text: CallText, allowed_claims_section: str = "
         - ``allowed_claims_section`` is the caller's already-rendered allowed-claims
           prompt block, or ``""`` when no allowed-claims artifact was supplied;
           forwarded unchanged to both sub-steps.
+        - ``stories_section`` is the caller's already-rendered author-stories context,
+          or ``""``; likewise forwarded unchanged to both sub-steps, so neither rewrite
+          can replace an author-supplied story with an ``[Author: ...]`` placeholder.
     Postconditions:
         - Returns the draft after applying any deterministic fixes and any
           LLM self-review fixes.
@@ -436,9 +477,11 @@ def self_review(draft: str, call_text: CallText, allowed_claims_section: str = "
     violations = deterministic_self_check(draft)
     if violations:
         logger.info("Deterministic self-check found %s violation(s)", len(violations))
-        draft = fix_deterministic_violations(draft, violations, call_text, allowed_claims_section)
+        draft = fix_deterministic_violations(
+            draft, violations, call_text, allowed_claims_section, stories_section
+        )
 
     # Step 2: LLM self-review for subjective issues
-    draft = llm_self_review(draft, call_text, allowed_claims_section)
+    draft = llm_self_review(draft, call_text, allowed_claims_section, stories_section)
 
     return draft

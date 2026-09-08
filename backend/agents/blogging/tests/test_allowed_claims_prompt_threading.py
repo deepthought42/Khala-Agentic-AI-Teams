@@ -221,7 +221,9 @@ def _run_writer_capturing_prompt(monkeypatch, draft_body="Body.", **writer_input
 
     monkeypatch.setattr(BlogWriterAgent, "_call_text", fake_call)
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
 
     out = a.run(_writer_input(**writer_input_overrides))
@@ -257,7 +259,7 @@ def test_writer_run_threads_allowed_claims_into_self_review(monkeypatch) -> None
     )
     captured = {}
 
-    def fake_self_review(self, draft, allowed_claims_section=""):
+    def fake_self_review(self, draft, allowed_claims_section="", stories_section=""):
         captured["allowed_claims_section"] = allowed_claims_section
         return draft
 

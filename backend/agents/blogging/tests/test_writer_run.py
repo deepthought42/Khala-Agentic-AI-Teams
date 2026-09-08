@@ -43,7 +43,9 @@ def test_writer_run_happy_with_all_options(monkeypatch, tmp_path) -> None:
     )
     # Disable the self-review path so tests stay deterministic
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
 
     output_path = tmp_path / "draft.md"
@@ -112,7 +114,7 @@ def test_writer_run_placeholder_skips_self_review(monkeypatch) -> None:
     monkeypatch.setattr(
         BlogWriterAgent,
         "_self_review",
-        lambda self, d, allowed_claims_section="": calls.append(d) or d,
+        lambda self, d, allowed_claims_section="", stories_section="": calls.append(d) or d,
     )
     out = a.run(_writer_input())
     assert out.draft == _PLACEHOLDER_DRAFT
@@ -134,7 +136,7 @@ def test_writer_run_old_short_prefix_still_self_reviews(monkeypatch) -> None:
     monkeypatch.setattr(
         BlogWriterAgent,
         "_self_review",
-        lambda self, d, allowed_claims_section="": calls.append(d) or d,
+        lambda self, d, allowed_claims_section="", stories_section="": calls.append(d) or d,
     )
     out = a.run(_writer_input())
     assert out.draft == body
@@ -161,7 +163,9 @@ def test_writer_run_json_parse_error_then_json_fallback(monkeypatch) -> None:
         lambda self, p, **kw: {"draft": "# Fallback\nBody."},
     )
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
     out = a.run(_writer_input())
     assert "Fallback" in out.draft
@@ -188,7 +192,9 @@ def test_writer_run_wrapped_json_parse_error_then_json_fallback(monkeypatch) -> 
         lambda self, p, **kw: {"draft": "# Unwrapped Fallback\nBody."},
     )
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
     out = a.run(_writer_input())
     assert "Unwrapped Fallback" in out.draft
@@ -311,7 +317,9 @@ def test_writer_run_default_length_guidance(monkeypatch) -> None:
 
     monkeypatch.setattr(BlogWriterAgent, "_call_text", fake_call)
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
     a.run(_writer_input(length_guidance=""))
     assert "TARGET LENGTH" in captured["prompt"]
@@ -504,7 +512,9 @@ def test_writer_run_text_path_forwards_system_prompt_content(monkeypatch) -> Non
 
     monkeypatch.setattr(BlogWriterAgent, "_call_text", fake_call_text)
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
 
     out = a.run(_writer_input())
@@ -536,7 +546,9 @@ def test_writer_run_json_fallback_forwards_system_prompt_content(monkeypatch) ->
 
     monkeypatch.setattr(BlogWriterAgent, "_call_agent_json", fake_call_agent_json)
     monkeypatch.setattr(
-        BlogWriterAgent, "_self_review", lambda self, d, allowed_claims_section="": d
+        BlogWriterAgent,
+        "_self_review",
+        lambda self, d, allowed_claims_section="", stories_section="": d,
     )
     out = a.run(_writer_input())
     assert "Fallback" in out.draft

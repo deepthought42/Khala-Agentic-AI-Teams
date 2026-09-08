@@ -402,3 +402,139 @@ def test_batch_revise_prompt_omits_suppression_without_stories() -> None:
     """The same safety gate as the other two prompts, pinned by byte-identity."""
     baseline = _capture_batch_revise_prompt()
     assert _capture_batch_revise_prompt(covered_sections=["Intro"]) == baseline
+
+
+# ---------------------------------------------------------------------------
+# _self_review — the rewrite that runs inside run(), after generation
+# ---------------------------------------------------------------------------
+#
+# The suppression block reaching the generation prompt is not enough on its own.
+# ``run()`` calls ``_self_review`` before returning, and both of its LLM steps rewrite
+# under ``WRITING_SYSTEM_PROMPT``, whose standing rule is to substitute an
+# ``[Author: ...]`` placeholder wherever no story was supplied. Worse, the checker is
+# asked to flag first-person narrative "not from the AUTHOR'S PERSONAL STORIES section"
+# while historically receiving only the draft — so every genuine story read as
+# fabricated. A draft written from real author material could therefore have that
+# material rewritten back into the placeholder the draft prompt had just suppressed,
+# inside a single ``run()`` call, before anything downstream ever saw it.
+
+
+STORIES_HEADING = "AUTHOR'S PERSONAL STORIES:"
+
+
+def _render_context(**kwargs) -> str:
+    from agents.blogging.blog_writer_agent.agent import (
+        _render_covered_sections_section,
+        _render_self_review_stories_context,
+    )
+
+    stories = kwargs.get("elicited_stories")
+    return _render_self_review_stories_context(
+        stories, _render_covered_sections_section(kwargs.get("covered_sections"), stories)
+    )
+
+
+def test_render_self_review_context_pairs_stories_with_the_suppression_block() -> None:
+    """Both halves travel together: the checker needs the stories to judge what was
+    supplied, the fixer needs the coverage to know which sections are already answered."""
+    out = _render_context(elicited_stories=STORIES, covered_sections=["Why it broke", "Intro"])
+
+    assert STORIES_HEADING in out
+    assert STORIES in out
+    assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+    assert out.index(STORIES_HEADING) < out.index(SUPPRESSION_HEADER)
+
+
+def test_render_self_review_context_is_empty_without_stories() -> None:
+    """The same safety gate the suppression renderer applies, for the same reason: the
+    block must never name a covered section in a prompt that does not carry the story."""
+    assert _render_context(covered_sections=["Intro"]) == ""
+    assert _render_context(elicited_stories="   ", covered_sections=["Intro"]) == ""
+
+
+def test_render_self_review_context_carries_stories_without_coverage() -> None:
+    """Stories alone are still worth sending: without them the checker's first rule —
+    flag first-person narrative not in the stories section — misfires on every story."""
+    out = _render_context(elicited_stories=STORIES)
+
+    assert STORIES in out
+    assert SUPPRESSION_HEADER not in out
+
+
+def _capture_self_review_prompts(monkeypatch, *, issues: bool = False) -> list[str]:
+    """Record every prompt, optionally driving self-review down its fix path.
+
+    With ``issues=True`` the self-review checker answers with a JSON issues array, so
+    ``llm_self_review`` proceeds to its rewrite and the prompt that could actually
+    reintroduce a placeholder is recorded too.
+
+    Keyed off the checker prompt's own opening rather than the call index: the
+    deterministic pass fires its own rewrite before the checker whenever the generated
+    draft trips one of its rules, so which call is "the checker" is not fixed.
+    """
+    from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
+
+    prompts: list[str] = []
+    draft_envelope = '{"draft": 0}\n---DRAFT---\n# Out\nBody.'
+
+    def fake_call(self, prompt, system_prompt=""):
+        prompts.append(prompt)
+        if issues and prompt.startswith("Review this draft:"):
+            return '[{"issue": "Off-brand opener", "location": "Intro", "fix": "Rewrite it."}]'
+        return draft_envelope
+
+    monkeypatch.setattr(BlogWriterAgent, "_call_text", fake_call)
+    return prompts
+
+
+def _only_prompt_starting(prompts: list[str], prefix: str) -> str:
+    """The one recorded prompt beginning with ``prefix``, or a failure naming what ran.
+
+    Guarded and exact for the same reason ``_suppression_line`` is: a regression that
+    stops a self-review step from running should say which step went missing, not index
+    silently into whichever prompt happens to sit at that position.
+    """
+    matches = [p for p in prompts if p.startswith(prefix)]
+    assert len(matches) == 1, (
+        f"expected exactly one prompt starting {prefix!r}, found {len(matches)} among "
+        f"{[p.splitlines()[0] for p in prompts]}"
+    )
+    return matches[0]
+
+
+def test_run_self_review_check_prompt_carries_stories_and_coverage(monkeypatch) -> None:
+    """The checker judges "was this story supplied?" — it must be handed the stories."""
+    prompts = _capture_self_review_prompts(monkeypatch)
+    make_writer_agent().run(
+        _writer_input(elicited_stories=STORIES, covered_sections=["Why it broke", "Intro"])
+    )
+
+    check_prompt = _only_prompt_starting(prompts, "Review this draft:")
+    assert STORIES in check_prompt
+    assert _suppression_line(check_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+
+
+def test_run_self_review_fix_prompt_carries_stories_and_coverage(monkeypatch) -> None:
+    """The rewrite is the step that can actually put a placeholder back, so it needs the
+    context most: it runs under the system prompt that mandates the placeholder."""
+    prompts = _capture_self_review_prompts(monkeypatch, issues=True)
+    make_writer_agent().run(
+        _writer_input(elicited_stories=STORIES, covered_sections=["Why it broke", "Intro"])
+    )
+
+    fix_prompt = _only_prompt_starting(prompts, "Fix ONLY these issues found during self-review")
+    assert STORIES in fix_prompt
+    assert _suppression_line(fix_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+
+
+def test_run_self_review_prompts_are_byte_identical_without_stories(monkeypatch) -> None:
+    """No stories, no context — and no change to either self-review prompt."""
+    baseline = _capture_self_review_prompts(monkeypatch, issues=True)
+    make_writer_agent().run(_writer_input())
+
+    with_coverage = _capture_self_review_prompts(monkeypatch, issues=True)
+    make_writer_agent().run(_writer_input(covered_sections=["Intro"]))
+
+    # Guarded, so a run that stopped reaching self-review could not make this vacuous.
+    _only_prompt_starting(baseline, "Fix ONLY these issues found during self-review")
+    assert with_coverage == baseline

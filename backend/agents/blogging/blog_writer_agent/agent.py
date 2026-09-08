@@ -129,6 +129,45 @@ def _classify_allowed_claims(allowed_claims: Optional[dict]) -> str:
     return _CLAIMS_POLICY_POPULATED if has_usable_claim else _CLAIMS_POLICY_RESTRICTIVE
 
 
+def _render_self_review_stories_context(
+    elicited_stories: Optional[str], covered_sections_section: str
+) -> str:
+    """The author's stories, plus any suppression block, as one self-review context block.
+
+    Self-review is the one rewrite that runs inside ``run()`` itself, between generation
+    and return, and it is the only writer prompt that can undo the draft prompt's work
+    before anything downstream sees the draft. Both of its LLM calls need this context to
+    be sound: ``SELF_REVIEW_PROMPT``'s first check flags first-person narrative "that
+    wasn't provided in the AUTHOR'S PERSONAL STORIES section" — unanswerable for a checker
+    that never receives that section, so every genuine story reads as fabricated — and the
+    fixer runs under ``WRITING_SYSTEM_PROMPT``, whose standing rule is to substitute an
+    ``[Author: ...]`` placeholder wherever no story was supplied.
+
+    Takes the suppression block already rendered for the draft prompt rather than
+    re-rendering it, so the two prompts cannot state different coverage.
+
+    Preconditions:
+        - ``elicited_stories`` is the author's stories blob, or ``None``/blank.
+        - ``covered_sections_section`` is ``_render_covered_sections_section``'s output
+          for this same input, or ``""``.
+    Postconditions:
+        - Returns ``""`` when ``elicited_stories`` is absent or blank, leaving every
+          self-review prompt byte-identical to one built without this context. The
+          suppression block never travels without the stories it refers to — the same
+          safety gate the renderer itself applies.
+        - Otherwise returns the stories under the bare ``AUTHOR'S PERSONAL STORIES:``
+          heading (the form ``build_revise_all_items_prompt`` already uses for non-
+          generation prompts), so the checker's reference to that section resolves,
+          followed by ``covered_sections_section`` when it is non-empty.
+    """
+    if not elicited_stories or not elicited_stories.strip():
+        return ""
+    block = "---\nAUTHOR'S PERSONAL STORIES:\n" + elicited_stories
+    if covered_sections_section:
+        block += "\n\n" + covered_sections_section
+    return block
+
+
 def _render_allowed_claims_section(allowed_claims: Optional[dict]) -> str:
     """Render allowed_claims.json content as a prompt section, or "" when no artifact
     was supplied at all.
@@ -565,7 +604,11 @@ class BlogWriterAgent(_BlogAgentBase):
         return self_review.deterministic_self_check(draft)
 
     def _fix_deterministic_violations(
-        self, draft: str, violations: list[str], allowed_claims_section: str = ""
+        self,
+        draft: str,
+        violations: list[str],
+        allowed_claims_section: str = "",
+        stories_section: str = "",
     ) -> str:
         """Call LLM once to fix deterministic violations. Returns cleaned draft.
 
@@ -577,10 +620,15 @@ class BlogWriterAgent(_BlogAgentBase):
             - ``violations`` is a list of human-readable violation strings (may be empty).
             - ``allowed_claims_section`` is an already-rendered allowed-claims prompt
               block (e.g. via ``_render_allowed_claims_section``), or ``""``.
+            - ``stories_section`` is an already-rendered author-stories context (e.g. via
+              ``_render_self_review_stories_context``), or ``""``.
         Postconditions:
             - On success with extractable fixed draft, returns that stripped draft.
             - When ``allowed_claims_section`` is non-empty, the fix prompt instructs
               the model to preserve existing ``[CLAIM:id]`` tags.
+            - When ``stories_section`` is non-empty, the fix prompt carries the author's
+              stories, so this rewrite cannot mistake one for an unsupported story and
+              replace it with an ``[Author: ...]`` placeholder.
             - On soft-fail (``LLMError`` excluding types re-raised below, or
               ``json.JSONDecodeError`` / ``TypeError`` / ``ValueError`` / ``AttributeError``),
               logs with traceback via ``logger.exception`` and returns the original ``draft``.
@@ -589,10 +637,12 @@ class BlogWriterAgent(_BlogAgentBase):
             - Unexpected exceptions propagate unchanged.
         """
         return self_review.fix_deterministic_violations(
-            draft, violations, self._call_text, allowed_claims_section
+            draft, violations, self._call_text, allowed_claims_section, stories_section
         )
 
-    def _llm_self_review(self, draft: str, allowed_claims_section: str = "") -> str:
+    def _llm_self_review(
+        self, draft: str, allowed_claims_section: str = "", stories_section: str = ""
+    ) -> str:
         """Run a focused LLM self-review for subjective violations. Returns cleaned draft.
 
         Delegates to ``self_review.llm_self_review``, passing ``self._call_text``
@@ -620,9 +670,13 @@ class BlogWriterAgent(_BlogAgentBase):
               ``EventLoopException``) propagate as the unwrapped cause.
             - Unexpected exceptions propagate unchanged.
         """
-        return self_review.llm_self_review(draft, self._call_text, allowed_claims_section)
+        return self_review.llm_self_review(
+            draft, self._call_text, allowed_claims_section, stories_section
+        )
 
-    def _self_review(self, draft: str, allowed_claims_section: str = "") -> str:
+    def _self_review(
+        self, draft: str, allowed_claims_section: str = "", stories_section: str = ""
+    ) -> str:
         """Run deterministic check then LLM self-review. Returns cleaned draft.
 
         Orchestrates the delegating methods above (``_fix_deterministic_violations``
@@ -635,6 +689,12 @@ class BlogWriterAgent(_BlogAgentBase):
         unchanged to both sub-steps so a mechanical or subjective rewrite cannot
         silently drop or corrupt ``[CLAIM:id]`` tagging.
 
+        ``stories_section`` is an already-rendered author-stories context (e.g. via
+        ``_render_self_review_stories_context``), or ``""``; forwarded unchanged to
+        both sub-steps for the same reason in the other direction — neither rewrite
+        can replace an author-supplied story with an ``[Author: ...]`` placeholder,
+        which would undo the draft prompt's suppression before the draft is returned.
+
         Both sub-steps (``_fix_deterministic_violations``, ``_llm_self_review``)
         already return the original draft on their own soft-fail paths, so this
         method has no additional failure handling of its own.
@@ -643,10 +703,12 @@ class BlogWriterAgent(_BlogAgentBase):
         violations = self._deterministic_self_check(draft)
         if violations:
             logger.info("Deterministic self-check found %s violation(s)", len(violations))
-            draft = self._fix_deterministic_violations(draft, violations, allowed_claims_section)
+            draft = self._fix_deterministic_violations(
+                draft, violations, allowed_claims_section, stories_section
+            )
 
         # Step 2: LLM self-review for subjective issues
-        draft = self._llm_self_review(draft, allowed_claims_section)
+        draft = self._llm_self_review(draft, allowed_claims_section, stories_section)
 
         return draft
 
@@ -693,6 +755,18 @@ class BlogWriterAgent(_BlogAgentBase):
               entry non-string, empty, or whitespace-only), and also whenever
               ``elicited_stories`` is absent or blank, so the prompt never claims a
               story it did not also supply.
+            - The same stories, plus that suppression section, are passed to
+              ``_self_review`` via ``_render_self_review_stories_context``, so the
+              deterministic-fix and LLM-self-review rewrite passes that may run after
+              generation cannot undo the suppression before this method returns. Both
+              passes rewrite under ``WRITING_SYSTEM_PROMPT``, whose standing rule is to
+              substitute an ``[Author: ...]`` placeholder wherever no story was supplied,
+              and the self-review checker is asked to flag first-person narrative "not
+              from the AUTHOR'S PERSONAL STORIES section" — so without the stories a
+              genuine, author-supplied story reads as fabricated and can be replaced by
+              the very placeholder the draft prompt suppressed. When
+              ``elicited_stories`` is absent or blank the context is ``""`` and every
+              self-review prompt is byte-identical to one built without it.
             - The suppression section narrows placeholder emission and nothing else.
               The quality checklist's two "NEVER fabricate" clauses and its FINAL
               CHECK scan are emitted unchanged for every input, and continue to
@@ -766,6 +840,11 @@ class BlogWriterAgent(_BlogAgentBase):
         if covered_sections_section:
             prompt_parts.append("")
             prompt_parts.append(covered_sections_section)
+        # Built from the block just rendered, not a second render: self-review must state
+        # the same coverage the draft prompt did.
+        stories_context = _render_self_review_stories_context(
+            draft_input.elicited_stories, covered_sections_section
+        )
         claims_section = _render_allowed_claims_section(draft_input.allowed_claims)
         if claims_section:
             prompt_parts.append("")
@@ -869,7 +948,7 @@ class BlogWriterAgent(_BlogAgentBase):
         if draft != _PLACEHOLDER_DRAFT:
             if on_llm_request:
                 on_llm_request("Running self-review...")
-            draft = self._self_review(draft, claims_section)
+            draft = self._self_review(draft, claims_section, stories_context)
         if draft_output_path:
             _write_draft_to_path(draft, draft_output_path)
         return WriterOutput(draft=draft)
