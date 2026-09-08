@@ -2,12 +2,14 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Decided and implemented — the decision below is settled and the tasks were carried out in the companion implementation change; this document is the record of what was changed and why, not a work item |
+| **Status** | Decided; tasks carried out on the companion implementation branch `claude/github-issue-7455-impl-bzg4rs`, which lands separately. This document is the record of what was decided and changed, not a work item — but see the note directly below before reading it against this tree |
 | **Created** | 2026-09-08 |
 | **Scope** | Eight files — see the File map. Production code: `planning_team/temporal/answer_signal.py`, `software_engineering_team/temporal/activities.py`, and `software_engineering_team/api/models.py` + `api/state.py` (the status surface, without which the audit record never leaves the job store) |
 | **Supersedes** | Nothing. Corrects two stale claims in `planning_hitl_temporal_contract.md` (see Task 3) |
 
-The task checkboxes below are kept, and checked, to show the order the work was actually done in. Read them as a record of execution rather than as outstanding work.
+The task checkboxes below are kept, and checked, to show the order the work was actually done in. Read them as a record of execution rather than as outstanding work — and read the prose sections the same way, including "Read the priority accordingly" below, which is written in the present tense of the decision rather than of this reading.
+
+> **If you are reading this in a tree where the code does not match:** that is merge ordering, not a missing implementation. The record and the code land as two changes against the same base — this document plus its index row, and the implementation on `claude/github-issue-7455-impl-bzg4rs` — and either can merge first. Until the implementation lands, `answer_signal.py` has no `on_defaulted` parameter, `JobStatusResponse` has no `defaulted_questions` field, and the SPEC-024 addendum this record describes does not exist. **Do not build against them from this document alone**; confirm against the tree you are working in.
 
 **Goal:** Close out the `Callable[[list], list]` answer-callback adapter over the durable Planning HITL primitive by reconciling its one divergence from the story contract — the exhausted-budget default path — rather than rebuilding an adapter that already ships.
 
@@ -58,7 +60,7 @@ Two secondary facts that change the shape of the remaining work:
    called**: no pause is ever raised, the bounded loop never iterates, and the terminal default
    never fires. All of it is real, tested code on an unreachable path.
 
-**Read the priority accordingly.** This plan is pre-emptive hygiene on a dark path, not a live-bug
+**Read the priority accordingly.** This work was pre-emptive hygiene on a dark path, not a live-bug
 fix. Nothing in production is silently fabricating Planning answers today, because nothing in
 production reaches the code that could. The argument for doing it *now* is sequencing: the
 observability gap is far cheaper to close while the path is dark than after someone flips
@@ -66,7 +68,7 @@ observability gap is far cheaper to close while the path is dark than after some
 not this plan's work and not its call — but no one should read this document as describing
 behaviour users are experiencing.
 
-So the remaining work is a **contract reconciliation plus one observability gap**, not a build.
+So the work this record covers was a **contract reconciliation plus one observability gap**, not a build.
 
 ### Two live signal names, and neither is the one the governing spec mandates
 
