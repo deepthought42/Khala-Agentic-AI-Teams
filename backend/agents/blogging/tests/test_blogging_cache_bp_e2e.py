@@ -66,6 +66,10 @@ def _cache_marked(system: Any) -> List[dict]:
 
 
 def _writer_input(**overrides: Any) -> WriterInput:
+    """Canonical minimal ``WriterInput`` for the wire tests: a one-section
+    content plan with a fixed audience/tone, so ``run()`` has a non-empty
+    outline to draft from without any test needing to build its own
+    ``ContentPlan``. ``overrides`` replaces any of these defaults."""
     plan = make_content_plan(
         overarching_topic="Topic",
         narrative_flow="flow",
@@ -78,6 +82,7 @@ def _writer_input(**overrides: Any) -> WriterInput:
 
 
 def _approving_reply(summary: str) -> str:
+    """Copy-editor JSON reply: approved, the given summary, no feedback items."""
     return json.dumps({"approved": True, "summary": summary, "feedback_items": []})
 
 
@@ -189,7 +194,9 @@ def test_marked_segment_byte_identical_across_two_copy_edit_iterations() -> None
     assert len(fake_messages.captured_calls) == 2
     system_1 = fake_messages.captured_calls[0]["system"]
     system_2 = fake_messages.captured_calls[1]["system"]
-    assert system_1 == system_2, "marked segment must be byte-identical across iterations"
+    assert system_1 == system_2, (
+        "system payload (and therefore the marked segment) must be byte-identical across iterations"
+    )
     assert len(_cache_marked(system_1)) == 1
 
     user_1 = fake_messages.captured_calls[0]["messages"][-1]["content"]
@@ -334,6 +341,16 @@ def test_user_turn_no_longer_carries_guideline_text(monkeypatch) -> None:
     brand_text = BRAND_SPEC_PROMPT_PATH.read_text(encoding="utf-8")
     style_text = STYLE_GUIDE_PATH.read_text(encoding="utf-8")
     combined_size = len(brand_text) + len(style_text)
+
+    # Guard the literal anchor sentences asserted on below against the docs
+    # having been reworded: if either fails here, the anchor text (not the
+    # segment/draft-prompt assertions further down) is what needs updating --
+    # a failure down there alone wouldn't distinguish "guideline text is
+    # missing from the segment" from "the doc's wording just changed".
+    assert "Use these rules for every piece of content." in style_text
+    assert (
+        "Use it as a reference when generating content, communications, social posts" in brand_text
+    )
 
     class _PromptCapturingLLM(DummyLLMClient):
         """Captures every user-turn prompt handed to the LLM client."""
