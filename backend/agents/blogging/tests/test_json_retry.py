@@ -399,12 +399,13 @@ def test_run_json_gate_wrapper_without_an_original_is_raised_intact(monkeypatch)
 
 
 def test_run_json_gate_wrapper_without_an_original_reaches_fallback_as_itself(monkeypatch):
-    """A fallback hook receives the wrapper, not ``None``.
+    """``fallback_builder`` receives the wrapper, not ``None``.
 
-    ``fallback_builder``/``on_unexpected_error`` are typed to take an
-    ``Exception`` and every blogging gate stringifies it into its fallback
-    payload, so handing them ``None`` would silently degrade the recorded
-    failure to the string ``"None"``.
+    It is typed to take an ``Exception`` and every blogging gate stringifies it
+    into its fallback payload, so handing it ``None`` would silently degrade
+    the recorded failure to the string ``"None"``. The sibling test below
+    covers the same for an explicit ``on_unexpected_error``, which
+    ``run_json_gate`` substitutes for ``fallback_builder`` on this path.
     """
     wrapper = EventLoopException(None)
     factory = _FakeStrandsAgentFactory([wrapper])
@@ -418,6 +419,32 @@ def test_run_json_gate_wrapper_without_an_original_reaches_fallback_as_itself(mo
     data = run_json_gate("model", "system", "prompt", fallback_builder=fallback_builder)
 
     assert data == {"fallback": True}
+    assert received == [wrapper]
+
+
+def test_run_json_gate_wrapper_without_an_original_reaches_on_unexpected_error(monkeypatch):
+    """``on_unexpected_error`` receives the wrapper too, not ``None``.
+
+    ``call_json_with_retry`` hands the same classified ``cause`` to whichever
+    hook is in play, so the guarantee above has to hold for the explicit hook
+    as well as for the ``fallback_builder`` that stands in for it. The two are
+    exercised separately rather than in one call: ``run_json_gate`` passes
+    ``on_unexpected_error if on_unexpected_error is not None else
+    fallback_builder``, so supplying both would leave ``fallback_builder``
+    uncalled on this path and prove nothing about it.
+    """
+    wrapper = EventLoopException(None)
+    factory = _FakeStrandsAgentFactory([wrapper])
+    monkeypatch.setattr(json_retry_module, "Agent", factory)
+    received = []
+
+    def on_unexpected_error(exc):
+        received.append(exc)
+        return {"unexpected": True}
+
+    data = run_json_gate("model", "system", "prompt", on_unexpected_error=on_unexpected_error)
+
+    assert data == {"unexpected": True}
     assert received == [wrapper]
 
 
