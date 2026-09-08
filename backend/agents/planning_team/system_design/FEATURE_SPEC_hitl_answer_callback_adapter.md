@@ -100,13 +100,15 @@ Two consequences bind this plan:
 
 ---
 
-## The one open decision
+## The decision: Option A (settled 2026-09-08)
 
 The story's contract says the adapter never fabricates. The shipped adapter fabricates exactly once
-per run, on an explicitly-bounded final round, and announces it only to a worker log. Something has
+per run, on an explicitly-bounded final round, and announces it only to a worker log. Something had
 to give.
 
-**Recommended — Option A: keep the bounded default, make it auditable, amend the criterion.**
+**Decided — Option A: keep the bounded default, make it auditable, amend the criterion.** This is
+no longer an open question; the tasks below implement it. Option B is recorded only so the
+reasoning behind the choice survives, not as a live alternative.
 
 "Never fabricate" was written before it was established that Planning's question ids do not survive
 a replay. Given that they don't, the choice on the final round is not *guess vs. wait*; it is
@@ -123,7 +125,7 @@ invariant that is actually true and actually worth holding —
 > round the caller has explicitly declared terminal, and every defaulted question is reported to the
 > caller for persistence.
 
-**Rejected — Option B: strict compliance.** Remove `_default_answer`, and have the terminal round
+**Not taken — Option B: strict compliance.** Remove `_default_answer`, and have the terminal round
 fail the run with an "unanswered clarification questions" error. It never guesses, which is
 honest. But `MAX_PLANNING_PAUSE_ROUNDS` is reached only when ids drift — a Planning-side
 nondeterminism problem — and Option B bills that to the user as a hard failure after eight rounds of
@@ -131,10 +133,12 @@ answering questions by hand. Trading a degraded-but-labelled plan for a dead job
 here. It also requires unwinding `RunTeamWorkflowV2`'s termination invariant and the activity-side
 `allow_repause` contract, which is a materially larger change than the story is scoped for.
 
-**If the reviewer picks Option B instead,** Tasks 2 and 4 below are replaced by: delete
+Had Option B been chosen, Tasks 2 and 4 would have been replaced by: delete
 `_default_answer`/`_option_confidence` and their six tests, make the terminal round raise a
 dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants block and its
-`MAX_PLANNING_PAUSE_ROUNDS` rationale comment. Task 1 and Task 3 apply unchanged either way.
+`MAX_PLANNING_PAUSE_ROUNDS` rationale comment. Recorded here so a future reader can tell this was
+weighed and declined rather than never considered — reopening it would be a new decision, not a
+resumption of this one. **Implement the tasks below as written.**
 
 ---
 
