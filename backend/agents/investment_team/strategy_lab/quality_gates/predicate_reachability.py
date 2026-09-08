@@ -277,12 +277,14 @@ class _RuleStarvation:
     (``modes/paper_trade.py``), and those bars short-circuit before
     ``engine_entries.maybe_emit``. How much of the head start survives there
     is a property of the run, not of the spec: a prime long enough to warm the
-    earlier rules (see ``PaperTradeConfig.warmup_bars`` for the default) leaves
-    the later rule shadowed on every executable bar and fully starved, while a
-    shorter prime — the API permits ``warmup_bars=0``, and ``LiveStream._warmup``
-    also skips priming when the provider cannot serve the strategy timeframe —
-    keeps the earlier rules warming up into live bars, where the later rule can
-    still be selected. The probe has no paper-trade context at synthesis time
+    earlier rules (see ``PaperTradeConfig.warmup_bars`` for the default) removes
+    the head start altogether, while a shorter prime — the API permits
+    ``warmup_bars=0``, and ``LiveStream._warmup`` also skips priming when the
+    provider cannot serve the strategy timeframe — carries part of it into live
+    bars, where the later rule keeps winning until the earlier rules warm.
+    Removing the head start is as far as priming goes: warm is not satisfied,
+    and whether an earlier rule actually takes a given live bar is its
+    predicate's business on data this probe has not seen. The probe has no paper-trade context at synthesis time
     and does not guess at one; the ``"warmup_only"`` finding instead scopes its
     count to this backtest and states that dependency rather than declaring any
     single paper outcome. It deliberately quotes no prime length: that default
@@ -356,18 +358,21 @@ class _RuleStarvation:
 
         A prefix bar is excluded from :attr:`evaluated` because *some* earlier
         rule is warming and so cannot be asked whether it would have covered
-        the fire. That uncertainty evaporates when a DIFFERENT earlier rule is
-        satisfied there: ``evaluate_entry_rules`` returns that rule, the
-        warming one is not in the running, and this rule is not selected —
-        settled, whatever the warming rule would eventually have done. Counting
+        the fire. That uncertainty evaporates two ways. A DIFFERENT earlier
+        rule satisfied there settles it: ``evaluate_entry_rules`` returns that
+        rule, the warming one is not in the running, and this rule is not
+        selected. So does this rule simply not firing — there is then no fire
+        for the warming rule to have covered, and the question the exclusion
+        protects never arises. Both are settled whatever the warming rule would
+        eventually have done, and both count. Counting
         those bars keeps an earlier rule that never finishes warming up over
         the whole window (a lookback longer than the data) from collapsing
         ``evaluated`` to zero and abstaining on a rule the same window shows
         shadowed on every fire.
 
-        Bars where no earlier rule is satisfied stay out: there the warming
-        rule's eventual verdict is exactly what would decide the bar, so it is
-        genuinely unjudged. This is a window-coverage floor, not an evidence
+        Bars where this rule fires and no earlier rule is satisfied stay out:
+        there the warming rule's eventual verdict is exactly what would decide
+        the bar, so it is genuinely unjudged. This is a window-coverage floor, not an evidence
         floor — ``_MIN_STARVATION_FIRES`` is what guards the starvation claim
         itself, so a short window still abstains here even when every one of
         its few bars is conclusive.
@@ -442,14 +447,19 @@ class _RuleStarvation:
             rule selected" about a rule this same window selects.
           * ``"warmup_only"`` — never independent in the steady-state window,
             but fires on at least one warmup-prefix bar where no earlier rule
-            is satisfied, AND has at least one covered fire. ``evaluate_entry_rules``
-            DOES select it there, so it is neither starved (it is still the
-            rule selected there — subject to the selection-vs-order caveat on
-            this class) nor plainly reachable (it stops being selected once the
-            earlier rules warm up). The covered fire is what makes that second
-            half a priority claim at all: it shows the rule still firing on a
-            bar an earlier rule takes. With none, the head start ends because
-            the rule stopped firing, and the rung above owns it.
+            is satisfied, AND fires at least once in the steady-state window.
+            ``evaluate_entry_rules`` DOES select it there, so it is neither
+            starved (it is still the rule selected there — subject to the
+            selection-vs-order caveat on this class) nor plainly reachable (it
+            stops being selected once the earlier rules warm up). The
+            steady-state fire is what makes that second half a priority claim
+            at all: with ``independent_fires`` already zero, it is a fire an
+            earlier rule took on a bar where every earlier rule was warm. The
+            test reads :attr:`fires` rather than :attr:`covered_fires` because
+            the latter spans the prefix too, and a fire an earlier rule took
+            BEFORE the earlier rules warmed up says nothing about what happens
+            after. With no steady-state fire the head start ends because the
+            rule stopped firing, and the rung above owns it.
           * ``"dead"`` — :attr:`covered_fires` is zero, so with the two rungs
             above ruled out the rule has no fire of any kind. Already reported
             once, per rule, by
@@ -481,7 +491,7 @@ class _RuleStarvation:
         if self.warmup_independent_fires > 0:
             if self.evaluated < _MIN_EVALUATED_BARS:
                 return "abstained_steady"
-            if self.covered_fires == 0:
+            if self.fires == 0:
                 return "reachable"
             return "warmup_only"
         if self.covered_fires == 0:
@@ -658,17 +668,20 @@ def _starvation_verdicts(
                 continue
             if any_earlier_warmup[k]:
                 hits = earlier_hits[k]
-                if hits:
-                    # Coverage is settled here despite the warming rule: it
-                    # cannot win the bar, and a satisfied earlier rule does.
+                if status != "satisfied":
+                    # No fire, so there is nothing the warming rule could have
+                    # covered: settled whatever it eventually does.
                     warmup_conclusive_bars += 1
-                if status == "satisfied":
-                    if hits:
-                        warmup_covered_fires += 1
-                        for index in hits:
-                            warmup_covered[index] = warmup_covered.get(index, 0) + 1
-                    else:
-                        warmup_independent_fires += 1
+                    continue
+                if hits:
+                    # Settled despite the warming rule: it cannot win the bar,
+                    # and a satisfied earlier rule does.
+                    warmup_conclusive_bars += 1
+                    warmup_covered_fires += 1
+                    for index in hits:
+                        warmup_covered[index] = warmup_covered.get(index, 0) + 1
+                else:
+                    warmup_independent_fires += 1
                 continue
             evaluated += 1
             if status != "satisfied":
@@ -1044,11 +1057,11 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         )
                     )
                 elif kind == "warmup_only":
+                    # The rung requires a steady-state fire and zero independent
+                    # ones, so there is always a fire here and always a coverer.
                     steady_state = (
                         f"it fires {v.fires} time(s), every one of them also covered by an "
                         f"earlier rule ({_coverage_text(v.coverage)})"
-                        if v.fires
-                        else "it never fires at all"
                     )
                     detail = (
                         f"Entry rule {rule_id} (side={v.side}) is selectable only while an "
@@ -1064,10 +1077,12 @@ class PredicateReachabilityProbe(GateResultsMixin):
                         "edge either way. How much of that "
                         "head start survives a paper run depends on the run's priming: paper "
                         "trading suppresses entries across its warm-up prefix, so a prime long "
-                        "enough to warm the earlier rules leaves this rule shadowed on every "
-                        "executable bar and fully starved, while a shorter or disabled prime "
-                        "carries part of the head start into live bars. Treat it as starved "
-                        "wherever it actually has to trade: fold its "
+                        "enough to warm the earlier rules removes the head start altogether, "
+                        "while a shorter or disabled prime carries part of it into live bars. "
+                        "Priming only warms the earlier rules — whether one of them is "
+                        "satisfied on any given live bar is its predicate's business, not "
+                        "something this window settles — so plan for the head start not being "
+                        "there: fold its "
                         "conditions into the earlier rule's all_of, list it BEFORE the broader "
                         "rule if it is the intended higher priority, or loosen it so it can fire "
                         "where the earlier rules don't."

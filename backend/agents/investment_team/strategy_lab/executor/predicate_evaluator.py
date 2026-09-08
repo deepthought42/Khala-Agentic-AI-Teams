@@ -307,12 +307,14 @@ def evaluate_entry_rules(
         zero — so "selected" does not promise an order.) That entry-eligibility
         is mode-specific: paper trading primes from a prefix emitted with
         ``is_warmup=True``, which short-circuits before the engine's entry
-        dispatch, so a prime long enough to warm the earlier rules starves the
-        later rule outright once it has to trade live, while a shorter or
+        dispatch, so a prime long enough to warm the earlier rules removes the
+        head start once the strategy has to trade live, while a shorter or
         disabled prime leaves the earlier rules warming up into live bars,
-        where the later rule can still be selected. The probe reports this case
-        as its own lesser finding, worded to name that dependency, rather than
-        folding it into either verdict.
+        where the later rule keeps it. Warm is not satisfied, so what happens
+        past the head start is whatever the earlier rules' predicates do on
+        those bars. The probe reports this case as its own lesser finding,
+        worded to name that dependency, rather than folding it into either
+        verdict.
 
         Like "dead"/"reachable", "structurally starved" is a per-dataset,
         data-dependent verdict — the same spec can be starved on one fetched

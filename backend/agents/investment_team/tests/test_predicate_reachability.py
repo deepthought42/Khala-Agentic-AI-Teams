@@ -752,9 +752,15 @@ def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_tr
     assert "in THIS backtest" in detail
     assert "depends on the run's priming" in detail
     assert "shorter or disabled prime" in detail
-    assert "Treat it as starved wherever it actually has to trade" in detail
-    # Never restate the paper case as an absolute in either direction.
+    assert "plan for the head start not being there" in detail
+    # Never restate the paper case as an absolute in either direction. Priming
+    # warms the earlier rules; whether one is SATISFIED on a live bar is its
+    # predicate's business, so a long prime removes the head start rather than
+    # guaranteeing starvation on bars this window never saw.
     assert "does not survive paper trading" not in detail
+    assert "shadowed on every executable bar" not in detail
+    assert "fully starved" not in detail
+    assert "whether one of them is satisfied on any given live bar" in detail
 
 
 def test_warmup_only_finding_claims_selection_not_a_filled_order() -> None:
@@ -825,7 +831,11 @@ def test_warmup_only_steady_state_clause_uses_steady_state_coverage_only() -> No
     assert "entry[1]" not in detail  # a prefix-only coverer never enters this clause
 
 
-def test_warmup_only_finding_reads_never_fires_when_the_steady_window_is_empty() -> None:
+def test_a_prefix_covered_fire_does_not_qualify_the_head_start_as_shadowing() -> None:
+    # A fire an earlier rule took BEFORE the earlier rules warmed up says
+    # nothing about what happens after: the rule still stopped firing on its
+    # own. covered_fires spans both windows, so gating on it let one such fire
+    # buy the whole warmup_only narrative; the gate reads steady-state fires.
     verdict = _RuleStarvation(
         rule_index=1,
         side="long",
@@ -839,12 +849,30 @@ def test_warmup_only_finding_reads_never_fires_when_the_steady_window_is_empty()
         warmup_coverage=((0, 3),),
         warmup_conclusive_bars=3,
     )
-    results = PredicateReachabilityProbe().to_starvation_gate_results(
-        [verdict], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+    assert verdict.covered_fires == 3
+    assert verdict.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [verdict], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
     )
-    assert [r.severity for r in results] == ["warning"]
-    assert "it never fires at all" in results[0].details
-    assert "covers" not in results[0].details
+
+
+def test_a_prefix_bar_the_rule_misses_on_is_judged_too() -> None:
+    # entry[0] never finishes warming, so every bar is a prefix bar. entry[1]
+    # covers all five of entry[2]'s fires; entry[2] then misses on 100 bars.
+    # A bar it misses has no fire for the warming rule to have covered, so the
+    # question the exclusion protects never arises there and the window is not
+    # five bars wide — it is 105.
+    v = _verdict(
+        ["satisfied"] * 5 + ["miss"] * 100,
+        ["warmup"] * 105,
+        ["satisfied"] * 5 + ["miss"] * 100,
+    )
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 105, 105)
+    assert (v.covered_fires, v.warmup_coverage) == (5, ((1, 5),))
+    assert v.verdict == "starved"
 
 
 def test_check_starvation_convenience_wraps_probe_and_format() -> None:
@@ -1116,7 +1144,7 @@ def test_bar_abstention_reports_the_count_its_floor_reads() -> None:
         ["warmup"] * 5 + ["satisfied"] * 10,
         _pattern(15, range(0, 3)),
     )
-    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (10, 3, 13)
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (10, 5, 15)
     assert v.verdict == "abstained_bars"
     detail = (
         PredicateReachabilityProbe()
