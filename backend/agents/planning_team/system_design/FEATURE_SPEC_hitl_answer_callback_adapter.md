@@ -49,6 +49,36 @@ Two secondary facts that change the shape of the remaining work:
 
 So the remaining work is a **contract reconciliation plus one observability gap**, not a build.
 
+### Two live signal names, and neither is the one the governing spec mandates
+
+Establish this before reading the constraints below, because it is easy to get wrong — this
+document got it wrong in its first draft. Three registrations of the same Planning-HITL concept
+exist:
+
+| Registration | Signal name | State |
+|---|---|---|
+| `RunTeamWorkflowV2` (SE team) via `PlanningAnswerSignalMixin` | `submit_planning_answers` | **Live** — drives the Phase 2 pause loop; `software_engineering_team/api/routes/hitl.py::submit_pending_answers` signals this name |
+| `PlanningWorkflow` (Planning team) via `HitlAnswerSignalMixin` | `submit_answers` | **Dormant** — registered, but `run()` never awaits `wait_for_answers`, so no phase arms a pause |
+| SPEC-024 §4.1 (repo-root governing spec) | `submit_answers` + a `selected_option_ids` payload extension | **Unimplemented** — `shared/hitl/models.py::AnswerSubmission` still carries only `question_id`/`selected_option_id`/`other_text` |
+
+Two consequences bind this plan:
+
+1. **The shipped wire contract is not the spec's.** SPEC-024 §4.1 mandates
+   `@workflow.signal(name="submit_answers")` — with an explicit "why the same name" rationale that
+   names `RunTeamWorkflowV2` as the shared-host case — plus the plural `selected_option_ids` field
+   for `allow_multiple=True` questions. Neither shipped. An implementer who wires an answers route
+   from §4.1 would signal `submit_answers` at a workflow registering only
+   `submit_planning_answers`: Temporal records the signal and delivers it to no handler, the
+   silent-undeliverable failure §4.3 itself warns about. Task 3 Step 5 writes that divergence down
+   so the next implementer cannot walk into it.
+2. **`PlanningAnswerSignalMixin` is scheduled for convergence.**
+   `shared/hitl/temporal_signal.py` is the shared extraction of the identical handler, buffer
+   rules, and wait half; its own docstring records that reconciling the team-local mixin is
+   deferred, and hard-forbids composing both on one class (identical private attribute names would
+   alias the two signal contracts). Building the `on_defaulted` hook into that mixin would put new
+   capability in a file the tracked migration rewrites. It goes on the adapter instead — see the
+   constraints.
+
 ---
 
 ## The one open decision
@@ -99,8 +129,16 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 - No behaviour change to thread mode's `_build_planning_answer_callback`
 - The adapter stays PRA-agnostic: it reports defaults, it does not persist them. Job-record writes
   belong to the activity layer.
-- No change to the signal name or payload shape fixed by the spec (`submit_planning_answers`,
-  `{"resume_token": str, "answers": list}`)
+- No change to the signal name or payload shape **as shipped** — `submit_planning_answers` with
+  `{"resume_token": str, "answers": list}`, fixed by the team-local contract and
+  `answer_signal.py`, *not* by SPEC-024. See "Two live signal names" above: the repo-root spec
+  mandates a different contract, and this plan deliberately does not close that gap.
+- Do not extend `PlanningAnswerSignalMixin` or its state machine. `shared/hitl/temporal_signal.py`'s
+  `HitlAnswerSignalMixin` is the sanctioned shared extraction of that same signal/wait machinery
+  (SPEC-024 §4.2's mandatory-extraction decision), and reconciling the team-local mixin onto it is
+  tracked follow-up work. New capability here belongs on the **adapter** layer
+  (`build_temporal_planning_answer_callback`), which has no shared counterpart and survives that
+  migration untouched — not on the signal/wait state machine, which does not.
 
 ## File map
 
@@ -108,10 +146,10 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 |---|---|
 | `backend/agents/planning_team/temporal/answer_signal.py` | Add an optional `on_defaulted` reporting hook to `build_temporal_planning_answer_callback`; update the factory's Postconditions |
 | `backend/agents/software_engineering_team/temporal/activities.py` | Wire `on_defaulted` in `plan_project_activity` to an `update_job(job_id, defaulted_questions=[...])` write |
-| `backend/agents/planning_team/tests/test_temporal_answer_signal.py` | Tests for the hook: fired with the defaulted ids on a terminal round, not fired on a resolving or re-pausing round, a raising hook does not corrupt the return |
+| `backend/agents/planning_team/tests/test_temporal_answer_signal.py` | Tests for the hook: fired with the defaulted ids on a terminal round, not fired on a resolving or re-pausing round, a raising hook propagates rather than being swallowed |
 | `backend/agents/software_engineering_team/tests/test_temporal_activities.py` | Assert the terminal round persists `defaulted_questions` on the job record |
 | `backend/agents/planning_team/system_design/planning_hitl_temporal_contract.md` | Correct the two stale claims; document the terminal-round default and the reporting hook |
-| `system_design/specs/SPEC-024-planning-team-clarification-hitl-contract.md` | Append an addendum recording the bounded-default amendment to the never-fabricate rule |
+| `system_design/specs/SPEC-024-planning-team-clarification-hitl-contract.md` | Append an addendum recording two amendments: the bounded-default exception to the never-fabricate rule, and the §4.1 wire-contract divergence (`submit_planning_answers` shipped, `selected_option_ids` did not) |
 
 ---
 
@@ -140,7 +178,7 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
     fails silently reintroduces the invisible-default bug this task exists to close
   - a non-callable `on_defaulted` fails the factory's assertion, matching how `next_resume_token`
     is already validated at construction rather than at the call site
-- [ ] **Step 2:** Add the parameter and the assertion; call the hook in `_resolved_cb` immediately before returning the defaulted list, after the existing `logger.warning`.
+- [ ] **Step 2:** Add the parameter and the assertion; call the hook in `_resolved_cb` immediately before returning the defaulted list, after the existing `logger.warning`. Keep every line of this change inside `build_temporal_planning_answer_callback` — do not touch `PlanningAnswerSignalMixin`. The adapter has no counterpart in `shared/hitl/temporal_signal.py`, so it survives the tracked mixin convergence; the state machine does not.
 - [ ] **Step 3:** Rewrite the factory docstring's `allow_repause=False` postcondition to state that defaults are reported to `on_defaulted` when supplied, and add an `Invariants:` line: the adapter never fabricates while another pause round remains.
 - [ ] **Step 4:** Re-run coverage; `answer_signal.py` stays at 100%.
 
@@ -154,6 +192,7 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 - [ ] **Step 2:** Rewrite the "PRA asks more than once" section. Its stated failure mode — the resolved callback returns `[]`, `_on_poll` treats that as "nothing to submit", the workflow never re-pauses — was closed by the re-pause path. It now raises a fresh `PlanningAnswerPauseSignal` on a new token. Keep the *reason* the section exists (multi-round PRA) and describe what actually happens.
 - [ ] **Step 3:** Document the terminal round: `allow_repause=False`, what `_default_answer` selects, its deliberate parity with `user_communication.get_default_option`, and where the defaults are now recorded.
 - [ ] **Step 4:** Append a dated addendum to the spec recording the amendment: the never-fabricate rule is bounded to non-terminal rounds, with the id-drift rationale and the reporting requirement that replaces it. Do not rewrite the original section — the addendum shows the decision changed and why.
+- [ ] **Step 5:** In the same addendum, record the wire-contract divergence from §4.1: the shipped signal name is `submit_planning_answers`, not `submit_answers`, and the `selected_option_ids` payload extension was not adopted. State the consequence plainly — a route wired from §4.1 as written signals a name no Planning-path workflow accepts — and point at the tracked convergence work rather than resolving it here. Also note that `PlanningWorkflow`'s `HitlAnswerSignalMixin` registration is dormant, so `submit_answers` has a handler on that workflow type but nothing arming a pause behind it. §4.1 is the section an implementer reads first; it must not send them into an undeliverable signal.
 
 ### Task 4: Persist the defaults where a human will see them
 
@@ -170,7 +209,15 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 
 ## Out of scope
 
-- The durable signal-wait mechanism itself (`PlanningAnswerSignalMixin`) — already merged and tested
+- The durable signal-wait mechanism itself (`PlanningAnswerSignalMixin`) — merged and tested, and
+  **not settled**: reconciling it onto `shared/hitl/temporal_signal.py`'s `HitlAnswerSignalMixin` is
+  tracked follow-up work that this plan neither performs nor blocks. Task 2 stays on the adapter
+  layer precisely so it survives that migration
+- Converging the three copies of this state machine (`CodingTeamWorkflow`'s inline one,
+  `PlanningAnswerSignalMixin`, and the shared `HitlAnswerSignalMixin`) onto one implementation
+- Closing the `submit_answers` / `submit_planning_answers` wire-contract divergence itself. Task 3
+  Step 5 only *records* it; adopting one name, and the `selected_option_ids` payload extension
+  SPEC-024 §4.1 requires, is its own story with a live-history migration to plan
 - Surfacing `defaulted_questions` in the Angular UI — a follow-on, and worth its own story: a plan
   built partly on machine-chosen answers should say so where the user reads the plan, not only in
   the job JSON
