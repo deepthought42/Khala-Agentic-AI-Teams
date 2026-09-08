@@ -211,8 +211,8 @@ class _PairCooccurrence:
 _StarvationVerdict = Literal[
     "abstained_bars",
     "abstained_steady",
-    "dead",
     "abstained_thin",
+    "dead",
     "starved",
     "warmup_only",
     "reachable",

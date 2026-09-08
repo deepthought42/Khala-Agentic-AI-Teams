@@ -777,7 +777,11 @@ class SynthesisMixin:
         been observed to rule out coincidence — an abstention below that floor
         is recorded as an ``info`` rather than dropped, and a rule whose only
         unshadowed fires land on the warmup prefix, where the engine really
-        does select it, is a ``warning`` rather than a critical).
+        does select it, is a ``warning`` rather than a critical — but only
+        where the window also shows a steady state past that prefix and the
+        rule still fires into it on bars an earlier rule takes; without either,
+        there is no priority claim to make and the probe abstains as an
+        ``info`` or stays silent).
         Findings never short-circuit the round — the post-backtest zero-trade
         path still owns routing.
         """
