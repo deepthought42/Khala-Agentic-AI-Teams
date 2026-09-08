@@ -10,6 +10,8 @@ Design documents for this team. The platform convention for this folder is:
 | `flow_charts.md` | Sequence and flow diagrams for every runtime path. |
 | `agent_anatomy.md` | Per-phase Input→Agent→Output diagrams and the coordinator/adapter seam (`AGENT_ANATOMY.md` conformance). |
 | `FEATURE_SPEC_<slug>.md` | Pre-implementation proposals for new user-facing features. |
+| `planning_hitl_temporal_contract.md` | The Temporal signal/wait + answer-callback primitive for clarification-question HITL. |
+| `FEATURE_SPEC_hitl_answer_callback_adapter.md` | Decision record for the answer-callback adapter's exhausted-budget default path and its never-fabricate contract — which is **bounded to non-terminal rounds**: the adapter does return system-chosen defaults on a caller-declared terminal round, and reports every one. Covers the options weighed and the one taken. |
 | `README.md` | This file — team-specific index of the documents above. |
 
 All diagrams use Mermaid. See `accessibility_audit_team`, `branding_team`,
