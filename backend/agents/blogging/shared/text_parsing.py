@@ -25,8 +25,13 @@ feed the index from ``enumerate(..., start=1)``, so no caller can produce a
 bool in practice — this is a precondition tightened, not a reachable
 behavior change.
 
-A related duplicate, ``_unwrap_event_loop_exception``, still exists in
-``shared/json_retry.py`` and is out of scope here.
+``shared/json_retry.py``'s ``_unwrap_event_loop_exception`` is not a second
+copy: it is a shim that calls ``unwrap_llm_cause`` and narrows the result to
+that module's ``Exception``-typed retry seam, holding no unwrap policy of its
+own. It previously returned ``original_exception`` unconditionally, so an
+``EventLoopException`` carrying no original yielded ``None`` — which
+``call_json_with_retry`` could only re-raise as ``TypeError``, losing the real
+failure. Delegating here makes the guard below canonical for both.
 """
 
 from __future__ import annotations

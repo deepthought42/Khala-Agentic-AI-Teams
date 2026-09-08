@@ -400,7 +400,11 @@ _GUARDED_HELPERS = frozenset(
         "format_feedback_item_line",
     }
 )
-_GUARDED_NAMES = _GUARDED_HELPERS | {f"_{name}" for name in _GUARDED_HELPERS}
+# ``json_retry`` reaches ``unwrap_llm_cause`` under a name of its own, so guard
+# that name too: without it the one place outside this module that is allowed
+# to answer for a shared helper would be the one place the guard cannot see.
+_GUARDED_ALIASES = frozenset({"_unwrap_event_loop_exception"})
+_GUARDED_NAMES = _GUARDED_HELPERS | {f"_{name}" for name in _GUARDED_HELPERS} | _GUARDED_ALIASES
 
 _CANONICAL_MODULE = Path(tp.__file__).resolve()
 _BLOGGING_ROOT = _CANONICAL_MODULE.parent.parent
@@ -414,6 +418,10 @@ _SANCTIONED_SHIMS = {
     # One-line delegation to text_parsing.format_feedback_item_line, kept as a
     # named method so existing monkeypatch-based tests keep their patch point.
     ("blog_writer_agent/agent.py", "_format_feedback_item_line"),
+    # Delegates to text_parsing.unwrap_llm_cause and narrows the result to
+    # call_json_with_retry's Exception -> Exception seam. Holds no unwrap
+    # policy of its own.
+    ("shared/json_retry.py", "_unwrap_event_loop_exception"),
 }
 
 
@@ -473,14 +481,24 @@ def test_no_module_outside_shared_text_parsing_reimplements_the_helpers() -> Non
 
     - The guard does not inspect bodies, so it does not check that the
       sanctioned shim forwards its arguments to the canonical helper. That is
-      behaviour, and belongs to ``BlogWriterAgent``'s own tests.
+      behaviour, and belongs to the shim owner's own tests --
+      ``BlogWriterAgent``'s for the writer method, and
+      ``test_json_retry.py``'s
+      ``test_unwrap_event_loop_exception_delegates_to_the_shared_helper`` for
+      the json_retry shim. An allowlist entry here says a name may exist, never
+      that what answers to it still delegates; without that paired test the
+      entry would pre-approve an inline policy regrowing at that exact name.
     - It does not detect a guarded name defined twice in one file. That is a
       Python redefinition, already reported by ruff's F811.
 
-    ``shared/json_retry.py``'s ``_unwrap_event_loop_exception`` is not matched
-    (different name) and is out of scope: it returns ``None`` where
-    ``unwrap_llm_cause`` returns the original exception, so the two are not
-    interchangeable.
+    ``shared/json_retry.py``'s ``_unwrap_event_loop_exception`` is sanctioned
+    rather than exempt. It once held its own unwrap — returning
+    ``original_exception`` unconditionally, so a wrapper carrying ``None``
+    yielded ``None`` where ``unwrap_llm_cause`` yields the wrapper — and the
+    fix is why the guard now watches that name: an unwatched name is free to
+    hold anything, while a watched one at least has to be argued for here. What
+    keeps it honest afterwards is the delegation test named above, not this
+    entry.
     """
     unsanctioned: list[str] = []
     seen: set[tuple[str, str]] = set()
