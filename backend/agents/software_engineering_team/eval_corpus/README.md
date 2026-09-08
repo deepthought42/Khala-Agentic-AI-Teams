@@ -151,10 +151,11 @@ diffs. Every substitution is recorded here rather than forced.
   commit's net squashed diff contains no `alert()` — the call had already been
   removed by `086a4894`, which is the commit that actually performs the
   substitution. `CASE-0012` is sourced from `086a4894`.
-- **`injection`, `CASE-0020`.** The plan cites `27691e3` for an f-string-
-  interpolated SQL table name. That commit hardened a fixed code literal that
-  was never attacker-controlled — defence in depth, not a vulnerability the
-  gates should have caught — so inverting it produces no exploitable defect.
+- **`injection`, `CASE-0020`.** The plan cites `27691e3` for an
+  f-string-interpolated SQL table name. That commit hardened a fixed code
+  literal that was never attacker-controlled — defence in depth, not a
+  vulnerability the gates should have caught — so inverting it produces no
+  exploitable defect.
   Every real SQL path in this codebase parameterizes its values, and no genuine
   injection fix exists in the history to source from, so `CASE-0020` is
   authored as an invented case with a request-reachable injection and marked

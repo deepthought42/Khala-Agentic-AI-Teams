@@ -16,11 +16,11 @@ new file mode 100644
 +    """Collect the reasons a ticket cannot be accepted.
 +
 +    Preconditions:
-+        * ``ticket`` is a mapping.
++        * ``ticket`` is a ``dict``.
 +    Postconditions:
 +        * Returns one message per failed check; empty when nothing failed.
 +    """
-+    assert isinstance(ticket, dict), "ticket must be a mapping"
++    assert isinstance(ticket, dict), "ticket must be a dict"
 +    problems: list[str] = []
 +    if not ticket.get("body"):
 +        problems.append("body is empty")
