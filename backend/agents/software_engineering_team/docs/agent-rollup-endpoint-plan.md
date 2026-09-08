@@ -192,6 +192,7 @@ does not. For the cost sum it can, and the plan says so rather than overclaiming
 | `median` | sorted midpoint, **averaging** the two middle values at even `n` | `percentile_cont(0.5)` — linear interpolation, which at the median of an even sample *is* their average | **Exact**, and it rests on `latency_ms` being `INTEGER` (see the DDL): the two middle values are exact integers, so `(a + b) / 2` is exact in IEEE double on both sides |
 | `p95` | nearest rank, `ordered[ceil(0.95n) - 1]`, no interpolation | `percentile_disc(0.95)` — first value whose cumulative distribution ≥ 0.95, i.e. `ordered[ceil(0.95n) - 1]` | **Exact** — `percentile_disc` selects an actual sample value, so there is no arithmetic to diverge |
 | token sums, `call_count` | Python `int` accumulation | `SUM(<integer column>)`, `COUNT(*)` | **Exact** — integer arithmetic, no representation question |
+| `latency_ms_sample_count` | `len(latencies)` — one sample per row | `COUNT(*)`, named explicitly (§3.5's query) | **Exact**, and it rests on `latency_ms` being **`NOT NULL`** in the DDL: every row contributes a sample, so the sample count equals `call_count`. If that column ever became nullable, `COUNT(*)` would overcount — `COUNT(latency_ms)` would be the correct aggregate and the two would diverge. Grounded here rather than assumed |
 | `total_cost_usd` | `math.fsum` over the raw `float8` values | `SUM(cost_usd::numeric)` | **Not exact.** `compute_from_traces` is canonical; the SQL path is compared within tolerance. See below |
 
 The `max(1, ...)`/`min(n, ...)` clamps in `_stats.p95` are no-ops for `0 < f <= 1`
@@ -209,8 +210,8 @@ parity fixture over representative rows cannot establish a for-all-values
 guarantee, so do not write one that implies it.
 
 Resolution: **`compute_from_traces` is the canonical definition of
-`total_cost_usd`.** The parity test asserts the percentiles, token sums and counts
-are *equal*, and that the two cost sums agree **within one unit in the last
+`total_cost_usd`.** The parity test asserts the percentiles, the token sums, and
+both counts — `call_count` and `latency_ms_sample_count` — are *equal*, and that the two cost sums agree **within one unit in the last
 reported decimal place (`1e-6` absolute)** — see §4.3 for why no tighter bound is
 available: both sides round to 6 decimals internally, so the rounded values are the
 only ones that exist to compare, and near a boundary they may legitimately differ
@@ -260,8 +261,9 @@ posture is wrong it is wrong for both queries, and changing it is a platform
 decision about how the metrics route is served — not something this story should
 decide unilaterally on the back of one added key.
 
-Two bounded mitigations *are* this story's to take, and both reuse machinery the
-repo already has:
+**One** bounded mitigation is this story's to take, reusing machinery the repo
+already has — and one candidate mitigation is deliberately *not* taken. Both
+decisions are recorded, because the second is as load-bearing as the first:
 
 1. **Bound the query — with a concrete number, not "the pattern".** Run the read
    under a transaction-local `statement_timeout`, as
