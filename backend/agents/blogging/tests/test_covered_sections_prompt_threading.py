@@ -6,10 +6,17 @@ the model stops asking for material the author supplied during planning.
 
 The change sits directly on an anti-fabrication guardrail, so these tests pin the
 *narrowing* (a covered section gets no placeholder instruction) alongside everything
-that must not move: the two "NEVER fabricate" clauses and the FINAL CHECK scan stay
-verbatim for every input, an absent or empty field leaves the prompt byte-identical to
-what it was before the field existed, and a set of covered sections with no stories to
-back it renders nothing at all.
+that must not move: in the draft prompt the two "NEVER fabricate" clauses and the
+FINAL CHECK scan stay verbatim for every input, an absent or empty field leaves either
+prompt byte-identical to what it was before the field existed, and a set of covered
+sections with no stories to back it renders nothing at all.
+
+The guardrail-verbatim assertions are scoped to ``run()`` deliberately: that quality
+checklist exists only in the draft prompt. ``revise_from_user_feedback`` builds from
+``USER_FEEDBACK_REVISION_INSTRUCTIONS`` and never carries those clauses, so its
+never-fabricate rule comes from the system prompt (``prompts.py``'s
+``WRITING_SYSTEM_PROMPT``, which both paths share) rather than from anything this suite
+could assert on the revise prompt's text.
 """
 
 from __future__ import annotations
@@ -42,29 +49,23 @@ SUPPRESSION_INSTRUCTION = "do not emit an [Author: ...] placeholder for those se
 
 
 def _writer_input(**overrides):
-    """Build a minimal valid ``WriterInput``, with any field overridable by keyword.
+    """A ``WriterInput`` over a three-section plan, via the shared builder.
 
-    Mirrors the helper in ``test_allowed_claims_prompt_threading.py`` so both prompt
-    suites build their input the same way.
+    The third section ("What we changed") deliberately never has a story, so the
+    suppression block can be asserted to name only the two that do.
     """
-    from agents.blogging.blog_writer_agent.models import WriterInput
-    from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
+    from agents.blogging.shared.content_plan import ContentPlanSection
 
-    from ._content_plan_test_utils import make_content_plan
+    from ._content_plan_test_utils import make_writer_input
 
-    plan = make_content_plan(
-        overarching_topic="Topic",
-        narrative_flow="flow",
+    return make_writer_input(
         sections=[
             ContentPlanSection(title="Intro", coverage_description="hook", order=0),
             ContentPlanSection(title="Why it broke", coverage_description="failure", order=1),
             ContentPlanSection(title="What we changed", coverage_description="fix", order=2),
         ],
-        title_candidates=[TitleCandidate(title="T", probability_of_success=0.5)],
+        **overrides,
     )
-    kwargs = {"content_plan": plan, "audience": "devs", "tone_or_purpose": "inform"}
-    kwargs.update(overrides)
-    return WriterInput(**kwargs)
 
 
 def _capture_prompts(monkeypatch) -> list[str]:
@@ -107,6 +108,16 @@ def _capture_revise_prompt(monkeypatch, **kwargs) -> str:
     return prompts[0]
 
 
+def _suppression_line(text: str) -> str:
+    """The single line naming the covered sections, for exact-match assertions.
+
+    Asserting this line whole rather than a substring of it is what makes the
+    "skipped" half of the renderer's contract testable: ``f"{HEADER} Intro" in text``
+    also passes for ``f"{HEADER} Intro, None, 7"``.
+    """
+    return next(line for line in text.splitlines() if line.startswith(SUPPRESSION_HEADER))
+
+
 # ---------------------------------------------------------------------------
 # _render_covered_sections_section — the renderer both prompts share
 # ---------------------------------------------------------------------------
@@ -116,7 +127,7 @@ def test_render_returns_block_naming_covered_sections() -> None:
     from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
 
     out = _render_covered_sections_section(["Intro", "Why it broke"], STORIES)
-    assert f"{SUPPRESSION_HEADER} Intro, Why it broke" in out
+    assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
     assert SUPPRESSION_INSTRUCTION in out
 
 
@@ -127,15 +138,21 @@ def test_render_sorts_and_deduplicates_titles() -> None:
     out = _render_covered_sections_section(
         ["Why it broke", "Intro", "Why it broke", "  Intro  "], STORIES
     )
-    assert f"{SUPPRESSION_HEADER} Intro, Why it broke" in out
+    assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
 
 
 def test_render_skips_unusable_entries() -> None:
-    """A malformed entry is skipped, never raised on: a bad title must not fail a draft."""
+    """A malformed entry is skipped, never raised on: a bad title must not fail a draft.
+
+    The header line is asserted *exactly*. A substring check would pass even if the
+    renderer regressed to stringifying junk ("...: Intro, None, 7" contains
+    "...: Intro"), which on this guardrail-adjacent block would name sections as
+    covered that have no story behind them.
+    """
     from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
 
     out = _render_covered_sections_section(["Intro", "", "   ", None, 7], STORIES)
-    assert f"{SUPPRESSION_HEADER} Intro" in out
+    assert _suppression_line(out) == f"{SUPPRESSION_HEADER} Intro"
 
 
 def test_render_returns_empty_for_absent_or_empty_sections() -> None:
@@ -179,13 +196,10 @@ def test_run_names_covered_sections_and_leaves_uncovered_ones_alone(monkeypatch)
         monkeypatch, elicited_stories=STORIES, covered_sections=["Intro", "Why it broke"]
     )
 
-    assert f"{SUPPRESSION_HEADER} Intro, Why it broke" in prompt
+    # Exact line, so the third plan section ("What we changed") cannot be named as
+    # covered: it has no story, and naming it would be the fabrication risk itself.
+    assert _suppression_line(prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
     assert SUPPRESSION_INSTRUCTION in prompt
-    # The third plan section has no story and must not be named as covered.
-    suppression_line = next(
-        line for line in prompt.splitlines() if line.startswith(SUPPRESSION_HEADER)
-    )
-    assert "What we changed" not in suppression_line
     # ...and the rules that still apply to it are untouched.
     assert NEVER_FABRICATE_HOOK in prompt
     assert NEVER_FABRICATE_FAILURE in prompt
@@ -229,7 +243,7 @@ def test_run_suppression_coexists_with_restrictive_allowed_claims(monkeypatch) -
         allowed_claims={"topic": "Topic", "claims": []},
     )
 
-    assert f"{SUPPRESSION_HEADER} Intro" in prompt
+    assert _suppression_line(prompt) == f"{SUPPRESSION_HEADER} Intro"
     assert "ALLOWED CLAIMS: none available." in prompt
     assert "no specific numbers, dollar figures, percentages, or durations" in prompt
     assert NEVER_FABRICATE_HOOK in prompt
@@ -255,8 +269,14 @@ def test_revise_from_user_feedback_names_covered_sections(monkeypatch) -> None:
     prompt = _capture_revise_prompt(
         monkeypatch, elicited_stories=STORIES, covered_sections=["Why it broke", "Intro"]
     )
-    assert f"{SUPPRESSION_HEADER} Intro, Why it broke" in prompt
+    assert _suppression_line(prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
     assert SUPPRESSION_INSTRUCTION in prompt
+    # The block carries its own never-fabricate fallback into this prompt. The draft
+    # prompt's quality checklist does not reach here (see the module docstring), so
+    # asserting its clauses would pin a guarantee this path never made.
+    assert "for every section not named above, the never-fabricate rules apply unchanged" in prompt
+    assert "emit the placeholder for it rather than inventing one" in prompt
+    assert NEVER_FABRICATE_HOOK not in prompt
 
 
 def test_revise_from_user_feedback_omits_suppression_when_absent(monkeypatch) -> None:

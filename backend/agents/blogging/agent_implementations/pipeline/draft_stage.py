@@ -184,17 +184,27 @@ def run_draft_stage(
                 draft_iterations=iteration,
             )
 
+            # One authoritative field set for both the initial draft and the
+            # post-elicitation redraft, so a field added later cannot reach one and
+            # miss the other — which would silently make the regenerated draft's
+            # inputs diverge from the first draft's. ``elicited_stories`` is
+            # deliberately absent: _fill_story_placeholders rejects it here and
+            # supplies the freshly extended text through its own parameter.
+            draft_input_kwargs = dict(
+                content_plan=plan,
+                audience=brief.audience,
+                tone_or_purpose=brief.tone_or_purpose,
+                target_word_count=length_policy.target_word_count,
+                length_guidance=build_draft_length_instruction(length_policy),
+                selected_title=selected_title,
+                covered_sections=covered_sections,
+                allowed_claims=allowed_claims,
+            )
+
             try:
                 draft_input = WriterInput(
-                    content_plan=plan,
-                    audience=brief.audience,
-                    tone_or_purpose=brief.tone_or_purpose,
-                    target_word_count=length_policy.target_word_count,
-                    length_guidance=build_draft_length_instruction(length_policy),
-                    selected_title=selected_title,
                     elicited_stories=elicited_stories_text or None,
-                    covered_sections=covered_sections,
-                    allowed_claims=allowed_claims,
+                    **draft_input_kwargs,
                 )
                 draft_output_path = (
                     (Path(work_dir) / f"draft_v{iteration}.md") if work_dir is not None else None
@@ -244,16 +254,7 @@ def run_draft_stage(
                     job_updater=job_updater,
                     elicited_stories_text=elicited_stories_text,
                     draft_agent=draft_agent,
-                    draft_input_kwargs=dict(
-                        content_plan=plan,
-                        audience=brief.audience,
-                        tone_or_purpose=brief.tone_or_purpose,
-                        target_word_count=length_policy.target_word_count,
-                        length_guidance=build_draft_length_instruction(length_policy),
-                        selected_title=selected_title,
-                        covered_sections=covered_sections,
-                        allowed_claims=allowed_claims,
-                    ),
+                    draft_input_kwargs=draft_input_kwargs,
                     work_dir=work_dir,
                     iteration=iteration,
                 )

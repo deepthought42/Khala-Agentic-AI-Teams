@@ -14,27 +14,14 @@ from .conftest import make_stub_editor_class, make_writer_agent
 
 
 def _writer_input(**overrides):
-    """Build a minimal valid ``WriterInput`` for tests, with a small hard-coded
-    content plan. Pass any ``WriterInput`` field (e.g. ``allowed_claims=...``) as
-    a keyword override to test that field's effect on the writer's prompt."""
-    from agents.blogging.blog_writer_agent.models import WriterInput
-    from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
+    """A minimal valid ``WriterInput`` (single-section plan), via the shared builder.
 
-    from ._content_plan_test_utils import make_content_plan
+    Pass any ``WriterInput`` field (e.g. ``allowed_claims=...``) as a keyword override
+    to test that field's effect on the writer's prompt.
+    """
+    from ._content_plan_test_utils import make_writer_input
 
-    plan = make_content_plan(
-        overarching_topic="Topic",
-        narrative_flow="flow",
-        sections=[ContentPlanSection(title="Intro", coverage_description="hook", order=0)],
-        title_candidates=[TitleCandidate(title="T", probability_of_success=0.5)],
-    )
-    kwargs = {
-        "content_plan": plan,
-        "audience": "devs",
-        "tone_or_purpose": "inform",
-    }
-    kwargs.update(overrides)
-    return WriterInput(**kwargs)
+    return make_writer_input(**overrides)
 
 
 def _minimal_plan():

@@ -187,9 +187,11 @@ def _render_covered_sections_section(
 
     Preconditions:
         - ``covered_sections`` is ``None`` or a list of plan section titles. Entries
-          that are not non-empty strings are tolerated (skipped), matching
-          ``_render_allowed_claims_section``'s handling of malformed claim entries:
-          a bad entry must not fail a draft.
+          that are not strings, or that are empty or whitespace-only, are tolerated
+          (skipped) — matching the ``isinstance(s, str) and s.strip()`` filter below,
+          and ``_render_allowed_claims_section``'s handling of malformed claim
+          entries: a bad entry must not fail a draft. Skipping a whitespace-only
+          title also keeps it from surfacing as an empty name in the joined list.
         - ``elicited_stories`` is the same value the caller renders into its
           AUTHOR'S PERSONAL STORIES block, so this function can tell whether that
           block actually reaches the model.

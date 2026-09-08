@@ -141,3 +141,42 @@ def make_pipeline_doubles(
         draft = "# Draft\n\nBody."
 
     return ppr, _Draft(), "PASS"
+
+
+def make_writer_input(
+    *,
+    sections: list[ContentPlanSection] | None = None,
+    **overrides: Any,
+):
+    """Build a minimal valid ``WriterInput`` for the writer-prompt test suites.
+
+    Shared so the prompt suites cannot drift into testing different inputs while
+    claiming to cover the same writer.
+
+    Preconditions:
+        - ``sections`` is ``None`` (use the single-``Intro`` default) or a non-empty
+          list of ``ContentPlanSection``.
+        - ``overrides`` keys are valid ``WriterInput`` field names (e.g.
+          ``allowed_claims``, ``covered_sections``, ``elicited_stories``).
+    Postconditions:
+        - Returns a valid ``WriterInput`` wrapping a ContentPlan built from
+          ``sections``, with ``audience``/``tone_or_purpose`` populated so prompts
+          that render them are exercised. Every field is overridable by keyword,
+          ``content_plan`` included.
+    """
+    from agents.blogging.blog_writer_agent.models import WriterInput
+
+    plan = make_content_plan(
+        overarching_topic="Topic",
+        narrative_flow="flow",
+        sections=sections
+        or [ContentPlanSection(title="Intro", coverage_description="hook", order=0)],
+        title_candidates=[TitleCandidate(title="T", probability_of_success=0.5)],
+    )
+    kwargs: dict[str, Any] = {
+        "content_plan": plan,
+        "audience": "devs",
+        "tone_or_purpose": "inform",
+    }
+    kwargs.update(overrides)
+    return WriterInput(**kwargs)

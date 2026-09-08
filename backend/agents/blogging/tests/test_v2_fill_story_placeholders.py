@@ -593,6 +593,9 @@ def _capture_revision_kwargs(monkeypatch, tmp_path, draft_input_kwargs) -> dict:
         work_dir=tmp_path,
         iteration=1,
     )
+    # Guarded rather than a bare subscript: if a regression skips the revision call
+    # entirely, the caller should read why, not a KeyError.
+    assert "kwargs" in captured, "revise_from_user_feedback was never called by the helper"
     return captured["kwargs"]
 
 
