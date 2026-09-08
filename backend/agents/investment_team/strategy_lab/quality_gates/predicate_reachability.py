@@ -288,9 +288,13 @@ class _RuleStarvation:
     ``warmup_independent_fires >= 0``; ``0 <= warmup_covered_fires <=
     warmup_conclusive_bars`` (every covered prefix fire lands on a prefix bar
     some satisfied earlier rule settles); ``coverage`` and ``warmup_coverage``
-    hold only rules listed before ``rule_index`` that covered at least one fire
-    in their own window; ``coverage`` is ordered by descending covered-fire
+    each hold only rules listed before ``rule_index`` that covered at least one
+    fire in their own window, and each is ordered by descending covered-fire
     count then ascending rule index — all enforced in :meth:`__post_init__`.
+    Only ``coverage`` is rendered in its own order (:attr:`combined_coverage`
+    re-sorts the merged view), but the two are the same shape and are read the
+    same way, so pinning one order and leaving the other to construction would
+    make a direct reader of :attr:`warmup_coverage` right by accident.
     """
 
     rule_index: int
@@ -322,6 +326,9 @@ class _RuleStarvation:
         assert all(index < self.rule_index for index, _ in self.warmup_coverage), (
             "warmup_coverage may only name rules listed before rule_index"
         )
+        assert list(self.warmup_coverage) == sorted(
+            self.warmup_coverage, key=lambda kv: (-kv[1], kv[0])
+        ), "warmup_coverage must be ordered by descending covered fires, then ascending index"
         assert all(count > 0 for _, count in self.coverage), (
             "coverage must hold only earlier rules that covered at least one fire"
         )
