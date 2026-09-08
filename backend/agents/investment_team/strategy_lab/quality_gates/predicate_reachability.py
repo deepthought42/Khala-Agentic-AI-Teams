@@ -832,10 +832,14 @@ class PredicateReachabilityProbe(GateResultsMixin):
         Unlike :meth:`probe_pairs` — which drops any bar either side of a pair
         is warming up on, since a pairwise tally has no notion of "the earlier
         rules as a whole" — the starvation verdict keeps a rule's warmup-prefix
-        fires as :attr:`_RuleStarvation.warmup_independent_fires`. That is not
-        an inconsistency between the two: ``probe_pairs`` reports no findings,
-        while this verdict does, and a finding that ignored those bars would
-        call a rule starved that the backtest demonstrably selects.
+        fires, split by what the bar showed: unshadowed ones (no earlier rule
+        satisfied) as :attr:`_RuleStarvation.warmup_independent_fires`,
+        shadowed ones as :attr:`_RuleStarvation.warmup_covered_fires`. That is
+        not an inconsistency between the two: ``probe_pairs`` reports no
+        findings, while this verdict does, and dropping either half misreports
+        a rule the backtest runs — the unshadowed half calls a rule starved
+        that the backtest demonstrably selects, the shadowed half calls one
+        dead that :meth:`probe` concurrently reports as firing.
 
         Per-leg diagnostics are computed only for a ``"starved"`` verdict on a
         multi-leaf rule, decomposing the STARVED rule's own leaves against its
