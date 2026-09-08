@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, Sequence
 
 import pytest
 
@@ -434,7 +435,7 @@ def _fake_cursor(monkeypatch):
     """
     monkeypatch.setenv("SE_TRACE_TO_POSTGRES", "true")
 
-    def _make(raise_on_execute: bool = False, rows=None) -> FakeCursor:
+    def _make(raise_on_execute: bool = False, rows: Optional[Sequence[Any]] = None) -> FakeCursor:
         return install_fake_cursor(
             monkeypatch, trace_store, raise_on_execute=raise_on_execute, rows=rows
         )

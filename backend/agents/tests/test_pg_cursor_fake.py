@@ -42,14 +42,14 @@ def test_execute_with_no_params_and_no_placeholders_is_valid() -> None:
 
 def test_execute_raises_before_recording_when_configured() -> None:
     cursor = FakeCursor(raise_on_execute=True)
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(RuntimeError, match="raise_on_execute is configured"):
         cursor.execute("SELECT 1")
     assert cursor.executed == []
 
 
 def test_executemany_raises_before_recording_when_configured() -> None:
     cursor = FakeCursor(raise_on_execute=True)
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(RuntimeError, match="raise_on_execute is configured"):
         cursor.executemany("INSERT INTO t (a) VALUES (%s)", [(1,)])
     assert cursor.executed == []
 
@@ -114,6 +114,21 @@ def test_fetchall_passes_through_non_dict_rows_unchanged() -> None:
     assert cursor.fetchall() == [(1, 2), (3, 4)]
 
 
+def test_queue_rows_replaces_served_rows() -> None:
+    cursor = FakeCursor(rows=[{"a": 1}])
+    cursor.queue_rows([{"a": 2}, {"a": 3}])
+    assert cursor.fetchall() == [{"a": 2}, {"a": 3}]
+    assert cursor.fetchone() == {"a": 2}
+
+
+def test_queue_rows_does_not_touch_executed_or_raise() -> None:
+    cursor = FakeCursor()
+    cursor.execute("SELECT 1")
+    cursor.queue_rows([{"a": 1}])
+    assert cursor.executed == [("SELECT 1", None)]
+    assert cursor._raise is False
+
+
 def test_install_fake_cursor_patches_pg_cursor_to_yield_the_cursor(monkeypatch) -> None:
     cursor = install_fake_cursor(monkeypatch, _Target, rows=[{"a": 1}])
     assert isinstance(cursor, FakeCursor)
@@ -124,7 +139,7 @@ def test_install_fake_cursor_patches_pg_cursor_to_yield_the_cursor(monkeypatch) 
 
 def test_install_fake_cursor_forwards_raise_on_execute(monkeypatch) -> None:
     cursor = install_fake_cursor(monkeypatch, _Target, raise_on_execute=True)
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(RuntimeError, match="raise_on_execute is configured"):
         cursor.execute("SELECT 1")
 
 

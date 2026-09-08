@@ -44,11 +44,15 @@ class FakeCursorContractViolation(BaseException):
 class FakeCursor:
     """Records every execute/executemany call and serves queued fetchall/fetchone rows.
 
-    No live Postgres involved. Mirrors psycopg's arity check: a statement
-    whose ``%s`` count does not match the row width is a hard error, not a
-    silently-recorded call. Without this the fake would happily accept a row
-    that real psycopg rejects, and since most write paths swallow exceptions
-    (log, no raise) the drift would surface only as silently-dropped rows in
+    No live Postgres involved. Mirrors psycopg's arity check for plain
+    positional ``%s`` placeholders (the style used throughout this
+    codebase): a statement whose ``%s`` count does not match the row width
+    is a hard error, not a silently-recorded call. ``%%``-escaped percents
+    are not modeled — ``sql.count("%s")`` would over-count a literal
+    ``%%s`` — so this is not exact psycopg fidelity, just the common case.
+    Without the check at all, the fake would happily accept a row that real
+    psycopg rejects, and since most write paths swallow exceptions (log, no
+    raise) the drift would surface only as silently-dropped rows in
     production.
 
     A single fake serves both write-path tests (``execute``/``executemany``
@@ -119,7 +123,7 @@ class FakeCursor:
             when ``params``'s length does not match ``sql``'s placeholder count.
         """
         if self._raise:
-            raise RuntimeError("boom")
+            raise RuntimeError("FakeCursor: raise_on_execute is configured; execute refused")
         self._check_arity(sql, params, sql.count("%s"))
         self.executed.append((sql, params))
 
@@ -141,12 +145,31 @@ class FakeCursor:
             count.
         """
         if self._raise:
-            raise RuntimeError("boom")
+            raise RuntimeError("FakeCursor: raise_on_execute is configured; executemany refused")
         expected = sql.count("%s")
         rows = list(seq)
         for row in rows:
             self._check_arity(sql, row, expected)
         self.executed.append((sql, rows))
+
+    def queue_rows(self, rows: Sequence[Any]) -> None:
+        """Replace the rows served by ``fetchall``/``fetchone`` (public seeding seam).
+
+        The supported way to reseed an already-installed cursor mid-test —
+        e.g. after clearing ``self.executed`` to assert on a second query in
+        the same test — without reaching into the private ``self._rows``
+        attribute from outside the class.
+
+        Preconditions:
+            ``rows`` is a sequence of dict-like rows — the shape
+            ``dict_rows=True`` callers expect back from ``fetchall``.
+        Postconditions:
+            ``self._rows`` becomes ``list(rows)``. Does not touch
+            ``self.executed`` or ``self._raise``. The next ``fetchall``/
+            ``fetchone`` call, and every one after until the next
+            ``queue_rows`` call, serves these rows.
+        """
+        self._rows = list(rows)
 
     @staticmethod
     def _copy_row(row: Any) -> Any:
