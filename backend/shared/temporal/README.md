@@ -93,8 +93,11 @@ so a mis-set override can never re-open that gap:
 - `CODING_TEAM_HEARTBEAT_INTERVAL_S` — `execute_coding_team_activity` (seconds;
   blank/garbage/non-positive/non-finite falls back to `30`, then capped at
   `CODING_HEARTBEAT_TIMEOUT_S / 3`).
-- `GITHUB_ISSUE_GROOMING_HEARTBEAT_INTERVAL_S` — `run_issue_grooming_activity`
-  (seconds; blank/garbage falls back to `30`, floor `0.1`).
+
+The issue-grooming beater is configured independently and carries no such cap:
+`GITHUB_ISSUE_GROOMING_HEARTBEAT_INTERVAL_S` serves `run_issue_grooming_activity`
+(seconds; blank/garbage falls back to `30`, floor `0.1`), so an override above its
+own heartbeat timeout is not clamped for you.
 
 Because these are *synchronous* activities, the beater is also what delivers
 cancellation: `activity.is_cancelled()` only ever flips because a beat carried

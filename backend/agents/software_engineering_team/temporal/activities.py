@@ -19,6 +19,7 @@ from temporalio import activity
 from temporalio.exceptions import CancelledError
 
 from shared.concurrency import BackgroundHeartbeat
+from shared.env import parse_float
 from shared.observability import bind_trace_id, current_trace_id, new_trace_id
 from shared.temporal.activity_utils import is_cancelled, is_last_attempt, raise_if_cancelled
 from software_engineering_team.shared.job_store import (
@@ -61,8 +62,6 @@ def _phase_heartbeat_interval_s() -> float:
           to prevent. Independent of the coding-team activity's own
           ``CODING_TEAM_HEARTBEAT_INTERVAL_S`` -- separate activities, separate knobs.
     """
-    from shared.env import parse_float
-
     return parse_float(
         "SE_PHASE_HEARTBEAT_INTERVAL_S",
         _DEFAULT_PHASE_HEARTBEAT_INTERVAL_S,

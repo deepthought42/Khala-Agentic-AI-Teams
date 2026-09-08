@@ -1260,6 +1260,25 @@ def test_plan_project_activity_retry_reemits_persisted_pause_without_rerunning(
 # ---------------------------------------------------------------------------
 
 
+def _record_beats(monkeypatch, activities):
+    """Patch ``activity.heartbeat`` to record beats; returns ``(beats, beaten)``.
+
+    ``beaten`` is set on the first beat so a test body can block until the beater
+    proves it is running, rather than sleeping a fixed interval and hoping.
+    """
+    import threading
+
+    beats: list = []
+    beaten = threading.Event()
+
+    def _beat(*_a, **_k) -> None:
+        beats.append(True)
+        beaten.set()
+
+    monkeypatch.setattr(activities.activity, "heartbeat", _beat)
+    return beats, beaten
+
+
 def test_phase_heartbeat_interval_env(monkeypatch) -> None:
     """Valid float honored; garbage/unset default to 30s; out-of-range clamps to the
     documented floor/ceiling so a mis-set knob can never outlast the heartbeat timeout."""
@@ -1326,8 +1345,6 @@ def test_plan_project_activity_heartbeats_while_planning_runs(
     fake run_workflow blocks until a beat lands, so the assertion fails (by timeout,
     then by count) if no beater is running.
     """
-    import threading
-
     from software_engineering_team.shared import job_store as js
     from software_engineering_team.temporal import activities
 
@@ -1338,14 +1355,7 @@ def test_plan_project_activity_heartbeats_while_planning_runs(
         "software_engineering_team.orchestrator._get_agents", lambda: {"architecture": None}
     )
 
-    beaten = threading.Event()
-    beats = []
-
-    def _beat(*a, **k):
-        beats.append(True)
-        beaten.set()
-
-    monkeypatch.setattr(activities.activity, "heartbeat", _beat)
+    beats, beaten = _record_beats(monkeypatch, activities)
 
     def _slow_planning(*a, **kw):
         # A stand-in for a multi-minute LLM call: it reports nothing to Temporal, so
@@ -1368,22 +1378,13 @@ def test_parse_spec_activity_heartbeats_while_pra_runs(
     monkeypatch, tmp_path, patched_job_store
 ) -> None:
     """Same liveness contract for Phase 1: the PRA loop runs under a live beater."""
-    import threading
-
     from software_engineering_team.shared import job_store as js
     from software_engineering_team.temporal import activities
 
     js.create_job("ps-beat", repo_path=str(tmp_path))
     monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "1")
 
-    beaten = threading.Event()
-    beats = []
-
-    def _beat(*a, **k):
-        beats.append(True)
-        beaten.set()
-
-    monkeypatch.setattr(activities.activity, "heartbeat", _beat)
+    beats, beaten = _record_beats(monkeypatch, activities)
 
     def _slow_parse(*a, **kw):
         assert beaten.wait(timeout=10), "no heartbeat emitted while the body ran"
@@ -1398,7 +1399,7 @@ def test_parse_spec_activity_heartbeats_while_pra_runs(
     assert beats, "parse_spec_activity must heartbeat for the duration of its body"
 
 
-def test_abort_if_superseded_is_a_noop_outside_an_activity(monkeypatch) -> None:
+def test_abort_if_superseded_is_a_noop_outside_an_activity() -> None:
     """Thread mode has no cancellation to observe, so the guard must never fire there."""
     from software_engineering_team.temporal import activities
 

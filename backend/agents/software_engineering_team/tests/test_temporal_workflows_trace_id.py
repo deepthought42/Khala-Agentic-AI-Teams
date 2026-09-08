@@ -382,12 +382,18 @@ def test_run_team_workflow_v2_heartbeat_timeouts_match_the_beaters_that_serve_th
         "plan_project_activity": timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
         "execute_coding_team_activity": timedelta(seconds=CODING_HEARTBEAT_TIMEOUT_S),
     }
-    scheduled = {name: kw.get("heartbeat_timeout") for name, kw in calls}
-    # Both plan_project_activity call sites (fresh + post-pause resume) are covered:
-    # the pause loop ran, so the name appears twice and a drifting second site would
-    # overwrite the first with a mismatching value.
+    # Per occurrence, not collapsed by name: the pause loop ran, so
+    # plan_project_activity appears twice (fresh + post-pause resume), and a dict
+    # keyed on the name would let the second entry overwrite the first -- masking
+    # drift at the fresh call site, which is exactly where the overlap this test
+    # guards against would re-open.
     assert [c[0] for c in calls].count("plan_project_activity") == 2
-    assert scheduled == expected
+    assert {name for name, _ in calls} == set(expected)
+    for name, kw in calls:
+        assert kw.get("heartbeat_timeout") == expected[name], (
+            name,
+            kw.get("heartbeat_timeout"),
+        )
 
     # And the beaters actually outpace what is scheduled above.
     assert amod._phase_heartbeat_interval_s() < PHASE_HEARTBEAT_TIMEOUT_S
