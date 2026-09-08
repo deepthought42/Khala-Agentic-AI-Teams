@@ -209,7 +209,13 @@ class _PairCooccurrence:
 
 
 _StarvationVerdict = Literal[
-    "abstained_bars", "dead", "abstained_thin", "starved", "warmup_only", "reachable"
+    "abstained_bars",
+    "abstained_steady",
+    "dead",
+    "abstained_thin",
+    "starved",
+    "warmup_only",
+    "reachable",
 ]
 
 
@@ -417,6 +423,17 @@ class _RuleStarvation:
           * ``"reachable"`` — fires at least once, in the steady-state window,
             on a bar no earlier rule covers, so first-match-wins can actually
             select it.
+          * ``"abstained_steady"`` — fires on a warmup-prefix bar no earlier
+            rule is satisfied on, but fewer than ``_MIN_EVALUATED_BARS``
+            :attr:`evaluated`. The rule IS selected there, which rules out
+            every starvation rung; what the window cannot show is whether that
+            survives the earlier rules warming up, because it never shows them
+            warm. ``"warmup_only"``'s claim is precisely that the selection
+            stops once they do, so it needs an observed steady-state window —
+            :attr:`judged_bars` cannot stand in, since the bars it restores are
+            prefix bars and say nothing about "after". Without this rung the
+            case falls through to ``"starved"``, a critical reading "never the
+            rule selected" about a rule this same window selects.
           * ``"warmup_only"`` — never independent in the steady-state window,
             but fires on at least one warmup-prefix bar where no earlier rule
             is satisfied. ``evaluate_entry_rules`` DOES select it there, so it
@@ -452,6 +469,8 @@ class _RuleStarvation:
         if self.independent_fires > 0:
             return "reachable"
         if self.warmup_independent_fires > 0:
+            if self.evaluated < _MIN_EVALUATED_BARS:
+                return "abstained_steady"
             return "warmup_only"
         if self.covered_fires == 0:
             return "dead"
@@ -955,9 +974,10 @@ class PredicateReachabilityProbe(GateResultsMixin):
             leaving the reader to assume the backtest's behaviour holds
             everywhere — or, having been told it does not, to assume every
             paper run starves the rule outright.
-          * ``"abstained_bars"`` / ``"abstained_thin"`` → ``info``, so an
-            abstention is visible on the gate timeline instead of being
-            indistinguishable from "checked, nothing found".
+          * ``"abstained_bars"`` / ``"abstained_steady"`` /
+            ``"abstained_thin"`` → ``info``, so an abstention is visible on the
+            gate timeline instead of being indistinguishable from "checked,
+            nothing found".
           * ``"dead"`` → NOTHING. A rule that never fires at all is already
             reported once, per rule, by :meth:`to_gate_results`; this is a
             DISTINCT finding kind and must not double-report it.
@@ -974,9 +994,24 @@ class PredicateReachabilityProbe(GateResultsMixin):
                 if kind == "abstained_bars":
                     results.append(
                         self._info(
-                            f"Entry rule {rule_id} (side={v.side}): only {v.evaluated} bar(s) "
+                            f"Entry rule {rule_id} (side={v.side}): only {v.judged_bars} bar(s) "
                             "judged against every earlier rule — too few to judge structural "
                             "starvation; skipped.",
+                            rule_id=rule_id,
+                        )
+                    )
+                elif kind == "abstained_steady":
+                    results.append(
+                        self._info(
+                            f"Entry rule {rule_id} (side={v.side}) fires on "
+                            f"{v.warmup_independent_fires} warmup-prefix bar(s) that no earlier "
+                            "rule is satisfied on, so first-match priority does select it there "
+                            f"— but only {v.evaluated} bar(s) of this window have every earlier "
+                            f"rule warm, fewer than the {_MIN_EVALUATED_BARS} needed to see "
+                            "whether that selection survives them warming up. Not reported as "
+                            "starved (it is demonstrably selected) nor as a warmup-only head "
+                            "start (this window never shows the head start end). Widen the "
+                            "window, or shorten the earlier rules' lookbacks, to judge it.",
                             rule_id=rule_id,
                         )
                     )

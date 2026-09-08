@@ -1056,6 +1056,70 @@ def test_conclusive_prefix_bars_do_not_lower_the_starvation_evidence_floor() -> 
     assert v.verdict == "abstained_thin"
 
 
+def test_prefix_selection_with_no_steady_state_window_abstains_rather_than_starving() -> None:
+    # entry[0] never finishes warming up, so there is no bar where every earlier
+    # rule is warm. entry[1] covers the first 20 bars — conclusive, so the bar
+    # floor is cleared — but entry[2] is selected outright on the other 40.
+    # "warmup_only" would claim the selection stops once the earlier rules warm
+    # up, and this window never shows them warm; "starved" would be a critical
+    # saying the rule is never selected, on 40 bars where it is.
+    v = _verdict(["satisfied"] * 60, ["warmup"] * 60, _pattern(60, range(0, 20)))
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (0, 20, 20)
+    assert (v.warmup_independent_fires, v.warmup_covered_fires) == (40, 20)
+    assert v.verdict == "abstained_steady"
+
+    results = PredicateReachabilityProbe().to_starvation_gate_results(
+        [v], _spec(_BROAD, extra_entries=[_entry(_NARROW), _entry(_NARROW)])
+    )
+    assert [r.severity for r in results] == ["info"]
+    detail = results[0].details
+    assert "fires on 40 warmup-prefix bar(s)" in detail
+    assert "only 0 bar(s) of this window have every earlier rule warm" in detail
+    # Neither neighbouring rung's claim may leak into it.
+    assert "and never after" not in detail
+    assert "structurally starved" not in detail
+    assert "Treat it as starved" not in detail
+
+
+def test_warmup_only_still_reached_once_the_steady_window_meets_the_floor() -> None:
+    # The steady-state floor gates warmup_only, it does not retire it: twenty
+    # all-warm bars is exactly enough to see the head start end.
+    earlier = ["warmup"] * 40 + ["satisfied"] * 20
+    v = _verdict(["satisfied"] * 40 + ["miss"] * 20, earlier)
+    assert (v.evaluated, v.warmup_independent_fires) == (20, 40)
+    assert v.verdict == "warmup_only"
+    # One bar short of the floor and the same shape abstains instead. The bar
+    # floor has to be cleared some other way for this to be the steady-state
+    # abstention rather than the bar one, so a second earlier rule settles the
+    # first 20 prefix bars.
+    thin = _verdict(
+        _pattern(60, range(20, 41)),
+        ["warmup"] * 41 + ["satisfied"] * 19,
+        _pattern(60, range(0, 20)),
+    )
+    assert (thin.evaluated, thin.judged_bars) == (19, 39)
+    assert thin.warmup_independent_fires == 21
+    assert thin.verdict == "abstained_steady"
+
+
+def test_bar_abstention_reports_the_count_its_floor_reads() -> None:
+    # The rung is gated on judged_bars, so quoting evaluated would under-report
+    # the window whenever a satisfied earlier rule settled part of the prefix.
+    v = _verdict(
+        _pattern(15, range(0)),
+        ["warmup"] * 5 + ["satisfied"] * 10,
+        _pattern(15, range(0, 3)),
+    )
+    assert (v.evaluated, v.warmup_conclusive_bars, v.judged_bars) == (10, 3, 13)
+    assert v.verdict == "abstained_bars"
+    detail = (
+        PredicateReachabilityProbe()
+        .to_starvation_gate_results([v], _spec(_BROAD, extra_entries=[_entry(_NARROW)]))[0]
+        .details
+    )
+    assert f"only {v.judged_bars} bar(s) judged" in detail
+
+
 def test_a_short_window_still_abstains_on_bars_even_when_every_bar_is_conclusive() -> None:
     # Nineteen conclusive bars is still nineteen bars. The carve-out restores
     # bars the warming rule made unaskable; it does not lower the floor.
