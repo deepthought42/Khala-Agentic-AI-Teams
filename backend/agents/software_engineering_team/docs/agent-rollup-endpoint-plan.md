@@ -316,7 +316,22 @@ decisions are recorded, because the second is as load-bearing as the first:
 
    Note the `5s` budget and the `~5s` escalation threshold below are deliberately
    the same number: a query that routinely approaches its own timeout *is* the
-   signal to open the summary-table story. A pathological window is then cancelled server-side and falls into the
+   signal to open the summary-table story.
+
+   **`statement_timeout` bounds the query, not the request.** Two segments sit
+   outside it, and neither is hypothetical:
+
+   - **Pool acquisition.** `SET LOCAL` runs only once a connection is in hand.
+     `pg_cursor` → `get_conn` calls `pool.connection()` with **no timeout**
+     (`shared/postgres/client.py:206`), so an exhausted pool falls back to
+     psycopg-pool's 30s default wait — *twice* the alias budget — before the
+     statement bound is ever installed. The repo already has the bounded form:
+     `check_connection` uses `pool.connection(timeout=timeout_s)` (`client.py:310`).
+     **This read must acquire with an explicit timeout too**, budgeted inside the
+     same `5s` (e.g. `2s` acquire + the remainder for the query), and the
+     pool-exhaustion case gets a test: a stub pool that blocks on acquisition must
+     produce the empty three-view shape within budget, not a 30s hang.
+   - **The DORA half, which runs first and is unbounded.** See below. A pathological window is then cancelled server-side and falls into the
    empty-rollup literal, instead of pinning a pooled connection until the alias's
    15s timeout. That converts the worst case from "saturate and time out" into
    "degrade to empty" — which is already the endpoint's stated contract, so it
@@ -357,6 +372,31 @@ decisions are recorded, because the second is as load-bearing as the first:
 
    If it is later built, the four findings above are its requirements list, and the
    endpoint tests need an autouse reset fixture from day one.
+
+**The route has no end-to-end deadline, and this story does not give it one.**
+State this plainly, because the ceiling's justification is easy to over-read.
+`_dora_payload` runs **before** `_rollup_payload` and issues two **unbounded**
+reads — `se_events.fetch_events_since` and `trace_store.fetch_cost_since`. So the
+arithmetic that matters is not `5s < 15s`; it is `dora_time + acquire + 5s < 15s`.
+A DORA half taking 11s succeeds today and would blow the alias budget once the
+rollup's `5s` is appended.
+
+Two things follow, and only one of them is this story's:
+
+- **Not this story's:** the `/dora` route can already exceed the alias timeout
+  today, from the DORA reads alone, with no rollup involved. Bounding those is a
+  change to existing behaviour on a route this story is only adding a key to —
+  the same "don't re-architect the endpoint while adding a payload field" line
+  drawn for the summary table. If the measurement below shows the DORA half
+  routinely near the budget, that is its own story, and a more urgent one than
+  this rollup.
+- **This story's:** stop claiming the rollup's bound guarantees the client sees a
+  response. It guarantees the *rollup* is not the unbounded part — necessary, not
+  sufficient. The `10s` ceiling is chosen to leave room for the DORA half at its
+  *typical* cost, not to prove a route-level deadline that no component here can
+  enforce. The measurement protocol should therefore record **DORA-half timing
+  alongside the rollup's**, so the sum is a known number rather than an
+  assumption.
 
 **What `statement_timeout` does not cover.** Mitigation 1 is worth keeping — it is
 three lines and it converts the common pathology into the endpoint's existing
@@ -401,6 +441,10 @@ threshold**: record the cancelled call's wall time and p95 ≈ `5s`, which does 
 *exceed* `5s`; discard cancelled runs and p95 < `5s` by construction. Either way the
 trigger can never fire from measured durations — the same class of statistical
 defect as measuring a p95 from one sample.
+
+Record the **DORA half's timing in the same runs** (see the end-to-end note in
+§3.5): the number that matters for the alias budget is `dora + acquire + rollup`,
+and none of the three is currently known.
 
 So: **20 executions**, timeout off, against the largest available `se_agent_traces`
 at the default 30-day window, discarding the first (cold-cache) run, taken while the
