@@ -193,8 +193,9 @@ def build_revise_all_items_prompt(
           their own labeled section near the end (title before stories);
           ``covered_sections_section`` is appended as its own section after
           ``elicited_stories`` when non-empty, naming the sections that already
-          have an author story so this rewrite does not re-introduce an
-          ``[Author: ...]`` placeholder for one;
+          have an author story so the rewrite is instructed not to re-introduce an
+          ``[Author: ...]`` placeholder for one (a prompt instruction, not an enforced
+          guarantee);
           ``allowed_claims_section`` is appended as its own section after
           ``elicited_stories`` and after the covered-sections block when both are
           present, when non-empty; and ``tone_or_purpose`` /
@@ -367,7 +368,14 @@ def generate_revision_plan(
           ``build_revision_plan_prompt`` (e.g. an agent's ``self._model``).
         - ``covered_sections_section`` is the caller's already-rendered
           placeholder-suppression block, or ``""``; forwarded unchanged to
-          ``build_revision_plan_prompt``.
+          ``build_revision_plan_prompt``. A non-empty block must have been produced by
+          ``_render_covered_sections_section`` from this same ``revise_input``, and must
+          never be supplied when ``revise_input.elicited_stories`` is blank: the block
+          names an ``AUTHOR'S PERSONAL STORIES`` section, and a suppression instruction
+          without the stories it names is the one input under which it could read as
+          licence to invent one. ``build_revision_plan_prompt`` appends the block only
+          alongside those stories, but nothing re-checks a block handed in from
+          elsewhere.
     Postconditions:
         - Returns a ``RevisionPlan``; never returns ``None``.
         - Both the JSON path and the plain-text fallback plan from the same prompt,

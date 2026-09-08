@@ -187,6 +187,8 @@ def test_render_collapses_internal_whitespace_in_titles() -> None:
 
 
 def test_render_returns_empty_for_absent_or_empty_sections() -> None:
+    """``None``, an empty list, and a list of only unusable entries all render nothing
+    rather than a header with nothing after it."""
     from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
 
     assert _render_covered_sections_section(None, STORIES) == ""
@@ -238,12 +240,15 @@ def test_run_names_covered_sections_and_leaves_uncovered_ones_alone(monkeypatch)
 
 
 def test_run_prompt_is_byte_identical_when_covered_sections_absent(monkeypatch) -> None:
+    """The first omission case: absent entirely, the prompt matches the pre-field
+    baseline byte for byte."""
     baseline = _capture_run_prompt(monkeypatch, elicited_stories=STORIES)
     with_none = _capture_run_prompt(monkeypatch, elicited_stories=STORIES, covered_sections=None)
     assert with_none == baseline
 
 
 def test_run_prompt_is_byte_identical_when_covered_sections_empty(monkeypatch) -> None:
+    """The second: an empty list carries the same byte-identity guarantee as absence."""
     baseline = _capture_run_prompt(monkeypatch, elicited_stories=STORIES)
     with_empty = _capture_run_prompt(monkeypatch, elicited_stories=STORIES, covered_sections=[])
     assert with_empty == baseline
@@ -461,15 +466,24 @@ def test_batch_revise_prompt_omits_suppression_without_stories() -> None:
 STORIES_HEADING = "AUTHOR'S PERSONAL STORIES:"
 
 
-def _render_context(**kwargs) -> str:
+def _render_context(
+    *, elicited_stories: str | None = None, covered_sections: list | None = None
+) -> str:
+    """Render the self-review stories context the way ``run()`` builds it.
+
+    Named parameters rather than ``**kwargs``: they mirror the ``WriterInput`` field
+    names so these tests read like the production call, and a typo raises ``TypeError``
+    here instead of silently passing ``None``, tripping the no-stories gate, and failing
+    downstream on ``assert STORIES_HEADING in ""``.
+    """
     from agents.blogging.blog_writer_agent.agent import (
         _render_covered_sections_section,
         _render_self_review_stories_context,
     )
 
-    stories = kwargs.get("elicited_stories")
     return _render_self_review_stories_context(
-        stories, _render_covered_sections_section(kwargs.get("covered_sections"), stories)
+        elicited_stories,
+        _render_covered_sections_section(covered_sections, elicited_stories),
     )
 
 
@@ -536,7 +550,7 @@ def _only_prompt_starting(prompts: list[str], prefix: str) -> str:
     matches = [p for p in prompts if p.startswith(prefix)]
     assert len(matches) == 1, (
         f"expected exactly one prompt starting {prefix!r}, found {len(matches)} among "
-        f"{[p.splitlines()[0] for p in prompts]}"
+        f"{[(p.splitlines() or ['<empty prompt>'])[0] for p in prompts]}"
     )
     return matches[0]
 
@@ -669,4 +683,8 @@ def test_revision_plan_prompt_carries_the_stories_and_coverage(monkeypatch) -> N
     assert STORIES in plan_prompt, "the planner cannot see the author's stories"
     assert _suppression_line(plan_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
     # The stories must precede the draft they are evidence about.
+    assert SUPPRESSION_INSTRUCTION in plan_prompt
+    assert "CURRENT DRAFT:" in plan_prompt, (
+        f"the planner cannot see the draft it is planning revisions for:\n{plan_prompt}"
+    )
     assert plan_prompt.index(STORIES) < plan_prompt.index("CURRENT DRAFT:")

@@ -657,8 +657,15 @@ class BlogWriterAgent(_BlogAgentBase):
               ``EventLoopException``) propagate as the unwrapped cause.
             - Unexpected exceptions propagate unchanged.
         """
+        # The two section arguments are passed by keyword deliberately: they are both
+        # plain ``str``, so a reorder in the delegate would still type-check here and
+        # would silently render the stories into the claims slot.
         return self_review.fix_deterministic_violations(
-            draft, violations, self._call_text, allowed_claims_section, stories_section
+            draft,
+            violations,
+            self._call_text,
+            allowed_claims_section=allowed_claims_section,
+            stories_section=stories_section,
         )
 
     def _llm_self_review(
@@ -700,8 +707,12 @@ class BlogWriterAgent(_BlogAgentBase):
               ``EventLoopException``) propagate as the unwrapped cause.
             - Unexpected exceptions propagate unchanged.
         """
+        # Keyword for the same reason as ``_fix_deterministic_violations`` above.
         return self_review.llm_self_review(
-            draft, self._call_text, allowed_claims_section, stories_section
+            draft,
+            self._call_text,
+            allowed_claims_section=allowed_claims_section,
+            stories_section=stories_section,
         )
 
     def _self_review(
@@ -790,7 +801,10 @@ class BlogWriterAgent(_BlogAgentBase):
             - The same stories, plus that suppression section, are passed to
               ``_self_review`` via ``_render_self_review_stories_context``, so the
               deterministic-fix and LLM-self-review rewrite passes that may run after
-              generation cannot undo the suppression before this method returns. Both
+              generation are given the stories and instructed to preserve the
+              suppression rather than reintroduce an ``[Author: ...]`` placeholder for a
+              covered section. A prompt instruction, not an enforced guarantee: nothing
+              in ``run()`` inspects what either pass returns. Both
               passes rewrite under ``WRITING_SYSTEM_PROMPT``, whose standing rule is to
               substitute an ``[Author: ...]`` placeholder wherever no story was supplied,
               and the self-review checker is asked to flag first-person narrative "not
@@ -1331,7 +1345,7 @@ class BlogWriterAgent(_BlogAgentBase):
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
-        covered_sections: Optional[List[str]] = None,
+        covered_sections: Optional[list[str]] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
         uncertainty_answers: Optional[dict[str, str]] = None,

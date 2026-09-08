@@ -23,6 +23,39 @@ def _make_agent():
 # ---------------------------------------------------------------------------
 
 
+def _stub_revision_plan(monkeypatch, target) -> None:
+    """Monkeypatch ``generate_revision_plan`` on ``target`` to return a fixed empty plan.
+
+    Written once because seven tests in this file need it: when the production signature
+    gained ``covered_sections_section`` the same one-line edit had to be applied to seven
+    identical lambdas, and a missed copy fails only at call time with a ``TypeError``
+    naming the lambda rather than the stale stub.
+
+    ``target`` stays a parameter rather than being hardcoded: two sites patch the
+    directly imported ``revision`` module and five patch ``wa_mod.revision``, and
+    collapsing them would assert those name the same object — true or not, it is not
+    this refactor's job to decide.
+
+    Accepts and ignores the full production keyword surface deliberately — what actually
+    reaches the planner is pinned in ``test_covered_sections_prompt_threading.py``, not
+    here; these tests only need planning to be fast and deterministic.
+
+    Preconditions:
+        - ``monkeypatch`` is the pytest fixture; the patch is undone at teardown.
+        - ``target`` is a module exposing ``generate_revision_plan``.
+    Postconditions:
+        - ``target.generate_revision_plan`` returns a ``RevisionPlan`` with no changes
+          and no risks for every call, whatever keywords the caller passes.
+    """
+
+    from agents.blogging.blog_writer_agent.models import RevisionPlan
+
+    def _stub(draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section=""):
+        return RevisionPlan(summary="planned", changes=[], risks=[])
+
+    monkeypatch.setattr(target, "generate_revision_plan", _stub)
+
+
 def test_identify_uncertainty_questions_returns_items(monkeypatch) -> None:
     """Parses a JSON array of uncertainty questions into model items."""
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
@@ -690,7 +723,7 @@ def test_revise_with_feedback_batches(monkeypatch, tmp_path) -> None:
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent import revision
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
 
     from ._content_plan_test_utils import make_content_plan
@@ -698,13 +731,7 @@ def test_revise_with_feedback_batches(monkeypatch, tmp_path) -> None:
     a = _make_agent()
 
     # Stub generate_revision_plan + _call_agent to keep things fast
-    monkeypatch.setattr(
-        revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, revision)
     monkeypatch.setattr(
         BlogWriterAgent,
         "_call_text",
@@ -737,7 +764,7 @@ def test_revise_skips_json_fallback_when_primary_returns_identical_draft(monkeyp
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent import revision
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
 
     from ._content_plan_test_utils import make_content_plan
@@ -746,13 +773,7 @@ def test_revise_skips_json_fallback_when_primary_returns_identical_draft(monkeyp
     original = "# Original\nBody"
     fallback_calls = {"n": 0}
 
-    monkeypatch.setattr(
-        revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, revision)
     monkeypatch.setattr(
         BlogWriterAgent,
         "_call_text",
@@ -788,7 +809,7 @@ def test_revise_programming_error_propagates(monkeypatch) -> None:
     import pytest
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
 
     from ._content_plan_test_utils import make_content_plan
@@ -797,13 +818,7 @@ def test_revise_programming_error_propagates(monkeypatch) -> None:
     import agents.blogging.blog_writer_agent.agent as wa_mod
 
     monkeypatch.setattr(wa_mod.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(
-        wa_mod.revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, wa_mod.revision)
 
     def boom(self, *a, **kw):
         raise RuntimeError("programmer bug")
@@ -831,7 +846,7 @@ def test_revise_falls_back_to_original_when_llm_fails(monkeypatch) -> None:
     """If text yields no draft and json fallback fails, return original draft."""
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
 
     from ._content_plan_test_utils import make_content_plan
@@ -842,13 +857,7 @@ def test_revise_falls_back_to_original_when_llm_fails(monkeypatch) -> None:
     import agents.blogging.blog_writer_agent.agent as wa_mod
 
     monkeypatch.setattr(wa_mod.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(
-        wa_mod.revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, wa_mod.revision)
     monkeypatch.setattr(BlogWriterAgent, "_call_text", lambda self, *a, **kw: "no marker")
     monkeypatch.setattr(
         BlogWriterAgent, "_fallback_draft_via_json", lambda self, p, system_prompt="": None
@@ -875,7 +884,7 @@ def test_revise_batch_uses_json_fallback_when_text_fails(monkeypatch) -> None:
     """Batch revise uses _fallback_draft_via_json when text path yields no draft."""
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
 
     from ._content_plan_test_utils import make_content_plan
@@ -884,13 +893,7 @@ def test_revise_batch_uses_json_fallback_when_text_fails(monkeypatch) -> None:
     import agents.blogging.blog_writer_agent.agent as wa_mod
 
     monkeypatch.setattr(wa_mod.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(
-        wa_mod.revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, wa_mod.revision)
 
     monkeypatch.setattr(BlogWriterAgent, "_call_text", lambda self, *a, **kw: "no marker")
     monkeypatch.setattr(
@@ -919,7 +922,7 @@ def test_revise_wrapped_temporary_retries_then_fallback(monkeypatch) -> None:
     """EventLoopException(LLMTemporaryError) is treated as transient and retried."""
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
     from strands.types.exceptions import EventLoopException
 
@@ -931,13 +934,7 @@ def test_revise_wrapped_temporary_retries_then_fallback(monkeypatch) -> None:
     import agents.blogging.blog_writer_agent.agent as wa_mod
 
     monkeypatch.setattr(wa_mod.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(
-        wa_mod.revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, wa_mod.revision)
     wrapped = LLMTemporaryError("temporary")
     call_count = 0
 
@@ -980,7 +977,7 @@ def test_revise_wrapped_json_parse_error_retries_then_fallback(monkeypatch) -> N
     """
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
     from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
-    from agents.blogging.blog_writer_agent.models import ReviseWriterInput, RevisionPlan
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.shared.content_plan import ContentPlanSection, TitleCandidate
     from strands.types.exceptions import EventLoopException
 
@@ -993,13 +990,7 @@ def test_revise_wrapped_json_parse_error_retries_then_fallback(monkeypatch) -> N
 
     sleep_calls: list[float] = []
     monkeypatch.setattr(wa_mod.time, "sleep", lambda secs: sleep_calls.append(secs))
-    monkeypatch.setattr(
-        wa_mod.revision,
-        "generate_revision_plan",
-        lambda draft, items, ri, *, call_json, call_text, llm=None, covered_sections_section="": (
-            RevisionPlan(summary="planned", changes=[], risks=[])
-        ),
-    )
+    _stub_revision_plan(monkeypatch, wa_mod.revision)
 
     call_count = 0
 

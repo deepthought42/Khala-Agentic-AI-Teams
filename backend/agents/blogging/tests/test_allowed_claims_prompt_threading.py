@@ -223,7 +223,7 @@ def _run_writer_capturing_prompt(monkeypatch, draft_body="Body.", **writer_input
     monkeypatch.setattr(
         BlogWriterAgent,
         "_self_review",
-        lambda self, d, allowed_claims_section="", stories_section="": d,
+        lambda self, draft, allowed_claims_section="", stories_section="": draft,
     )
 
     out = a.run(_writer_input(**writer_input_overrides))

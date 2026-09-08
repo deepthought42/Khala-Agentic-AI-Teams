@@ -43,7 +43,7 @@ def _noop_self_review(self, d, allowed_claims_section="", stories_section=""):
     return d
 
 
-def _recording_self_review(calls: list):
+def _recording_self_review(calls: list[str]):
     """The same double, recording each draft it is handed into ``calls``."""
 
     def _stub(self, d, allowed_claims_section="", stories_section=""):

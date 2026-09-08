@@ -153,6 +153,26 @@ def _split_sentences_for_staccato(para: str) -> list[str]:
     return re.split(r"(?<=[.!?])\s+", protected)
 
 
+def _prompt_section(text: str) -> str:
+    """Wrap an already-rendered prompt section with blank-line spacing.
+
+    Written once because four sites need the identical spacing — the deterministic
+    fixer's claims and stories blocks, and the self-review checker's and fixer's. The
+    docstrings around them say the section is embedded "surrounded only by blank-line
+    spacing"; with four copies that is a convention four places must keep, and a
+    drifting trailing newline in one would silently change how a prompt is delimited
+    while the byte-identity tests still pass per-site.
+
+    Preconditions:
+        - ``text`` is an already-rendered section, or ``""``.
+    Postconditions:
+        - Returns ``""`` for empty input, so the enclosing prompt is byte-identical to
+          one built without the section; otherwise the text with a blank line before it
+          and a newline after.
+    """
+    return f"\n\n{text}\n" if text else ""
+
+
 def deterministic_self_check(draft: str) -> list[str]:
     """Scan draft for mechanical violations. Returns list of violation descriptions.
 
@@ -279,8 +299,8 @@ def fix_deterministic_violations(
         - Unexpected exceptions propagate unchanged.
     """
     checklist = "\n".join(f"- {v}" for v in violations)
-    claims_block = f"\n\n{allowed_claims_section}\n" if allowed_claims_section else ""
-    stories_block = f"\n\n{stories_section}\n" if stories_section else ""
+    claims_block = _prompt_section(allowed_claims_section)
+    stories_block = _prompt_section(stories_section)
     prompt = (
         "Fix ONLY these specific issues in the draft below. Do not change anything else.\n\n"
         f"ISSUES TO FIX:\n{checklist}\n\n"
@@ -370,7 +390,7 @@ def llm_self_review(
         - Unexpected exceptions propagate unchanged.
     """
     try:
-        review_context = f"\n\n{stories_section}\n" if stories_section else ""
+        review_context = _prompt_section(stories_section)
         raw = call_text(f"Review this draft:\n\n{draft}{review_context}", SELF_REVIEW_PROMPT)
         cleaned = raw.strip()
         # Prefer the shared extractor for fenced / whole-response JSON. It can
@@ -413,7 +433,7 @@ def llm_self_review(
             fix = iss.get("fix", "")
             issue_lines.append(f"{i}. [{loc}] {desc}\n   Fix: {fix}")
 
-        claims_block = f"\n\n{allowed_claims_section}\n" if allowed_claims_section else ""
+        claims_block = _prompt_section(allowed_claims_section)
         fix_prompt = (
             "Fix ONLY these issues found during self-review. Do not change anything else.\n\n"
             "ISSUES:\n" + "\n\n".join(issue_lines) + "\n\n"

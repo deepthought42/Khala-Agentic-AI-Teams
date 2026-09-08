@@ -17,6 +17,11 @@ sites for ``selected_title``.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
+
+from agents.blogging.agent_implementations.pipeline.constants import (
+    COPY_EDIT_ESCALATION_THRESHOLD,
+)
 
 from .conftest import make_stub_editor_class
 
@@ -25,10 +30,12 @@ COVERED_SECTIONS = {"Why it broke", "Intro"}
 # the writer's prompt has to be.
 EXPECTED_ORDER = ["Intro", "Why it broke"]
 
-# draft_editor_iterations needed to reach the copy-edit escalation branch: the stage's
-# loop sets copy_edit_num = iteration - 1 and escalates when copy_edit_num hits
-# COPY_EDIT_ESCALATION_THRESHOLD (10), i.e. iteration 11.
-_ESCALATION_ITERATIONS = 11
+# draft_editor_iterations needed to reach the copy-edit escalation branch. Derived from
+# the production constant rather than hardcoded: the stage's loop sets
+# copy_edit_num = iteration - 1 and escalates when copy_edit_num reaches the threshold,
+# so the first escalating iteration is threshold + 1. Importing it means a change to the
+# threshold moves this test with it instead of silently driving too few rounds.
+_ESCALATION_ITERATIONS = COPY_EDIT_ESCALATION_THRESHOLD + 1
 
 
 def _capturing_stub_writer_class(captured_inputs: list, *, uncertainty_questions: list) -> type:
@@ -187,7 +194,7 @@ def _run_stage(
     editor_class=None,
     job_store: bool = False,
     draft_editor_iterations: int = 2,
-) -> list:
+) -> list[tuple[str, Any]]:
     """Drive ``run_draft_stage`` and return the ``(kind, input)`` pairs it produced."""
     import agents.blogging.agent_implementations.blog_writing_process_v2 as v2
     from agents.blogging.agent_implementations.pipeline.context import PipelineContext
@@ -197,7 +204,7 @@ def _run_stage(
 
     from ._content_plan_test_utils import make_minimal_planning_phase_result
 
-    captured: list = []
+    captured: list[tuple[str, Any]] = []
     questions = (
         [SimpleNamespace(question_id="q1", question="Which framing?", context="ctx")]
         if job_store
