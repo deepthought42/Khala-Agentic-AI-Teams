@@ -357,10 +357,30 @@ decisions are recorded, because the second is as load-bearing as the first:
      psycopg-pool's 30s default wait — *twice* the alias budget — before the
      statement bound is ever installed. The repo already has the bounded form:
      `check_connection` uses `pool.connection(timeout=timeout_s)` (`client.py:310`).
-     **This read must acquire with an explicit timeout too**, budgeted inside the
-     same `5s` (e.g. `2s` acquire + the remainder for the query), and the
-     pool-exhaustion case gets a test: a stub pool that blocks on acquisition must
-     produce the empty three-view shape within budget, not a 30s hang.
+     **This read must acquire with an explicit timeout too, drawn from the same
+     budget** — and that has to be stated as *one deadline*, not two, because an
+     earlier draft said "budgeted inside the same `5s` (e.g. `2s` acquire + the
+     remainder)" while §4.3 asserted the installed `statement_timeout` is exactly
+     `5000` by default. Those cannot both hold: installing the full `5000` after a
+     `2s` acquire makes the real worst case `7s`, and installing the remainder
+     fails the test. Neither statement was wrong alone; together they were
+     contradictory, which is why the contract is now written once, here:
+
+     > **The clamped value is a total deadline for the whole read, not a query
+     > timeout.** Take `deadline = now + budget` before acquiring. Acquire with
+     > `pool.connection(timeout=…)` bounded by the remaining budget (cap the
+     > acquire slice at `2s` so a pathological pool cannot consume the whole
+     > allowance). Then install `SET LOCAL statement_timeout` to **the remaining
+     > time**, not to `budget`. Acquisition plus execution therefore never exceeds
+     > the clamped value.
+
+     Two consequences for §4.3's tests, both stated there: the exact-value
+     assertions (`5000`, `2500`, `1000`, `10000`) hold **under a stub pool that
+     acquires instantly**, where remaining ≈ budget — that is what makes them
+     deterministic; and a separate case must show a *slow* acquire reducing the
+     installed timeout, or the derivation is untested. The pool-exhaustion case
+     asserts the **total** wall time stays inside the budget and the read produces
+     the empty three-view shape, not a 30s hang.
    - **The DORA half, which runs first and is unbounded.** See below.
 
    With the statement timeout and a bounded acquisition both in place, a
@@ -521,9 +541,33 @@ trade worth making to protect a complexity score.
 ### 4.1 `backend/agents/software_engineering_team/shared/trace_store.py`
 
 Add `fetch_trace_rollup_rows(cutoff, *, job_id=None)` — the aggregating read from
-§3.5. It runs the `GROUPING SETS` query, splits the result by the `GROUPING()`
-tags into the three views, and returns them already shaped as `CallRollup` field
-dicts. Same best-effort contract as its neighbours — never raises, logs at DEBUG
+§3.5. It runs the `GROUPING SETS` query and splits the result by the `GROUPING()`
+tags into the three views.
+
+**It returns aggregate rows, not `CallRollup` dicts, and that boundary is
+load-bearing.** `agent_rollup._rollup_for_group` owns the derived semantics —
+`cache_read_ratio = round(cache_read / (cache_read + cache_creation + input), 4)`,
+`None` when that denominator is zero, and the 6-decimal cost rounding
+(`agent_rollup.py:189,193`). If the store shapes `CallRollup`s itself it becomes a
+**second producer of those semantics**, and a later change to `_rollup_for_group`
+silently updates the offline path while leaving the HTTP path stale — the two
+diverge with nothing failing. So the row → `CallRollup` conversion lives in a
+**pure adapter in `metrics/agent_rollup.py`** (`rollup_from_aggregate_rows`, say),
+imported by `_rollup_payload` and exercised directly by the tests. One module owns
+the arithmetic; the store owns the SQL.
+
+**The adapter also restores deterministic ordering.** `compute_from_traces` sorts
+all three views explicitly (`agent_rollup.py:302-309`) and its docstring promises
+"sorted ascending, so the result is deterministic for a fixed row set" (line 260).
+Postgres guarantees no row order for a `GROUPING SETS` aggregate without an
+`ORDER BY`, so inserting rows in arrival order would let the HTTP path emit a
+different serialized key order than the schema-of-record for identical data. The
+adapter sorts every level — `by_agent`, `by_phase`, and the nested phase keys
+inside `by_agent_phase` — and a test asserts the emitted key order against a
+shuffled input row set. Sorting in the adapter rather than adding `ORDER BY` keeps
+the guarantee in the same module that makes it, and costs nothing on tens of rows.
+
+Same best-effort contract as its neighbours — never raises, logs at DEBUG
 — but its empty value is the **same three-view shape as its success value**:
 `{"by_agent": {}, "by_phase": {}, "by_agent_phase": {}}` on a disabled or failing
 Postgres, never a bare `[]`. A function whose success return is a three-view
@@ -622,14 +666,22 @@ New tests:
 | DORA fails, rollup survives | `compute_dora` raises + rollup read returns groups | DORA half is the zeroed literal; `agent_rollup` is non-empty |
 | Literal drift guard | compare the empty-rollup literal's keys against `AgentRollupMetrics(window_days=1.0, computed_at="x").to_dict().keys()` | mirrors the existing DORA drift guard |
 | Window is shared | request `window_days=7` | both `body["window_days"]` and `body["agent_rollup"]["window_days"]` are `7.0` |
+| The **clamped** window reaches the rollup, at both bounds | request `window_days=10000` and `window_days=0.5`; assert the nested `agent_rollup["window_days"]` is `365.0` and `1.0` respectively, **and** that the `cutoff` passed to the §4.1 reader corresponds to the clamped value (capture it via the patched read). The in-range `7` case above cannot catch this: an implementation that clamps for `compute_dora` but hands `_rollup_payload` the raw `window_days` passes it, then serves a 10,000-day aggregate while the payload beside it reports 365 — defeating the scan bound §3.3's precondition exists to enforce |
 
-**Two fake-cursor tests for the `statement_timeout` boundary**, in
-`test_observability_stores_pg.py` or a store-level unit test as convenient:
+**Three fake-cursor tests for the timeout boundary**, in
+**`test_observability_stores.py`** — the unit suite, deliberately *not* the `_pg`
+file, and no longer "as convenient". They use a fake cursor, so they need no live
+server; putting them in the integration-marked `_pg` file would exclude them from
+both the SE unit CI job (which runs `-m "not integration"`) and §5's coverage
+command, leaving the timeout branches outside the 90% floor the plan advertises.
+That hole is exactly what the earlier "or a store-level unit test as convenient"
+wording permitted:
 
 | Test | Asserts |
 |---|---|
 | Timeout is installed **before** the aggregate, at the **exact** clamped value | the fake cursor records `SET LOCAL statement_timeout = <ms>` as the *first* statement and the `GROUPING SETS` query strictly after it. **Assert the exact value, parameterized over `POSTGRES_STATEMENT_TIMEOUT_MS`** — unset → `5000`, `2500` → `2500`, `0` → `1000` (floor), `30000` → `10000` (ceiling). A range assertion like "inside `[1000, 10000]`" is not a test: an implementation that ignores the variable entirely and hardcodes `10000` passes it, while violating both the `5s` default and a `1.5s` operator setting |
 | Cancellation degrades, not raises | the fake cursor raises psycopg's query-cancelled error on the aggregate; the read returns the empty three-view shape and logs at **WARNING** (§4.1). Assert the level explicitly — `any(r.levelname == "WARNING" ... for r in caplog.records)`, not `caplog.at_level(logging.DEBUG)` — or the test passes against the silenced behaviour it exists to forbid |
+| The timeout is **derived** from the remaining budget | a stub pool that takes a measurable slice of the budget to acquire must yield a correspondingly *reduced* `SET LOCAL statement_timeout`, strictly less than the clamped budget. Without this the single-deadline contract in §3.5 is unverified, and an implementation that installs the full budget after a slow acquire — the exact overrun that contract exists to prevent — passes every other row here |
 
 These are not optional garnish. §3.5's cache deferral makes `statement_timeout` the
 **only** remaining mitigation on this path, and none of the other planned tests
@@ -666,9 +718,17 @@ So `.github/workflows/ci.yml` joins this story's file list, and **two edits are
 required, not one** — adding the file to the invocation alone still leaves the
 guard dormant:
 
-1. **Add the path to the invocation**:
-   `agents/software_engineering_team/tests/test_observability_stores_pg.py` on the
-   live-Postgres job's `-m integration` line.
+1. **Add the path to the invocation**, *relative to that job's working
+   directory*: `software_engineering_team/tests/test_observability_stores_pg.py`
+   on the live-Postgres job's `-m integration` line. **Not** the `agents/…`-prefixed
+   form used by §5's commands — `test-integration` sets
+   `working-directory: backend/agents` (ci.yml:1259-1262), so an `agents/…` path
+   resolves to `backend/agents/agents/…` and fails collection outright. The
+   convention is visible in the invocation's existing entry, quoted two paragraphs
+   above: `../unified_api/tests/test_integration_smoke.py`, sibling-relative from
+   `backend/agents`. §5's commands keep the `agents/…` prefix because they are run
+   from `backend/`; the two are different working directories, and the paths are
+   correctly different.
 2. **Make the job trigger for SE changes.** `test-integration` is gated on
    `needs.changes.outputs.needs_integration == 'true'` (line 1258), and that flag
    is computed as `needs_integration = fan_out_full or shared_backend`
@@ -689,13 +749,28 @@ adapter that maps only the columns it sees leaves it at its dataclass default `0
 while the percentiles beside it are real. `latency_ms` is `NOT NULL`, so every row
 in a group contributes a sample and the count equals `call_count` — the SQL names
 it explicitly (§3.5) and the test asserts it rather than trusting the mapping.
+**`cache_read_ratio` must be asserted too, in both branches.** It is the one
+derived field with real arithmetic behind it, and every listed assertion above
+passes while it is wrong: an adapter can use the wrong denominator (it is
+cache-read + cache-creation + **input** tokens, not just the cache columns), skip
+the 4-decimal rounding, or emit `0.0` where the contract requires `None`. Note the store/adapter split above changes this
+for the better: because `fetch_trace_rollup_rows` now yields **rows**, the
+endpoint's populated test patches rows and the adapter still runs, so the ratio is
+exercised there rather than stubbed past. That covers the shape; it does not cover
+agreement with Postgres, which is what the parity test is for. The live parity test
+compares it for a **nonzero-denominator group** and a
+**zero-denominator group**, the latter asserting `None` rather than a falsy number,
+since `0.0 == None` is False but `not 0.0` and `not None` are both True and a
+sloppy assertion would pass on either.
+
 `total_cost_usd` needs care,
 and the obvious formulation is wrong:
 
 **Compare the exposed values as integer microdollars, one unit apart at most.**
 Neither side exposes an unrounded sum to compare: `compute_from_traces` rounds
 internally (`total_cost_usd=round(math.fsum(costs), 6)`, `agent_rollup.py:193`) and
-the §4.1 reader returns already-shaped `CallRollup` dicts, also rounded. An earlier
+the §4.1 adapter (`rollup_from_aggregate_rows`) rounds identically, because it is
+the same `_rollup_for_group` arithmetic. An earlier
 draft asked for a `1e-9` bound on the pre-rounding values, which is not
 implementable without adding a raw-sum test seam to a pure function that has no
 other reason to grow one — not worth it for a bound nothing consumes.
