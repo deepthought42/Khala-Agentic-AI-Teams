@@ -415,3 +415,102 @@ def test_call_agent_with_no_system_prompt_builds_plain_string_agent(monkeypatch)
     assert captured["model"] == "some-model"
     assert captured["system_prompt"] == agent_module.WRITING_SYSTEM_PROMPT
     assert isinstance(captured["system_prompt"], str)
+
+
+# ---------------------------------------------------------------------------
+# The writer -> shared run_json_gate -> Agent seam.
+#
+# The fallback route is the one writer path whose Agent is constructed inside
+# a shared helper rather than in _call_agent. The tests around it stub either
+# side of that seam -- test_writer_interactive.py monkeypatches
+# _fallback_draft_via_json wholesale, and test_json_retry.py exercises
+# run_json_gate with no writer involved -- so nothing covers the composition.
+# ---------------------------------------------------------------------------
+
+
+def _record_json_retry_agents(monkeypatch, response: str) -> list:
+    """Replace ``shared.json_retry``'s ``Agent`` with a recorder; return its captures.
+
+    Preconditions:
+        - ``response`` is the text every constructed recorder returns when invoked.
+    Postconditions:
+        - Returns a list receiving one ``{"model", "system_prompt"}`` dict per
+          ``Agent(...)`` construction inside ``run_json_gate``, in order.
+    """
+    from agents.blogging.shared import json_retry
+
+    captured: list = []
+
+    class _RecordingAgent:
+        def __init__(self, *, model, system_prompt):
+            captured.append({"model": model, "system_prompt": system_prompt})
+
+        def __call__(self, prompt):
+            return response
+
+    monkeypatch.setattr(json_retry, "Agent", _RecordingAgent)
+    return captured
+
+
+def test_fallback_draft_via_json_reaches_the_agent_with_the_cached_segment(monkeypatch) -> None:
+    """Driving _fallback_draft_via_json through the *real* run_json_gate: the segment
+    list the caller hands it must survive the hop into the shared helper and land on
+    the Agent that helper constructs. This is the JSON-fallback route named in the
+    cached-segment work -- the path already recovering from a text-path failure, where
+    a silent loss of brand/style context would be hardest to notice."""
+    agent = make_writer_agent(
+        brand_spec_content="MyBrand: Test brand.",
+        writing_style_guide_content="Use concise, natural sentences.",
+    )
+    segments = agent._writing_system_prompt_with_content
+    # Guard: this agent has guideline text, so the helper returned the list form.
+    assert isinstance(segments, list)
+    captured = _record_json_retry_agents(monkeypatch, '{"draft": "# Recovered"}')
+
+    result = agent._fallback_draft_via_json("revise this", system_prompt=segments)
+
+    assert result == "# Recovered"
+    assert captured[0]["model"] is agent._model
+    assert captured[0]["system_prompt"] is segments
+
+
+def test_fallback_draft_via_json_without_guidelines_reaches_the_agent_with_a_plain_string(
+    monkeypatch,
+) -> None:
+    """Same seam, no-segments case: a writer with no brand/style content falls back to
+    the bare WRITING_SYSTEM_PROMPT string -- never a one-element content-block list --
+    so run_json_gate builds the Agent exactly as it did before caching."""
+    from agents.blogging.blog_writer_agent.prompts import WRITING_SYSTEM_PROMPT
+
+    agent = make_writer_agent(brand_spec_content="", writing_style_guide_content="   ")
+    captured = _record_json_retry_agents(monkeypatch, '{"draft": "# Recovered"}')
+
+    result = agent._fallback_draft_via_json("revise this")
+
+    assert result == "# Recovered"
+    assert captured[0]["system_prompt"] == WRITING_SYSTEM_PROMPT
+    assert isinstance(captured[0]["system_prompt"], str)
+
+
+def test_call_agent_rejects_a_blank_prompt_before_constructing_an_agent(monkeypatch) -> None:
+    """_call_agent's non-empty-prompt precondition must fire *before* the Agent is
+    built. Asserting only that it raises would stay green if the guard moved below
+    the construction, leaving a wasted client construction on the error path."""
+    import agents.blogging.blog_writer_agent.agent as agent_module
+
+    constructed: list = []
+
+    class _FakeAgent:
+        def __init__(self, *, model, system_prompt):
+            constructed.append(system_prompt)
+
+        def __call__(self, prompt):  # pragma: no cover - never reached
+            return "response"
+
+    monkeypatch.setattr(agent_module, "Agent", _FakeAgent)
+    a = make_writer_agent()
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        a._call_agent("some-model", "   ")
+
+    assert constructed == []

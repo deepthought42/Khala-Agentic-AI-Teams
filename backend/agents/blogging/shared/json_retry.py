@@ -36,6 +36,8 @@ from strands.types.exceptions import EventLoopException
 from llm_service import LLMJsonParseError, LLMRateLimitError, LLMTemporaryError
 from llm_service.util import extract_json_from_response
 
+from .system_prompt_assembly import SystemContentSegment
+
 AgentInvoker = Callable[[str], Any]
 """A callable that runs a single LLM turn, e.g. a ``strands.Agent`` instance: ``agent(prompt) -> result``."""
 
@@ -178,7 +180,7 @@ def _unwrap_event_loop_exception(exc: Exception) -> Exception:
 
 def run_json_gate(
     model: Any,
-    system_prompt: Union[str, List[Any]],
+    system_prompt: Union[str, List[SystemContentSegment]],
     prompt: str,
     *,
     strict_json_suffix: str = _DEFAULT_STRICT_JSON_SUFFIX,
