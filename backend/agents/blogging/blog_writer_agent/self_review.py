@@ -459,8 +459,11 @@ def self_review(
           prompt block, or ``""`` when no allowed-claims artifact was supplied;
           forwarded unchanged to both sub-steps.
         - ``stories_section`` is the caller's already-rendered author-stories context,
-          or ``""``; likewise forwarded unchanged to both sub-steps, so neither rewrite
-          can replace an author-supplied story with an ``[Author: ...]`` placeholder.
+          or ``""``; likewise forwarded unchanged to both sub-steps, so both rewrites run
+          with the evidence that the stories were supplied and are instructed to preserve
+          them rather than substitute an ``[Author: ...]`` placeholder — a prompt
+          instruction, not an enforced guarantee, as both sub-steps' own postconditions
+          say. Nothing here validates the model's output.
     Postconditions:
         - Returns the draft after applying any deterministic fixes and any
           LLM self-review fixes.

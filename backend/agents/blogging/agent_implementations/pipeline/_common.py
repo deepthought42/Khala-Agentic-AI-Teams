@@ -1440,7 +1440,7 @@ def _run_title_selection(
     return None
 
 
-def normalize_covered_sections(covered_sections: Optional[set]) -> Optional[list[str]]:
+def normalize_covered_sections(covered_sections: Optional[set[str]]) -> Optional[list[str]]:
     """Normalize ``PipelineContext.covered_sections`` for a writer input.
 
     Shared rather than written per stage: the draft prompt and the gate-driven rewrite

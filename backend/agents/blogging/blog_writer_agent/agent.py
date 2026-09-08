@@ -129,6 +129,26 @@ def _classify_allowed_claims(allowed_claims: Optional[dict]) -> str:
     return _CLAIMS_POLICY_POPULATED if has_usable_claim else _CLAIMS_POLICY_RESTRICTIVE
 
 
+def _has_usable_stories(elicited_stories: Optional[str]) -> bool:
+    """True when a non-blank author-stories blob was supplied.
+
+    Shared by both renderers below rather than written twice. Each of their docstrings
+    leans on this being *the same* gate — one calls it "the same safety gate the renderer
+    itself applies", the other calls it "load-bearing, not defensive tidiness" — and two
+    copies of the predicate would make that true only by convention. If one later learned
+    to treat, say, a blob of bare ``[Story for section: ...]`` headers as blank and the
+    other did not, the suppression block and the self-review context would gate on
+    different conditions and the block could travel without the stories it names.
+
+    Preconditions:
+        - ``elicited_stories`` is the author's stories blob, or ``None``.
+    Postconditions:
+        - Returns ``False`` for ``None``, empty, and whitespace-only input; ``True``
+          otherwise.
+    """
+    return bool(elicited_stories and elicited_stories.strip())
+
+
 def _render_self_review_stories_context(
     elicited_stories: Optional[str], covered_sections_section: str
 ) -> str:
@@ -160,7 +180,7 @@ def _render_self_review_stories_context(
           generation prompts), so the checker's reference to that section resolves,
           followed by ``covered_sections_section`` when it is non-empty.
     """
-    if not elicited_stories or not elicited_stories.strip():
+    if not _has_usable_stories(elicited_stories):
         return ""
     block = "---\nAUTHOR'S PERSONAL STORIES:\n" + elicited_stories
     if covered_sections_section:
@@ -260,7 +280,7 @@ def _render_covered_sections_section(
           that a named section whose story cannot be found in the stories block still
           gets a placeholder rather than an invented anecdote.
     """
-    if not elicited_stories or not elicited_stories.strip():
+    if not _has_usable_stories(elicited_stories):
         return ""
     titles = sorted(
         {" ".join(s.split()) for s in (covered_sections or []) if isinstance(s, str) and s.strip()}
@@ -627,8 +647,9 @@ class BlogWriterAgent(_BlogAgentBase):
             - When ``allowed_claims_section`` is non-empty, the fix prompt instructs
               the model to preserve existing ``[CLAIM:id]`` tags.
             - When ``stories_section`` is non-empty, the fix prompt carries the author's
-              stories, so this rewrite cannot mistake one for an unsupported story and
-              replace it with an ``[Author: ...]`` placeholder.
+              stories and instructs the model not to treat them as unsupported, i.e. not
+              to replace them with an ``[Author: ...]`` placeholder. Like the claims
+              block, a prompt instruction — this function does not check the rewrite.
             - On soft-fail (``LLMError`` excluding types re-raised below, or
               ``json.JSONDecodeError`` / ``TypeError`` / ``ValueError`` / ``AttributeError``),
               logs with traceback via ``logger.exception`` and returns the original ``draft``.
@@ -652,10 +673,19 @@ class BlogWriterAgent(_BlogAgentBase):
             - ``draft`` is a string (may be empty).
             - ``allowed_claims_section`` is an already-rendered allowed-claims prompt
               block (e.g. via ``_render_allowed_claims_section``), or ``""``.
+            - ``stories_section`` is an already-rendered author-stories context (e.g. via
+              ``_render_self_review_stories_context``), or ``""``.
         Postconditions:
             - On success, returns the reviewed/fixed draft or the original when no issues.
             - When issues are found and ``allowed_claims_section`` is non-empty, the fix
               prompt instructs the model to preserve existing ``[CLAIM:id]`` tags.
+            - When ``stories_section`` is non-empty, both the checker prompt and the fix
+              prompt carry the author's stories, so genuine author material is not
+              flagged as fabricated and rewritten into an ``[Author: ...]`` placeholder.
+              The checker needs it to answer its own first rule at all — it is asked for
+              narrative "not from the AUTHOR'S PERSONAL STORIES section" — and the fixer
+              to know those stories were supplied. A prompt instruction, not an enforced
+              guarantee.
             - If the response's JSON parses to a value that is not a list of issue
               dicts (e.g. a top-level object, or salvaged prose residue with no
               recoverable issues array), returns the original ``draft`` unchanged.
@@ -691,9 +721,11 @@ class BlogWriterAgent(_BlogAgentBase):
 
         ``stories_section`` is an already-rendered author-stories context (e.g. via
         ``_render_self_review_stories_context``), or ``""``; forwarded unchanged to
-        both sub-steps for the same reason in the other direction — neither rewrite
-        can replace an author-supplied story with an ``[Author: ...]`` placeholder,
-        which would undo the draft prompt's suppression before the draft is returned.
+        both sub-steps for the same reason in the other direction — so neither rewrite
+        is instructed to replace an author-supplied story with an ``[Author: ...]``
+        placeholder, which would undo the draft prompt's suppression before the draft
+        is returned. A prompt instruction in both directions, not an enforced outcome:
+        nothing here inspects what the model returns.
 
         Both sub-steps (``_fix_deterministic_violations``, ``_llm_self_review``)
         already return the original draft on their own soft-fail paths, so this
@@ -1087,6 +1119,9 @@ class BlogWriterAgent(_BlogAgentBase):
             revise_input,
             llm=self._model,
             allowed_claims_section=_render_allowed_claims_section(revise_input.allowed_claims),
+            covered_sections_section=_render_covered_sections_section(
+                revise_input.covered_sections, revise_input.elicited_stories
+            ),
         )
         current_draft = draft
         primary_succeeded = False

@@ -137,6 +137,8 @@ def _suppression_line(text: str) -> str:
 
 
 def test_render_returns_block_naming_covered_sections() -> None:
+    """The happy path: both covered sections named on the header line, and the
+    instruction that narrows placeholder emission present alongside them."""
     from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
 
     out = _render_covered_sections_section(["Intro", "Why it broke"], STORIES)
@@ -368,8 +370,16 @@ def test_revise_from_user_feedback_omits_suppression_without_stories(monkeypatch
 
 
 def _capture_batch_revise_prompt(**overrides) -> str:
-    """Build the batch-revise prompt directly, with any ``ReviseWriterInput`` override."""
+    """Build the batch-revise prompt directly, with any ``ReviseWriterInput`` override.
+
+    Renders ``covered_sections_section`` the way ``BlogWriterAgent.revise`` does and
+    passes it in: the builder takes the block pre-rendered, like its
+    ``allowed_claims_section`` sibling, so ``revision.py`` keeps the independence from
+    ``agent.py`` its module docstring claims. That the agent performs that render is
+    pinned separately by ``test_revise_renders_and_passes_the_suppression_block``.
+    """
     from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
+    from agents.blogging.blog_writer_agent.agent import _render_covered_sections_section
     from agents.blogging.blog_writer_agent.models import ReviseWriterInput
     from agents.blogging.blog_writer_agent.revision import build_revise_all_items_prompt
     from agents.blogging.shared.content_plan import ContentPlanSection
@@ -394,12 +404,16 @@ def _capture_batch_revise_prompt(**overrides) -> str:
     # one list and the model from another. The plan *text* stays a literal — it is a
     # separate argument from the ``content_plan`` model, so overriding ``content_plan``
     # is NOT consistency-safe here and no test does it.
+    revise_input = ReviseWriterInput(**kwargs)
     return build_revise_all_items_prompt(
         kwargs["draft"],
         kwargs["feedback_items"],
         "plan text",
-        ReviseWriterInput(**kwargs),
+        revise_input,
         llm=None,
+        covered_sections_section=_render_covered_sections_section(
+            revise_input.covered_sections, revise_input.elicited_stories
+        ),
     )
 
 
@@ -563,3 +577,46 @@ def test_run_self_review_prompts_are_byte_identical_without_stories(monkeypatch)
     # Guarded, so a run that stopped reaching self-review could not make this vacuous.
     _only_prompt_starting(baseline, "Fix ONLY these issues found during self-review")
     assert with_coverage == baseline
+
+
+def test_revise_renders_and_passes_the_suppression_block(monkeypatch) -> None:
+    """``build_revise_all_items_prompt`` no longer renders the block itself — it takes it
+    pre-rendered, like its ``allowed_claims_section`` sibling, so ``revision.py`` keeps
+    the independence from ``agent.py`` its module docstring claims. That moves the
+    derivation to ``revise()``, so this pins it there: real agent, real
+    ``ReviseWriterInput``, block present in the prompt actually sent."""
+    from agents.blogging.blog_copy_editor_agent.models import FeedbackItem
+    from agents.blogging.blog_writer_agent.agent import BlogWriterAgent
+    from agents.blogging.blog_writer_agent.models import ReviseWriterInput
+    from agents.blogging.shared.content_plan import ContentPlanSection
+
+    from ._content_plan_test_utils import make_content_plan
+
+    prompts = _capture_prompts(monkeypatch)
+    monkeypatch.setattr(
+        BlogWriterAgent,
+        "_call_agent_json",
+        lambda self, *a, **kw: {"summary": "s", "changes": [], "risks": []},
+    )
+
+    make_writer_agent().revise(
+        ReviseWriterInput(
+            draft="# Draft\n\nBody.",
+            feedback_items=[
+                FeedbackItem(
+                    category="style", severity="must_fix", issue="Tighten.", suggestion="Cut."
+                )
+            ],
+            content_plan=make_content_plan(
+                overarching_topic="Topic",
+                narrative_flow="flow",
+                sections=[ContentPlanSection(title="Intro", coverage_description="hook", order=0)],
+            ),
+            elicited_stories=STORIES,
+            covered_sections=["Why it broke", "Intro"],
+        )
+    )
+
+    batch_prompt = _only_prompt_starting(prompts, "YOUR TASK: Revise the draft")
+    assert _suppression_line(batch_prompt) == f"{SUPPRESSION_HEADER} Intro, Why it broke"
+    assert SUPPRESSION_INSTRUCTION in batch_prompt

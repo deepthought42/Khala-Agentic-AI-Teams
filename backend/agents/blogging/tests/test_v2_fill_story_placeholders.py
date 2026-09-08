@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 from agents.blogging.blog_writer_agent.models import WriterOutput
@@ -560,7 +561,9 @@ def test_fill_story_placeholders_rejects_draft_agent_without_revise_from_user_fe
         _fill_story_placeholders(**_valid_fill_kwargs(draft_agent=object()))  # type: ignore[arg-type]
 
 
-def _capture_revision_kwargs(monkeypatch, tmp_path, draft_input_kwargs) -> dict:
+def _capture_revision_kwargs(
+    monkeypatch, tmp_path, draft_input_kwargs: dict[str, Any]
+) -> dict[str, Any]:
     """Drive the helper's placeholder path once and return the revision call's kwargs."""
     import agents.blogging.agent_implementations.blog_writing_process_v2 as v2
     import agents.blogging.ghost_writer_agent as gw
@@ -574,7 +577,7 @@ def _capture_revision_kwargs(monkeypatch, tmp_path, draft_input_kwargs) -> dict:
         _make_stub_ghost(narrative="I once debugged a production outage.", rounds_used=2),
     )
 
-    captured: dict = {}
+    captured: dict[str, Any] = {}
 
     class _StubAgent:
         def revise_from_user_feedback(self, **kw):

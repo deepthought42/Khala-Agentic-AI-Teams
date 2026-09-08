@@ -119,6 +119,7 @@ def build_revise_all_items_prompt(
     *,
     llm: Any,
     allowed_claims_section: str = "",
+    covered_sections_section: str = "",
 ) -> str:
     """Build one revision prompt that applies every copy-editor feedback item.
 
@@ -135,6 +136,13 @@ def build_revise_all_items_prompt(
           allowed-claims prompt block (e.g. via
           ``agent._render_allowed_claims_section(revise_input.allowed_claims)``),
           or ``""`` when no allowed-claims artifact was supplied.
+        - ``covered_sections_section`` is the caller's already-rendered
+          placeholder-suppression block (e.g. via
+          ``agent._render_covered_sections_section(revise_input.covered_sections,
+          revise_input.elicited_stories)``), or ``""``. Caller-rendered for the same
+          reason as ``allowed_claims_section``, and so this module keeps the
+          independence its own docstring claims: ``agent`` imports it, so rendering
+          the block here would mean importing back into ``agent`` and closing a cycle.
     Postconditions:
         - Returns a prompt string embedding ``REVISION_TASK_INSTRUCTIONS``, the
           content plan, every feedback item formatted via
@@ -147,14 +155,10 @@ def build_revise_all_items_prompt(
           (capped at ``MAX_PREVIOUS_FEEDBACK_ITEMS``) is inserted after it;
           ``selected_title`` and ``elicited_stories`` are each appended as
           their own labeled section near the end (title before stories);
-          ``covered_sections`` is rendered via
-          ``agent._render_covered_sections_section`` (imported inside the function,
-          since ``agent`` imports this module) and appended as its own section
-          after ``elicited_stories``, naming the sections that already have an
-          author story so this rewrite does not re-introduce an ``[Author: ...]``
-          placeholder for one — omitted when it is absent, empty, or yields no
-          usable title, and whenever ``elicited_stories`` is absent or blank, since
-          the block must never claim a story the prompt does not also carry;
+          ``covered_sections_section`` is appended as its own section after
+          ``elicited_stories`` when non-empty, naming the sections that already
+          have an author story so this rewrite does not re-introduce an
+          ``[Author: ...]`` placeholder for one;
           ``allowed_claims_section`` is appended as its own section after
           ``elicited_stories`` and after the covered-sections block when both are
           present, when non-empty; and ``tone_or_purpose`` /
@@ -274,13 +278,6 @@ def build_revise_all_items_prompt(
     # which sections they already satisfy -- and the system prompt's standing
     # instruction to insert [Author: ...] could put a placeholder back on a section
     # whose story is in this very prompt.
-    # Imported here, not at module scope: agent.py does ``from . import revision``,
-    # so a module-level import back into it would be circular.
-    from .agent import _render_covered_sections_section
-
-    covered_sections_section = _render_covered_sections_section(
-        revise_input.covered_sections, revise_input.elicited_stories
-    )
     if covered_sections_section:
         prompt_parts.extend(["", covered_sections_section])
     if allowed_claims_section:

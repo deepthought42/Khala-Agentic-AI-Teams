@@ -93,8 +93,9 @@ class WriterInput(BaseModel):
           asks for a story: a named section gets no ``[Author: ...]`` placeholder
           because one is already supplied, while every section not named keeps the
           never-fabricate rule unchanged. It is therefore safe to leave unset —
-          ``None`` and ``[]`` both produce a prompt byte-identical to one built
-          without ``covered_sections`` — and it never licenses invented first-person
+          ``None``, ``[]``, and a list whose every entry is unusable all produce a
+          prompt byte-identical to one built without ``covered_sections`` — and it
+          never licenses invented first-person
           detail for any section, including a named one whose story cannot be found
           in ``elicited_stories``.
         - ``covered_sections`` is meaningful only alongside a non-blank
@@ -141,7 +142,7 @@ class WriterInput(BaseModel):
             "Plan section titles that already have an author story in elicited_stories. "
             "The draft prompt names them and suppresses the [Author: ...] placeholder for "
             "those sections only; every other section keeps the never-fabricate rule "
-            "unchanged. Absent or empty renders nothing, leaving the prompt "
+            "unchanged. Absent, empty, or containing no usable title (non-string, empty, and whitespace-only entries are skipped) renders nothing, leaving the prompt "
             "byte-identical to one built without this field."
         ),
     )
@@ -219,9 +220,9 @@ class ReviseWriterInput(BaseModel):
           instruction to insert ``[Author: ...]`` when no story was supplied could
           reintroduce a placeholder for a section whose story is in that very prompt.
         - As on ``WriterInput``, it only narrows where placeholders appear: unnamed
-          sections keep the never-fabricate rule, ``None``/``[]`` leave the prompt
-          byte-identical to one built without the field, and it is ignored without a
-          non-blank ``elicited_stories``.
+          sections keep the never-fabricate rule, ``None``/``[]``/a list with no
+          usable entry all leave the prompt byte-identical to one built without the
+          field, and it is ignored without a non-blank ``elicited_stories``.
     """
 
     draft: str = Field(..., description="The current draft to revise.")
@@ -271,7 +272,7 @@ class ReviseWriterInput(BaseModel):
             "Plan section titles that already have an author story in elicited_stories. "
             "The revision prompt names them and suppresses the [Author: ...] placeholder for "
             "those sections only; every other section keeps the never-fabricate rule "
-            "unchanged. Absent or empty renders nothing, leaving the prompt "
+            "unchanged. Absent, empty, or containing no usable title (non-string, empty, and whitespace-only entries are skipped) renders nothing, leaving the prompt "
             "byte-identical to one built without this field."
         ),
     )
