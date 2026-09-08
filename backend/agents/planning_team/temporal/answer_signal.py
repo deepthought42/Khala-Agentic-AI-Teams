@@ -133,6 +133,7 @@ def build_temporal_planning_answer_callback(
     submitted_answers: Optional[List[Dict[str, Any]]] = None,
     next_resume_token: Optional[Callable[[], str]] = None,
     allow_repause: bool = True,
+    on_defaulted: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
 ) -> Callable[[list], list]:
     """Build a ``Callable[[list], list]`` satisfying Planning's ``answer_callback``
     contract (``planning_team.orchestrator.resolve_pra_answers``), backed by the
@@ -162,6 +163,15 @@ def build_temporal_planning_answer_callback(
           pause again. Omitted, a re-pause reuses ``resume_token``, which is
           still preferable to answering a batch silently but leaves the two
           rounds sharing one token.
+        - ``on_defaulted``, when given, is a one-argument callable accepting the
+          list of answers this callback FABRICATED on a terminal round (never
+          the human's own answers, and never the combined list). It is the
+          caller's hook for recording that fact somewhere durable -- a
+          ``logger.warning`` inside an activity worker is not a record anything
+          downstream can read, and a defaulted plan that looks fully
+          human-answered in the job record is the silent auto-answer this
+          callback exists to prevent, merely relocated. It must not swallow its
+          own failures; see the postcondition below.
         - ``allow_repause`` is a bool. ``False`` forbids a further pause: when
           ``submitted_answers`` is provided, the callback resolves whatever it is
           handed, defaulting any unmatched question. It does NOT make the
@@ -198,7 +208,18 @@ def build_temporal_planning_answer_callback(
           runtime modes exist to prevent.
         - When any well-formed question has no matching answer and ``allow_repause``
           is false, ``cb`` returns the matches plus a defaulted answer per unmatched
-          question (see :func:`_default_answer`) and logs a warning naming them.
+          question (see :func:`_default_answer`), logs a warning naming them, and --
+          when ``on_defaulted`` was given -- calls it exactly once with just those
+          fabricated answers, in ``missing`` order, before returning. An exception
+          raised by ``on_defaulted`` PROPAGATES: it is not caught, and the callback
+          returns nothing. Swallowing it would produce the one outcome this whole
+          mechanism rules out -- a plan built on fabricated answers with no surviving
+          record that they were fabricated. Failing the round is recoverable; an
+          unrecorded default is not.
+        - ``on_defaulted`` is never called on any other path: not on the initial
+          pause callback, not on a round that resolves fully, and not on one that
+          re-pauses. Nothing was fabricated on those paths, and a caller must be
+          able to treat a call as proof that it was.
           The pause budget is spent, so the choice is between a defaulted answer and
           a sub-job that waits until it times out; a default that is announced beats
           a hang. The option it picks follows the same policy
@@ -219,6 +240,11 @@ def build_temporal_planning_answer_callback(
           so a duplicate satisfies both its required-coverage and unknown-id
           checks and is then stored verbatim. The first entry per id wins, in
           ``submitted_answers`` order.
+    Invariants:
+        - The callback never fabricates an answer while another pause round
+          remains. It defaults only on a round the caller has explicitly declared
+          terminal via ``allow_repause=False``, and every such default is reported
+          to ``on_defaulted`` when one was supplied.
     """
     assert isinstance(resume_token, str) and resume_token, (
         "build_temporal_planning_answer_callback requires a non-empty resume_token"
@@ -235,6 +261,10 @@ def build_temporal_planning_answer_callback(
         "build_temporal_planning_answer_callback requires next_resume_token to be a "
         "zero-argument callable that mints a FRESH token (e.g. pause_cycle."
         "mint_resume_token), or None"
+    )
+    assert on_defaulted is None or callable(on_defaulted), (
+        "build_temporal_planning_answer_callback requires on_defaulted to be a "
+        "one-argument callable receiving the fabricated answers, or None"
     )
 
     if submitted_answers is None:
@@ -282,7 +312,13 @@ def build_temporal_planning_answer_callback(
             len(missing),
             ", ".join(q["id"] for q in missing),
         )
-        return matched + [_default_answer(q) for q in missing]
+        defaulted = [_default_answer(q) for q in missing]
+        if on_defaulted is not None:
+            # Deliberately unguarded. A hook that fails silently leaves a plan
+            # built on fabricated answers with nothing anywhere saying so --
+            # exactly the failure the hook exists to close.
+            on_defaulted(defaulted)
+        return matched + defaulted
 
     return _resolved_cb
 

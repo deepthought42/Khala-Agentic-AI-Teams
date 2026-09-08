@@ -210,6 +210,16 @@ class JobStatusResponse(BaseModel):
         default=False,
         description="True when job is blocked waiting for user to answer pending questions.",
     )
+    defaulted_questions: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Clarification answers chosen by the system, not by a human. Non-empty only when "
+            "Planning exhausted its bounded pause budget and the final round defaulted the "
+            "questions nobody answered; each entry carries the question_id and the "
+            "selected_option_id that was picked. An empty list means every answer behind this "
+            "plan came from a person."
+        ),
+    )
     resume_token: Optional[str] = Field(
         default=None,
         description="Set only for a Temporal-native pause; the client must echo this back on "

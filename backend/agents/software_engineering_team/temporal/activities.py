@@ -562,7 +562,10 @@ def _plan_project_activity_body(
         ``allow_repause=False`` suppresses a *further* pause on a resume: the callback then
         resolves every batch with whatever answers match AND defaults every question left
         unanswered (see ``build_temporal_planning_answer_callback``'s ``_default_answer``),
-        logging a warning naming them. Defaulting is the load-bearing half: the answers
+        logging a warning naming them AND recording them on the job record's
+        ``defaulted_questions`` (surfaced by ``JobStatusResponse``), so a plan built
+        partly on machine-chosen answers says so where a human reads it rather than
+        only in a worker log line. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
         required, so resolving with only the matches would leave the sub-job waiting out its
         poll timeout instead of resuming. In the designed flow this returns a
@@ -623,6 +626,11 @@ def _plan_project_activity_body(
         # pause round needs its own token (mint_resume_token: never reused).
         next_resume_token=lambda: mint_resume_token(job_id),
         allow_repause=allow_repause,
+        # Overwrite, not append: the terminal round runs once per job, and this
+        # activity is retryable. Resolution is deterministic given the same
+        # submitted_answers and questions, so a retry recomputes the identical
+        # list -- appending would duplicate every entry instead.
+        on_defaulted=lambda defaulted: update_job(job_id, defaulted_questions=defaulted),
     )
 
     try:

@@ -31,12 +31,26 @@ durably (surviving worker restarts). This primitive is the reusable building
 block that lets a callback presented to Planning's code look synchronous
 while the actual wait happens at the workflow level.
 
-**Scope of this primitive** (issue-tracked): the signal/wait mixin and the
-`Callable[[list], list]` adapter, unit-tested in isolation. Wiring this into
-`planning_team/temporal/activities.py`'s `document_production_activity` (so a
-real workflow drives the pause loop end-to-end) is separate follow-on work —
-this primitive is deliberately usable by, but not yet used by, any concrete
-workflow class.
+**Where this is used today.** The SE team's `RunTeamWorkflowV2`
+(`software_engineering_team/temporal/workflows.py`) mixes in
+`PlanningAnswerSignalMixin` and drives a bounded pause loop
+(`MAX_PLANNING_PAUSE_ROUNDS`) against `plan_project_activity`, which builds the
+adapter and unwinds `PlanningAnswerPauseSignal` into `{"outcome": "paused"}`.
+
+**But the path is gated off, so none of it currently executes.**
+`plan_project_activity` passes `use_product_analysis=False` on the same
+`run_planning_workflow` call that supplies the callback, and
+`DocumentProductionAgent.run` reaches `answer_callback` only inside its
+`if use_product_analysis and run_pra and wait_pra:` branch;
+`planning_team.orchestrator`'s `resolve_pra_answers` call is the only consumer
+and sits behind that same branch. So on the live path the callback is built,
+passed, and never invoked — no pause is raised, the loop never iterates, the
+terminal default never fires. Treat everything below as describing behaviour
+that is implemented and tested but not yet reachable in production.
+
+Wiring this into `planning_team/temporal/activities.py`'s own
+`document_production_activity` (so Planning's *own* workflow drives a pause loop,
+rather than only the SE team's) remains separate follow-on work.
 
 ## Signal contract
 
@@ -117,20 +131,27 @@ clarification round before completing — each round has its own, unrelated
 stays true, which includes a second (or third) round with brand-new question
 IDs.
 
-A single `submitted_answers=<...>` "resolved" callback built once in step 4
-above cannot serve more than one round: called again with a later round's
-(different) question IDs, `build_temporal_planning_answer_callback`'s filter
-correctly finds no match and returns `[]` — by design, it never fabricates an
-answer for an unmatched question. But `_on_poll` treats an empty return as
-"nothing to submit yet" (`if answers: submit_product_analysis_answers(...)`)
-and just keeps polling, so the workflow never re-pauses for that second
-round; PRA's own `total_timeout` eventually expires the whole wait silently
-instead. The deferred wiring must therefore detect, on each `answer_callback`
-invocation, whether the current `questions` batch is the one already resolved
-or a **new** one — and for a new batch, raise a fresh
-`PlanningAnswerPauseSignal` with a new `resume_token` (re-arming
-`wait_for_planning_answers`) rather than reusing the one-shot resolved
-callback for the rest of the phase.
+**This is handled now; the paragraph below records what it used to do and why
+the current shape exists.** An earlier version of the resolved callback returned
+`[]` when a later round's question IDs matched nothing, and `_on_poll` treats an
+empty return as "nothing to submit yet"
+(`if answers: submit_product_analysis_answers(...)`) — so it just kept polling,
+the workflow never re-paused, and PRA's own `total_timeout` expired the whole
+wait silently.
+
+The resolved callback now re-pauses instead: any well-formed question with no
+matching answer raises a fresh `PlanningAnswerPauseSignal`, on a newly minted
+token when `next_resume_token` was supplied, re-arming
+`wait_for_planning_answers` for the new batch. That covers both "the submitter
+skipped this one" and "the replay opened a question nobody has seen."
+
+**Re-pausing alone does not guarantee convergence**, which is why the terminal
+round exists. Planning's question IDs come straight from LLM output
+(`question_processing.parse_open_question`) and a resume replays Planning from
+scratch, so a re-run can mint fresh IDs for questions the user already answered
+and every round would then pause on the next batch forever. The caller therefore
+bounds the loop — `RunTeamWorkflowV2` at `MAX_PLANNING_PAUSE_ROUNDS` — and passes
+`allow_repause=False` on its final round.
 
 ## Open problem for the deferred wiring work: a rejected submission looks the same as success
 

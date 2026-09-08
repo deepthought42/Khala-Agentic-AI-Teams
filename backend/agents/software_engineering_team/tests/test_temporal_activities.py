@@ -1206,6 +1206,72 @@ def test_plan_project_activity_final_round_resolves_a_drifted_question_instead_o
     assert job["pending_questions"] == []
     assert job["resume_token"] is None
 
+    # The whole justification for defaulting rather than hanging is that the
+    # choice is announced. A worker log line is not an announcement anything
+    # downstream can read, so the activity records it on the job -- and
+    # build_job_status_response surfaces it from there.
+    assert job["defaulted_questions"] == [
+        {"question_id": "q1-regenerated", "selected_option_id": None, "other_text": None}
+    ]
+
+
+def test_plan_project_status_omits_defaults_when_a_human_answered_everything(
+    tmp_path, patched_job_store
+) -> None:
+    """An empty ``defaulted_questions`` is a claim, not an absence: every answer
+    behind this plan came from a person. It must be an empty list rather than a
+    missing key or None, so a client can read it without special-casing the
+    common path.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-clean", repo_path=str(tmp_path), job_type="run_team")
+
+    assert build_job_status_response("pp-clean", js.get_job("pp-clean")).defaulted_questions == []
+
+
+def test_plan_project_status_surfaces_defaulted_questions(tmp_path, patched_job_store) -> None:
+    """The persisted record has to reach the client. ``build_job_status_response``
+    assembles an explicit payload dict, so a field absent from it is dropped
+    silently -- the audit trail would stop at the job record and the UI would show
+    a plan that looks fully human-answered.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-defaulted", repo_path=str(tmp_path), job_type="run_team")
+    js.update_job(
+        "pp-defaulted",
+        defaulted_questions=[{"question_id": "q9", "selected_option_id": "opt-b"}],
+    )
+
+    response = build_job_status_response("pp-defaulted", js.get_job("pp-defaulted"))
+
+    assert response.defaulted_questions == [{"question_id": "q9", "selected_option_id": "opt-b"}]
+
+
+def test_plan_project_status_degrades_a_malformed_defaulted_questions_value(
+    tmp_path, patched_job_store
+) -> None:
+    """A status endpoint that 500s on a corrupt record tells the user nothing.
+    A non-list, and non-dict entries inside a list, degrade to what a job that
+    defaulted nothing reports.
+    """
+    from software_engineering_team.api.state import build_job_status_response
+    from software_engineering_team.shared import job_store as js
+
+    js.create_job("pp-garbled", repo_path=str(tmp_path), job_type="run_team")
+    js.update_job("pp-garbled", defaulted_questions="not-a-list")
+    assert (
+        build_job_status_response("pp-garbled", js.get_job("pp-garbled")).defaulted_questions == []
+    )
+
+    js.update_job("pp-garbled", defaulted_questions=[{"question_id": "q1"}, "junk", 7])
+    assert build_job_status_response(
+        "pp-garbled", js.get_job("pp-garbled")
+    ).defaulted_questions == [{"question_id": "q1"}]
+
 
 def test_plan_project_activity_retry_reemits_persisted_pause_without_rerunning(
     monkeypatch, tmp_path, patched_job_store

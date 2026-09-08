@@ -3233,3 +3233,70 @@ resolved by the round-advancement proxy above; #7445-B inherits it knowingly.
   (`test_workflow_pauses_then_resumes_to_completion_via_signal`,
   `test_workflow_survives_worker_restart_while_paused_with_buffered_signal`,
   `test_workflow_resumes_via_early_signal_buffered_before_pause_processed`).
+
+---
+
+## 7. Addendum — 2026-09-08: what actually shipped
+
+This section is appended, not merged into the sections above, so the record shows where the
+implementation departed from the design and why. **Where this addendum and an earlier section
+disagree, this addendum describes the code.**
+
+### 7.1 The never-fabricate rule is bounded to non-terminal rounds
+
+§3 and §5 frame the primitive around never proceeding without a real answer. The shipped
+`build_temporal_planning_answer_callback` honours that while another pause round remains, and
+deliberately does **not** on a round the caller declares terminal via `allow_repause=False`: it
+defaults every unanswered question and returns a complete set.
+
+The reason is a convergence problem this spec did not anticipate. Planning's question ids come
+straight from LLM output (`product_requirements_analysis_agent.question_processing.parse_open_question`)
+and a resume replays Planning from scratch, so a re-run can mint fresh ids for questions the user
+has already answered. An unbounded pause loop therefore never converges — every round pauses on a
+newly-minted batch — and PRA's sub-job waits out its own `total_timeout` while nobody is left to
+answer it. `RunTeamWorkflowV2` bounds the loop at `MAX_PLANNING_PAUSE_ROUNDS` and spends its last
+round with `allow_repause=False`; that flag is the loop's termination proof, not an optimisation.
+
+So the choice on the final round is not *guess vs. wait*. It is *guess vs. hang*. The amended rule:
+
+> The adapter never fabricates an answer while another pause round remains. It defaults only on a
+> round the caller has explicitly declared terminal, and every defaulted question is reported to
+> the caller for persistence.
+
+The reporting half is what makes the exception acceptable, and is enforced in code rather than by
+convention: `on_defaulted` receives exactly the fabricated answers, `plan_project_activity` writes
+them to the job record's `defaulted_questions`, and `JobStatusResponse` returns them, so a plan
+built partly on machine-chosen answers says so where a human reads it. A hook that raises is not
+caught — an unrecorded default is the failure this exists to prevent, and failing the round is the
+recoverable half of that trade.
+
+### 7.2 The wire contract diverged from §4.1 — read this before wiring any answers route
+
+§4.1 mandates `@workflow.signal(name="submit_answers")` and extends the payload with
+`selected_option_ids: List[str]` for `allow_multiple=True` questions. **Neither shipped.** What
+exists today:
+
+| Registration | Signal name | State |
+|---|---|---|
+| `RunTeamWorkflowV2` via `PlanningAnswerSignalMixin` | `submit_planning_answers` | Live — drives the pause loop; `software_engineering_team/api/routes/hitl.py::submit_pending_answers` signals this name |
+| `PlanningWorkflow` via `shared/hitl/temporal_signal.py::HitlAnswerSignalMixin` | `submit_answers` | Registered but dormant — `run()` never awaits `wait_for_answers`, so no phase arms a pause |
+| §4.1 as written | `submit_answers` + `selected_option_ids` | Unimplemented — `shared/hitl/models.py::AnswerSubmission` still carries only `question_id`/`selected_option_id`/`other_text` |
+
+**Consequence.** An implementer who builds a Planning answers route from §4.1 as written will
+signal `submit_answers` at a workflow that registers only `submit_planning_answers`. Temporal
+records the signal and delivers it to no handler — precisely the silent-undeliverable failure §4.3
+warns about — and the pause never resolves. `PlanningWorkflow` does register `submit_answers`, but
+nothing behind it arms a pause, so signalling that workflow type resolves nothing either.
+
+Converging the names (and the three copies of the state machine: `CodingTeamWorkflow`'s inline one,
+`PlanningAnswerSignalMixin`, and the shared `HitlAnswerSignalMixin`) is tracked follow-up work, not
+resolved here — it needs a `workflow.patched` migration for histories already recorded against the
+live name. Until then, **the shipped name is the one to signal.**
+
+### 7.3 The Planning path is gated off
+
+`plan_project_activity` passes `use_product_analysis=False` on the same `run_planning_workflow`
+call that supplies the callback, and `DocumentProductionAgent.run` reaches `answer_callback` only
+inside its `if use_product_analysis and run_pra and wait_pra:` branch. The pause loop, the re-pause
+path, and the terminal default are implemented and tested, but unreachable in production until that
+gate opens. Nothing here describes behaviour users are currently experiencing.

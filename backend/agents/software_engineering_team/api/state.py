@@ -18,7 +18,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -250,6 +250,28 @@ def _coerce_progress(value: Any) -> Optional[int]:
     return coerce_progress(value)
 
 
+def _coerce_defaulted_questions(value: Any) -> List[Dict[str, Any]]:
+    """Coerce a stored ``defaulted_questions`` value into a list of dicts.
+
+    Postconditions: always returns a list. A missing key, a non-list, or a list
+    with non-dict entries degrades to the entries that are usable (an empty list
+    when none are), never a 500 and never a ``None`` the response model would
+    reject. The field is written by
+    ``build_temporal_planning_answer_callback``'s ``on_defaulted`` hook, but this
+    reads the job store, where an older record predating the field, or one
+    written by a future caller, is equally possible.
+
+    An empty result is meaningful and not merely an absence: it is the claim that
+    every answer behind this plan came from a person. That is why a malformed
+    stored value degrades to empty rather than raising -- a status endpoint that
+    500s tells the user nothing, while an empty list matches what a job that never
+    defaulted anything reports, which is the overwhelmingly common case.
+    """
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
+
+
 def _coerce_current_activity(value: Any) -> Optional[CurrentActivityEntry]:
     """Coerce a stored current_activity value into the response model, or None.
 
@@ -357,6 +379,10 @@ def build_job_status_response(job_id: str, data: Dict[str, Any]) -> JobStatusRes
         "waiting_for_answers": (
             False if answers_accepted else bool(data.get("waiting_for_answers", False))
         ),
+        # Not cleared by answers_accepted, unlike the pause envelope above: a
+        # default that was applied stays applied, and the record of it must outlive
+        # the pause that produced it.
+        "defaulted_questions": _coerce_defaulted_questions(data.get("defaulted_questions")),
         "resume_token": None if answers_accepted else resume_token,
         "planning_subprocess": data.get("planning_subprocess"),
         "planning_completed_phases": data.get("planning_completed_phases") or [],
