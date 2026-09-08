@@ -510,6 +510,23 @@ def _starvation(spec, market_data=_MD):
     return PredicateReachabilityProbe().check_starvation(spec, market_data)
 
 
+def _warmup_shadowed_spec(**kwargs) -> StrategySpec:
+    """Spec whose entry[1] is selectable ONLY while entry[0] is warming up.
+
+    entry[0] needs a 200-bar sma, so it is warming across the fixture's first
+    199 bars; entry[1] (``_BROAD``) fires from bar 51 and, once that sma is
+    warm, entry[0] covers it on every remaining bar. That leaves 148 prefix
+    bars where first-match priority selects entry[1]. Several tests read the
+    emitted wording off exactly this pair, so it lives here rather than inline
+    in each of them.
+    """
+    return _spec(
+        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
+        extra_entries=[_entry(_BROAD)],
+        **kwargs,
+    )
+
+
 def test_genuinely_starved_second_rule_is_reported() -> None:
     # Broad-then-narrow: entry[1]'s firing set is a strict subset of entry[0]'s,
     # so it can never win the first-match-wins scan.
@@ -713,10 +730,7 @@ def test_rule_shadowed_only_after_an_earlier_rule_warms_up_is_a_warning_not_a_cr
     # still warming up, so `evaluate_entry_rules` returns entry[1] and the
     # engine opens positions from it — calling it starved ("contributes no
     # entries") would be a false critical.
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec()
     results = _starvation(spec)
     assert [(r.severity, r.rule_id) for r in results] == [("warning", "entry[1]")]
     detail = results[0].details
@@ -733,10 +747,7 @@ def test_warmup_only_finding_scopes_its_claim_to_the_backtest_and_names_paper_tr
     # a property of that run's prime length, not a second absolute: the API
     # permits warmup_bars=0, and LiveStream._warmup then skips priming
     # entirely, leaving the earlier rule warming up on live executable bars.
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec()
     detail = _starvation(spec)[0].details
     assert "in THIS backtest" in detail
     assert "depends on the run's priming" in detail
@@ -752,10 +763,7 @@ def test_warmup_only_finding_claims_selection_not_a_filled_order() -> None:
     # evaluating entry rules while the symbol holds a position or a pending
     # entry, and a matched entry can be risk-sized to zero. The finding must
     # claim the former and disclaim the latter.
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec()
     detail = _starvation(spec)[0].details
     assert "first-match priority selects" in detail
     assert "does not model" in detail
@@ -767,10 +775,7 @@ def test_warmup_only_finding_quotes_no_paper_trade_prime_length() -> None:
     # The paper warm-up default lives in PaperTradeConfig, another layer's
     # config. A figure copied into author-facing text would go stale silently,
     # so the wording stays conditional and names no bar count.
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec()
     detail = _starvation(spec)[0].details
     assert "500" not in detail
     assert "a prime long enough to warm the earlier rules" in detail
@@ -781,11 +786,7 @@ def test_warmup_only_finding_conditions_the_selection_claim_on_the_custom_path()
     # maybe_emit returns on its first guard and these rules are never evaluated.
     # A trailing "the executed code may differ" note cannot repair a sentence
     # that already asserted the selection happened, so the claim is conditioned.
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        custom=True,
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec(custom=True)
     results = _starvation(spec)
     assert [r.severity for r in results] == ["warning"]
     detail = results[0].details
@@ -795,10 +796,7 @@ def test_warmup_only_finding_conditions_the_selection_claim_on_the_custom_path()
 
 
 def test_warmup_only_finding_claims_selection_plainly_on_the_compiled_path() -> None:
-    spec = _spec(
-        Predicate(lhs="bar.close", op=">", rhs=_sma(200)),
-        extra_entries=[_entry(_BROAD)],
-    )
+    spec = _warmup_shadowed_spec()
     detail = _starvation(spec)[0].details
     assert "in THIS backtest it is the rule first-match priority selects" in detail
     assert "WOULD select" not in detail
@@ -1008,6 +1006,27 @@ def test_starved_and_thin_findings_both_use_the_split_evidence_clause() -> None:
         detail = results[0].details
         assert "every one of them on the warmup prefix" in detail
         assert "not at all across the 30 bar(s)" in detail
+
+
+def test_coverage_clause_names_the_fires_rather_than_leaning_on_a_pronoun() -> None:
+    # Every _fire_evidence_text shape ends on a bar count, so a following "them"
+    # attaches to the bars — and in the prefix-only shape that reads as "an
+    # earlier rule fires on every one of the 30 bars where every earlier rule is
+    # warm", contradicting the clause it follows. Both rungs name the fires.
+    warming = ["warmup"] * 40 + ["miss"] * 30
+    for satisfied, expect_severity, verb in (
+        (range(0, 40), "critical", "is covered by"),
+        (range(0, 4), "info", "is also covered by"),
+    ):
+        v = _verdict(_pattern(70, satisfied), warming, _pattern(70, satisfied))
+        results = PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        assert [r.severity for r in results] == [expect_severity]
+        detail = results[0].details
+        assert f"every earlier rule is warm, and every one of those fires {verb}" in detail
+        assert "rule fires on every one of them" not in detail
+        assert "is warm, all of them" not in detail
 
 
 def test_conclusive_prefix_coverage_is_not_gated_by_the_steady_state_bar_floor() -> None:

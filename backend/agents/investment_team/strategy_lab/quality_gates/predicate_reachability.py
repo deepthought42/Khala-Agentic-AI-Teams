@@ -230,8 +230,9 @@ class _RuleStarvation:
     rule before it are post-warmup — the steady-state window, where every
     earlier rule is actually able to compete for priority.
 
-    :attr:`warmup_independent_fires` is the one field counted OUTSIDE that
-    window, and it exists because the steady-state window alone cannot answer
+    The four ``warmup_*`` fields are the ones counted OUTSIDE that window,
+    over the warmup prefix — the bars where at least one earlier rule is still
+    warming up. They exist because the steady-state window alone cannot answer
     the question the finding claims to answer. ``evaluate_entry_rules`` selects
     a rule only on ``"satisfied"``, so an earlier rule that is still warming up
     does NOT win its bar — and in the backtest this probe gates, every bar
@@ -241,8 +242,20 @@ class _RuleStarvation:
     short-circuit in ``_process_bar_strategy_response``. A rule that fires on
     the warmup prefix while no earlier rule is satisfied is therefore the rule
     first-match priority SELECTS there, however thoroughly the steady-state
-    window shadows it. Counting those bars is what keeps :attr:`verdict` from
-    claiming a rule is never the selection when it demonstrably is.
+    window shadows it — :attr:`warmup_independent_fires`. Counting those bars
+    is what keeps :attr:`verdict` from claiming a rule is never the selection
+    when it demonstrably is.
+
+    The prefix supplies the opposite evidence just as readily, and the other
+    three fields carry it. A prefix fire that an earlier rule DOES cover is
+    permanent shadowing: :attr:`warmup_covered_fires` counts it and
+    :attr:`warmup_coverage` attributes it, feeding :attr:`covered_fires` and
+    :attr:`combined_coverage`. :attr:`warmup_conclusive_bars` is what makes
+    that judgeable at all — the prefix bars a satisfied earlier rule settles
+    whatever is still warming there — and feeds :attr:`judged_bars`. The two
+    windows have different denominators, so no clause may pair a count from one
+    with a window or a coverage set from the other; each property above states
+    which window it spans.
 
     Selection is the most this can prove, and the most the finding claims.
     ``_EngineEntryDispatcher.maybe_emit`` returns before evaluating entry rules
@@ -272,9 +285,12 @@ class _RuleStarvation:
 
     Invariants: ``rule_index >= 1`` (rule 0 has nothing before it and can never
     be starved); ``0 <= independent_fires <= fires <= evaluated``;
-    ``warmup_independent_fires >= 0``; ``coverage`` is ordered by descending
-    covered-fire count then ascending rule index, and holds only earlier rules
-    that covered at least one fire — enforced in :meth:`__post_init__`.
+    ``warmup_independent_fires >= 0``; ``0 <= warmup_covered_fires <=
+    warmup_conclusive_bars`` (every covered prefix fire lands on a prefix bar
+    some satisfied earlier rule settles); ``coverage`` and ``warmup_coverage``
+    hold only rules listed before ``rule_index`` that covered at least one fire
+    in their own window; ``coverage`` is ordered by descending covered-fire
+    count then ascending rule index — all enforced in :meth:`__post_init__`.
     """
 
     rule_index: int
@@ -961,7 +977,7 @@ class PredicateReachabilityProbe(GateResultsMixin):
                     results.append(
                         self._info(
                             f"Entry rule {rule_id} (side={v.side}): {_fire_evidence_text(v)}, "
-                            f"all of them also covered by an earlier rule "
+                            f"and every one of those fires is also covered by an earlier rule "
                             f"({_coverage_text(v.combined_coverage)}) — fewer than "
                             f"{_MIN_STARVATION_FIRES} covered fires is too few to separate "
                             "structural starvation from a merely rarely-firing rule, so it is "
@@ -1002,8 +1018,8 @@ class PredicateReachabilityProbe(GateResultsMixin):
                 elif kind == "starved":
                     detail = (
                         f"Entry rule {rule_id} (side={v.side}) is structurally starved: "
-                        f"{_fire_evidence_text(v)}, and an earlier, higher-priority rule fires "
-                        f"on every one of them "
+                        f"{_fire_evidence_text(v)}, and every one of those fires is covered "
+                        f"by an earlier, higher-priority rule "
                         f"({_coverage_text(v.combined_coverage)}) — under first-match-wins "
                         f"priority "
                         f"{rule_id} is never the rule selected, so it contributes no entries as "
@@ -1105,6 +1121,11 @@ def _fire_evidence_text(v: _RuleStarvation) -> str:
       * prefix fires only — states the total and that the steady-state window
         saw none, so the window is still reported rather than silently dropped.
       * both — gives the total once and then each part with its own window.
+
+    Every shape ends on a bar count, so a caller appending a clause about the
+    FIRES must name them ("every one of those fires") rather than lean on a
+    pronoun: "every one of them" attaches to the nearest plural, the bars, and
+    in the prefix-only shape then contradicts the sentence it follows.
     """
     assert v.covered_fires, "fire evidence requires at least one covered fire"
     if not v.warmup_covered_fires:
