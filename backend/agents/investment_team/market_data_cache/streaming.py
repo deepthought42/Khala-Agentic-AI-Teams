@@ -35,7 +35,7 @@ from ..trading_service.providers.base import ProviderAdapter
 from .store import (
     MarketDataCache,
     SnapshotMeta,
-    _reconcile_snapshot_hash,
+    _reconcile_snapshot,
     compute_dataset_fingerprint,
     get_default_cache,
 )
@@ -175,8 +175,11 @@ class CachingProviderHistoricalStream:
             # Reconcile the per-snapshot sha256 with the read-repaired bars so
             # snapshots[sym].sha256 and the recomputed dataset_fingerprint
             # identify the same (canonical) replayed dataset for a legacy
-            # snapshot whose stored hash was over raw non-finite volume.
-            meta = _reconcile_snapshot_hash(meta, bars)
+            # snapshot whose stored hash was over raw non-finite volume, and
+            # the recorded coverage with the bars' real span so a snapshot
+            # written from a truncated fetch does not report the full
+            # requested window.
+            meta = _reconcile_snapshot(meta, bars)
             trimmed = [b for b in bars if self._start <= b.date <= self._end]
             per_symbol_bars[sym] = trimmed
             snapshots[sym] = meta
