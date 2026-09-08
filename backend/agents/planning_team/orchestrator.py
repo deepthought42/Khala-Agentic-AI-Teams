@@ -125,7 +125,7 @@ def run_workflow(
         wait_for_ai_systems_build_completion,
         wait_for_product_analysis_completion,
     )
-    from planning_team.exceptions import PlanningAnswerPauseSignal
+    from planning_team.exceptions import PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded
     from planning_team.phases import (
         run_discovery,
         run_document_production,
@@ -246,6 +246,12 @@ def run_workflow(
         # raises this as its "no answer yet" control-flow signal — it must reach the
         # caller (an activity boundary) unconverted, not be folded into a normal
         # success=False failure result like every other exception here.
+        raise
+    except PlanningDefaultsNotRecorded:
+        # Same reasoning, opposite case: the terminal round DID fabricate answers and
+        # could not record that it did. Folding it into a success=False result would
+        # report a generic planning failure; re-raising fails the activity, which
+        # Temporal retries against a record the terminal attempt already cleared.
         raise
     except Exception as e:
         logger.exception("Planning workflow failed")

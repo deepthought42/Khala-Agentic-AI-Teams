@@ -1376,6 +1376,36 @@ def test_a_terminal_attempt_clears_defaults_it_does_not_reproduce(
     assert js.get_job("pp-stale")["defaulted_questions"] == []
 
 
+def test_a_failed_audit_write_raises_a_passthrough_exception(tmp_path, patched_job_store) -> None:
+    """The hook must fail the round, and only one exception type actually does.
+
+    ``poll_until_terminal`` folds an ordinary ``on_poll`` exception into a failed
+    status and ``DocumentProductionAgent.run`` logs that and carries on, so a plain
+    raise would ship fabricated answers with no record of them. Both boundaries pass
+    ``PlanningDefaultsNotRecorded`` through instead.
+    """
+    from unittest.mock import patch
+
+    from planning_team.exceptions import PlanningDefaultsNotRecorded
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-writefail", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-writefail")
+
+    with patch(
+        "software_engineering_team.temporal.activities.update_job",
+        side_effect=RuntimeError("job store down"),
+    ):
+        with pytest.raises(PlanningDefaultsNotRecorded) as exc:
+            record([{"question_id": "q1", "question_text": "T", "selected_option_id": "a"}])
+
+    assert exc.value.job_id == "pp-writefail"
+    assert exc.value.record_count == 1
+    # The original failure is preserved for whoever debugs the retry.
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
 def test_record_defaulted_questions_requires_a_job_id() -> None:
     """A blank job_id would silently write nowhere, leaving the terminal round's
     fabrication unrecorded -- the one outcome this hook exists to rule out.

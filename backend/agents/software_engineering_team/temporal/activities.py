@@ -567,9 +567,21 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
     accumulated: Dict[tuple, Dict[str, Any]] = {}
 
     def _record(records: List[Dict[str, Any]]) -> None:
+        from planning_team.exceptions import PlanningDefaultsNotRecorded
+
         for rec in records:
             accumulated[(rec.get("question_id"), rec.get("question_text"))] = rec
-        update_job(job_id, defaulted_questions=list(accumulated.values()))
+        try:
+            update_job(job_id, defaulted_questions=list(accumulated.values()))
+        except Exception as exc:
+            # Re-raised as a passthrough type, not left as-is: poll_until_terminal
+            # folds an ordinary on_poll exception into a failed status and
+            # DocumentProductionAgent.run logs that and carries on, so a plain
+            # raise here would produce a successful activity with fabricated
+            # answers and no record of them -- the exact failure this hook exists
+            # to prevent. PlanningDefaultsNotRecorded is passed through both
+            # boundaries and fails the activity, which Temporal then retries.
+            raise PlanningDefaultsNotRecorded(job_id, len(records), exc) from exc
 
     return _record
 
@@ -618,7 +630,9 @@ def _plan_project_activity_body(
         accumulates (see ``_record_defaulted_questions``) -- the hook fires per
         round, not per execution. A terminal attempt clears the field before it runs,
         so a retry whose replay needs no defaults does not inherit the previous
-        attempt's records. Defaulting is the load-bearing half: the answers
+        attempt's records. A failed audit write raises ``PlanningDefaultsNotRecorded``,
+        which both the PRA poll loop and ``run_workflow`` pass through, so it fails
+        this activity rather than degrading into a warning. Defaulting is the load-bearing half: the answers
         route rejects a batch missing any required question and every PRA question is
         required, so resolving with only the matches would leave the sub-job waiting out its
         poll timeout instead of resuming. In the designed flow this returns a

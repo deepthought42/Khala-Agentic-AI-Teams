@@ -272,11 +272,21 @@ def build_temporal_planning_answer_callback(
           audit records for just those fabricated answers, in ``missing`` order,
           before returning. Once per batch is not once per callback: see the
           precondition above. An exception
-          raised by ``on_defaulted`` PROPAGATES: it is not caught, and the callback
-          returns nothing. Swallowing it would produce the one outcome this whole
-          mechanism rules out -- a plan built on fabricated answers with no surviving
-          record that they were fabricated. Failing the round is recoverable; an
-          unrecorded default is not.
+          raised by ``on_defaulted`` PROPAGATES out of THIS function: it is not
+          caught here, and the callback returns nothing. Swallowing it would produce
+          the one outcome this whole mechanism rules out -- a plan built on fabricated
+          answers with no surviving record that they were fabricated.
+
+          **Propagating out of here is not the same as failing the round, and a hook
+          author must not assume it is.** Two boundaries downstream convert a raised
+          exception into a warning: ``poll_until_terminal`` folds any ``on_poll``
+          exception outside its ``passthrough_exceptions`` into a failed status, and
+          ``DocumentProductionAgent.run`` logs a failed PRA status and carries on
+          producing a plan. A hook that raises a plain ``RuntimeError`` therefore
+          yields a *successful* activity with fabricated answers and no record of
+          them. A hook whose failure must actually stop the round has to raise a type
+          both boundaries pass through -- ``planning_team.exceptions.PlanningDefaultsNotRecorded``
+          exists for exactly this, and the activity-side hook uses it.
           The pause budget is spent, so the choice is between a defaulted answer and
           a sub-job that waits until it times out; a default that is announced beats
           a hang. The option it picks follows the same policy

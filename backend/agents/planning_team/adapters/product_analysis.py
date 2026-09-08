@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from planning_team.adapters._base import BaseAdapter
-from planning_team.exceptions import PlanningAnswerPauseSignal
+from planning_team.exceptions import PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded
 from shared.http.job_polling import get_json, poll_until_terminal, post_json
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,11 @@ def wait_for_product_analysis_completion(
     Returns final status dict; status key is 'completed' or 'failed'.
 
     Raises:
+        PlanningDefaultsNotRecorded: when a terminal-round ``answer_callback`` fabricated
+            answers but its audit hook could not persist them. Whitelisted through
+            ``poll_until_terminal`` for the same reason as the pause signal: folded into
+            a failed status it would surface only as a warning while the plan ships,
+            leaving fabricated answers unrecorded.
         PlanningAnswerPauseSignal: when a durable-HITL ``answer_callback`` signals that
             no answer is available yet. It is whitelisted through ``poll_until_terminal``
             deliberately, for a Temporal activity boundary to catch and translate into a
@@ -121,6 +126,11 @@ def wait_for_product_analysis_completion(
         # Temporal activity boundary to translate into a paused result. Without
         # this it would be swallowed into a failed status here and the pause would
         # never happen -- the whole feature inert, silently.
-        passthrough_exceptions=(PlanningAnswerPauseSignal,),
+        # PlanningDefaultsNotRecorded joins it for the mirror-image reason: the
+        # terminal round fabricated answers and could not record that it did.
+        # Folded into a failed status it would become a logged warning while the
+        # plan ships anyway -- fabricated answers with no surviving record, which
+        # is the failure the audit hook exists to prevent.
+        passthrough_exceptions=(PlanningAnswerPauseSignal, PlanningDefaultsNotRecorded),
         log_context="product analysis",
     )

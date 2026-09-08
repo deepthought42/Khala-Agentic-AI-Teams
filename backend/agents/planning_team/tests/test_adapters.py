@@ -337,3 +337,64 @@ def test_ai_systems_wait_for_completion_delegates_to_poll():
         with patch("shared.http.job_polling.time.sleep", return_value=None):
             out = wait_for_ai_systems_build_completion("build-789")
     assert out == {"status": "completed", "blueprint": {"name": "agent-x"}}
+
+
+def test_defaults_not_recorded_escapes_the_pra_poll_loop() -> None:
+    """A failed audit write must not degrade into a failed PRA status.
+
+    ``poll_until_terminal`` folds any other ``on_poll`` exception into
+    ``{"status": "failed"}``, and ``DocumentProductionAgent.run`` logs that and
+    keeps producing a plan -- so a plain exception here would ship fabricated
+    answers with no record of them, the exact failure the audit hook exists to
+    prevent. Only a passthrough type actually stops the round.
+    """
+    from unittest.mock import patch
+
+    from planning_team.adapters.product_analysis import wait_for_product_analysis_completion
+    from planning_team.exceptions import PlanningDefaultsNotRecorded
+
+    def _cb(pending):
+        raise PlanningDefaultsNotRecorded("job-1", 2, RuntimeError("job store down"))
+
+    with patch(
+        "planning_team.adapters.product_analysis.get_product_analysis_status",
+        return_value={
+            "status": "running",
+            "waiting_for_answers": True,
+            "pending_questions": [{"id": "q1"}],
+        },
+    ):
+        with pytest.raises(PlanningDefaultsNotRecorded) as exc:
+            wait_for_product_analysis_completion(
+                job_id="job-1", poll_interval=0.01, max_wait=1.0, answer_callback=_cb
+            )
+
+    assert exc.value.job_id == "job-1"
+    assert exc.value.record_count == 2
+
+
+def test_an_ordinary_callback_error_still_folds_into_a_failed_status() -> None:
+    """The passthrough is narrow on purpose: everything else stays fail-closed,
+    so widening it for the audit case does not turn every callback bug into an
+    escaping exception.
+    """
+    from unittest.mock import patch
+
+    from planning_team.adapters.product_analysis import wait_for_product_analysis_completion
+
+    def _cb(pending):
+        raise RuntimeError("something else broke")
+
+    with patch(
+        "planning_team.adapters.product_analysis.get_product_analysis_status",
+        return_value={
+            "status": "running",
+            "waiting_for_answers": True,
+            "pending_questions": [{"id": "q1"}],
+        },
+    ):
+        result = wait_for_product_analysis_completion(
+            job_id="job-1", poll_interval=0.01, max_wait=1.0, answer_callback=_cb
+        )
+
+    assert result["status"] == "failed"

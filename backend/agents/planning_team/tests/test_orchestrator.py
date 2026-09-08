@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 _agents_dir = Path(__file__).resolve().parent.parent.parent
 if str(_agents_dir) not in sys.path:
     sys.path.insert(0, str(_agents_dir))
@@ -148,3 +150,21 @@ def test_run_workflow_propagates_planning_answer_pause_signal(tmp_path, monkeypa
             auto_answer_questions=False,
         )
     assert exc_info.value.resume_token == "job-1:tok1"
+
+
+def test_defaults_not_recorded_propagates_out_of_run_workflow(monkeypatch, tmp_path) -> None:
+    """The second boundary. ``run_workflow``'s broad ``except Exception`` would fold
+    this into ``success=False`` with a generic failure_reason, which reads as "planning
+    failed" rather than "the audit record was lost" -- and would let the activity return
+    normally instead of failing so Temporal can retry it.
+    """
+    from planning_team.exceptions import PlanningDefaultsNotRecorded
+    from planning_team.orchestrator import run_workflow
+
+    def _boom(*args, **kwargs):
+        raise PlanningDefaultsNotRecorded("job-1", 1, RuntimeError("job store down"))
+
+    monkeypatch.setattr("planning_team.phases.run_intake", _boom)
+
+    with pytest.raises(PlanningDefaultsNotRecorded):
+        run_workflow(repo_path=str(tmp_path), client_name="c", initial_brief="b")
