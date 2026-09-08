@@ -1265,14 +1265,13 @@ def test_defaulted_questions_keep_rounds_that_reuse_a_question_id(
     assert [r["question_text"] for r in stored] == ["Which auth?", "Which region?"]
 
 
-def test_defaulted_questions_do_not_double_on_a_repeated_record(
-    tmp_path, patched_job_store
-) -> None:
-    """A genuine repeat of the same question is one entry, last write winning.
+def test_defaulted_questions_do_not_double_on_a_repeated_poll(tmp_path, patched_job_store) -> None:
+    """A poll-repeat of the same question is one entry, not one row per poll.
 
-    ``_on_poll`` can present the same still-unanswered batch on consecutive polls;
-    each is defaulted again, and the audit record must not grow a duplicate row
-    per poll.
+    ``_on_poll`` re-presents a still-unanswered batch on every poll and each is
+    defaulted again. ``_default_answer`` is deterministic for a given question, so
+    a genuine repeat produces an IDENTICAL record -- which is what the key
+    collapses. Without this, one question inflates into a row per poll.
     """
     from software_engineering_team.shared import job_store as js
     from software_engineering_team.temporal.activities import _record_defaulted_questions
@@ -1280,12 +1279,60 @@ def test_defaulted_questions_do_not_double_on_a_repeated_record(
     js.create_job("pp-repeat", repo_path=str(tmp_path), job_type="run_team")
     record = _record_defaulted_questions("pp-repeat")
 
-    record([{"question_id": "q1", "question_text": "Same", "selected_option_id": "a"}])
-    record([{"question_id": "q1", "question_text": "Same", "selected_option_id": "b"}])
+    batch = [
+        {
+            "question_id": "q1",
+            "question_text": "Same",
+            "selected_option_id": "a",
+            "selected_option_label": "A",
+        }
+    ]
+    record(batch)
+    record(batch)
 
-    stored = js.get_job("pp-repeat")["defaulted_questions"]
-    assert len(stored) == 1
-    assert stored[0]["selected_option_id"] == "b"
+    assert js.get_job("pp-repeat")["defaulted_questions"] == batch
+
+
+def test_rounds_that_match_on_id_and_text_but_differ_in_selection_both_survive(
+    tmp_path, patched_job_store
+) -> None:
+    """Identity is the whole record, not the ``(id, question_text)`` pair.
+
+    PRA's parser defaults both ``id`` and ``question_text`` identically across
+    separate rounds, so two unrelated rounds can coincide on that pair while
+    offering different options -- and collapsing them would discard a real audit
+    event. SPEC-024 risk 3 makes this correction explicitly, superseding an earlier
+    draft that specified the pair.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal.activities import _record_defaulted_questions
+
+    js.create_job("pp-differ", repo_path=str(tmp_path), job_type="run_team")
+    record = _record_defaulted_questions("pp-differ")
+
+    record(
+        [
+            {
+                "question_id": "q0",
+                "question_text": "Pick one",
+                "selected_option_id": "a",
+                "selected_option_label": "Postgres",
+            }
+        ]
+    )
+    record(
+        [
+            {
+                "question_id": "q0",
+                "question_text": "Pick one",
+                "selected_option_id": "b",
+                "selected_option_label": "Redis",
+            }
+        ]
+    )
+
+    stored = js.get_job("pp-differ")["defaulted_questions"]
+    assert [r["selected_option_label"] for r in stored] == ["Postgres", "Redis"]
 
 
 def test_a_retry_rebuilds_defaulted_questions_rather_than_doubling_them(

@@ -547,16 +547,47 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
           merges its records into a per-execution accumulator and writes the whole
           accumulated list to ``defaulted_questions``, so the job record always
           carries every round defaulted so far, in the order they were defaulted.
-        - De-duplicates on ``(question_id, question_text)``, not ``question_id``
-          alone. PRA's parser falls back to a positional ``q{index}`` id
-          (``question_processing.parse_open_question``), so two unrelated rounds can
-          reuse one id; keying on the id alone would drop the second question's
-          record as a duplicate of the first. Last write wins for a genuine repeat
-          of the same question, which is the answer actually submitted most
-          recently.
+        - De-duplicates on the WHOLE record -- ``question_id``, ``question_text``,
+          ``selected_option_id`` and ``selected_option_label`` together -- rather
+          than on the id, or on the ``(id, question_text)`` pair. PRA's parser
+          defaults both ``id`` and ``question_text`` identically across separate
+          rounds (``question_processing.parse_open_question``), so either narrower
+          key discards a real audit event whenever two unrelated rounds coincide on
+          it while differing in their options.
+
+          SPEC-024 risk 3 is the authority here, and it is worth reading before
+          narrowing this again: it requires the full canonical question shape for
+          retry reconciliation and says so *in correction of* an earlier draft that
+          specified the ``(id, question_text)`` pair. This key is not that full
+          shape -- it is everything the audit record actually holds, which is a
+          narrower object than the pending-question dict -- and the two operations
+          differ, but the direction of the correction applies to both.
+
+          **Residual limitation, per that same risk:** no comparison over
+          PRA-reported fields distinguishes "the same question re-presented on the
+          next poll" from "an unrelated later round that coincides on every field
+          this record carries" with certainty; only a PRA-side round identifier
+          would, and that is outside this boundary. De-duplication is still
+          required -- ``_on_poll`` re-presents an unanswered batch on every poll,
+          so without it one question inflates into a row per poll -- so the
+          collision is accepted knowingly and narrowed as far as the record allows.
+          Last write wins for a genuine repeat, which is the answer most recently
+          submitted.
         - Writing the full accumulated list (rather than appending server-side)
           keeps a Temporal retry idempotent: a retry runs a fresh accumulator and
           rebuilds the field from scratch, so entries are never doubled.
+        - Records answers the system CHOSE AND SUBMITTED, not answers the
+          product-analysis job confirmed it applied. The hook fires from inside
+          ``_resolved_cb``, before ``_on_poll`` POSTs the returned batch, and
+          ``_on_poll`` ignores that POST's result -- a rejected submission is
+          currently indistinguishable from an applied one
+          (``planning_hitl_temporal_contract.md``, "a rejected submission looks the
+          same as success"). Coordinating the record with a confirmed submission
+          means checking that return value and re-raising, which is the deferred
+          wiring work that open problem already covers; doing it here would widen
+          this hook into a problem it did not create. Until then the field's own
+          description states the narrower claim rather than implying the broader
+          one.
     Invariants:
         - The accumulator is per-callable and therefore per-activity-execution; it
           is never shared across jobs or retries.
@@ -570,7 +601,14 @@ def _record_defaulted_questions(job_id: str) -> Callable[[List[Dict[str, Any]]],
         from planning_team.exceptions import PlanningDefaultsNotRecorded
 
         for rec in records:
-            accumulated[(rec.get("question_id"), rec.get("question_text"))] = rec
+            accumulated[
+                (
+                    rec.get("question_id"),
+                    rec.get("question_text"),
+                    rec.get("selected_option_id"),
+                    rec.get("selected_option_label"),
+                )
+            ] = rec
         try:
             update_job(job_id, defaulted_questions=list(accumulated.values()))
         except Exception as exc:

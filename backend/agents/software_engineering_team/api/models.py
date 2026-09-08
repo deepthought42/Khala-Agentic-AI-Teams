@@ -213,13 +213,16 @@ class JobStatusResponse(BaseModel):
     defaulted_questions: List[Dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "Clarification answers chosen by the system, not by a human. Non-empty only when "
-            "Planning exhausted its bounded pause budget and its terminal round(s) defaulted "
-            "the questions nobody answered. Each entry carries question_id, question_text, "
-            "selected_option_id and selected_option_label; the two option fields are null "
-            "when the question offered nothing to default to, and question_text is null when "
-            "the question carried none. An empty list means every answer behind this plan "
-            "came from a person."
+            "Clarification answers chosen and submitted by the system, not by a human. "
+            "Non-empty only when Planning exhausted its bounded pause budget and its "
+            "terminal round(s) defaulted the questions nobody answered. Each entry carries "
+            "question_id, question_text, selected_option_id and selected_option_label; the "
+            "two option fields are null when the question offered nothing to default to, and "
+            "question_text is null when the question carried none. An empty list means every "
+            "answer behind this plan came from a person. Note the exact claim: these answers "
+            "were CHOSEN AND SUBMITTED by the system, not confirmed as accepted by the "
+            "downstream analysis job -- a submission it rejects is currently indistinguishable "
+            "from one it applied, a known gap tracked separately from this field."
         ),
     )
     resume_token: Optional[str] = Field(
