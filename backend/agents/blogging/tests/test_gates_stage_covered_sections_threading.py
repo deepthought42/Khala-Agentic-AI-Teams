@@ -44,6 +44,8 @@ def _capturing_stub_writer_class(captured: list) -> type:
 
 
 class _ValidatorStub:
+    """Stand-in for the validator runner's result: PASS with no checks recorded."""
+
     def __init__(self, status: str = "PASS"):
         self.status = status
         self.checks = []
@@ -65,6 +67,9 @@ def _run_gates(monkeypatch, tmp_path, *, covered_sections) -> list:
     captured: list = []
 
     class _FailingCompliance:
+        """Always returns FAIL with one tone violation — this is what forces the
+        gate-driven rewrite to fire, which is the call site under test."""
+
         def __init__(self, *a, **kw):
             pass
 
@@ -77,6 +82,9 @@ def _run_gates(monkeypatch, tmp_path, *, covered_sections) -> list:
             )
 
     class _PassingFactCheck:
+        """Always returns a fully passing report, so compliance is the only failing
+        gate and the rewrite loop is entered for exactly one reason."""
+
         def __init__(self, *a, **kw):
             pass
 

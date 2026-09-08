@@ -34,6 +34,7 @@ from ._common import (
     _load_required_guidelines,
     _make_update,
     _wait_for_hitl,
+    normalize_covered_sections,
 )
 from .constants import COPY_EDIT_ESCALATION_THRESHOLD, STYLE_GUIDE_PATH
 from .context import PipelineContext, PipelineStatus
@@ -141,11 +142,9 @@ def run_draft_stage(
     planning_phase_result = ctx.planning_phase_result
     plan = ctx.plan
     elicited_stories_text = ctx.elicited_stories_text
-    # sorted() both normalizes the set to the list WriterInput takes and pins a stable
-    # order (set iteration varies run to run under hash randomization). The guard covers
-    # the empty set and the None the field still holds in Temporal mode, where planning's
-    # value does not yet cross the activity boundary.
-    covered_sections = sorted(ctx.covered_sections) if ctx.covered_sections else None
+    # Shared with the gates stage so the draft prompt and the gate-driven rewrite cannot
+    # name different sections; see the helper for what it guarantees.
+    covered_sections = normalize_covered_sections(ctx.covered_sections)
     selected_title = ctx.selected_title
     _update = _make_update(job_updater)
 
@@ -157,6 +156,29 @@ def run_draft_stage(
     # having populated one), is a no-op, matching the fact-check/validator
     # gates' handling of the same artifact.
     allowed_claims = load_allowed_claims_for_brief(work_dir, brief.brief)
+
+    # One authoritative field set for all three ``revise_from_user_feedback`` rounds
+    # (uncertainty answers, author feedback, copy-edit escalation), which differ only in
+    # the draft they revise, the feedback text, and where the output is written. Built
+    # once for the same reason ``draft_input_kwargs`` below is: hand-maintained parallel
+    # kwargs lists are how ``covered_sections`` reached only some rounds in the first
+    # place, and a round that silently loses a field drops the suppression block for
+    # that revision. ``plan`` is fixed for the stage, so the rendered outline is too.
+    #
+    # ``draft_agent`` is deliberately not captured here: the escalation path rebuilds it,
+    # and every call resolves the name at call time.
+    revise_base_kwargs = dict(
+        content_plan_text=content_plan_to_outline_markdown(plan),
+        audience=brief.audience,
+        tone_or_purpose=brief.tone_or_purpose,
+        selected_title=selected_title,
+        elicited_stories=elicited_stories_text or None,
+        covered_sections=covered_sections,
+        allowed_claims=allowed_claims,
+        target_word_count=length_policy.target_word_count,
+        length_guidance=build_draft_length_instruction(length_policy),
+        on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
+    )
 
     # Draft + Copy Editor loop (load style and brand spec as raw text for draft/editor agents)
     writing_style_content, brand_spec_content = _load_required_guidelines("start drafting")
@@ -350,19 +372,8 @@ def run_draft_stage(
                             draft_result = draft_agent.revise_from_user_feedback(
                                 draft=draft_result.draft,
                                 user_feedback=answer_feedback,
-                                content_plan_text=content_plan_text,
-                                audience=brief.audience,
-                                tone_or_purpose=brief.tone_or_purpose,
-                                selected_title=selected_title,
-                                elicited_stories=elicited_stories_text or None,
-                                covered_sections=covered_sections,
-                                allowed_claims=allowed_claims,
-                                target_word_count=length_policy.target_word_count,
-                                length_guidance=build_draft_length_instruction(length_policy),
-                                on_llm_request=lambda msg: _update(
-                                    BlogPhase.DRAFT_REVIEW, status_text=msg
-                                ),
                                 draft_output_path=draft_output_path,
+                                **revise_base_kwargs,
                             )
 
                 # ── Step 3: Present draft for editor review ───────────────
@@ -454,17 +465,8 @@ def run_draft_stage(
                     draft_result = draft_agent.revise_from_user_feedback(
                         draft=draft_result.draft,
                         user_feedback=user_feedback_text,
-                        content_plan_text=content_plan_text,
-                        audience=brief.audience,
-                        tone_or_purpose=brief.tone_or_purpose,
-                        selected_title=selected_title,
-                        elicited_stories=elicited_stories_text or None,
-                        covered_sections=covered_sections,
-                        allowed_claims=allowed_claims,
-                        target_word_count=length_policy.target_word_count,
-                        length_guidance=build_draft_length_instruction(length_policy),
-                        on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
                         draft_output_path=draft_output_path,
+                        **revise_base_kwargs,
                     )
 
                     # Present revised draft for another round of review
@@ -645,7 +647,6 @@ def run_draft_stage(
                                 record_guideline_updates(job_id, update_dicts)
 
                         # Revise based on user feedback before continuing the loop
-                        content_plan_text = content_plan_to_outline_markdown(plan)
                         draft_output_path = (
                             (Path(work_dir) / f"draft_v{iteration}_esc.md")
                             if work_dir is not None
@@ -654,19 +655,15 @@ def run_draft_stage(
                         draft_result = draft_agent.revise_from_user_feedback(
                             draft=draft_result.draft,
                             user_feedback=esc_feedback_text,
-                            content_plan_text=content_plan_text,
-                            audience=brief.audience,
-                            tone_or_purpose=brief.tone_or_purpose,
-                            selected_title=selected_title,
-                            elicited_stories=elicited_stories_text or None,
-                            covered_sections=covered_sections,
-                            allowed_claims=allowed_claims,
-                            target_word_count=length_policy.target_word_count,
-                            length_guidance=build_draft_length_instruction(length_policy),
-                            on_llm_request=lambda msg: _update(
-                                BlogPhase.COPY_EDIT_LOOP, status_text=msg
-                            ),
                             draft_output_path=draft_output_path,
+                            # Only the progress phase differs from the shared set: this
+                            # round reports under the copy-edit loop, not draft review.
+                            **{
+                                **revise_base_kwargs,
+                                "on_llm_request": lambda msg: _update(
+                                    BlogPhase.COPY_EDIT_LOOP, status_text=msg
+                                ),
+                            },
                         )
                         # Continue copy-edit loop with revised draft
                         continue

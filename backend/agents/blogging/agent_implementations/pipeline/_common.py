@@ -918,7 +918,7 @@ class _DraftAgent(Protocol):
         tone_or_purpose: Optional[str] = None,
         selected_title: Optional[str] = None,
         elicited_stories: Optional[str] = None,
-        covered_sections: Optional[List[str]] = None,
+        covered_sections: Optional[list[str]] = None,
         allowed_claims: Optional[dict[str, Any]] = None,
         target_word_count: int = 1000,
         length_guidance: str = "",
@@ -1438,6 +1438,30 @@ def _run_title_selection(
     except Exception as e:
         logger.warning("Title selection phase error (skipping): %s", e)
     return None
+
+
+def normalize_covered_sections(covered_sections: Optional[set]) -> Optional[list[str]]:
+    """Normalize ``PipelineContext.covered_sections`` for a writer input.
+
+    Shared rather than written per stage: the draft prompt and the gate-driven rewrite
+    must name the same sections in the same order, and two copies of this expression
+    could drift — a later change that also trimmed or lower-cased titles in one stage
+    would silently diverge the two prompt paths, with no test failing.
+
+    Preconditions:
+        - ``covered_sections`` is the context field: a ``set[str]`` of plan section
+          titles, an empty set, or ``None`` (its value in Temporal mode, where
+          planning's set does not yet cross the activity boundary).
+    Postconditions:
+        - Returns a lexicographically sorted ``list[str]`` for a non-empty set, which
+          both normalizes it to the type ``WriterInput``/``ReviseWriterInput`` take and
+          pins a stable order (set iteration varies run to run under hash
+          randomization).
+        - Returns ``None`` for an empty set or ``None``, the documented no-op: the
+          renderer emits nothing for it, leaving the prompt byte-identical to one
+          built without the field.
+    """
+    return sorted(covered_sections) if covered_sections else None
 
 
 def _load_required_guidelines(action: str, *, phase: str = "draft") -> Tuple[str, str]:

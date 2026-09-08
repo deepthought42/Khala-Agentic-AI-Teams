@@ -50,6 +50,10 @@ FINAL_CHECK = (
 )
 
 SUPPRESSION_HEADER = "SECTIONS ALREADY COVERED BY AN AUTHOR STORY:"
+# The draft prompt's own stories heading, in full. The bare phrase "AUTHOR'S PERSONAL
+# STORIES" also occurs inside the suppression block and the checklist, so ordering
+# assertions match this longer form to pin the heading itself.
+STORIES_SECTION_HEADING = "AUTHOR'S PERSONAL STORIES (use these in the relevant sections"
 SUPPRESSION_INSTRUCTION = "do not emit an [Author: ...] placeholder for those sections"
 
 
@@ -296,7 +300,12 @@ def test_run_suppression_precedes_the_quality_checklist(monkeypatch) -> None:
     # name the missing one, not surface as "ValueError: substring not found".
     _suppression_line(prompt)
     assert NEVER_FABRICATE_HOOK in prompt, f"checklist hook missing from:\n{prompt}"
-    assert prompt.index("AUTHOR'S PERSONAL STORIES") < prompt.index(SUPPRESSION_HEADER)
+    # The stories heading is guarded too, and matched in its full form: the phrase
+    # "AUTHOR'S PERSONAL STORIES" also appears inside the suppression block, so a bare
+    # index() on it could silently measure the wrong occurrence if the real heading went
+    # missing — passing or failing for a reason that has nothing to do with ordering.
+    assert STORIES_SECTION_HEADING in prompt, f"stories heading missing from:\n{prompt}"
+    assert prompt.index(STORIES_SECTION_HEADING) < prompt.index(SUPPRESSION_HEADER)
     assert prompt.index(SUPPRESSION_HEADER) < prompt.index(NEVER_FABRICATE_HOOK)
 
 
@@ -326,6 +335,20 @@ def test_revise_from_user_feedback_omits_suppression_when_absent(monkeypatch) ->
     assert _capture_revise_prompt(monkeypatch, elicited_stories=STORIES, covered_sections=[]) == (
         baseline
     )
+
+
+def test_revise_from_user_feedback_prompt_is_byte_identical_when_no_entry_is_usable(
+    monkeypatch,
+) -> None:
+    """The third omission case on this builder too, matching the ``run()``-level pin: a
+    present, non-empty ``covered_sections`` whose every entry is unusable renders
+    nothing. Both contracts now enumerate it, so both are asserted."""
+    baseline = _capture_revise_prompt(monkeypatch, elicited_stories=STORIES)
+    all_unusable = _capture_revise_prompt(
+        monkeypatch, elicited_stories=STORIES, covered_sections=["", "   ", "\n"]
+    )
+
+    assert all_unusable == baseline
 
 
 def test_revise_from_user_feedback_omits_suppression_without_stories(monkeypatch) -> None:
@@ -366,9 +389,11 @@ def _capture_batch_revise_prompt(**overrides) -> str:
         ),
     }
     kwargs.update(overrides)
-    # Every argument is re-read from kwargs after the update: passing ``items`` directly
-    # would let an override of ``feedback_items`` build the prompt from one list and the
-    # model from another.
+    # ``draft`` and ``feedback_items`` are re-read from kwargs after the update: passing
+    # ``items`` directly would let an override of ``feedback_items`` build the prompt from
+    # one list and the model from another. The plan *text* stays a literal — it is a
+    # separate argument from the ``content_plan`` model, so overriding ``content_plan``
+    # is NOT consistency-safe here and no test does it.
     return build_revise_all_items_prompt(
         kwargs["draft"],
         kwargs["feedback_items"],

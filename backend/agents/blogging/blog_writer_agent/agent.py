@@ -1320,8 +1320,9 @@ class BlogWriterAgent(_BlogAgentBase):
               story, so a revision that reaches this path after the post-draft story
               fill does not re-introduce an ``[Author: ...]`` placeholder for a
               section already covered. Omitted — leaving the prompt byte-identical to
-              one built without ``covered_sections`` — when that argument is absent
-              or empty, and whenever ``elicited_stories`` is absent or blank. It
+              one built without ``covered_sections`` — when that argument is absent,
+              empty, or yields no usable title (every entry non-string, empty, or
+              whitespace-only), and whenever ``elicited_stories`` is absent or blank. It
               narrows placeholder emission only; the system prompt's never-fabricate
               rule still governs every section it does not name.
             - Returns a ``WriterOutput`` whose ``draft`` field is the original

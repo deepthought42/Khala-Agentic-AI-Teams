@@ -17,7 +17,7 @@ from temporalio.exceptions import CancelledError
 from llm_service.interface import LLMRateLimitError, LLMTemporaryError
 from shared.concurrency import parallel_map
 
-from ._common import _load_required_guidelines, _make_update
+from ._common import _load_required_guidelines, _make_update, normalize_covered_sections
 from .constants import BRAND_SPEC_PROMPT_PATH
 from .context import PipelineContext, PipelineStatus
 
@@ -110,10 +110,8 @@ def run_gates_stage(ctx: "PipelineContext") -> None:
     run_gates = ctx.run_gates
     plan = ctx.plan
     elicited_stories_text = ctx.elicited_stories_text
-    # Same normalization the draft stage applies: sorted() turns the set into the list
-    # ReviseWriterInput takes and pins a stable order; the guard covers the empty set
-    # and the None the field still holds in Temporal mode.
-    covered_sections = sorted(ctx.covered_sections) if ctx.covered_sections else None
+    # The same helper the draft stage calls, so the two prompt paths cannot drift.
+    covered_sections = normalize_covered_sections(ctx.covered_sections)
     selected_title = ctx.selected_title
     draft_result = ctx.draft_result
     _update = _make_update(job_updater)

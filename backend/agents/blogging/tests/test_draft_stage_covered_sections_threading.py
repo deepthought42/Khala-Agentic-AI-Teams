@@ -40,9 +40,13 @@ def _capturing_stub_writer_class(captured_inputs: list, *, uncertainty_questions
           return (empty to skip the uncertainty-answer revision path).
     Postconditions:
         - Returns a class (not an instance) suitable for monkeypatching a module's
-          ``BlogWriterAgent`` reference. Every ``run``/``revise_from_user_feedback``
-          call appends a ``(kind, input)`` pair to ``captured_inputs``, where
-          ``input`` always exposes ``covered_sections``.
+          ``BlogWriterAgent`` reference. Every ``run``, ``revise`` or
+          ``revise_from_user_feedback`` call appends a ``(kind, input)`` pair to
+          ``captured_inputs`` — ``kind`` is ``"run"``, ``"revise"`` or
+          ``"revise_from_user_feedback"`` — where ``input`` always exposes
+          ``covered_sections``. ``revise`` is enumerated because it is how the batch
+          copy-edit ``ReviseWriterInput`` is captured, one of the call sites this
+          suite exists to pin.
     """
     from agents.blogging.blog_writer_agent.models import WriterOutput
 

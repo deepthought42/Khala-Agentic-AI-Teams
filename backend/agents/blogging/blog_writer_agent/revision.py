@@ -147,8 +147,17 @@ def build_revise_all_items_prompt(
           (capped at ``MAX_PREVIOUS_FEEDBACK_ITEMS``) is inserted after it;
           ``selected_title`` and ``elicited_stories`` are each appended as
           their own labeled section near the end (title before stories);
+          ``covered_sections`` is rendered via
+          ``agent._render_covered_sections_section`` (imported inside the function,
+          since ``agent`` imports this module) and appended as its own section
+          after ``elicited_stories``, naming the sections that already have an
+          author story so this rewrite does not re-introduce an ``[Author: ...]``
+          placeholder for one — omitted when it is absent, empty, or yields no
+          usable title, and whenever ``elicited_stories`` is absent or blank, since
+          the block must never claim a story the prompt does not also carry;
           ``allowed_claims_section`` is appended as its own section after
-          ``elicited_stories`` when non-empty; and ``tone_or_purpose`` /
+          ``elicited_stories`` and after the covered-sections block when both are
+          present, when non-empty; and ``tone_or_purpose`` /
           ``audience`` are each prepended as a single labeled line at the
           very front (tone_or_purpose before audience). Absent fields are
           omitted rather than left blank.
