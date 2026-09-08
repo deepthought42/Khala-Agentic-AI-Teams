@@ -420,9 +420,15 @@ class _RuleStarvation:
           * ``"abstained_bars"`` — fewer than ``_MIN_EVALUATED_BARS``
             :attr:`judged_bars`; a window-coverage problem, not a reachability
             verdict.
-          * ``"reachable"`` — fires at least once, in the steady-state window,
-            on a bar no earlier rule covers, so first-match-wins can actually
-            select it.
+          * ``"reachable"`` — fires on a bar no earlier rule covers, so
+            first-match-wins can actually select it. Usually a steady-state
+            fire; also a warmup-prefix one when NO fire anywhere is covered,
+            because then nothing was ever shadowed. Such a rule fires early and
+            then stops, which is a property of its predicate rather than of
+            priority: reordering or folding it cannot make a predicate hold
+            again, and its firing count is already :meth:`to_gate_results`'
+            to report. Starvation reporting has nothing to add, so it stays
+            silent.
           * ``"abstained_steady"`` — fires on a warmup-prefix bar no earlier
             rule is satisfied on, but fewer than ``_MIN_EVALUATED_BARS``
             :attr:`evaluated`. The rule IS selected there, which rules out
@@ -436,10 +442,14 @@ class _RuleStarvation:
             rule selected" about a rule this same window selects.
           * ``"warmup_only"`` — never independent in the steady-state window,
             but fires on at least one warmup-prefix bar where no earlier rule
-            is satisfied. ``evaluate_entry_rules`` DOES select it there, so it
-            is neither starved (it is still the rule selected there — subject
-            to the selection-vs-order caveat on this class) nor plainly
-            reachable (it stops being selected once the earlier rules warm up).
+            is satisfied, AND has at least one covered fire. ``evaluate_entry_rules``
+            DOES select it there, so it is neither starved (it is still the
+            rule selected there — subject to the selection-vs-order caveat on
+            this class) nor plainly reachable (it stops being selected once the
+            earlier rules warm up). The covered fire is what makes that second
+            half a priority claim at all: it shows the rule still firing on a
+            bar an earlier rule takes. With none, the head start ends because
+            the rule stopped firing, and the rung above owns it.
           * ``"dead"`` — :attr:`covered_fires` is zero, so with the two rungs
             above ruled out the rule has no fire of any kind. Already reported
             once, per rule, by
@@ -455,14 +465,14 @@ class _RuleStarvation:
           * ``"starved"`` — fires enough times, and never on a bar that no
             earlier rule covers, on the warmup prefix or after. This is the
             reportable finding.
-        ``"warmup_only"`` is checked before ``"dead"`` deliberately: a rule
-        whose every fire lands on the warmup prefix has ``fires == 0`` in the
-        steady-state window, yet :meth:`PredicateReachabilityProbe.probe`
-        counts those same bars and reports it as firing — calling it dead here
-        would contradict that and lose the finding entirely. The bottom two
-        rungs are mutually exclusive with ``"reachable"``/``"warmup_only"``
-        regardless of check order (both require zero independent fires of
-        either kind). Deterministic; depends only on this instance's counts.
+        A rule whose every fire lands on the warmup prefix has ``fires == 0``
+        in the steady-state window, yet :meth:`PredicateReachabilityProbe.probe`
+        counts those same bars and reports it as firing — so ``"dead"`` must
+        never claim it. It cannot: every rung below the prefix branch requires
+        ``covered_fires`` to be non-zero or zero consistently with it, and a
+        prefix fire counts toward ``covered_fires`` exactly when an earlier
+        rule shadowed it. Deterministic; depends only on this instance's
+        counts.
         """
         if self.judged_bars < _MIN_EVALUATED_BARS:
             return "abstained_bars"
@@ -471,6 +481,8 @@ class _RuleStarvation:
         if self.warmup_independent_fires > 0:
             if self.evaluated < _MIN_EVALUATED_BARS:
                 return "abstained_steady"
+            if self.covered_fires == 0:
+                return "reachable"
             return "warmup_only"
         if self.covered_fires == 0:
             return "dead"

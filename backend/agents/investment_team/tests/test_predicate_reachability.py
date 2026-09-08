@@ -835,6 +835,9 @@ def test_warmup_only_finding_reads_never_fires_when_the_steady_window_is_empty()
         coverage=(),
         legs=(),
         warmup_independent_fires=7,
+        warmup_covered_fires=3,
+        warmup_coverage=((0, 3),),
+        warmup_conclusive_bars=3,
     )
     results = PredicateReachabilityProbe().to_starvation_gate_results(
         [verdict], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
@@ -1083,22 +1086,25 @@ def test_prefix_selection_with_no_steady_state_window_abstains_rather_than_starv
 
 def test_warmup_only_still_reached_once_the_steady_window_meets_the_floor() -> None:
     # The steady-state floor gates warmup_only, it does not retire it: twenty
-    # all-warm bars is exactly enough to see the head start end.
+    # all-warm bars is exactly enough to see the head start end. The rule keeps
+    # firing across them and is covered every time, so there is shadowing to
+    # report — the covered_fires gate is satisfied and only the floor is at
+    # issue here.
     earlier = ["warmup"] * 40 + ["satisfied"] * 20
-    v = _verdict(["satisfied"] * 40 + ["miss"] * 20, earlier)
-    assert (v.evaluated, v.warmup_independent_fires) == (20, 40)
+    v = _verdict(["satisfied"] * 60, earlier)
+    assert (v.evaluated, v.warmup_independent_fires, v.covered_fires) == (20, 40, 20)
     assert v.verdict == "warmup_only"
     # One bar short of the floor and the same shape abstains instead. The bar
     # floor has to be cleared some other way for this to be the steady-state
     # abstention rather than the bar one, so a second earlier rule settles the
     # first 20 prefix bars.
     thin = _verdict(
-        _pattern(60, range(20, 41)),
+        _pattern(60, range(0, 41)),
         ["warmup"] * 41 + ["satisfied"] * 19,
         _pattern(60, range(0, 20)),
     )
     assert (thin.evaluated, thin.judged_bars) == (19, 39)
-    assert thin.warmup_independent_fires == 21
+    assert (thin.warmup_independent_fires, thin.covered_fires) == (21, 20)
     assert thin.verdict == "abstained_steady"
 
 
@@ -1161,17 +1167,45 @@ def test_warmup_prefix_fires_are_not_independent_when_another_earlier_rule_cover
     assert v.verdict == "starved"
 
 
-def test_warmup_only_beats_dead_when_every_fire_is_on_the_warmup_prefix() -> None:
-    # The rule fires ONLY while the earlier rule warms up. `probe` counts those
-    # bars and calls it reachable, so the starvation ladder must not call it
-    # dead and fall silent — the shadowing is still worth reporting.
+def test_unshadowed_prefix_fires_with_no_covered_fire_anywhere_are_reachable() -> None:
+    # The rule fires ONLY while the earlier rule warms up, and no fire it has
+    # is covered by anything. Nothing was ever shadowed: it stopped firing,
+    # which is a property of its predicate, not of priority. Calling it
+    # warmup_only would prescribe folding or reordering for a rule no ordering
+    # can bring back, and calling it dead would contradict `probe`, which
+    # counts those same bars and reports it firing. Neither: it IS selected
+    # there, so it is reachable, and its firing count is `to_gate_results`' to
+    # report.
     later = ["satisfied"] * 10 + ["miss"] * 20
     earlier = ["warmup"] * 10 + ["satisfied"] * 20
     v = _verdict(later, earlier)
-    assert (v.evaluated, v.fires) == (20, 0)
+    assert (v.evaluated, v.fires, v.covered_fires) == (20, 0, 0)
     assert v.warmup_independent_fires == 10
-    assert v.verdict == "warmup_only"
     assert v.coverage == ()
+    assert v.verdict == "reachable"
+    assert (
+        PredicateReachabilityProbe().to_starvation_gate_results(
+            [v], _spec(_BROAD, extra_entries=[_entry(_NARROW)])
+        )
+        == []
+    )
+
+
+def test_warmup_only_needs_a_covered_fire_to_call_the_head_start_a_priority_problem() -> None:
+    # Same prefix head start, but now the rule keeps firing afterwards and an
+    # earlier rule takes every one of those bars. THAT is priority shadowing,
+    # so the ordering remedies the finding prescribes are the right ones.
+    later = ["satisfied"] * 30
+    earlier = ["warmup"] * 10 + ["satisfied"] * 20
+    v = _verdict(later, earlier)
+    assert (v.fires, v.covered_fires, v.warmup_independent_fires) == (20, 20, 10)
+    assert v.verdict == "warmup_only"
+    detail = (
+        PredicateReachabilityProbe()
+        .to_starvation_gate_results([v], _spec(_BROAD, extra_entries=[_entry(_NARROW)]))[0]
+        .details
+    )
+    assert "every one of them also covered by an earlier rule" in detail
 
 
 def test_a_steady_state_independent_fire_outranks_warmup_prefix_fires() -> None:
