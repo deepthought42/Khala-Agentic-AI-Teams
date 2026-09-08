@@ -957,7 +957,8 @@ class _EngineExitDispatcher:
         market scale-out is still in flight, so ``maybe_emit`` defers the next rung
         without standing the whole bar down, and (d) whether this migration's
         entry-attached protective leg is currently on the book for this position,
-        which is what makes the stop-loss cede per-position rather than run-level. A spec has at most one
+        which is what makes the stop-loss cede per-position rather than
+        run-level. A spec has at most one
         limit-style stop (enforced by ``StrategySpec``), so "an engine STOP_LIMIT
         rests" unambiguously means "that stop is in flight" — no per-order
         identity bookkeeping beyond the single id is needed. The id is only
@@ -1028,12 +1029,18 @@ class _EngineExitDispatcher:
           * ``resting_limit_stop_id`` — the ``order_id`` of an already-resting
             limit-style STOP_LIMIT (or ``None``; a non-``None`` id means the chosen
             intent must exclude that stop rule, and that ``maybe_emit`` cancels
-            the order when it emits a replacement close). An ENTRY-ATTACHED
-            child (``parent_order_id`` set) is reported only once it has
-            LATCHED (``stop_limit_armed``): before that it is the position's
-            standing protection rather than a competing close, and cancelling
-            it would leave the position unprotected — see the per-order check
-            below for the full rationale;
+            the order when it emits a replacement close). An entry-attached
+            child OF THIS MIGRATION — ``parent_order_id`` set *and* carrying
+            the ``engine_exit:stop_loss`` reason bound to this position's
+            entry — is reported only once it has LATCHED
+            (``stop_limit_armed``): before that it is the position's standing
+            protection rather than a competing close, and cancelling it would
+            leave the position unprotected. The narrowing is load-bearing, not
+            incidental: any OTHER attached child (a strategy-supplied
+            ``attached_stop_loss`` leg, say) is reported regardless of latch,
+            because the dispatcher has always relied on this id to notice it.
+            Keying the skip on ``parent_order_id`` alone would hide those —
+            see the per-order check below for the full rationale;
           * ``entry_continuation_in_flight`` — ``True`` iff a scaled-take-profit
             spec has the position's own same-side, partially-filled entry
             continuation still resting (so the scaled deferral can read it without a
@@ -2160,8 +2167,10 @@ def _engine_entry_emission_active(entry_rules: Sequence[Any], sizing: Any) -> bo
     entry order actually carried the leg) rather than a run-level flag, which is
     a larger change than this migration step.
 
-    Preconditions: ``entry_rules`` is the run's (possibly empty) entry-rule
-    sequence; ``sizing`` is the run's sizing config or ``None``.
+    Preconditions: ``entry_rules`` is the run's entry-rule sequence — possibly
+    empty, or ``None`` on the custom-code path; both are falsy, and both are
+    load-bearing inputs this guard exists for rather than domain violations.
+    ``sizing`` is the run's sizing config or ``None``.
     Postconditions: ``True`` iff ``entry_rules`` is non-empty AND ``sizing`` is
     not ``None`` — byte-for-byte the FIRST of ``maybe_emit``'s early returns (see
     the known gap above for the second).

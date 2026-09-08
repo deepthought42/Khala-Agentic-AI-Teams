@@ -964,6 +964,10 @@ def test_gap_through_resting_only_close_does_not_trip_conformance_gate_false_cri
 # ---------------------------------------------------------------------------
 
 
+# NOTE: ``test_stop_loss_mechanism_coexistence.py`` defines a same-named helper
+# with a DIFFERENT default (``pct=0.05``). The defaults are incidental — each
+# suite picks one that suits its price fixtures — but the rule SHAPE must stay
+# in lockstep, so change both together.
 def _limit_stop_rule(pct: float = 0.03, limit_offset_pct: float = 0.01) -> StopLossRule:
     return StopLossRule(
         pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
@@ -1274,7 +1278,7 @@ def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
     so this cannot strip protection or targets it does not own."""
     sim, order_book, portfolio = _make_simulator()
     req = _emit([_limit_stop_rule(pct=0.05, limit_offset_pct=0.01)], side="long", close=100.0)
-    order_book.submit(
+    parent = order_book.submit(
         req, submitted_at="2024-01-01", submitted_equity=10_000_000.0, expect_brackets=True
     )
     other = order_book.submit(
@@ -1294,6 +1298,10 @@ def test_attachment_leaves_unrelated_engine_exits_alone() -> None:
 
     sim.process_bar(_bar("2024-01-02", open_price=100.0))
     assert "AAA" in portfolio.positions
+    # Without this the test passes VACUOUSLY: the retirement pass runs only as a
+    # consequence of attachment materializing, so a regression that never created
+    # the child would leave the take-profit trivially untouched and still pass.
+    assert len(order_book.children_of(parent.order_id)) == 1
     assert any(po.order_id == other.order_id for po in order_book.pending_for_symbol("AAA"))
 
 
@@ -1345,6 +1353,12 @@ def test_fallback_still_fills_on_the_bar_its_replacement_materializes() -> None:
 
     [trade] = outcome.closed_trades
     assert trade.exit_reason == f"{ENGINE_EXIT_REASON_PREFIX}stop_loss"
+    # The price is what names the closer; the reason literal does not, since the
+    # bar-close evaluator stamps the same one. Only the fallback can fill here
+    # (its limit is 98, while the replacement child's stop of 95 is not crossed
+    # by a low of 97) — asserting 98.0 keeps that explicit if a new exit path
+    # ever appears on this bar.
+    assert trade.exit_price == pytest.approx(98.0)
     assert "AAA" not in portfolio.positions
 
 

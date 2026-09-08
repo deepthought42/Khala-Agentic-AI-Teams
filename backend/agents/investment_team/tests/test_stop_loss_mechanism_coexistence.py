@@ -507,6 +507,10 @@ def test_resting_mechanism_alone_closes_the_position_exactly_once() -> None:
 # ---------------------------------------------------------------------------
 
 
+# NOTE: ``test_resting_stop_loss_attachment.py`` defines a same-named helper with
+# a DIFFERENT default (``pct=0.03``). The defaults are incidental — each suite
+# picks one that suits its price fixtures — but the rule SHAPE must stay in
+# lockstep, so change both together.
 def _limit_stop_rule(pct: float = 0.05, limit_offset_pct: float = 0.01) -> StopLossRule:
     return StopLossRule(
         pct=pct, basis="entry_price", style="limit", limit_offset_pct=limit_offset_pct
@@ -518,7 +522,13 @@ def test_limit_style_rule_is_claimed_by_exactly_one_mechanism(resting_enabled: b
     """The mutual-exclusion contract, for the limit style, across both settings
     of the feature check: exactly one mechanism claims the rule. When the
     resting mechanism has it, the bar-close dispatcher neither evaluates it
-    (``exclude_rule_index``) nor tracks its order (``_has_limit_stop_rule``)."""
+    (``exclude_rule_index``) nor reports its un-latched child for cancellation
+    (``_scan_pending_for_gate`` -> ``resting_limit_stop_id``).
+
+    ``_has_limit_stop_rule`` stays True in BOTH settings — it is spec shape, not
+    ownership, so the per-bar scan keeps running either way. An earlier attempt
+    made it the ownership signal; that is what the latch tests below exist to
+    keep reverted."""
     rules = [_limit_stop_rule()]
     entries, exits = _wire_dispatchers(rules, resting_enabled=resting_enabled)
 
@@ -594,7 +604,7 @@ def _scan_with_child(
     )
     scan = exits._scan_pending_for_gate(tracked, pos, [po])
     assert scan is not None
-    return scan[0]
+    return scan.resting_limit_stop_id
 
 
 def test_unarmed_entry_attached_stop_limit_is_not_reported_for_cancellation() -> None:
@@ -628,26 +638,31 @@ def test_dispatcher_emitted_stop_limit_is_always_reported(armed: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The real sizing type, so the truth table exercises a call shape production
+# actually produces rather than an opaque sentinel.
+_SIZING = FixedFractionSizing(fraction=0.02)
+
+
 @pytest.mark.parametrize(
     "entry_rules, sizing, expected",
     [
         (
             [EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=90.0))],
-            "sizing",
+            _SIZING,
             True,
         ),
         # The custom-code path proper: the mode layers pass ``entry_rules=None``,
         # which ``TradingService.__init__`` then stores as an empty list — so both
         # shapes must read as inactive, and both are exercised here rather than
         # only the post-``__init__`` one.
-        (None, "sizing", False),
-        ([], "sizing", False),
+        (None, _SIZING, False),
+        ([], _SIZING, False),
         ([EntryRule(side="long", when=Predicate(lhs="bar.close", op=">", rhs=90.0))], None, False),
         ([], None, False),
     ],
 )
 def test_engine_entry_emission_active_matches_maybe_emit_guard(
-    entry_rules: list[EntryRule] | None, sizing: object | None, expected: bool
+    entry_rules: list[EntryRule] | None, sizing: FixedFractionSizing | None, expected: bool
 ) -> None:
     """The predicate is byte-for-byte the condition ``maybe_emit`` returns early
     on, so the entry dispatcher and ``TradingService.run`` can never disagree
@@ -669,7 +684,7 @@ def test_engine_entry_emission_active_matches_maybe_emit_guard(
 )
 def test_run_cedes_the_stop_only_when_entry_emission_can_attach_it(
     style: str,
-    entry_rules,
+    entry_rules: list[EntryRule] | None,
     expect_ceded: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

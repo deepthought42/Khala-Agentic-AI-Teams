@@ -1966,7 +1966,10 @@ class FillSimulator:
     def _drain_deferred_stop_loss_retirements(self, *, before_bar: Optional[str] = None) -> None:
         """Run queued stop-loss fallback retirements.
 
-        Deferring them to here — after ``process_bar``'s fill loop — is
+        The invariant is not "after the fill loop" but the narrower **never
+        while a fill loop is iterating** — ``process_bar`` calls this at two
+        points (before its snapshot and after the loop) and both satisfy that.
+        Deferring out of the loop — after ``process_bar``'s fill loop — is
         load-bearing, not tidiness. That loop iterates a snapshot but skips any
         order no longer in the book (``if po.order_id not in self.order_book``),
         so cancelling a fallback mid-loop destroys its fill opportunity for the
@@ -2035,7 +2038,7 @@ class FillSimulator:
     ) -> None:
         """Cancel any dispatcher-emitted stop-loss order this attachment replaces.
 
-        MUST run only after the current bar's fill loop has finished — see
+        MUST NOT run while a fill loop is iterating — see
         :meth:`_drain_deferred_stop_loss_retirements`, which is the only caller.
 
         The window this closes: while an entry is only PARTIALLY filled it has no
