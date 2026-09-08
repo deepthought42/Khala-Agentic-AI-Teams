@@ -299,6 +299,19 @@ it once and pass it, rather than recomputing and trusting agreement.
   here that means one flaky symbol silently hiding a genuinely starved rule for
   the rest of the attempt. Apply it to any early return added during
   implementation, not only the three the plan already names.
+- **A memo key names every input the memoized value depends on — no member is
+  omitted because it "can't change".** Review found this defect three separate
+  times too, each time in a different disguise: `spec.target_symbols` standing
+  in for the resolved universe (the cap is read from the environment per call);
+  the signature and the fetch seam each resolving that universe independently
+  (D11); and `config.start_date` / `config.end_date` left out as "fixed for the
+  attempt" (`BacktestConfig` is not frozen). The disguise is what makes it
+  recur — each looked like a local judgement about one field. It is one rule,
+  and the asymmetry decides it: an unnecessary key member costs a tuple slot,
+  while a missing one serves a verdict computed over inputs this round does not
+  have, silently and with no way to notice. When tempted to omit a member,
+  include it. Reserve the assumption for values a type system or a `frozen=True`
+  actually enforces — and then cite the enforcement, not the intent.
 
 ---
 
@@ -364,21 +377,34 @@ it once and pass it, rather than recomputing and trusting agreement.
 - [ ] **Step 2.1** — `_design_starvation_probe_enabled() -> bool`, returning
       `_env_flag("STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED")`, placed with
       the other flag helpers.
-- [ ] **Step 2.2** — `_starvation_probe_signature(spec, resolved_symbols) -> tuple`:
+- [ ] **Step 2.2** — `_starvation_probe_signature(spec, config, resolved_symbols) -> tuple`:
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
-      spec.asset_class, tuple(resolved_symbols),
+      spec.asset_class, tuple(resolved_symbols), config.start_date, config.end_date,
       (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`,
       where `resolved_symbols` is the list Step 2.4 resolved **once** for this
       round and also passed to the fetch seam — literally the same object, not a
       second call that happens to agree (D11).
 
       It extends synthesis's `(entry_rules, requires_custom_code)` key with
-      `asset_class`, the **resolved** symbols and `as_of`, because — unlike
-      synthesis — the design loop can change which bars the verdict is computed
-      against between rounds. That makes the correspondence with Step 1.1's bars
-      key element-for-element: resolved symbols, `asset_class`, `as_of`, plus
-      `config.start_date` / `config.end_date`, which are fixed for the attempt
-      and deliberately omitted.
+      `asset_class`, the **resolved** symbols, the backtest window and `as_of`,
+      because — unlike synthesis — the design loop can change which bars the
+      verdict is computed against between rounds. Every member of Step 1.1's
+      bars key is therefore a member of this one: resolved symbols,
+      `asset_class`, `config.start_date`, `config.end_date`, `as_of`. That
+      correspondence is the point, and it has to be literal — see below.
+
+      **The window is in the key, not assumed constant.** An earlier revision
+      omitted both dates as "fixed for the attempt". `BacktestConfig` is a plain
+      `BaseModel` with no `frozen=True` (`models.py:604`), and
+      `_design_starvation_findings` receives `config` and `cache` as separate
+      arguments, so nothing structurally ties one to the other. Change the
+      window while reusing the cache and the failure is silent and specific:
+      Step 1.1's bars memo *is* date-aware and would refetch correctly, but the
+      findings memo short-circuits on the unchanged signature and returns
+      `cache.findings` before the seam is ever called — so the reviewer receives
+      a verdict computed over the previous window and the date-aware bars key
+      never gets consulted. Two extra tuple members close that; asserting the
+      invariant instead would only be as good as the assertion.
 
       **Use the resolved universe, never `spec.target_symbols` as a proxy for it.**
       An earlier revision took the proxy and documented the assumption it needed —
@@ -420,10 +446,11 @@ it once and pass it, rather than recomputing and trusting agreement.
       why it starts here rather than at the fetch. Resolve the universe
       **once** —
       `symbols = self.market_data_service.resolve_strategy_symbols(spec)`, empty
-      ⇒ `[]` — build the signature from that same list, and only then compare it
-      against `cache.signature`: unchanged ⇒ `cache.findings`. **That order is
-      load-bearing.** `_starvation_probe_signature` takes `resolved_symbols`
-      (Step 2.2), so a cache comparison placed *before* the resolution has
+      ⇒ `[]` — build the signature from that same list and this round's `config`
+      (Step 2.2), and only then compare it against `cache.signature`: unchanged
+      ⇒ `cache.findings`. **That order is
+      load-bearing.** `_starvation_probe_signature` takes `resolved_symbols`,
+      so a cache comparison placed *before* the resolution has
       nothing to compare with: it would need a stale signature or a second
       resolution call, and the second call is precisely the disagreement window
       D11 closed. Resolve once → build the signature → compare → fetch. On a
@@ -544,7 +571,11 @@ it once and pass it, rather than recomputing and trusting agreement.
       `readiness_results` itself was not mutated (the fresh-merge invariant).
 - [ ] **Step 5.5** — *Memo.* Direct-call test: two rounds with reachability-equivalent
       specs ⇒ the probe runs exactly once (count `_fetch_design_probe_bars` and
-      `probe_starvation` calls); changing `target_symbols` alone ⇒ re-probes. Plus the negative: a round whose
+      `probe_starvation` calls); changing `target_symbols` alone ⇒ re-probes;
+      **mutating `config.start_date` or `config.end_date` between two otherwise
+      identical rounds ⇒ re-probes**, since `BacktestConfig` is not frozen and the
+      findings memo would otherwise answer for the previous window before the
+      date-aware bars key could refetch (Step 2.2). Plus the negative: a round whose
       fetch returned `None` leaves the cache unwritten, so the next round with an
       unchanged signature probes again rather than serving a memoized empty
       (Step 2.4 detail 2).
@@ -632,6 +663,7 @@ suddenly slows down is the signal it did not take.
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
 | A mid-attempt universe-cap change staling the memo, or mislabelling one universe's findings with another's signature | Universe resolved once per round and passed to both the signature and the fetch (D11) |
+| A changed backtest window served from a memo built for the previous one | `config.start_date` / `config.end_date` are signature members, not an assumed-constant (Step 2.2), pinned by Step 5.5 |
 | A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
