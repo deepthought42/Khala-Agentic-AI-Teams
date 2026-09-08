@@ -47,7 +47,10 @@ lines.
 - It fetches **the same symbols, over the same window, at the same `as_of`** that
   synthesis will fetch, and `MarketDataService` is backed by a durable
   content-hashed Parquet cache. So the synthesis fetch that follows hits that
-  cache — the fetch is *moved earlier*, not duplicated.
+  cache — the fetch is usually *moved earlier* rather than duplicated. "Usually"
+  is load-bearing and D13 says why: the two calls resolve `as_of` independently,
+  so a snapshot landing between them is visible to synthesis and not to the
+  design probe.
 
   Stated precisely, because the precision is what makes it hold: that cache is
   keyed **per symbol**, not per universe (`market_data_cache/store.py:607`;
@@ -267,29 +270,43 @@ hardcoded US-holiday years. Leaning on it alone would have covered the less
 likely half: a provider with limited history returns a truncated series far
 more often than a punctured one.
 
-So the two shapes get the check each can actually answer. **Interior holes**
+So each shape gets the check that can actually answer it. **Interior holes**
 stay with the report — it owns the asset-class calendar and the tuned
 thresholds, and a hand-rolled version in the seam would have to reproduce both
-to avoid flagging every weekend. **Truncated ends** go to the seam, measured
-*relatively*: each symbol's first and last bar against the widest span any
-symbol returned, suppress if one is short. Relative comparison needs no
-calendar, so it cannot be wrong about holidays — and it matches the shape of the
-verdict it protects, since starvation is itself relative and a symbol short
-against its peers is exactly the input that corrupts it.
+to avoid flagging every weekend. **One symbol short of its peers** goes to the
+seam, measured *relatively*: each symbol's first and last bar against the widest
+span any symbol returned. Relative comparison needs no calendar, so it cannot be
+wrong about holidays, and it matches the shape of the verdict it protects, since
+starvation is itself relative. **Every symbol short together** defeats both — no
+window for the report, no shorter peer for the relative check — so it needs an
+absolute comparison against the requested dates, **with a tolerance in calendar
+days rather than a trading calendar**.
+
+That tolerance is the whole design, and it is chosen from the shape of the two
+error modes rather than tuned: a window that legitimately starts on a weekend,
+a holiday, or in a market the repo does not model is short by *days*, while a
+provider that simply lacks the history is short by *months*. A few days of slack
+separates them cleanly. Computing the true first and last trading day instead
+would be more precise in principle and worse in practice — it is exactly the
+calendar work `_count_gaps` already declines outside its hardcoded holiday
+years, and getting it wrong suppresses every probe on a legitimate window rather
+than occasionally missing a marginal one. Prefer the check that fails toward
+saying something true.
 
 One store-level fact worth recording because it outlives this story:
 `MarketDataCache.get_or_fetch` writes the **requested** `start`/`end` as the
 snapshot's coverage (`market_data_cache/store.py:652-660`) without checking that
 the returned bars span them, so a temporally short fetch is durably cached as if
 it were complete and a later `_find_covering_snapshot` will hit it. Fixing that
-belongs to the store — and it is also what would close the one gap the two
-checks above leave open: a truncation identical across *every* symbol, invisible
-to the report because it never sees the window, and invisible to a relative
-comparison because there is no shorter peer. Recording real coverage instead of
-requested coverage is what retires that class. Until then it is the stated floor
-of this defence, and the case where the probe at least compares like with like,
-so the relative verdict stays coherent even over a window smaller than asked
-for. Its consequence here is bounded and acceptable:
+belongs to the store. Its consequence for the three checks above is now
+narrow rather than structural: a uniformly truncated fetch is caught by the
+absolute bounds check on the way in, so the poisoned snapshot cannot smuggle one
+past the probe on a later round — `fetch_multi_symbol_range` re-runs the report
+and the seam re-checks the bounds on every call, cache hits included. What
+remains is availability, not correctness: the probe stays quiet for that window
+until the snapshot ages out. Recording real coverage instead of requested
+coverage is what retires the underlying class, and it would let the cache heal
+itself rather than waiting. Its consequence here is bounded and acceptable:
 `fetch_multi_symbol_range` re-runs the quality report on every call, cache hits
 included, so the shortfall keeps suppressing the probe instead of silently
 recovering into a false verdict. The cost is that the probe stays quiet for that
@@ -379,6 +396,83 @@ the unchanged signature and serve the daily verdict for an intraday spec. That
 is the fifth instance of the constraint below, and the first one the constraint
 predicted rather than followed.
 
+**D13 — The design probe pins its own dataset; it cannot pin synthesis's.**
+Step 1.1 stamps one `as_of` per design attempt so the review rounds compare with
+each other. That is the whole of what this seam can do alone, and the remainder
+has to be said rather than left as an implication of the affordability
+argument: **synthesis resolves its own `as_of` later, and with an empty
+`spec.audit.data_snapshot_id` it passes `None`, which is re-evaluated at that
+moment.** A snapshot written between the design review and synthesis is
+therefore eligible for synthesis and not for the design probe. The reviewer can
+revise against one dataset while the strategy is evaluated on another.
+
+Closing that needs the chosen cutoff to travel from design to synthesis — a
+change to `_fetch_market_data`'s contract and to the synthesis path, for the
+benefit of both phases rather than this diagnostic. It is not this story's, and
+this story is not what introduces it: two independent `as_of=None` fetches
+already drift the same way today, between the readiness price provider and
+synthesis. What *is* this story's is not to overstate the alignment it buys.
+
+So the affordability claim is narrower than "the synthesis fetch is a cache
+hit": every symbol the two fetches share is a hit **when no new snapshot lands
+in between**, which is the common case and not a guarantee. When one does, the
+design probe's fetch was still not wasted — it warmed the rows synthesis would
+otherwise have fetched cold for every symbol whose snapshot did not move. Read
+the cost argument as "usually moved, occasionally partly added", never as
+"always moved".
+
+---
+
+## Open question the plan does not settle: evaluation-window feedback
+
+Review raised this and it is correct on the mechanism, so it is recorded here
+rather than answered by an implementer's judgement mid-task.
+
+**The concern.** The probe computes reachability over the full
+`config.start_date`–`config.end_date` window. The reviewer sees "rule 3 is
+starved", the designer reorders or re-predicates, and the revised spec is then
+backtested and walk-forward evaluated over *that same window*, out-of-sample
+folds included. Information from the OOS folds — coarse information, one boolean
+per rule, but information — has entered model selection. Reported OOS metrics
+are then not quite out of sample, and the direction of the bias is optimistic.
+
+**What this plan changes, and what it does not.** It does not create the class.
+`_run_synthesis_reachability_probe` already computes over the full window
+(`orchestrator_synthesis.py:474`), inside the synthesis round loop, feeding
+`all_gate_results` on a path that revises the spec. The same coarse leak exists
+today, one phase later. What this plan changes is *exposure*: the feedback moves
+earlier and becomes routine — every review round of every readiness-clean spec,
+rather than a synthesis-phase gate firing. That is a real increase and should
+not be waved through on "pre-existing".
+
+**Why the obvious remedy is not a local fix.** Computing design findings on a
+training sub-window sounds like a scoped change and is not:
+- it makes the design verdict and the synthesis verdict disagree about the same
+  spec — the exact failure D12 rejects for frequency, arriving by another route;
+- it breaks the cache alignment the affordability argument rests on, since a
+  different date range is a different snapshot row per symbol. The fetch becomes
+  genuinely additional rather than moved;
+- it requires the fold boundaries at design time, which is walk-forward's
+  concern reaching backwards into a phase that currently knows nothing about it;
+- and left asymmetric it is arguably worse than today: the design probe would be
+  clean while the synthesis probe kept leaking, so the reported number would be
+  no more trustworthy and the two phases would now contradict each other.
+
+Done properly this is "reachability diagnostics run on a training sub-window, at
+**both** phases, with the fold boundaries available to both" — a change to the
+synthesis gate's contract and to walk-forward's interface, worth its own story
+and its own decision.
+
+**What this plan does about it.** Nothing silently. The flag
+(`STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, D5) is the operator's off
+switch for exactly this: it was justified as an escape hatch for the added
+fetch, and it turns out to be the escape hatch for the added feedback too. The
+severity demotion (D8) also bounds the effect — a `warning` informs the
+reviewer's judgement rather than forcing a rejection, so the leak is one input
+to a judge and not a mechanical gate. Neither of those makes the concern go
+away, and this section exists so the decision is made by someone who owns the
+evaluation contract rather than absorbed into an implementation step.
+
 ---
 
 ## Global constraints
@@ -451,9 +545,20 @@ predicted rather than followed.
     same list to both the signature and this fetch, so there is exactly one
     resolution per round and no window in which the two could disagree. See D11
     for why that matters more than it looks;
-  - `as_of = (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None`
-    — byte-identical to `_fetch_market_data`, so the durable cache key matches
-    and synthesis's later fetch hits it;
+  - `as_of = (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or
+    self._design_probe_as_of` — the snapshot id when the spec carries one, and
+    otherwise **a single UTC timestamp stamped once per design attempt**, beside
+    the cache resets in Step 1.2. Not `None`, which is what `_fetch_market_data`
+    passes and what an earlier revision of this step copied: `_parse_as_of(None)`
+    returns `_now_utc()` **evaluated per call**
+    (`market_data_cache/store.py:335-342`), and `_find_covering_snapshot` selects
+    `fetch_ts <= cutoff ORDER BY fetch_ts DESC LIMIT 1`. So a snapshot written
+    between two rounds — by a concurrent job, another worker, a streaming
+    writer — is eligible for the later round and not the earlier one, and the
+    reviewer would be revising against a dataset that has silently moved
+    underneath it. Stamping once makes the design loop's rounds comparable with
+    each other, which is the property this seam actually owns. See D13 for the
+    part it does *not* fix;
   - memo on `(tuple(symbols), spec.asset_class, config.start_date, config.end_date, as_of)`
     in a lazily-created `self._design_probe_bars_cache`, mirroring
     `_benchmark_bars_cache`. **Only a complete, successful fetch is stored.**
@@ -505,14 +610,20 @@ predicted rather than followed.
       returned `None` for an empty fetch. That ordering is a precondition, not
       an incidental, and the docstring should say so.
 
-      **Residual, stated rather than papered over:** a truncation identical
-      across *every* symbol is caught by neither check — the report cannot see
-      the window, and a relative comparison has no shorter peer to notice. That
-      is the one case where the probe at least compares like with like, so the
-      relative verdict stays coherent even though the window is smaller than
-      asked for; combined with the snapshot-coverage issue below it is the known
-      floor of this defence, and closing it needs the store to record real
-      coverage rather than requested coverage.
+      - **Uniformly truncated ends** — a shortfall identical across *every*
+        symbol defeats both checks above: the report never sees the window, and
+        a relative comparison has no shorter peer. This one needs an absolute
+        comparison against `config.start_date` / `config.end_date`, **with a
+        tolerance measured in calendar days, not a trading calendar.** The
+        tolerance is what makes it safe: a request beginning on a Saturday, a
+        holiday, or in a market whose calendar the repo does not model is short
+        by days, while a provider that only has recent history is short by
+        months. A few days of slack absorbs the first without blinding the
+        check to the second. Do **not** try to compute the true first and last
+        trading day of the window: that is the calendar work the repo already
+        declines to do outside `_US_HOLIDAYS_YEAR_MIN`…`_MAX`, and getting it
+        wrong suppresses every probe on a legitimate window rather than
+        occasionally missing a marginal one.
 
     Neither axis raises, so no exception reaches the guard below; both would
     fabricate starvation. The second axis is the same category error as the
@@ -525,7 +636,8 @@ predicted rather than followed.
     path; `_fetch_market_data` remains synthesis-only and remains the marker
     tests use for "synthesis was entered".*
 
-- [ ] **Step 1.2** — Reset `self._design_probe_bars_cache = {}` in
+- [ ] **Step 1.2** — Stamp `self._design_probe_as_of = _now_utc().isoformat()` and
+      reset `self._design_probe_bars_cache = {}` in
       `_run_design_attempt` (same file, `DesignMixin`), beside the existing
       `self._consecutive_spec_mutation_rounds = {}` and
       `self._benchmark_bars_cache = {}` resets around lines 1573-1583.
@@ -796,6 +908,12 @@ predicted rather than followed.
       receives, assert it is the same list the signature was built from. A test
       that only checked the signature's contents would pass even with two
       resolutions racing.
+- [ ] **Step 5.12** — *One `as_of` per design attempt* (D13). Assert the seam
+      receives a concrete `as_of` string, not `None`, for a spec with no
+      `audit.data_snapshot_id`; that two rounds of the same attempt receive the
+      **same** string; and that a new attempt gets a different one. A test that
+      only checked "not None" would pass an implementation that re-stamped every
+      round, which is the drift the pin exists to remove.
 - [ ] **Step 5.10** — *Non-daily specs are not probed* (D12). A readiness-clean
       two-rule spec with `timeframe="5m"` ⇒ `[]`, and `fetch_multi_symbol_range`
       is never called — patch it with a `_must_not_run` raiser, like Step 5.7
@@ -817,9 +935,17 @@ predicted rather than followed.
     seam's own relative endpoint check is doing the work. Without the clean
     stub this test would pass on the report alone and pin nothing.
 
-      In both, `probe_starvation` is never called. Positive control: full-span
+  - *Uniformly truncated:* every symbol returns the same short span, well
+    beyond the day-scale tolerance, with a clean report — caught by neither the
+    report nor the relative check, so this one pins the absolute bounds check.
+    Its negative control matters as much: a window whose requested `start` falls
+    on a weekend, with every series beginning on the following Monday, **must
+    still probe** — that is the case a trading-calendar implementation gets
+    wrong and the tolerance gets right.
+
+      In all three, `probe_starvation` is never called. Positive control: full-span
       bars for every symbol with a clean report do probe. **And assert the memo
-      stays unwritten in both**, for the reason Step 5.8 gives for its own
+      stays unwritten in each**, for the reason Step 5.8 gives for its own
       suppression path — these returns are the ones most likely to be
       implemented as a plain `return []` that writes the signature on the way
       out, and doing so would let one short window hide a genuinely starved rule
