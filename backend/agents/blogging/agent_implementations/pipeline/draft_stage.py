@@ -157,28 +157,45 @@ def run_draft_stage(
     # gates' handling of the same artifact.
     allowed_claims = load_allowed_claims_for_brief(work_dir, brief.brief)
 
-    # One authoritative field set for all three ``revise_from_user_feedback`` rounds
-    # (uncertainty answers, author feedback, copy-edit escalation), which differ only in
-    # the draft they revise, the feedback text, and where the output is written. Built
-    # once for the same reason ``draft_input_kwargs`` below is: hand-maintained parallel
-    # kwargs lists are how ``covered_sections`` reached only some rounds in the first
-    # place, and a round that silently loses a field drops the suppression block for
-    # that revision. ``plan`` is fixed for the stage, so the rendered outline is too.
-    #
-    # ``draft_agent`` is deliberately not captured here: the escalation path rebuilds it,
-    # and every call resolves the name at call time.
-    revise_base_kwargs = dict(
-        content_plan_text=content_plan_to_outline_markdown(plan),
-        audience=brief.audience,
-        tone_or_purpose=brief.tone_or_purpose,
-        selected_title=selected_title,
-        elicited_stories=elicited_stories_text or None,
-        covered_sections=covered_sections,
-        allowed_claims=allowed_claims,
-        target_word_count=length_policy.target_word_count,
-        length_guidance=build_draft_length_instruction(length_policy),
-        on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
-    )
+    def revise_base_kwargs() -> dict:
+        """The field set every ``revise_from_user_feedback`` round shares.
+
+        One definition for all three rounds — uncertainty answers, author feedback and
+        copy-edit escalation — which differ only in the draft revised, the feedback text,
+        the output path, and (for escalation) the progress phase. Hand-maintained parallel
+        kwargs lists are how ``covered_sections`` reached only some rounds in the first
+        place, and a round that silently loses a field drops the suppression block for
+        that revision.
+
+        A function rather than a dict built once, because ``elicited_stories_text`` is
+        **not** fixed for the stage: ``_fill_story_placeholders`` rebinds it with the
+        stories collected after the first draft. A snapshot taken before that call would
+        hand every later round the pre-fill text — omitting the narratives the author had
+        just supplied, which the writer's standing never-fabricate rule would then turn
+        back into ``[Author: ...]`` placeholders. Reading it here defers to call time.
+
+        ``draft_agent`` is deliberately not included: the escalation path rebuilds it, and
+        every call resolves the name itself.
+
+        Preconditions:
+            - Called from within ``run_draft_stage``, after ``plan``/``brief``/
+              ``length_policy`` are bound.
+        Postconditions:
+            - Returns a fresh dict carrying the current ``elicited_stories_text`` and
+              ``covered_sections``; mutating it does not affect later calls.
+        """
+        return dict(
+            content_plan_text=content_plan_to_outline_markdown(plan),
+            audience=brief.audience,
+            tone_or_purpose=brief.tone_or_purpose,
+            selected_title=selected_title,
+            elicited_stories=elicited_stories_text or None,
+            covered_sections=covered_sections,
+            allowed_claims=allowed_claims,
+            target_word_count=length_policy.target_word_count,
+            length_guidance=build_draft_length_instruction(length_policy),
+            on_llm_request=lambda msg: _update(BlogPhase.DRAFT_REVIEW, status_text=msg),
+        )
 
     # Draft + Copy Editor loop (load style and brand spec as raw text for draft/editor agents)
     writing_style_content, brand_spec_content = _load_required_guidelines("start drafting")
@@ -373,7 +390,7 @@ def run_draft_stage(
                                 draft=draft_result.draft,
                                 user_feedback=answer_feedback,
                                 draft_output_path=draft_output_path,
-                                **revise_base_kwargs,
+                                **revise_base_kwargs(),
                             )
 
                 # ── Step 3: Present draft for editor review ───────────────
@@ -466,7 +483,7 @@ def run_draft_stage(
                         draft=draft_result.draft,
                         user_feedback=user_feedback_text,
                         draft_output_path=draft_output_path,
-                        **revise_base_kwargs,
+                        **revise_base_kwargs(),
                     )
 
                     # Present revised draft for another round of review
@@ -659,7 +676,7 @@ def run_draft_stage(
                             # Only the progress phase differs from the shared set: this
                             # round reports under the copy-edit loop, not draft review.
                             **{
-                                **revise_base_kwargs,
+                                **revise_base_kwargs(),
                                 "on_llm_request": lambda msg: _update(
                                     BlogPhase.COPY_EDIT_LOOP, status_text=msg
                                 ),

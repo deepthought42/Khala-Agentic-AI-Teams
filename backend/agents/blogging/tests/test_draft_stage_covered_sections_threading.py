@@ -63,10 +63,15 @@ def _capturing_stub_writer_class(captured_inputs: list, *, uncertainty_questions
             return WriterOutput(draft="# Revised\n\nBody.")
 
         def revise_from_user_feedback(self, *a, covered_sections=None, **kw):
-            # Recorded as a namespace so callers can assert on ``.covered_sections``
-            # uniformly across both call shapes.
+            # Every keyword is recorded, not just ``covered_sections``: this call shape
+            # passes kwargs rather than a model, so anything dropped here is invisible to
+            # the suite. A snapshot of ``elicited_stories`` taken before the story fill
+            # once reached these rounds unnoticed for exactly that reason.
             captured_inputs.append(
-                ("revise_from_user_feedback", SimpleNamespace(covered_sections=covered_sections))
+                (
+                    "revise_from_user_feedback",
+                    SimpleNamespace(**kw, covered_sections=covered_sections),
+                )
             )
             return WriterOutput(draft="# Revised\n\nBody.")
 
@@ -126,6 +131,23 @@ def _spy_fill_story_placeholders(captured_kwargs: list):
     def _fill(*, draft_text, draft_input_kwargs, elicited_stories_text, **_kw):
         captured_kwargs.append(draft_input_kwargs)
         return WriterOutput(draft=draft_text), elicited_stories_text
+
+    return _fill
+
+
+def _spy_fill_collecting_a_story(captured_kwargs: list, appended: str):
+    """The same stand-in, but simulating a fill that actually collected a story.
+
+    ``_spy_fill_story_placeholders`` returns ``elicited_stories_text`` unchanged, which is
+    the one case that cannot detect a stale snapshot: the pre-fill and post-fill values are
+    equal, so a later round reading either looks correct. This one appends, so a revision
+    round carrying the pre-fill text is visibly missing ``appended``.
+    """
+    from agents.blogging.blog_writer_agent.models import WriterOutput
+
+    def _fill(*, draft_text, draft_input_kwargs, elicited_stories_text, **_kw):
+        captured_kwargs.append(draft_input_kwargs)
+        return WriterOutput(draft=draft_text), f"{elicited_stories_text}\n\n{appended}"
 
     return _fill
 
@@ -367,3 +389,45 @@ def test_draft_stage_threads_covered_sections_into_the_copy_edit_revision(monkey
     assert revisions, "the copy-edit revision never fired"
     for revise_input in revisions:
         assert revise_input.covered_sections == EXPECTED_ORDER
+
+
+def test_revisions_after_the_fill_carry_the_stories_it_collected(monkeypatch) -> None:
+    """A story collected during the placeholder fill must reach the later revision rounds.
+
+    ``_fill_story_placeholders`` rebinds ``elicited_stories_text`` with the narratives it
+    collected. Every revision round after it has to read that rebound value, not a
+    snapshot taken before the first draft — a round carrying the pre-fill text omits the
+    story the author just supplied, and the writer's standing never-fabricate rule would
+    then turn it back into the ``[Author: ...]`` placeholder the fill existed to answer.
+
+    The sibling coverage tests cannot catch this: their fill spy returns the stories text
+    unchanged, so pre-fill and post-fill are the same string.
+    """
+    collected = "[Story for section: Why it broke]\nThe rollback script was never tested."
+    fill_kwargs: list = []
+    from agents.blogging.agent_implementations.pipeline import draft_stage as ds
+
+    monkeypatch.setattr(
+        ds, "_fill_story_placeholders", _spy_fill_collecting_a_story(fill_kwargs, collected)
+    )
+    _install_fake_job_store(
+        monkeypatch,
+        draft_feedback_script=[
+            {"approved": False, "feedback": "Tighten the intro."},
+            {"approved": True},
+        ],
+        submitted_answers=[{"question_id": "q1", "selected_answer": "The second framing."}],
+    )
+
+    captured = _run_stage(monkeypatch, covered_sections=COVERED_SECTIONS, job_store=True)
+
+    assert fill_kwargs, "story-placeholder fill never ran"
+    post_fill = [
+        (kind, inp) for kind, inp in captured if kind in ("revise_from_user_feedback", "revise")
+    ]
+    assert post_fill, "no revision round ran after the fill"
+    for kind, writer_input in post_fill:
+        assert collected in (writer_input.elicited_stories or ""), (
+            f"{kind} carried pre-fill stories: the story collected during the fill is "
+            f"missing from its prompt input"
+        )
