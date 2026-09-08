@@ -247,6 +247,31 @@ severity rule to decide a soundness question is a category error, and it left th
 default-universe path — the more common one — exposed to the very false positive
 D9 exists to prevent.
 
+**The check has two axes, and fixing the first left the second.** *Which
+symbols* was only half of it; *which bars* is the other. A provider can return a
+nonempty series for every requested symbol that covers only part of the
+requested window. That passes a membership check while omitting an interval —
+and a rule whose independent fires all fall inside the omitted interval reads as
+starved on what survives. Same false positive, same cause, one axis over. So the
+seam also suppresses on a failing data-quality report, which it does not have to
+derive: `fetch_multi_symbol_range` already runs
+`validate_market_data(..., mode="warn")` after the symbols resolve and leaves
+the structured result on `MarketDataService.last_quality_report`. Consulting it
+beats re-deriving coverage from the bars, which would have to model trading
+calendars to avoid flagging every weekend as a gap.
+
+One store-level fact worth recording because it outlives this story:
+`MarketDataCache.get_or_fetch` writes the **requested** `start`/`end` as the
+snapshot's coverage (`market_data_cache/store.py:652-660`) without checking that
+the returned bars span them, so a temporally short fetch is durably cached as if
+it were complete and a later `_find_covering_snapshot` will hit it. Fixing that
+belongs to the store. Its consequence here is bounded and acceptable:
+`fetch_multi_symbol_range` re-runs the quality report on every call, cache hits
+included, so the shortfall keeps suppressing the probe instead of silently
+recovering into a false verdict. The cost is that the probe stays quiet for that
+window until the snapshot ages out — the same availability trade D9 already
+accepts, and the right one for a finding whose value is precision.
+
 The availability cost is real and accepted: one flaky symbol in a ten-symbol
 default universe suppresses that round's probe entirely. That is the right trade
 for this finding. `FAITHFUL_EXECUTION.md` states plainly that precision is what
@@ -291,6 +316,45 @@ value twice is the same defect as assuming it is stable** — the second read is
 just a shorter race. Wherever a value must agree across two consumers, compute
 it once and pass it, rather than recomputing and trusting agreement.
 
+**D12 — Non-daily specs get no probe, and `timeframe` is in the key.**
+`StrategySpec.timeframe` is a `Literal["1m","5m","15m","1h","1d"]`
+(`models.py:345`), and `fetch_multi_symbol_range` defaults to
+`frequency="1d"` / `intraday_mode=False`. Step 1.1 mirrors `_fetch_market_data`,
+so a 5-minute spec would be probed against daily candles. For a rule like
+"5-minute RSI < 30" those are not coarse data, they are the wrong series: the
+rule fires never or always, and "structurally starved" computed on that is
+meaningless rather than approximate. It would prompt a revision of a correct
+design — the exact churn D8 exists to prevent, arriving by a different route.
+
+**So the seam returns `None` when `spec.timeframe != "1d"`, checked before any
+fetch** (same reasoning as the entry-rule count in D10 — do not pay for a
+verdict you will not use).
+
+The tempting alternative is to fetch at the spec's own frequency instead. Reject
+it here, for a reason worth checking rather than assuming: **synthesis does not
+do that either.** `_fetch_market_data` calls `fetch_multi_symbol_range` with
+`symbols` / `asset_class` / `start_date` / `end_date` / `as_of` and no
+`frequency` or `intraday_mode` (`orchestrator.py:1489-1495`), so the
+synthesis-phase reachability probe already runs on daily bars for an intraday
+spec. Making the design probe frequency-aware would (a) make it disagree with
+the synthesis verdict for the same spec, and (b) break the cache alignment the
+affordability argument rests on, since the two fetches would no longer share
+symbol snapshots. Fixing the frequency gap is a real piece of work — it belongs
+to the fetch path and to both probes at once, not to this story, which only
+changes where an existing verdict is *delivered*.
+
+This makes the design probe stricter than synthesis on a second axis, alongside
+D9. Both strictnesses have the same shape and the same justification: a round
+that cannot judge soundly says nothing.
+
+`spec.timeframe` goes in the probe signature regardless of the suppression,
+and the reason is not redundancy — the design loop **mutates the spec between
+rounds**. A round-1 `1d` spec that probes and memoizes, followed by a round-2
+revision to `5m` with the same rules, universe and window, would otherwise hit
+the unchanged signature and serve the daily verdict for an intraday spec. That
+is the fifth instance of the constraint below, and the first one the constraint
+predicted rather than followed.
+
 ---
 
 ## Global constraints
@@ -314,10 +378,10 @@ it once and pass it, rather than recomputing and trusting agreement.
   implementation, not only the three the plan already names.
 - **A memo key names every input the memoized value depends on — no member is
   omitted because it "can't change".** Review found this defect three separate
-  times too, each time in a different disguise: `spec.target_symbols` standing
-  in for the resolved universe (the cap is read from the environment per call);
-  the signature and the fetch seam each resolving that universe independently
-  (D11); and `config.start_date` / `config.end_date` left out as "fixed for the
+  times, each in a different disguise: `spec.target_symbols` standing in for the
+  resolved universe (the cap is read from the environment per call); the
+  signature and the fetch seam each resolving that universe independently (D11);
+  and `config.start_date` / `config.end_date` left out as "fixed for the
   attempt" (`BacktestConfig` is not frozen). The disguise is what makes it
   recur — each looked like a local judgement about one field. It is one rule,
   and the asymmetry decides it: an unnecessary key member costs a tuple slot,
@@ -325,6 +389,15 @@ it once and pass it, rather than recomputing and trusting agreement.
   have, silently and with no way to notice. When tempted to omit a member,
   include it. Reserve the assumption for values a type system or a `frozen=True`
   actually enforces — and then cite the enforcement, not the intent.
+
+  Stated as a rule it then earned its keep: `spec.timeframe` (D12) is the fourth
+  member, and the first one added because the rule said to rather than because
+  review caught it missing. The design loop mutates the spec between rounds, so
+  a `1d` verdict must not be replayed for a `5m` revision. A fifth appearance
+  sits outside the memo, in the affordability argument — "the synthesis fetch
+  that follows is a cache hit" assumed both fetches resolve the same universe —
+  which is the same assumption wearing a cost claim instead of a correctness
+  one. Read the rule that broadly.
 
 ---
 
@@ -365,12 +438,32 @@ it once and pass it, rather than recomputing and trusting agreement.
     rather than being served a remembered failure. This is the same rule Step 2.4
     applies to the findings memo, and for the same reason: a memo that caches an
     absence turns a transient fault into a permanent one;
-  - after the fetch, apply D9's coverage check against **the `symbols` list it
-    was given** — not a freshly resolved one: if any of them is missing from
-    those that returned bars, return `None`, explicit `target_symbols` and the
-    asset-class default universe alike. A partial fetch
-    is silent (no exception reaches the guard below) and probing one would
-    fabricate starvation;
+  - **before fetching, return `None` when `spec.timeframe != "1d"`** (D12) —
+    the seam fetches daily bars, and an intraday spec judged on them yields a
+    meaningless verdict, so there is nothing to buy with the fetch;
+  - after the fetch, apply D9's coverage check **on both axes** against **the
+    `symbols` list it was given** — not a freshly resolved one:
+    * *which symbols* — if any requested symbol is missing from those that
+      returned bars, return `None`, explicit `target_symbols` and the
+      asset-class default universe alike;
+    * *which dates* — a symbol can return a nonempty series that covers only
+      part of the requested window, which passes a membership check while
+      hiding exactly the interval a rule's independent fires live in.
+      `MarketDataService` already computes this: `fetch_multi_symbol_range`
+      runs `validate_market_data(..., mode="warn")` and leaves the structured
+      result on `self.last_quality_report`, so the seam consults that report
+      rather than re-deriving coverage from the bars (which would have to
+      model trading calendars to avoid flagging every weekend). Suppress on a
+      failing report. Read it immediately after our own fetch and treat it,
+      like `provider_used`, as **shared mutable state on the service** that a
+      later fetch overwrites — that read ordering is the precondition, and the
+      docstring should say so.
+
+    Neither axis raises, so no exception reaches the guard below; both would
+    fabricate starvation. The second axis is the same category error as the
+    first: D9's earlier revision fixed *which symbols* and left *which bars*,
+    the way its own predecessor fixed explicit targets and left the default
+    universe;
   - wrap the fetch in `try` / `except Exception` → `logger.debug(...)` → `None`.
     A design-time diagnostic must never crash or stall a cycle.
   - Docstring states the invariant explicitly: *this is not the synthesis fetch
@@ -392,14 +485,17 @@ it once and pass it, rather than recomputing and trusting agreement.
       the other flag helpers.
 - [ ] **Step 2.2** — `_starvation_probe_signature(spec, config, resolved_symbols) -> tuple`:
       `(tuple(r.model_dump_json() for r in spec.entry_rules), bool(spec.requires_custom_code),
-      spec.asset_class, tuple(resolved_symbols), config.start_date, config.end_date,
+      spec.asset_class, spec.timeframe, tuple(resolved_symbols),
+      config.start_date, config.end_date,
       (getattr(spec, "audit", None) and spec.audit.data_snapshot_id) or None)`,
       where `resolved_symbols` is the list Step 2.4 resolved **once** for this
       round and also passed to the fetch seam — literally the same object, not a
       second call that happens to agree (D11).
 
       It extends synthesis's `(entry_rules, requires_custom_code)` key with
-      `asset_class`, the **resolved** symbols, the backtest window and `as_of`,
+      `asset_class`, `timeframe` (D12 — the design loop mutates the spec between
+      rounds, so a `1d` round's verdict must not be served to a `5m` one), the
+      **resolved** symbols, the backtest window and `as_of`,
       because — unlike synthesis — the design loop can change which bars the
       verdict is computed against between rounds. Every member of Step 1.1's
       bars key is therefore a member of this one: resolved symbols,
@@ -592,6 +688,18 @@ it once and pass it, rather than recomputing and trusting agreement.
       fetch returned `None` leaves the cache unwritten, so the next round with an
       unchanged signature probes again rather than serving a memoized empty
       (Step 2.4 detail 2).
+
+      **And a case that actually reaches the bars memo.** The cases above all
+      turn on the *findings* memo, which short-circuits before
+      `_fetch_design_probe_bars` is called at all — so they pass whether Step
+      1.1's bars memo exists, is keyed wrongly, or is missing entirely. The
+      bars memo is only exercised where the findings signature **misses** but
+      the fetch inputs are unchanged: **different entry rules, same universe,
+      window, `timeframe` and `as_of`.** Assert `probe_starvation` runs twice
+      and `market_data_service.fetch_multi_symbol_range` exactly once. Counting
+      `_fetch_design_probe_bars` calls is not enough here — the seam is entered
+      both rounds by design; the memo's whole job is that only one of those
+      entries reaches the service.
 - [ ] **Step 5.6** — *Fail-open, at both layers* (Step 2.4 detail 1).
       *Outer:* `_fetch_design_probe_bars` monkeypatched to raise ⇒ `[]`, no
       exception escapes, cycle completes — the seam's own `except` cannot catch
@@ -633,6 +741,24 @@ it once and pass it, rather than recomputing and trusting agreement.
       receives, assert it is the same list the signature was built from. A test
       that only checked the signature's contents would pass even with two
       resolutions racing.
+- [ ] **Step 5.10** — *Non-daily specs are not probed* (D12). A readiness-clean
+      two-rule spec with `timeframe="5m"` ⇒ `[]`, and `fetch_multi_symbol_range`
+      is never called — patch it with a `_must_not_run` raiser, like Step 5.7
+      does for the seam. Plus the memo half, which is the part a suppression-only
+      test would miss: probe a `1d` spec, then mutate `timeframe` to `5m`
+      leaving rules, universe and window identical, and assert the second round
+      returns `[]` rather than replaying the daily verdict through an unchanged
+      signature.
+- [ ] **Step 5.11** — *Temporally short fetches suppress the probe* (D9, second
+      axis). Every requested symbol returns bars, but the series covers a strict
+      sub-range of `config.start_date`–`config.end_date` and the stubbed
+      `last_quality_report` reports the gap ⇒ `[]`, and `probe_starvation` is
+      never called. Positive control: full-span bars with a clean report do
+      probe. **And assert the memo stays unwritten**, for the reason Step 5.8
+      gives for its own suppression path — this return is the one most likely to
+      be implemented as a plain `return []` that writes the signature on the way
+      out, and doing so would let one short window hide a genuinely starved rule
+      for the rest of the attempt.
 
 ### Task 6: Docs
 
@@ -677,7 +803,8 @@ suddenly slows down is the signal it did not take.
 | A `critical` finding hard-blocks an intentional priority ordering | Demoted to `warning` on the design path (D8), pinned by Step 5.1 |
 | A mid-attempt universe-cap change staling the memo, or mislabelling one universe's findings with another's signature | Universe resolved once per round and passed to both the signature and the fetch (D11) |
 | A changed backtest window served from a memo built for the previous one | `config.start_date` / `config.end_date` are signature members, not an assumed-constant (Step 2.2), pinned by Step 5.5 |
-| A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe, explicit and default universes alike (D9), pinned by Step 5.8 |
+| An intraday spec judged on daily candles | Probe suppressed for `timeframe != "1d"` before any fetch, and `timeframe` is a signature member so a mid-attempt change cannot replay the daily verdict (D12), pinned by Step 5.10 |
+| A silently partial fetch fabricates a starvation finding | Any shortfall against the resolved request suppresses the probe on **both** axes — missing symbols, and a series that covers only part of the window — explicit and default universes alike (D9), pinned by Steps 5.8 and 5.11 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
