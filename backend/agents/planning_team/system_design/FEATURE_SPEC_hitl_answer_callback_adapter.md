@@ -42,10 +42,29 @@ Two secondary facts that change the shape of the remaining work:
    answered; without a terminal round that resolves, the loop re-asks forever and PRA's sub-job
    waits out its own `total_timeout`. Deleting `_default_answer` breaks a workflow invariant that is
    documented and tested.
-2. **The primitive is no longer unwired.** The team-local contract doc still describes it as
-   "deliberately usable by, but not yet used by, any concrete workflow class," and still documents
-   the resolved callback as returning `[]` for an unmatched question. Both statements were true when
-   written and are false now — the re-pause path and the SE-team wiring both landed since.
+2. **The primitive is wired — but the path is gated off, so none of it currently executes.**
+   The team-local contract doc still describes it as "deliberately usable by, but not yet used by,
+   any concrete workflow class," and still documents the resolved callback as returning `[]` for an
+   unmatched question. Both statements were true when written and are false now: the re-pause path
+   and the SE-team wiring landed since. But "wired" is not "reachable."
+   `plan_project_activity` hard-codes `use_product_analysis=False`
+   (`software_engineering_team/temporal/activities.py:670`) on the same
+   `run_planning_workflow` call that passes the callback, and
+   `DocumentProductionAgent.run` invokes `answer_callback` only inside its
+   `if use_product_analysis and run_pra and wait_pra:` branch
+   (`planning_team/agents/document_production/agent.py:91-94`).
+   `orchestrator.py:193` is the only place the callback is consumed, and it sits behind that same
+   branch. So on the live `RunTeamWorkflowV2` path the callback is built, passed, and **never
+   called**: no pause is ever raised, the bounded loop never iterates, and the terminal default
+   never fires. All of it is real, tested code on an unreachable path.
+
+**Read the priority accordingly.** This plan is pre-emptive hygiene on a dark path, not a live-bug
+fix. Nothing in production is silently fabricating Planning answers today, because nothing in
+production reaches the code that could. The argument for doing it *now* is sequencing: the
+observability gap is far cheaper to close while the path is dark than after someone flips
+`use_product_analysis` to `True` and the first defaulted plan ships unnoticed. Flipping that gate is
+not this plan's work and not its call — but no one should read this document as describing
+behaviour users are experiencing.
 
 So the remaining work is a **contract reconciliation plus one observability gap**, not a build.
 
@@ -147,7 +166,9 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 | `backend/agents/planning_team/temporal/answer_signal.py` | Add an optional `on_defaulted` reporting hook to `build_temporal_planning_answer_callback`; update the factory's Postconditions |
 | `backend/agents/software_engineering_team/temporal/activities.py` | Wire `on_defaulted` in `plan_project_activity` to an `update_job(job_id, defaulted_questions=[...])` write |
 | `backend/agents/planning_team/tests/test_temporal_answer_signal.py` | Tests for the hook: fired with the defaulted ids on a terminal round, not fired on a resolving or re-pausing round, a raising hook propagates rather than being swallowed |
-| `backend/agents/software_engineering_team/tests/test_temporal_activities.py` | Assert the terminal round persists `defaulted_questions` on the job record |
+| `backend/agents/software_engineering_team/api/models.py` | Add `defaulted_questions` to `JobStatusResponse` (empty-list default) — without it the persisted value never leaves the job record |
+| `backend/agents/software_engineering_team/api/state.py` | Populate `defaulted_questions` in `build_job_status_response`, which assembles an explicit payload dict and drops unlisted keys |
+| `backend/agents/software_engineering_team/tests/test_temporal_activities.py` | Assert the terminal round persists `defaulted_questions` on the job record, and that the status response echoes it |
 | `backend/agents/planning_team/system_design/planning_hitl_temporal_contract.md` | Correct the two stale claims; document the terminal-round default and the reporting hook |
 | `system_design/specs/SPEC-024-planning-team-clarification-hitl-contract.md` | Append an addendum recording two amendments: the bounded-default exception to the never-fabricate rule, and the §4.1 wire-contract divergence (`submit_planning_answers` shipped, `selected_option_ids` did not) |
 
@@ -160,6 +181,7 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 - [ ] **Step 1:** Run `python3 -m pytest agents/planning_team/tests/test_temporal_answer_signal.py --cov=planning_team.temporal.answer_signal --cov-report=term-missing` from `backend/` and confirm `87 stmts, 0 miss, 100%`. Record the number in the PR body — it is the baseline the change must not regress.
 - [ ] **Step 2:** Run the SE-side pause-loop tests (`test_temporal_activities.py -k repause or paused`, `test_temporal_workflows_trace_id.py -k pause`) green before touching anything, so a later failure is attributable.
 - [ ] **Step 3:** Confirm no caller outside `plan_project_activity` passes `allow_repause` (a repo-wide grep). If a second caller has appeared, it must be listed in the PR body — the reporting hook has to reach it too, or its defaults stay invisible.
+- [ ] **Step 4:** Re-confirm the gate before writing any code: `plan_project_activity` still passes `use_product_analysis=False`, and `DocumentProductionAgent.run` still reaches `answer_callback` only inside its PRA branch. If either has changed, the path is now live and this work stops being pre-emptive — say so in the PR body, because it changes how urgently the observability gap needs closing.
 
 ### Task 2: Report defaulted answers out of the adapter
 
@@ -198,12 +220,24 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 
 **Files:**
 - Modify: `backend/agents/software_engineering_team/temporal/activities.py`
+- Modify: `backend/agents/software_engineering_team/api/models.py`
+- Modify: `backend/agents/software_engineering_team/api/state.py`
 - Modify: `backend/agents/software_engineering_team/tests/test_temporal_activities.py`
+- Modify: the `build_job_status_response` tests under `software_engineering_team/tests/`
 
-- [ ] **Step 1: Write the failing test** — a `plan_project_activity` call with `allow_repause=False` and a partially-answered batch leaves `defaulted_questions` on the job record, carrying each defaulted `question_id` and `selected_option_id`.
+A job-record write on its own is invisible, so it does not satisfy this task's own title.
+`JobStatusResponse` (`api/models.py`) carries `pending_questions` and `waiting_for_answers` but no
+`defaulted_questions`, and `build_job_status_response` (`api/state.py`) assembles an explicit
+payload dict — an unlisted key is dropped, not passed through. Without both changes,
+`GET /run-team/{job_id}` never returns the value and the whole "auditable rather than silent"
+justification for keeping the default fails. The status API is therefore in scope here; only
+*rendering* it in the Angular UI is the follow-on.
+
+- [ ] **Step 1: Write the failing tests** — (a) a `plan_project_activity` call with `allow_repause=False` and a partially-answered batch leaves `defaulted_questions` on the job record, carrying each defaulted `question_id` and `selected_option_id`; (b) `build_job_status_response` echoes that value, and returns an empty list (not `None`, not a missing key) for a job that defaulted nothing.
 - [ ] **Step 2:** Pass `on_defaulted=lambda answers: update_job(job_id, defaulted_questions=answers)` at the `build_temporal_planning_answer_callback` call site. Append rather than overwrite if a prior round could already have written the field — verify against `update_job`'s semantics before choosing.
-- [ ] **Step 3:** Update the `plan_project_activity` docstring's Postconditions to state that a terminal round records its defaults on the job record.
-- [ ] **Step 4:** Run `make lint` and the full `planning_team` + `software_engineering_team` Temporal test suites.
+- [ ] **Step 3:** Add `defaulted_questions` to `JobStatusResponse` (defaulting to an empty list, so every existing caller keeps deserializing) and populate it in `build_job_status_response` from the job record. Follow how `pending_questions` is already threaded through both.
+- [ ] **Step 4:** Update the `plan_project_activity` docstring's Postconditions to state that a terminal round records its defaults on the job record, and note on `JobStatusResponse` what a non-empty `defaulted_questions` means: these answers were chosen by the system, not by a human.
+- [ ] **Step 5:** Run `make lint` and the full `planning_team` + `software_engineering_team` Temporal and API test suites.
 
 ---
 
@@ -218,9 +252,14 @@ dedicated non-retryable error, and rewrite `RunTeamWorkflowV2`'s Invariants bloc
 - Closing the `submit_answers` / `submit_planning_answers` wire-contract divergence itself. Task 3
   Step 5 only *records* it; adopting one name, and the `selected_option_ids` payload extension
   SPEC-024 §4.1 requires, is its own story with a live-history migration to plan
-- Surfacing `defaulted_questions` in the Angular UI — a follow-on, and worth its own story: a plan
-  built partly on machine-chosen answers should say so where the user reads the plan, not only in
-  the job JSON
+- *Rendering* `defaulted_questions` in the Angular UI — a follow-on worth its own story: a plan built
+  partly on machine-chosen answers should say so where the user reads the plan. Returning the field
+  from the status API is **not** deferred with it; that is Task 4, because without it there is
+  nothing for a UI story to render and the audit trail stops at the job record
+- Flipping `use_product_analysis` to `True` in `plan_project_activity`, which is what would make any
+  of this path reachable in the first place. That is a product decision with its own blast radius
+  (a live PRA sub-job per planning run); this plan deliberately lands ahead of it rather than
+  waiting on it
 - Any change to thread mode's `_build_planning_answer_callback`
 - The `document_production_activity` PRA-checkpoint work the spec describes, which remains unbuilt
 
