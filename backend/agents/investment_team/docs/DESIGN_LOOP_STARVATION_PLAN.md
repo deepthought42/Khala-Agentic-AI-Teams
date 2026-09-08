@@ -5,10 +5,12 @@
 round, merged through the *same* path the hypothesis/rules consistency finding
 already uses (`_review_and_handle_critique`), not a parallel delivery mechanism.
 
-**Scope:** Step 1 of 3 for "wire the structurally-starved finding into the
-design-loop reviewer". Reviewer adjudication / no-hard-block preservation
-(step 2) and the end-to-end integration test (step 3) are separate stories;
-this plan stops where they begin, but notes where each will attach.
+**Scope:** The first of three stories for "wire the structurally-starved finding
+into the design-loop reviewer". The **adjudication story** (preserving the
+reviewer's no-hard-block behaviour) and the **integration-test story** (proving
+the loop reconciles a starved-rule spec) are separate units of work with their
+own branches — see Out of scope. This document numbers only its own work, as
+`Step N.M`; a bare "step" never refers to a sibling story.
 
 **Tech Stack:** Python 3.10+, Pydantic v2, pytest, ruff (line-length 120).
 
