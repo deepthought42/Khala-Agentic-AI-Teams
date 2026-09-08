@@ -128,10 +128,26 @@ path only because `_fetch_market_data` has its own `try` around it. One layer is
 not enough — a guard inside the seam cannot catch the seam being unavailable,
 and a diagnostic that can abort a design cycle is worse than no diagnostic.
 
-**D5 — `STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, default `true`.**
+**D5 — `STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, default `false` for now.**
 Matches `STRATEGY_LAB_MECHANICAL_REPAIR_ENABLED` / `STRATEGY_LAB_REGIME_SUMMARY_ENABLED`
-via `_env_flag`. The flag is the operator's escape hatch for the added design-time
-fetch — the one genuinely new cost in this change.
+via `_env_flag`. It is the operator's escape hatch for the added design-time
+fetch — but the default is `false`, and that is not about the fetch.
+
+**The default is the conservative answer to an unresolved question, not a
+verdict on it.** The evaluation-window section below records a real bias
+concern: revising a spec after seeing reachability over the full window puts
+the walk-forward OOS folds into model selection. Until that is decided, shipping
+`true` would make every cycle carry the exposure by default while the only
+mitigation is an operator remembering to switch it off — deciding the open
+question in the risky direction by omission. `false` decides nothing: the
+mechanism is wired, tested and one env var from live, and the flip is a
+one-character diff once the evaluation contract's owner has ruled.
+
+Note what this costs, since it is the acceptance criteria: with the default off,
+"the reviewer receives the finding each round" holds *when the flag is on*, not
+out of the box. If the decision is that the leak is acceptable — a defensible
+answer given it already exists at synthesis — flip the default in the same
+commit that records the ruling.
 
 **D6 — Optional keyword args, not required ones.**
 `_review_and_handle_critique` gains `config` and `starvation_cache`, both
@@ -463,10 +479,11 @@ Done properly this is "reachability diagnostics run on a training sub-window, at
 synthesis gate's contract and to walk-forward's interface, worth its own story
 and its own decision.
 
-**What this plan does about it.** Nothing silently. The flag
-(`STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, D5) is the operator's off
-switch for exactly this: it was justified as an escape hatch for the added
-fetch, and it turns out to be the escape hatch for the added feedback too. The
+**What this plan does about it.** Nothing silently, and nothing by
+default. `STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED` now **defaults to
+`false`** (D5) precisely because of this section: an unresolved bias question
+should not ship as the default behaviour, with an operator switch as the only
+thing standing between it and every cycle. The
 severity demotion (D8) also bounds the effect — a `warning` informs the
 reviewer's judgement rather than forcing a rejection, so the leak is one input
 to a judge and not a mechanical gate. Neither of those makes the concern go
@@ -550,7 +567,37 @@ evaluation contract rather than absorbed into an implementation step.
     timestamp stamped once per design attempt**, beside the cache resets in
     Step 1.2. The helper exists so this seam and the probe signature cannot word
     the same fallback differently; they did, briefly, and Step 2.2 records why
-    that mattered even though it happened to be harmless. Not `None`, which is what `_fetch_market_data`
+    that mattered even though it happened to be harmless.
+
+    **And the cutoff must be enforced, not merely passed.** `as_of` constrains
+    only the *snapshot lookup*: `_find_covering_snapshot` filters
+    `fetch_ts <= cutoff`, but on a miss `get_or_fetch` falls through to
+    `fetch_fn` and writes a **new** snapshot whose `fetch_ts` is now — later
+    than the cutoff by construction. So passing an audited historical
+    `data_snapshot_id` does not stop the probe from judging on data recorded
+    after it. Returning bare bars (D1) makes that undetectable downstream,
+    because the `SnapshotMeta` carrying `fetch_ts` is exactly what D1 discards.
+
+    **So when the spec carries an audited `data_snapshot_id`, the seam checks
+    the cutoff is satisfiable before it fetches anything.** The store exposes a
+    read-only path for exactly this —
+    `MarketDataCache.lookup_snapshot(symbol=…, asset_class=…, frequency="1d",
+    start=…, end=…, as_of=…) -> Optional[SnapshotMeta]`, which is
+    `_find_covering_snapshot` without the fetch fallback. Every requested symbol
+    must return a meta; any `None` ⇒ abstain, no `fetch_multi_symbol_range`
+    call at all. Checking after the fetch is not an option and the reason is
+    structural: `fetch_multi_symbol_range` returns bare
+    `Dict[str, List[OHLCVBar]]`, so the `fetch_ts` needed to detect the
+    violation is gone by the time the seam sees the result — and the live fetch
+    that violated the cutoff has already happened.
+
+    For an **unaudited** spec the stamped `as_of` is a stability pin between
+    rounds, not a historical cutoff, so the miss path is harmless and the seam
+    fetches normally. Restricting the lookup gate to audited specs keeps the
+    cold-cache case working: the probe would otherwise stay silent for a new
+    universe until synthesis populated the snapshots. The cost of this gate is
+    therefore paid only by audited replays, which are precisely the runs where a
+    verdict computed on post-cutoff data would be worst; Not `None`, which is what `_fetch_market_data`
     passes and what an earlier revision of this step copied: `_parse_as_of(None)`
     returns `_now_utc()` **evaluated per call**
     (`market_data_cache/store.py:335-342`), and `_find_covering_snapshot` selects
@@ -577,61 +624,71 @@ evaluation contract rather than absorbed into an implementation step.
     * *which symbols* — if any requested symbol is missing from those that
       returned bars, return `None`, explicit `target_symbols` and the
       asset-class default universe alike;
-    * *which dates* — a symbol can return a nonempty series that covers only
-      part of the requested window, which passes a membership check while
-      hiding exactly the interval a rule's independent fires live in. This
-      needs **two** checks, because the shapes fail differently and no single
-      mechanism sees both:
-      - **Interior holes** — the service already computes this.
+    * *which dates* — the axis that kept sprouting new cases. Three separate
+      revisions each fixed one shape and left a sibling: interior holes vs.
+      truncated ends, then one-symbol-short vs. everyone-short, then the two
+      blind spots below. **That is the signal to stop adding checks and make
+      the class unrepresentable**, so the seam now owns one predicate instead
+      of a growing list of filters:
+
+      > **`_probe_coverage_is_sound(symbols, bars, config, spec) -> bool`** —
+      > true only when, for **every requested symbol**, the returned series
+      > spans the requested window and contains no omission this probe cares
+      > about. Anything else abstains.
+
+      One predicate, one call site, one test target. The point is not tidiness:
+      each earlier revision was a *filter* answering "is this particular defect
+      present", so a defect nobody had thought of passed by default. A predicate
+      answers "is this data sound enough to judge", so an unanticipated defect
+      fails closed. The inputs it uses:
+
+      - **The service's quality report, as an input rather than the arbiter.**
         `fetch_multi_symbol_range` runs `validate_market_data(..., mode="warn")`
-        and leaves the structured result on `self.last_quality_report`; suppress
-        on a failing report. Do not re-derive it in the seam: the detector
-        carries an asset-class calendar and tuned thresholds
-        (`gap_pct_threshold` 0.005, `gap_min_count` 3), which is exactly the
-        machinery a hand-rolled check would have to reproduce to avoid flagging
-        every weekend.
-      - **Truncated ends** — the report cannot see these, and the reason is
-        structural rather than incidental: `_count_gaps` counts missing bars
-        *"between `bars[0]` and `bars[-1]`"* and `validate_market_data` is never
-        passed the requested `start`/`end` at all, so a series that simply stops
-        short of the window is indistinguishable from a complete one. It also
-        returns 0 gaps outright, with a `calendar_window_unsupported` note,
-        for windows outside its hardcoded US-holiday years. **So the seam checks
-        the ends itself, and does it relatively: compare each symbol's first and
-        last bar dates against the widest span any symbol returned, and suppress
-        if one is short.** Relative comparison is the point — it needs no
-        calendar, so it cannot be wrong about holidays, and starvation is itself
-        a relative verdict, so a symbol short against its peers is precisely the
-        input that corrupts it.
+        and leaves the result on `self.last_quality_report`. Use its gap counts;
+        do **not** use its pass/fail verdict. Its thresholds
+        (`gap_pct_threshold` 0.005, `gap_min_count` 3) are tuned for *backtest
+        viability* — whether a series is good enough to trade on — and this
+        probe asks a different question. A single missing bar can be a rule's
+        only independent fire, so **any** gap the report counts is
+        disqualifying here even though the report grades it a warning. Stricter
+        than the report, deliberately, for the same reason the probe is stricter
+        than synthesis elsewhere.
+      - **`calendar_window_unsupported` is an abstention, not a pass.** Outside
+        `_US_HOLIDAYS_YEAR_MIN`…`_MAX`, `_count_gaps` returns zero gaps and
+        surfaces that note rather than risk a false positive. Zero-because-we-
+        did-not-look must not read as zero-because-there-are-none: a 2017 window
+        would otherwise sail through the check with no gap detection at all.
+        Treat the note as "cannot judge" ⇒ no probe.
+      - **Endpoint coverage against the requested window, per asset class.**
+        `_count_gaps` measures only *between* `bars[0]` and `bars[-1]` and never
+        receives the requested `start`/`end`, so truncation is structurally
+        invisible to it. The seam compares the ends itself, and the tolerance is
+        **asset-class dependent, not global**: exchange-traded classes get a few
+        calendar days of slack for a window that legitimately opens on a weekend
+        or holiday; **continuous 24×7 classes such as crypto get zero**, because
+        for them a weekend is not an excuse and one missing bar can be the
+        distinguishing fire. A single global calendar-day tolerance would accept
+        exactly the shortfall that corrupts a crypto verdict.
+      - **Peer comparison, which needs no calendar at all.** Each symbol's first
+        and last bar against the widest span any symbol returned. This catches
+        one short symbol among many regardless of asset class or holiday
+        window, and it is the check most closely shaped like the verdict it
+        protects, since starvation is itself relative.
 
       Read the report immediately after our own fetch and treat it, like
       `provider_used`, as **shared mutable state on the service**: it is
       assigned only under `if result:`, so an empty fetch leaves the previous
-      call's report in place. That is safe only because the seam consults it
-      solely when bars came back — the membership check above has already
+      call's report in place. That is safe only because the predicate consults
+      it solely when bars came back — the membership check above has already
       returned `None` for an empty fetch. That ordering is a precondition, not
       an incidental, and the docstring should say so.
 
-      - **Uniformly truncated ends** — a shortfall identical across *every*
-        symbol defeats both checks above: the report never sees the window, and
-        a relative comparison has no shorter peer. This one needs an absolute
-        comparison against `config.start_date` / `config.end_date`, **with a
-        tolerance measured in calendar days, not a trading calendar.** The
-        tolerance is what makes it safe: a request beginning on a Saturday, a
-        holiday, or in a market whose calendar the repo does not model is short
-        by days, while a provider that only has recent history is short by
-        months. A few days of slack absorbs the first without blinding the
-        check to the second. Do **not** try to compute the true first and last
-        trading day of the window: that is the calendar work the repo already
-        declines to do outside `_US_HOLIDAYS_YEAR_MIN`…`_MAX`, and getting it
-        wrong suppresses every probe on a legitimate window rather than
-        occasionally missing a marginal one.
-
-    Neither axis raises, so no exception reaches the guard below; both would
-    fabricate starvation. The second axis is the same category error as the
-    first: D9's earlier revision fixed *which symbols* and left *which bars*,
-    the way its own predecessor fixed explicit targets and left the default
-    universe;
+    None of these raise, so no exception reaches the guard below, and every one
+    of them would fabricate starvation. The history is the argument for the
+    predicate: explicit targets fixed, default universe left; symbols fixed,
+    dates left; interior holes fixed, truncation left; truncation fixed,
+    unsupported calendars and sub-threshold gaps left. Four rounds of the same
+    shape is not four coincidences;
   - wrap the fetch in `try` / `except Exception` → `logger.debug(...)` → `None`.
     A design-time diagnostic must never crash or stall a cycle.
   - Docstring states the invariant explicitly: *this is not the synthesis fetch
@@ -809,6 +866,20 @@ evaluation contract rather than absorbed into an implementation step.
       `config: Optional[BacktestConfig] = None` and
       `starvation_cache: Optional[_StarvationProbeCache] = None` (D6),
       documented as "production always supplies both; `None` disables the probe".
+- [ ] **Step 3.1a** — **Admit the reviewer call against the budget before the
+      probe runs.** Python evaluates the whole `reviewer_findings` expression —
+      and therefore `_design_starvation_findings` and its fetch — *before*
+      `design_review_agent.run(...)` is called, and `charge_active_budget()`
+      lives inside `run` (`agents/design_review.py:582`). So a cycle whose
+      design-review budget is already exhausted still pays a market-data fetch
+      before `DesignBudgetExhausted` is raised. Hoist the budget admission ahead
+      of the merge, or compute the starvation findings only after it succeeds.
+      **The autouse conftest stub in Task 4 makes this invisible to the existing
+      budget-exhaustion test** — the stubbed seam returns `None` without
+      fetching — so the fix needs its own test that patches
+      `fetch_multi_symbol_range` with a `_must_not_run` raiser and asserts an
+      exhausted budget never reaches it. A hygiene measure that hides the
+      regression it was introduced alongside is worth naming as such.
 - [ ] **Step 3.2** — Inside the `if deterministic_ready:` branch, extend the single
       existing merge expression — one list, one path:
 
@@ -865,7 +936,17 @@ evaluation contract rather than absorbed into an implementation step.
       would otherwise emit `critical`.
 - [ ] **Step 5.2** — *No starved rules ⇒ unchanged.* Two independently reachable
       rules with bars that trigger an abstention: assert the reviewer's findings
-      are byte-identical to the no-probe run (this is the test that pins D2).
+      match the no-probe run (this is the test that pins D2). **Not
+      byte-identical** — `QualityGateResult.evaluated_at` carries
+      `default_factory=lambda: datetime.now(timezone.utc).isoformat()`
+      (`quality_gates/models.py:32`), so every result from *every* gate,
+      readiness and hypothesis included, differs between two runs no matter what
+      the probe does. An earlier revision said byte-identical, which would have
+      failed against a correct implementation and sent someone hunting a
+      non-existent bug. Compare the semantic fields — `gate_name`, `passed`,
+      `details`, `severity`, `phase`, `rule_id` — or the rendered prompt block,
+      which is what the reviewer actually consumes and therefore what "exactly
+      as today" means.
 - [ ] **Step 5.3** — *Flag off ⇒ unchanged*, and *bars unavailable ⇒ unchanged*
       (`_fetch_design_probe_bars` returns `None`).
 - [ ] **Step 5.4** — *Existing findings survive.* Assert the readiness findings and
@@ -934,12 +1015,23 @@ evaluation contract rather than absorbed into an implementation step.
       receives, assert it is the same list the signature was built from. A test
       that only checked the signature's contents would pass even with two
       resolutions racing.
-- [ ] **Step 5.12** — *One `as_of` per design attempt* (D13). Assert the seam
-      receives a concrete `as_of` string, not `None`, for a spec with no
-      `audit.data_snapshot_id`; that two rounds of the same attempt receive the
-      **same** string; and that a new attempt gets a different one. A test that
-      only checked "not None" would pass an implementation that re-stamped every
+- [ ] **Step 5.12** — *One `as_of` per design attempt* (D13). Instrument
+      **`market_data_service.fetch_multi_symbol_range`** and assert on the
+      `as_of` keyword it receives: a concrete string rather than `None` for a
+      spec with no `audit.data_snapshot_id`; the **same** string across two
+      rounds of one attempt; a different one on a new attempt. A test that only
+      checked "not None" would pass an implementation that re-stamped every
       round, which is the drift the pin exists to remove.
+
+      **Assert at the service, not at the seam.** An earlier revision said "the
+      seam receives a concrete `as_of`", which was true when the caller computed
+      it and stopped being true the moment `_effective_probe_as_of` moved that
+      computation inside the seam — the seam's arity is still
+      `(spec, config, symbols)`, so there is no `as_of` for a replacement seam
+      to observe. Left as written it would have pushed an implementer to widen
+      the seam's signature to make the test expressible, which is the tail
+      wagging the dog. The service boundary is where the value actually crosses,
+      and it is the boundary that matters anyway.
 - [ ] **Step 5.10** — *Non-daily specs are not probed* (D12). A readiness-clean
       two-rule spec with `timeframe="5m"` ⇒ `[]`, and `fetch_multi_symbol_range`
       is never called — patch it with a `_must_not_run` raiser, like Step 5.7
@@ -1021,7 +1113,9 @@ suddenly slows down is the signal it did not take.
 | A mid-attempt universe-cap change staling the memo, or mislabelling one universe's findings with another's signature | Universe resolved once per round and passed to both the signature and the fetch (D11) |
 | A changed backtest window served from a memo built for the previous one | `config.start_date` / `config.end_date` are signature members, not an assumed-constant (Step 2.2), pinned by Step 5.5 |
 | An intraday spec judged on daily candles | Probe suppressed for `timeframe != "1d"` before any fetch, and `timeframe` is a signature member so a mid-attempt change cannot replay the daily verdict (D12), pinned by Step 5.10 |
-| A silently partial fetch fabricates a starvation finding | Any shortfall suppresses the probe: missing symbols (membership, explicit and default universes alike), interior holes (the service's quality report), and truncated ends (the seam's own relative endpoint check, since the report never sees the requested window) — D9, pinned by Steps 5.8 and 5.11 |
+| An audited replay judged on post-cutoff data | `as_of` gates only snapshot lookup, not the miss-path live fetch, so audited specs are pre-checked with `lookup_snapshot` and abstain unless every symbol is satisfiable from cache (D13) |
+| A budget-exhausted cycle still pays a market-data fetch | Budget admitted before the merge expression is evaluated (Step 3.1a), with its own test — the conftest seam stub hides this from the existing budget test |
+| Incomplete data fabricates a starvation finding | One predicate, `_probe_coverage_is_sound`, replaces the filter list that grew four times: every requested symbol present, its series spanning the requested window, no gap the probe cares about — with the quality report as an input rather than the arbiter, `calendar_window_unsupported` treated as abstention, and endpoint tolerance per asset class (zero for 24×7) — D9, pinned by Steps 5.8 and 5.11 |
 | Wasted fetch on specs that cannot be starved | Entry-rule count checked before fetching (D10, Step 2.4), pinned by Step 5.7 |
 | Double-reporting against synthesis gates | Reviewer delivery only, no `all_gate_results` recording (D3) |
 | Merge conflict with the in-flight warmup-shadowing refinement to `predicate_reachability.py` | This plan touches no probe internals — only its public `probe_starvation` / `to_starvation_gate_results` API, which that work does not change |
