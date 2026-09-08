@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from agents.blogging.shared import call_json_with_retry, run_json_gate
 from agents.blogging.shared import json_retry as json_retry_module
+from strands.types.exceptions import EventLoopException
 
 from llm_service import LLMJsonParseError, LLMRateLimitError, LLMTemporaryError
 
@@ -349,8 +350,6 @@ def test_run_json_gate_explicit_hooks_override_fallback_builder_independently(mo
 
 def test_run_json_gate_event_loop_exception_unwraps_transient(monkeypatch):
     """The standard EventLoopException unwrap is applied without a caller-supplied hook."""
-    from strands.types.exceptions import EventLoopException
-
     cause = LLMTemporaryError("temporary")
     factory = _FakeStrandsAgentFactory([EventLoopException(cause)])
     monkeypatch.setattr(json_retry_module, "Agent", factory)
@@ -378,3 +377,63 @@ def test_run_json_gate_agent_construction_failure_uses_fallback_builder(monkeypa
     fallback = {"fallback": True}
     data = run_json_gate("model", "system", "prompt", fallback_builder=lambda e: fallback)
     assert data is fallback
+
+
+def test_run_json_gate_wrapper_without_an_original_is_raised_intact(monkeypatch):
+    """An EventLoopException carrying no original exception is re-raised as itself.
+
+    The unwrap returns ``original_exception`` only when it is usable. Before
+    the unwrap was reconciled onto ``text_parsing.unwrap_llm_cause``, a
+    ``None`` original became the classified cause and ``raise cause`` failed
+    with ``TypeError: exceptions must derive from BaseException`` — replacing
+    the real transport failure with a nonsense one and discarding the
+    wrapper's traceback.
+    """
+    wrapper = EventLoopException(None)
+    factory = _FakeStrandsAgentFactory([wrapper])
+    monkeypatch.setattr(json_retry_module, "Agent", factory)
+
+    with pytest.raises(EventLoopException) as exc_info:
+        run_json_gate("model", "system", "prompt")
+    assert exc_info.value is wrapper
+
+
+def test_run_json_gate_wrapper_without_an_original_reaches_fallback_as_itself(monkeypatch):
+    """A fallback hook receives the wrapper, not ``None``.
+
+    ``fallback_builder``/``on_unexpected_error`` are typed to take an
+    ``Exception`` and every blogging gate stringifies it into its fallback
+    payload, so handing them ``None`` would silently degrade the recorded
+    failure to the string ``"None"``.
+    """
+    wrapper = EventLoopException(None)
+    factory = _FakeStrandsAgentFactory([wrapper])
+    monkeypatch.setattr(json_retry_module, "Agent", factory)
+    received = []
+
+    def fallback_builder(exc):
+        received.append(exc)
+        return {"fallback": True}
+
+    data = run_json_gate("model", "system", "prompt", fallback_builder=fallback_builder)
+
+    assert data == {"fallback": True}
+    assert received == [wrapper]
+
+
+def test_run_json_gate_does_not_recover_a_base_exception_original(monkeypatch):
+    """A non-``Exception`` original stays wrapped rather than escaping the handler.
+
+    ``unwrap_llm_cause`` is typed over ``BaseException``, so it would hand back
+    a ``KeyboardInterrupt`` smuggled into the wrapper. Re-raising that from
+    inside ``call_json_with_retry``'s ``except Exception`` block would unwind
+    past every ``except Exception`` above it, turning one failed LLM gate into
+    a torn-down job. The shim narrows it back to the wrapper instead.
+    """
+    wrapper = EventLoopException(KeyboardInterrupt())
+    factory = _FakeStrandsAgentFactory([wrapper])
+    monkeypatch.setattr(json_retry_module, "Agent", factory)
+
+    with pytest.raises(EventLoopException) as exc_info:
+        run_json_gate("model", "system", "prompt")
+    assert exc_info.value is wrapper
