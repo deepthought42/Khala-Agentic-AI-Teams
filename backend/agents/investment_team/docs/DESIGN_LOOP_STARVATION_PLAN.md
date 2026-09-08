@@ -58,9 +58,10 @@ lines.
 ## Design decisions
 
 **D1 — A separate fetch seam on `DesignMixin`, not `_fetch_market_data`.**
-Add `_fetch_design_probe_bars(spec, config) -> Optional[Dict[str, List[OHLCVBar]]]`
-to `orchestrator_design.py`. It reuses `resolve_strategy_symbols` +
-`fetch_multi_symbol_range` but returns bare bars rather than the
+Add `_fetch_design_probe_bars(spec, config, symbols) -> Optional[Dict[str, List[OHLCVBar]]]`
+to `orchestrator_design.py`. It reuses `fetch_multi_symbol_range` — the caller
+resolves the universe and hands the list in, so this seam never calls
+`resolve_strategy_symbols` itself (D11) — and returns bare bars rather than the
 `_MarketDataFetch` envelope: design persists no audit row, so the
 requested/fetched/`provider_used` *record fields* have no consumer here. It does
 still compute requested-vs-fetched coverage internally — see D9, that part is
@@ -96,17 +97,20 @@ list, leaving `readiness_results` untouched for the memoization and recording
 paths. Recording would double-report against the synthesis-phase starvation
 gates already on the timeline. Reviewer delivery is the whole ask.
 
-**D4 — Fail open, everywhere, at two layers.** No symbols, no bars, a fetch
-exception, a probe exception, fewer than two entry rules, or the flag off ⇒
-empty list ⇒ the reviewer sees exactly today's findings. `probe_starvation`
-already returns `[]` for falsy `market_data` and for `len(entry_rules) < 2`, so
-some of this is free. The rest needs a guard in *both* places, mirroring
-`_readiness_price_provider` and `_compute_regime_summary`: inside
-`_fetch_design_probe_bars` for a failing fetch, and around the whole
-fetch-probe-render sequence in `_design_starvation_findings` for a failure of
-the seam or the probe itself. One layer is not enough — a guard inside the seam
-cannot catch the seam being unavailable, and a diagnostic that can abort a
-design cycle is worse than no diagnostic.
+**D4 — Fail open, everywhere, at two layers.** No symbols, a resolution
+exception, no bars, a fetch exception, a probe exception, fewer than two entry
+rules, or the flag off ⇒ empty list ⇒ the reviewer sees exactly today's
+findings. `probe_starvation` already returns `[]` for falsy `market_data` and
+for `len(entry_rules) < 2`, so some of this is free. The rest needs a guard in
+*both* places, mirroring `_readiness_price_provider` and
+`_compute_regime_summary`: inside `_fetch_design_probe_bars` for a failing
+fetch, and in `_design_starvation_findings` around everything from the symbol
+resolution through the render, for a failure of the resolution, the seam or the
+probe itself. The outer guard has to start at the resolution rather than at the
+fetch: D11 moved that call out of the seam, and it is guarded on the synthesis
+path only because `_fetch_market_data` has its own `try` around it. One layer is
+not enough — a guard inside the seam cannot catch the seam being unavailable,
+and a diagnostic that can abort a design cycle is worse than no diagnostic.
 
 **D5 — `STRATEGY_LAB_DESIGN_STARVATION_PROBE_ENABLED`, default `true`.**
 Matches `STRATEGY_LAB_MECHANICAL_REPAIR_ENABLED` / `STRATEGY_LAB_REGIME_SUMMARY_ENABLED`
@@ -411,11 +415,17 @@ it once and pass it, rather than recomputing and trusting agreement.
       `len(entry_rules) < 2`, so fetching the universe first to reach a
       guaranteed-empty verdict is pure waste on a common, valid spec shape —
       and the flag defaults on, so every review round of every single-rule spec
-      would pay it); signature unchanged ⇒
-      `cache.findings`; otherwise **resolve the universe once** —
+      would pay it). Then, **inside the guard of detail 1**: resolve the
+      universe **once** —
       `symbols = self.market_data_service.resolve_strategy_symbols(spec)`, empty
-      ⇒ `[]` — and use that one list for both the signature and the fetch call
-      (D11); then fetch bars, `probe_starvation`, filter to
+      ⇒ `[]` — build the signature from that same list, and only then compare it
+      against `cache.signature`: unchanged ⇒ `cache.findings`. **That order is
+      load-bearing.** `_starvation_probe_signature` takes `resolved_symbols`
+      (Step 2.2), so a cache comparison placed *before* the resolution has
+      nothing to compare with: it would need a stale signature or a second
+      resolution call, and the second call is precisely the disagreement window
+      D11 closed. Resolve once → build the signature → compare → fetch. On a
+      miss, fetch bars with that same list (D11), `probe_starvation`, filter to
       `verdict == "starved"` (D2), render with
       `to_starvation_gate_results(..., phase="design")`, **demote any `critical`
       result to `warning`** (D8 — a `critical` deterministic finding instructs
@@ -426,13 +436,23 @@ it once and pass it, rather than recomputing and trusting agreement.
       Two contract details this helper must get right, both of them easy to get
       wrong and both pinned by tests in Task 5:
 
-      1. **An outer `try` / `except Exception` → `logger.debug(...)` → `[]` wraps
-         the fetch, the probe and the render.** Step 1.1's guard sits *inside*
+      1. **An outer `try` / `except Exception` → `logger.debug(...)` → `[]` opens
+         before the resolution and closes after the render** — it covers the
+         resolve, the signature build, the cache comparison, the fetch, the probe
+         and the render. Step 1.1's guard sits *inside*
          `_fetch_design_probe_bars` and so cannot catch a failure of the seam
          itself, nor one raised by `probe_starvation` /
          `to_starvation_gate_results` on a spec shape they did not expect.
-         A design-time diagnostic must never abort a cycle, so the guard belongs
-         at both layers.
+         The resolution needs the same cover and does not inherit it from
+         anywhere: `_fetch_market_data` wraps its own
+         `resolve_strategy_symbols` call in a `try` that returns an empty
+         envelope (`orchestrator.py:1482-1486`), but D11 moved the design
+         path's resolution *out* of the seam and into this helper, so that guard
+         no longer stands between a raising resolution and the cycle. Leaving it
+         outside would let a universe-resolution failure abort the very cycle
+         the fail-open promise protects. A design-time diagnostic must never
+         abort a cycle, so the guard belongs at both layers and, at this layer,
+         around the whole diagnostic.
       2. **Write `cache.signature` only after bars were obtained and probed.**
          `None` bars — the fail-open return of a transient fetch error — must
          return `[]` *without* touching the cache. Storing an empty findings
@@ -524,14 +544,12 @@ it once and pass it, rather than recomputing and trusting agreement.
       raising ⇒ `[]`. *Gate mapping:* `to_starvation_gate_results` monkeypatched
       to raise on a compiled-path spec ⇒ `[]` — Step 2.4 names it explicitly as a
       failure the guard must absorb, and it is the one case where the probe
-      succeeded and only the rendering failed. All four leave the reviewer's
+      succeeded and only the rendering failed. *Resolution:*
+      `market_data_service.resolve_strategy_symbols` raising ⇒ `[]` — this one
+      only passes if the guard opens *before* the resolution rather than around
+      the fetch alone, which is the whole reason detail 1 states the boundary
+      instead of leaving it to the implementer. All five leave the reviewer's
       findings exactly as today.
-- [ ] **Step 5.9** — *One resolution per round* (D11). Count
-      `resolve_strategy_symbols` calls across a probing round and assert exactly
-      one; and with `_fetch_design_probe_bars` asserting on the `symbols` it
-      receives, assert it is the same list the signature was built from. A test
-      that only checked the signature's contents would pass even with two
-      resolutions racing.
 - [ ] **Step 5.7** — *No fetch when starvation is impossible* (Step 2.4). A
       readiness-clean single-entry-rule spec must not invoke the seam at all:
       patch `_fetch_design_probe_bars` with a `_must_not_run` raiser, like the
@@ -552,6 +570,13 @@ it once and pass it, rather than recomputing and trusting agreement.
       `return []` and carries the identical hazard, and it is the worse one — an
       implementation that wrote the signature here would let a single flaky
       symbol hide a genuinely starved rule for the rest of the attempt.
+
+- [ ] **Step 5.9** — *One resolution per round* (D11). Count
+      `resolve_strategy_symbols` calls across a probing round and assert exactly
+      one; and with `_fetch_design_probe_bars` asserting on the `symbols` it
+      receives, assert it is the same list the signature was built from. A test
+      that only checked the signature's contents would pass even with two
+      resolutions racing.
 
 ### Task 6: Docs
 
@@ -589,7 +614,7 @@ suddenly slows down is the signal it did not take.
 
 | Risk | Mitigation |
 |---|---|
-| Design-time fetch slows or fails a cycle | Reviewer-branch-only, memoized, fail-open, flag-gated (D1/D4/D5) |
+| Design-time symbol resolution or fetch slows or fails a cycle | Reviewer-branch-only, memoized, flag-gated, and fail-open from the resolution onward rather than from the fetch onward (D1/D4/D5), pinned by Step 5.6 |
 | Existing tests newly hit the network | Autouse conftest stub (Task 4) |
 | The "design never fetches market data" invariant reads as weakened | Separate seam + clarifying comments; `_fetch_market_data` stays synthesis-only (D1) |
 | Prompt noise on clean specs | Actionable verdicts only (D2), pinned by Step 5.2 |
