@@ -2,32 +2,155 @@
 Temporal activities for the software engineering team.
 
 Each activity wraps the existing orchestrator or standalone runner logic;
-they run in the worker process and update the job store. No threads are started.
+they run in the worker process and update the job store. The only threads started
+here are the background beaters (``shared.concurrency.BackgroundHeartbeat``) that
+keep the long, blocking activities inside their scheduled ``heartbeat_timeout``.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from temporalio import activity
+from temporalio.exceptions import CancelledError
 
 from shared.concurrency import BackgroundHeartbeat
+from shared.env import parse_float
 from shared.observability import bind_trace_id, current_trace_id, new_trace_id
-from shared.temporal.activity_utils import is_last_attempt
+from shared.temporal.activity_utils import is_cancelled, is_last_attempt, raise_if_cancelled
 from software_engineering_team.shared.job_store import (
     JOB_STATUS_FAILED,
     JOB_STATUS_RUNNING,
     add_pending_questions,
     update_job,
 )
+from software_engineering_team.temporal.constants import (
+    CODING_HEARTBEAT_TIMEOUT_S,
+    PHASE_HEARTBEAT_TIMEOUT_S,
+)
 
 logger = logging.getLogger(__name__)
 
 RETRY_FAILED_SCHEDULE_TO_CLOSE_SECONDS = 24 * 3600
 STANDALONE_SCHEDULE_TO_CLOSE_SECONDS = 12 * 3600
+
+_DEFAULT_PHASE_HEARTBEAT_INTERVAL_S = 30.0
+_DEFAULT_CODING_HEARTBEAT_INTERVAL_S = 30.0
+
+
+def _phase_heartbeat_interval_s() -> float:
+    """Interval (seconds) between background heartbeats for the Phase 1/2 activities.
+
+    ``parse_spec_activity`` and ``plan_project_activity`` block on LLM calls that are
+    themselves budgeted at up to ``LLM_TIMEOUT`` (default 3600s) apiece, so a beater is
+    the only thing keeping either inside the workflow's
+    ``PHASE_HEARTBEAT_TIMEOUT_S`` heartbeat timeout.
+
+    Preconditions:
+        - None (the environment may be unset or hold garbage).
+    Postconditions:
+        - Returns ``SE_PHASE_HEARTBEAT_INTERVAL_S`` clamped to
+          ``[1.0, PHASE_HEARTBEAT_TIMEOUT_S / 3]``; unset/blank/unparseable/non-finite
+          yields the 30s default (per ``shared.env.parse_float``'s documented
+          garbage-to-default / out-of-range-to-bound contract). The ceiling is what
+          makes a mis-set interval harmless: beats always outpace the heartbeat
+          timeout, so the knob can never re-introduce the spurious timeout it exists
+          to prevent. Independent of the coding-team activity's own
+          ``CODING_TEAM_HEARTBEAT_INTERVAL_S`` -- separate activities, separate knobs.
+    """
+    return parse_float(
+        "SE_PHASE_HEARTBEAT_INTERVAL_S",
+        _DEFAULT_PHASE_HEARTBEAT_INTERVAL_S,
+        minimum=1.0,
+        maximum=PHASE_HEARTBEAT_TIMEOUT_S / 3.0,
+    )
+
+
+def _phase_beating(name: str) -> BackgroundHeartbeat:
+    """Background beater keeping a Phase 1/2 activity alive across blocking LLM calls.
+
+    Mirrors ``execute_coding_team_activity``'s single-liveness-owner arrangement: one
+    beater owns ``activity.heartbeat()`` for the whole body, and no progress callback
+    inside it heartbeats.
+
+    Preconditions:
+        - ``name`` is a non-empty thread name.
+        - Called on the activity's own thread, inside its ``bind_trace_id`` block: the
+          constructor snapshots that context so the beater thread can reach both the
+          Temporal activity handle and the bound trace id.
+    Postconditions:
+        - Returns an unstarted context manager; entering it starts the daemon beater
+          at ``_phase_heartbeat_interval_s()``, exiting stops and joins it. Beat errors
+          (outside an activity context, e.g. unit tests) are swallowed by the driver,
+          so wrapping a body in it never changes that body's outcome.
+    """
+    assert name, "name must be non-empty"
+    return BackgroundHeartbeat(
+        activity.heartbeat,
+        _phase_heartbeat_interval_s(),
+        name=name,
+        copy_context=True,
+        join_timeout=5.0,
+    )
+
+
+def _abort_if_superseded(activity_name: str, stage: str) -> None:
+    """Abort a cancelled activity attempt rather than let it write.
+
+    A heartbeat stops the *spurious* timeout; this stops an attempt Temporal has
+    already given up on from racing the winner to the job record. Every field these
+    activities write (``phase``, ``status_text``, ``requirements_title``, and the whole
+    pause envelope -- ``waiting_for_answers`` / ``pending_questions`` /
+    ``resume_token``) is client-visible, and a losing attempt's write landing last is
+    what strands or duplicates a HITL pause.
+
+    Preconditions:
+        - ``activity_name``/``stage`` are non-empty; safe to call outside an activity
+          context (thread mode), where it is a no-op.
+    Postconditions:
+        - Returns ``None`` when the attempt is live. Raises ``CancelledError`` naming
+          the suppressed stage when ``is_cancelled()`` -- which, for these synchronous
+          activities, only ever becomes True because a beat delivered the server's
+          cancellation, so this guard is load-bearing only in company with
+          ``_phase_beating``.
+    """
+    if is_cancelled():
+        logger.info(
+            "%s attempt cancelled; suppressing %s write",
+            activity_name,
+            stage,
+            extra={"trace_id": current_trace_id()},
+        )
+        raise CancelledError(f"{activity_name} attempt cancelled before {stage}")
+
+
+def _cancellation_checked(updater: Callable[..., None], activity_name: str) -> Callable[..., None]:
+    """Wrap a phase job updater so a cancelled attempt stops instead of writing.
+
+    The phase updater is the highest-frequency checkpoint an activity has (the
+    sub-agent calls it at every phase boundary), so guarding it is what turns
+    cancellation into a prompt abort rather than a run-to-completion. The check
+    happens *outside* the wrapped updater, whose own contract is to swallow every
+    exception -- inside it, the abort would be logged and discarded.
+
+    Preconditions:
+        - ``updater`` is a ``_make_phase_job_updater`` result (keyword-only kwargs);
+          ``activity_name`` is non-empty.
+    Postconditions:
+        - Returns a callable that raises ``CancelledError`` (writing nothing) when the
+          attempt is cancelled, and otherwise forwards every kwarg to ``updater``
+          unchanged. Outside an activity context it is a pure pass-through.
+    """
+
+    def _checked(**kwargs: Any) -> None:
+        _abort_if_superseded(activity_name, "phase progress")
+        updater(**kwargs)
+
+    return _checked
 
 
 @activity.defn(name="retry_failed")
@@ -327,15 +450,36 @@ def parse_spec_activity(
     runs in its own process/thread, so unlike the thread-mode orchestrator the id
     must be passed explicitly rather than inherited via contextvars.
 
+    Preconditions:
+        - ``job_id`` identifies an existing job and ``repo_path`` an existing directory.
+        - ``sprint_id`` and ``spec_content_override`` are mutually exclusive (passing
+          both raises rather than silently preferring one).
+        - Called as a Temporal activity, or directly in a test; both are supported --
+          the beater and cancellation guards degrade to no-ops outside an activity
+          context.
     Postconditions:
         When ``sprint_id`` is set, spec content is synthesized from the
         ``product_delivery`` sprint's planned stories (via
         ``shared.sprint_scope.load_requirements_from_sprint``) instead of read from
         disk, and both the LLM spec-parse and the PRA agent are skipped — mirroring
         the thread-mode orchestrator's sprint path (``discovery.py``).
+
+        A background beater (``_phase_beating``) emits ``activity.heartbeat()`` for the
+        whole body, so a run longer than the workflow's ``PHASE_HEARTBEAT_TIMEOUT_S``
+        is not timed out and retried underneath itself. Because these are synchronous
+        activities, that beater is also what delivers cancellation: with it running,
+        the body's ``_abort_if_superseded`` guards can see ``is_cancelled()`` and stop
+        a superseded attempt before it writes.
     """
     with bind_trace_id(trace_id or new_trace_id()):
-        return _parse_spec_activity_body(job_id, repo_path, spec_content_override, sprint_id)
+        # Single liveness mechanism, mirroring execute_coding_team_activity: the body
+        # blocks on the PRA agent's review/communicate/update/cleanup loop and on the
+        # spec-parse LLM call, neither of which reports to Temporal. Without this the
+        # scheduled heartbeat_timeout fires on any run longer than it and Temporal
+        # retries the activity while this attempt keeps running -- two attempts then
+        # write the same job record concurrently.
+        with _phase_beating("se-parse-spec-heartbeat"):
+            return _parse_spec_activity_body(job_id, repo_path, spec_content_override, sprint_id)
 
 
 def _parse_spec_activity_body(
@@ -353,6 +497,11 @@ def _parse_spec_activity_body(
         FAILED write so a retry that later succeeds never leaves a transient
         FAILED status behind. Either way, the exception propagates to the
         activity wrapper.
+
+        A cancelled attempt writes nothing further: the PRA progress updater and the
+        PRA-failure status write are guarded, and the outer handler re-raises a
+        cancellation (via ``raise_if_cancelled``) ahead of the FAILED write, so a
+        superseded attempt can never land its status on top of the winner's.
     """
     from software_engineering_team.temporal.phase_models import SpecParseResult
 
@@ -440,13 +589,16 @@ def _parse_spec_activity_body(
             # fields AND rescales the agent's own 0-100 progress onto the
             # product-analysis band — without it the Temporal bar sprints to 100
             # during PRA and collapses at the next phase handoff.
-            _pra_updater = _make_phase_job_updater(
-                job_id,
-                subprocess_key="analysis_subprocess",
-                completed_key="analysis_completed_phases",
-                phase_order=PRA_PHASE_ORDER,
-                progress_band=PROGRESS_BAND_PRODUCT_ANALYSIS,
-                phase="product_analysis",
+            _pra_updater = _cancellation_checked(
+                _make_phase_job_updater(
+                    job_id,
+                    subprocess_key="analysis_subprocess",
+                    completed_key="analysis_completed_phases",
+                    phase_order=PRA_PHASE_ORDER,
+                    progress_band=PROGRESS_BAND_PRODUCT_ANALYSIS,
+                    phase="product_analysis",
+                ),
+                "parse_spec_activity",
             )
 
             pra_agent = ProductRequirementsAnalysisAgent(get_client("product_analysis"))
@@ -459,6 +611,11 @@ def _parse_spec_activity_body(
                 initial_spec_path=Path(initial_spec_path) if initial_spec_path else None,
             )
             if not pra_result.success:
+                # PRA folds every exception into success=False, so a cancellation
+                # raised by _pra_updater arrives here looking like a PRA failure.
+                # Check before writing: a superseded attempt must not stamp FAILED
+                # over the winner's status.
+                _abort_if_superseded("parse_spec_activity", "PRA failure status")
                 err = pra_result.failure_reason or "PRA did not complete"
                 update_job(job_id, status=JOB_STATUS_FAILED, error=err, phase="completed")
                 return SpecParseResult(spec_content=spec_content).model_dump()
@@ -478,6 +635,10 @@ def _parse_spec_activity_body(
         ).model_dump()
 
     except Exception as e:
+        # Cancellation is not a failure: re-raise it as a Temporal cancellation
+        # BEFORE the FAILED write, so a superseded attempt leaves the job record
+        # to whichever attempt Temporal is still running.
+        raise_if_cancelled(e, "parse_spec_activity cancelled")
         logger.exception(
             "parse_spec_activity failed for job %s",
             job_id,
@@ -515,16 +676,41 @@ def plan_project_activity(
     ``PlanningAnswerPauseSignal`` raised anyway, still returns ``{"outcome": "paused"}``
     here and the calling workflow fails the run non-retryably. The end-to-end guarantee
     holds across the two files; this one does not promise it alone.
+
+    Preconditions:
+        - ``job_id`` identifies an existing job, ``repo_path`` an existing directory, and
+          ``spec_parse_result`` validates as a ``SpecParseResult``.
+        - ``resume_token``/``submitted_answers`` are supplied together on a resume and
+          omitted together on a fresh invocation.
+        - Called as a Temporal activity, or directly in a test; both are supported --
+          the beater and cancellation guards degrade to no-ops outside an activity
+          context.
+    Postconditions:
+        A background beater (``_phase_beating``) emits ``activity.heartbeat()`` for the
+        whole body, so a run longer than the workflow's ``PHASE_HEARTBEAT_TIMEOUT_S``
+        is not timed out and retried underneath itself — which is what previously let a
+        superseded attempt run to completion and race the winner's writes to the job
+        record. Because these are synchronous activities, that beater is also what
+        delivers cancellation: with it running, the body's ``_abort_if_superseded``
+        guards can see ``is_cancelled()`` and stop a superseded attempt before it
+        writes — the pause envelope above all.
     """
     with bind_trace_id(trace_id or new_trace_id()):
-        return _plan_project_activity_body(
-            job_id,
-            repo_path,
-            spec_parse_result,
-            resume_token,
-            submitted_answers,
-            allow_repause,
-        )
+        # Single liveness mechanism, mirroring execute_coding_team_activity: the body
+        # blocks on Planning's discovery/requirements map-reduce (one LLM call per spec
+        # section) and on the Architecture Expert's continuation calls, each budgeted at
+        # up to LLM_TIMEOUT. Without this the scheduled heartbeat_timeout fires on any
+        # run longer than it and Temporal retries the activity while this attempt keeps
+        # running -- two attempts then race to write the same pause envelope.
+        with _phase_beating("se-plan-project-heartbeat"):
+            return _plan_project_activity_body(
+                job_id,
+                repo_path,
+                spec_parse_result,
+                resume_token,
+                submitted_answers,
+                allow_repause,
+            )
 
 
 def _plan_project_activity_body(
@@ -574,6 +760,14 @@ def _plan_project_activity_body(
         than promising more than this function delivers. The calling workflow uses it to bound its pause
         loop -- see ``build_temporal_planning_answer_callback`` for why an unbounded one
         cannot be relied on to terminate.
+
+        A cancelled attempt writes nothing further. Every job-record write here is
+        guarded by ``_abort_if_superseded`` -- the pause-envelope consume, the planning
+        progress updater, the planning-failure status, the success ``requirements_title``
+        write, and the pause envelope itself -- and the outer handler re-raises a
+        cancellation (via ``raise_if_cancelled``) ahead of the FAILED write. Planning's
+        ``run_workflow`` folds an aborted updater into ``success=False``, which is why
+        the failure branch re-checks rather than trusting the exception type.
     """
     from planning_team.temporal.answer_signal import (
         PlanningAnswerPauseSignal,
@@ -607,6 +801,9 @@ def _plan_project_activity_body(
         # activity, never the answers-submission route) before continuing normally --
         # otherwise a client polling status after the job completes would still see a
         # stale "waiting_for_answers" pause pointing at an already-resolved token.
+        # A superseded attempt must never clear it: the pause it would erase belongs
+        # to the attempt Temporal is still running, and the user would be stranded.
+        _abort_if_superseded("plan_project_activity", "pause-envelope consume")
         update_job(
             job_id,
             waiting_for_answers=False,
@@ -650,12 +847,15 @@ def _plan_project_activity_body(
 
         # Shared with the thread path: rescales Planning's own 0-100 progress onto
         # the planning band so the Temporal bar stays monotone into the coding phase.
-        _planning_updater = _make_phase_job_updater(
-            job_id,
-            subprocess_key="planning_subprocess",
-            completed_key="planning_completed_phases",
-            phase_order=PLANNING_PHASE_ORDER,
-            progress_band=PROGRESS_BAND_PLANNING,
+        _planning_updater = _cancellation_checked(
+            _make_phase_job_updater(
+                job_id,
+                subprocess_key="planning_subprocess",
+                completed_key="planning_completed_phases",
+                phase_order=PLANNING_PHASE_ORDER,
+                progress_band=PROGRESS_BAND_PLANNING,
+            ),
+            "plan_project_activity",
         )
 
         # Identical wiring to the thread path: the shared factory owns architecture-input
@@ -675,6 +875,11 @@ def _plan_project_activity_body(
             auto_answer_questions=False,
         )
         if not planning_result.get("success"):
+            # run_workflow folds every exception except PlanningAnswerPauseSignal into
+            # success=False, so a cancellation raised by _planning_updater arrives here
+            # looking like a planning failure. Check before writing: a superseded
+            # attempt must not stamp FAILED over the winner's status.
+            _abort_if_superseded("plan_project_activity", "planning failure status")
             err = planning_result.get("failure_reason") or "Planning failed"
             update_job(job_id, status=JOB_STATUS_FAILED, error=err, phase="completed")
             return PlanResult().model_dump()
@@ -688,6 +893,7 @@ def _plan_project_activity_body(
             path / "plan" / "planning_team" / "planning_document.md"
         )
         spec_content_for_planning = adapter_result.final_spec_content or spec_data.spec_content
+        _abort_if_superseded("plan_project_activity", "planning result")
         update_job(job_id, requirements_title=adapter_result.requirements.title)
 
         _check_cancellation(job_id)
@@ -714,6 +920,11 @@ def _plan_project_activity_body(
         from software_engineering_team.orchestrator import _structure_planning_questions
 
         structured = _structure_planning_questions(exc.pending_questions, source="planning")
+        # The pause envelope is the write that must never come from a superseded
+        # attempt: a stale resume_token strands the user's answers against a token
+        # nothing is waiting on, and re-populated pending_questions duplicate a pause
+        # the live attempt already owns.
+        _abort_if_superseded("plan_project_activity", "pause envelope")
         # resume_token is persisted in the SAME atomic write as waiting_for_answers/
         # pending_questions (add_pending_questions' resume_token param) so a client polling
         # POST /run-team/{job_id}/answers between two separate writes can never observe a
@@ -726,6 +937,10 @@ def _plan_project_activity_body(
         }
 
     except Exception as e:
+        # Cancellation is not a failure: re-raise it as a Temporal cancellation
+        # BEFORE the FAILED write, so a superseded attempt leaves the job record
+        # to whichever attempt Temporal is still running.
+        raise_if_cancelled(e, "plan_project_activity cancelled")
         logger.exception(
             "plan_project_activity failed for job %s",
             job_id,
@@ -739,15 +954,26 @@ def _plan_project_activity_body(
 def _coding_heartbeat_interval_s() -> float:
     """Interval (seconds) between background heartbeats for the coding-team activity.
 
-    Must stay comfortably below the activity's `heartbeat_timeout` (10 min). Override via
-    `CODING_TEAM_HEARTBEAT_INTERVAL_S`; blank/garbage/non-positive falls back to 30s.
+    Preconditions:
+        - None (the environment may be unset or hold garbage).
+    Postconditions:
+        - Returns `CODING_TEAM_HEARTBEAT_INTERVAL_S`; blank/garbage/non-positive/
+          non-finite falls back to 30s, and any value is capped at
+          `CODING_HEARTBEAT_TIMEOUT_S / 3` -- the same number the workflow schedules
+          this activity's `heartbeat_timeout` with, so the knob can never be set high
+          enough to let the timeout fire under a live beater. Independent of the
+          Phase 1/2 activities' own `SE_PHASE_HEARTBEAT_INTERVAL_S`.
     """
     raw = os.getenv("CODING_TEAM_HEARTBEAT_INTERVAL_S", "")
     try:
         val = float(raw)
-        return val if val > 0 else 30.0
     except (TypeError, ValueError):
-        return 30.0
+        return _DEFAULT_CODING_HEARTBEAT_INTERVAL_S
+    # isfinite before the cap: min(nan, x) is nan, and BackgroundHeartbeat asserts a
+    # positive interval -- a nan would turn a liveness knob into a crash on start.
+    if not math.isfinite(val) or val <= 0:
+        return _DEFAULT_CODING_HEARTBEAT_INTERVAL_S
+    return min(val, CODING_HEARTBEAT_TIMEOUT_S / 3.0)
 
 
 def _coding_update_callback(job_id: str) -> Callable[..., None]:

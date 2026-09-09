@@ -312,3 +312,89 @@ def test_retry_failed_workflow_generates_and_forwards_a_trace_id():
         asyncio.run(wfmod.RetryFailedWorkflow().run("job-4"))
 
     assert calls[0] == ("retry_failed_activity", ["job-4", _FIRST_TRACE_ID])
+
+
+@contextlib.contextmanager
+def _kwarg_driver(handlers: dict[str, Any], calls: list):
+    """Like ``_driver`` but records each activity's scheduling kwargs, not just its args.
+
+    Kept separate rather than widening ``_driver``'s tuple: one test above asserts a
+    recorded call by full-tuple equality.
+    """
+    counter = itertools.count()
+
+    async def _fake_exec(fn, *pos, **kw):
+        name = getattr(fn, "__name__", str(fn))
+        calls.append((name, kw))
+        handler = handlers.get(name, lambda a: None)
+        return handler(list(kw.get("args") or pos)) if callable(handler) else handler
+
+    def _fake_uuid4() -> uuid.UUID:
+        return uuid.UUID(int=_FIRST_UUID.int + next(counter))
+
+    with (
+        mock.patch.object(_wf, "execute_activity", _fake_exec),
+        mock.patch.object(_wf, "uuid4", _fake_uuid4),
+    ):
+        yield
+
+
+def test_run_team_workflow_v2_heartbeat_timeouts_match_the_beaters_that_serve_them():
+    """Every activity scheduled with a ``heartbeat_timeout`` must be sized against the
+    constant its own background beater reads.
+
+    A ``heartbeat_timeout`` declared here but never honoured by the activity is the bug
+    this pairing exists to prevent: Temporal times the attempt out, retries it, and the
+    original attempt keeps running and writing. Pinning the timeout to the shared
+    constant is what keeps the declaration and the beater from drifting apart -- an
+    inline ``timedelta(minutes=5)`` here would leave the beater sizing itself against a
+    number nothing schedules with.
+    """
+    from datetime import timedelta
+
+    from software_engineering_team.temporal import activities as amod
+    from software_engineering_team.temporal.constants import (
+        CODING_HEARTBEAT_TIMEOUT_S,
+        PHASE_HEARTBEAT_TIMEOUT_S,
+    )
+
+    calls: list = []
+    plan_calls = {"n": 0}
+
+    def _fake_plan(args):
+        plan_calls["n"] += 1
+        if plan_calls["n"] == 1:
+            return {"outcome": "paused", "resume_token": "job-hb:tok1"}
+        return {"outcome": "completed"}
+
+    workflow_obj = wfmod.RunTeamWorkflowV2()
+
+    async def _fake_wait_condition(pred, timeout=None):
+        workflow_obj.submit_planning_answers({"resume_token": "job-hb:tok1", "answers": []})
+        assert pred()
+
+    with _kwarg_driver({"plan_project_activity": _fake_plan}, calls):
+        with mock.patch.object(_wf, "wait_condition", _fake_wait_condition):
+            asyncio.run(workflow_obj.run("job-hb", "/repo"))
+
+    expected = {
+        "parse_spec_activity": timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
+        "plan_project_activity": timedelta(seconds=PHASE_HEARTBEAT_TIMEOUT_S),
+        "execute_coding_team_activity": timedelta(seconds=CODING_HEARTBEAT_TIMEOUT_S),
+    }
+    # Per occurrence, not collapsed by name: the pause loop ran, so
+    # plan_project_activity appears twice (fresh + post-pause resume), and a dict
+    # keyed on the name would let the second entry overwrite the first -- masking
+    # drift at the fresh call site, which is exactly where the overlap this test
+    # guards against would re-open.
+    assert [c[0] for c in calls].count("plan_project_activity") == 2
+    assert {name for name, _ in calls} == set(expected)
+    for name, kw in calls:
+        assert kw.get("heartbeat_timeout") == expected[name], (
+            name,
+            kw.get("heartbeat_timeout"),
+        )
+
+    # And the beaters actually outpace what is scheduled above.
+    assert amod._phase_heartbeat_interval_s() < PHASE_HEARTBEAT_TIMEOUT_S
+    assert amod._coding_heartbeat_interval_s() < CODING_HEARTBEAT_TIMEOUT_S

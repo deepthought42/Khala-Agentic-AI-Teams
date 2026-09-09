@@ -1246,3 +1246,542 @@ def test_plan_project_activity_retry_reemits_persisted_pause_without_rerunning(
     job = js.get_job("pp-retry")
     assert job["resume_token"] == "pp-retry:orig-token"
     assert job["waiting_for_answers"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 1/2 liveness: the background beater and the cancellation guards.
+#
+# RunTeamWorkflowV2 schedules parse_spec_activity and plan_project_activity with a
+# heartbeat_timeout (PHASE_HEARTBEAT_TIMEOUT_S). Neither used to heartbeat, so any run
+# longer than that was timed out server-side and retried while the original attempt kept
+# running to completion -- two attempts writing the same job record, the pause envelope
+# included. These tests pin both halves of the fix: beats are emitted for the whole body,
+# and a cancelled attempt stops instead of writing.
+# ---------------------------------------------------------------------------
+
+
+def _record_beats(monkeypatch, activities):
+    """Patch ``activity.heartbeat`` to record beats; returns ``(beats, beaten)``.
+
+    ``beaten`` is set on the first beat so a test body can block until the beater
+    proves it is running, rather than sleeping a fixed interval and hoping.
+    """
+    import threading
+
+    beats: list = []
+    beaten = threading.Event()
+
+    def _beat(*_a, **_k) -> None:
+        beats.append(True)
+        beaten.set()
+
+    monkeypatch.setattr(activities.activity, "heartbeat", _beat)
+    return beats, beaten
+
+
+def test_phase_heartbeat_interval_env(monkeypatch) -> None:
+    """Valid float honored; garbage/unset default to 30s; out-of-range clamps to the
+    documented floor/ceiling so a mis-set knob can never outlast the heartbeat timeout."""
+    from software_engineering_team.temporal import activities
+    from software_engineering_team.temporal.constants import PHASE_HEARTBEAT_TIMEOUT_S
+
+    ceiling = PHASE_HEARTBEAT_TIMEOUT_S / 3.0
+
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "12.5")
+    assert activities._phase_heartbeat_interval_s() == 12.5
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "garbage")
+    assert activities._phase_heartbeat_interval_s() == 30.0
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "")
+    assert activities._phase_heartbeat_interval_s() == 30.0
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "nan")
+    assert activities._phase_heartbeat_interval_s() == 30.0
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "0")
+    assert activities._phase_heartbeat_interval_s() == 1.0
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "-5")
+    assert activities._phase_heartbeat_interval_s() == 1.0
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "9999")
+    assert activities._phase_heartbeat_interval_s() == ceiling
+    monkeypatch.delenv("SE_PHASE_HEARTBEAT_INTERVAL_S", raising=False)
+    assert activities._phase_heartbeat_interval_s() == 30.0
+
+
+def test_phase_beating_interval_stays_under_the_scheduled_heartbeat_timeout(
+    monkeypatch,
+) -> None:
+    """The beater's interval must be a fraction of the timeout the workflow schedules
+    with, for every possible env value -- otherwise the beater cannot prevent the very
+    timeout it exists to prevent."""
+    from software_engineering_team.temporal import activities
+    from software_engineering_team.temporal.constants import PHASE_HEARTBEAT_TIMEOUT_S
+
+    for raw in ("1", "30", "9999", "garbage", "inf", ""):
+        monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", raw)
+        interval = activities._phase_heartbeat_interval_s()
+        assert 0 < interval <= PHASE_HEARTBEAT_TIMEOUT_S / 3.0, raw
+
+
+def test_coding_heartbeat_interval_is_capped_at_a_third_of_its_timeout(monkeypatch) -> None:
+    """Same ceiling for the coding activity's own knob; a non-finite value falls back to
+    the default rather than reaching BackgroundHeartbeat, whose positive-interval assert
+    a nan would fail -- turning a liveness knob into a crash on activity start."""
+    from software_engineering_team.temporal import activities
+    from software_engineering_team.temporal.constants import CODING_HEARTBEAT_TIMEOUT_S
+
+    monkeypatch.setenv("CODING_TEAM_HEARTBEAT_INTERVAL_S", "9999")
+    assert activities._coding_heartbeat_interval_s() == CODING_HEARTBEAT_TIMEOUT_S / 3.0
+    monkeypatch.setenv("CODING_TEAM_HEARTBEAT_INTERVAL_S", "nan")
+    assert activities._coding_heartbeat_interval_s() == 30.0
+    monkeypatch.setenv("CODING_TEAM_HEARTBEAT_INTERVAL_S", "inf")
+    assert activities._coding_heartbeat_interval_s() == 30.0
+
+
+def test_plan_project_activity_heartbeats_while_planning_runs(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The whole Planning body runs under a live beater.
+
+    Without it, a Planning run longer than the scheduled heartbeat_timeout is timed out
+    and retried while this attempt keeps running -- the overlap this fix removes. The
+    fake run_workflow blocks until a beat lands, so the assertion fails (by timeout,
+    then by count) if no beater is running.
+    """
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-beat", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "1")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents", lambda: {"architecture": None}
+    )
+
+    beats, beaten = _record_beats(monkeypatch, activities)
+
+    def _slow_planning(*a, **kw):
+        # A stand-in for a multi-minute LLM call: it reports nothing to Temporal, so
+        # only the background beater can keep the attempt alive.
+        assert beaten.wait(timeout=10), "no heartbeat emitted while the body ran"
+        return {"success": False, "failure_reason": "stop here"}
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _slow_planning)
+
+    activities.plan_project_activity(
+        "pp-beat",
+        str(tmp_path),
+        {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+    )
+
+    assert beats, "plan_project_activity must heartbeat for the duration of its body"
+
+
+def test_parse_spec_activity_heartbeats_while_pra_runs(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """Same liveness contract for Phase 1: the PRA loop runs under a live beater."""
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-beat", repo_path=str(tmp_path))
+    monkeypatch.setenv("SE_PHASE_HEARTBEAT_INTERVAL_S", "1")
+
+    beats, beaten = _record_beats(monkeypatch, activities)
+
+    def _slow_parse(*a, **kw):
+        assert beaten.wait(timeout=10), "no heartbeat emitted while the body ran"
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr("software_engineering_team.spec_parser.parse_spec_with_llm", _slow_parse)
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        activities.parse_spec_activity("ps-beat", str(tmp_path), spec_content_override="spec")
+
+    assert beats, "parse_spec_activity must heartbeat for the duration of its body"
+
+
+def test_abort_if_superseded_is_a_noop_outside_an_activity() -> None:
+    """Thread mode has no cancellation to observe, so the guard must never fire there."""
+    from software_engineering_team.temporal import activities
+
+    assert activities._abort_if_superseded("some_activity", "some write") is None
+
+
+def test_cancellation_checked_forwards_when_live_and_raises_when_cancelled(
+    monkeypatch,
+) -> None:
+    """The wrapped phase updater is a pass-through until the attempt is cancelled, then
+    it raises WITHOUT writing -- the check must sit outside the updater, whose own
+    contract is to swallow every exception it sees."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.temporal import activities
+
+    seen: list = []
+    wrapped = activities._cancellation_checked(
+        lambda **kw: seen.append(kw), "plan_project_activity"
+    )
+
+    wrapped(current_phase="discovery", progress=15)
+    assert seen == [{"current_phase": "discovery", "progress": 15}]
+
+    monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+    with pytest.raises(CancelledError):
+        wrapped(current_phase="requirements", progress=25)
+    assert len(seen) == 1, "a cancelled attempt must write nothing"
+
+
+def test_plan_project_activity_cancelled_attempt_writes_no_pause_envelope(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The worst case named in the report: a superseded attempt must not persist a pause.
+
+    A stale resume_token strands the user's answers against a token nothing is waiting
+    on, and re-populated pending_questions duplicate a pause the live attempt owns.
+    Without the guard this test sees ``waiting_for_answers is True`` on the job record.
+    """
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-cancel-pause", repo_path=str(tmp_path), job_type="run_team")
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents", lambda: {"architecture": None}
+    )
+
+    def _pausing_planning(*args, **kwargs):
+        # Cancellation arrives mid-run (a beat delivered it), then Planning pauses.
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        return kwargs["answer_callback"]([{"id": "q1", "question_text": "Which auth?"}])
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _pausing_planning)
+
+    with pytest.raises(CancelledError):
+        activities.plan_project_activity(
+            "pp-cancel-pause",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+        )
+
+    job = js.get_job("pp-cancel-pause")
+    assert not job.get("waiting_for_answers")
+    assert not job.get("pending_questions")
+    assert not job.get("resume_token")
+
+
+def test_plan_project_activity_cancelled_attempt_writes_no_failed_status(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """A cancelled attempt is superseded, not failed: it must not stamp FAILED over the
+    status of whichever attempt Temporal is still running."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-cancel-fail", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents", lambda: {"architecture": None}
+    )
+    # Final attempt: without the cancellation check this is exactly when FAILED lands.
+    monkeypatch.setattr(activities.activity, "info", lambda: _fake_activity_info(attempt=3))
+
+    def _cancelled_planning(*a, **kw):
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        raise RuntimeError("worker torn down mid-run")
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _cancelled_planning)
+
+    with pytest.raises(CancelledError):
+        activities.plan_project_activity(
+            "pp-cancel-fail",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+        )
+
+    assert js.get_job("pp-cancel-fail")["status"] != js.JOB_STATUS_FAILED
+
+
+def test_plan_project_activity_cancelled_attempt_folds_planning_failure_into_cancellation(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """Planning's run_workflow folds every exception into ``success=False``, so an
+    aborted phase updater reaches the failure branch looking like a planning failure.
+    That branch must re-check cancellation rather than trust the exception type."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-cancel-folded", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.orchestrator._get_agents", lambda: {"architecture": None}
+    )
+
+    def _updater_aborted(*a, **kwargs):
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        # What planning_team.orchestrator.run_workflow returns after swallowing the
+        # CancelledError its job_updater raised.
+        return {"success": False, "failure_reason": "plan_project_activity cancelled"}
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _updater_aborted)
+
+    with pytest.raises(CancelledError):
+        activities.plan_project_activity(
+            "pp-cancel-folded",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+        )
+
+    job = js.get_job("pp-cancel-folded")
+    assert job["status"] != js.JOB_STATUS_FAILED
+    assert job.get("phase") != "completed"
+
+
+def test_plan_project_activity_cancelled_attempt_leaves_a_live_pause_alone(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The pause-envelope *consume* write is guarded too: a superseded attempt clearing
+    the envelope would erase a pause the live attempt is still waiting on."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("pp-cancel-consume", repo_path=str(tmp_path), job_type="run_team")
+    js.add_pending_questions(
+        "pp-cancel-consume",
+        [{"id": "q1", "question_text": "Which auth provider?"}],
+        resume_token="pp-cancel-consume:live-token",
+    )
+    monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+
+    def _must_not_run(*a, **kw):  # pragma: no cover
+        raise AssertionError("a cancelled attempt must not reach Planning")
+
+    monkeypatch.setattr("planning_team.orchestrator.run_workflow", _must_not_run)
+
+    with pytest.raises(CancelledError):
+        activities.plan_project_activity(
+            "pp-cancel-consume",
+            str(tmp_path),
+            {"spec_content": "spec", "validated_spec": "spec", "plan_dir": str(tmp_path)},
+            "",
+            "pp-cancel-consume:live-token",
+            [{"question_id": "q1", "other_text": "Okta"}],
+        )
+
+    job = js.get_job("pp-cancel-consume")
+    assert job["waiting_for_answers"] is True
+    assert job["resume_token"] == "pp-cancel-consume:live-token"
+
+
+def test_parse_spec_activity_cancelled_attempt_writes_no_failed_status(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """Phase 1 carries the same contract as Phase 2."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-cancel", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(activities.activity, "info", lambda: _fake_activity_info(attempt=3))
+
+    def _cancelled_parse(*a, **kw):
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        raise RuntimeError("worker torn down mid-run")
+
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm", _cancelled_parse
+    )
+
+    with pytest.raises(CancelledError):
+        activities.parse_spec_activity("ps-cancel", str(tmp_path), spec_content_override="spec")
+
+    assert js.get_job("ps-cancel")["status"] != js.JOB_STATUS_FAILED
+
+
+def _fake_pra(monkeypatch, run_workflow):
+    """Patch the PRA agent parse_spec_activity constructs with one whose run_workflow
+    is ``run_workflow``. Returns nothing; the caller asserts on its own captures."""
+    from software_engineering_team import product_requirements_analysis_agent as pra_mod
+
+    class _FakeAgent:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        def run_workflow(self, **kwargs):
+            return run_workflow(**kwargs)
+
+    monkeypatch.setattr(pra_mod, "ProductRequirementsAnalysisAgent", _FakeAgent)
+
+
+def _fake_requirements(title="Widget"):
+    from shared.dev_models.models import ProductRequirements
+
+    return ProductRequirements(
+        title=title,
+        description="d",
+        acceptance_criteria=[],
+        constraints=[],
+        priority="medium",
+        metadata={},
+    )
+
+
+def test_parse_spec_activity_pra_updater_is_cancellation_checked(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """Phase 1's PRA progress updater carries the same guard as Phase 2's.
+
+    The updater forwards while the attempt is live, then raises without writing once
+    cancellation lands — and the outer handler turns that into a Temporal cancellation
+    rather than a FAILED write.
+    """
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-cancel", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(activities.activity, "info", lambda: _fake_activity_info(attempt=3))
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+
+    def _run_workflow(**kwargs):
+        updater = kwargs["job_updater"]
+        updater(current_phase="spec_review", progress=10)
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        updater(current_phase="communicate", progress=40)  # must raise, writing nothing
+        raise AssertionError("the cancelled updater must abort the PRA run")
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    with pytest.raises(CancelledError):
+        activities.parse_spec_activity("ps-pra-cancel", str(tmp_path), spec_content_override="spec")
+
+    job = js.get_job("ps-pra-cancel")
+    # The live write landed; the cancelled one did not, and no FAILED status was
+    # stamped even though this is the final Temporal attempt.
+    assert job["analysis_subprocess"] == "spec_review"
+    assert job["status"] != js.JOB_STATUS_FAILED
+
+
+def test_parse_spec_activity_cancelled_pra_failure_writes_no_failed_status(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """PRA folds every exception into ``success=False``, so an aborted updater reaches
+    the PRA-failure branch looking like an ordinary PRA failure. That branch must
+    re-check cancellation rather than stamp FAILED on the winner's job record."""
+    from temporalio.exceptions import CancelledError
+
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-folded", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+
+    def _run_workflow(**kwargs):
+        monkeypatch.setattr(activities.activity, "is_cancelled", lambda: True)
+        return AnalysisWorkflowResult(success=False, failure_reason="parse_spec cancelled")
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    with pytest.raises(CancelledError):
+        activities.parse_spec_activity("ps-pra-folded", str(tmp_path), spec_content_override="spec")
+
+    job = js.get_job("ps-pra-folded")
+    assert job["status"] != js.JOB_STATUS_FAILED
+    assert job.get("phase") != "completed"
+
+
+def test_parse_spec_activity_runs_pra_and_returns_validated_spec(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The live (uncancelled) PRA path still works end to end: progress writes land
+    through the wrapped updater and the validated spec comes back on the result."""
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-ok", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(title="Widget"),
+    )
+
+    def _run_workflow(**kwargs):
+        kwargs["job_updater"](current_phase="spec_cleanup", progress=90)
+        return AnalysisWorkflowResult(
+            success=True, final_spec_content="validated spec", iterations=2
+        )
+
+    _fake_pra(monkeypatch, _run_workflow)
+
+    result = activities.parse_spec_activity(
+        "ps-pra-ok", str(tmp_path), spec_content_override="spec"
+    )
+
+    assert result["validated_spec"] == "validated spec"
+    assert result["pra_iterations"] == 2
+    assert result["requirements_title"] == "Widget"
+
+    job = js.get_job("ps-pra-ok")
+    assert job["analysis_subprocess"] == "spec_cleanup"
+    assert job["status"] != js.JOB_STATUS_FAILED
+
+
+def test_parse_spec_activity_uncancelled_pra_failure_still_marks_failed(
+    monkeypatch, tmp_path, patched_job_store
+) -> None:
+    """The cancellation guard must not swallow a genuine PRA failure.
+
+    Same branch as the cancelled case above, with the attempt still live: the job is
+    marked FAILED and a bare SpecParseResult comes back, so the workflow does not
+    barrel into Phase 2 on an unvalidated spec.
+    """
+    from software_engineering_team.product_requirements_analysis_agent.models import (
+        AnalysisWorkflowResult,
+    )
+    from software_engineering_team.shared import job_store as js
+    from software_engineering_team.temporal import activities
+
+    js.create_job("ps-pra-failed", repo_path=str(tmp_path))
+    monkeypatch.setenv("LLM_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        "software_engineering_team.spec_parser.parse_spec_with_llm",
+        lambda *a, **k: _fake_requirements(),
+    )
+    _fake_pra(
+        monkeypatch,
+        lambda **kw: AnalysisWorkflowResult(success=False, failure_reason="spec too thin"),
+    )
+
+    result = activities.parse_spec_activity(
+        "ps-pra-failed", str(tmp_path), spec_content_override="spec"
+    )
+
+    assert result["spec_content"] == "spec"
+    assert not result.get("validated_spec")
+    job = js.get_job("ps-pra-failed")
+    assert job["status"] == js.JOB_STATUS_FAILED
+    assert job["error"] == "spec too thin"
+    assert job["phase"] == "completed"
