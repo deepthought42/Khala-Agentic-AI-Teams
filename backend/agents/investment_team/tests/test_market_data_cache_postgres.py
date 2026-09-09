@@ -275,7 +275,9 @@ def test_record_snapshot_postgres_insert(
     assert cursor.executed
     sql, params = cursor.executed[0]
     assert "INSERT INTO investment_market_data_snapshots" in sql
-    # 11 placeholders, 11 values
+    # 13 placeholders, 13 values — the realised range and the requested one
+    # are separate columns.
+    assert sql.count("%s") == 13
     assert params == (
         meta.symbol,
         meta.asset_class,
@@ -284,6 +286,8 @@ def test_record_snapshot_postgres_insert(
         meta.fetch_ts,
         meta.start_date,
         meta.end_date,
+        meta.requested_start_date,
+        meta.requested_end_date,
         meta.row_count,
         meta.sha256,
         meta.schema_version,
@@ -378,3 +382,111 @@ def test_default_workers_no_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MARKET_DATA_FETCH_WORKERS", raising=False)
     assert _default_workers(3) == 3
     assert _default_workers(50) == 16
+
+
+# ---------------------------------------------------------------------------
+# Requested-vs-realised coverage columns on the Postgres branch
+# ---------------------------------------------------------------------------
+
+
+def test_find_covering_snapshot_postgres_predicate_spans_both_ranges(
+    cache: MarketDataCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre: Postgres enabled. Post: the SELECT bounds the lookup on the union
+    of the realised and requested ranges (``LEAST``/``GREATEST`` over the
+    ``COALESCE``-folded columns), so a legacy row with NULL ``requested_*``
+    matches exactly the window it matched before the columns existed.
+    """
+    cursor = _FakeCursor(rows=[])
+    _patch_pg_cursor(monkeypatch, cursor)
+
+    cache._find_covering_snapshot(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-02",
+        end="2024-01-04",
+        as_of_dt=datetime(2024, 2, 1, tzinfo=timezone.utc),
+    )
+    sql, params = cursor.executed[0]
+    normalized = " ".join(sql.split())
+    assert "requested_start_date, requested_end_date" in normalized
+    assert "LEAST(start_date, COALESCE(requested_start_date, start_date)) <= %s" in normalized
+    assert "GREATEST(end_date, COALESCE(requested_end_date, end_date)) >= %s" in normalized
+    assert params[-2:] == ("2024-01-02", "2024-01-04")
+
+
+def test_row_to_meta_reads_requested_columns() -> None:
+    """A row carrying the requested-window columns round-trips both ranges."""
+    row = {
+        "symbol": "AAA",
+        "asset_class": "stocks",
+        "frequency": "1d",
+        "provider": "yahoo",
+        "fetch_ts": datetime(2024, 1, 5, 12, 0, tzinfo=timezone.utc),
+        "start_date": date(2024, 1, 3),
+        "end_date": date(2024, 1, 5),
+        "requested_start_date": date(2024, 1, 1),
+        "requested_end_date": date(2024, 1, 5),
+        "row_count": 3,
+        "sha256": "0" * 64,
+        "parquet_path": "/tmp/x.parquet",
+        "schema_version": 1,
+    }
+    meta = _row_to_meta(row)
+    assert (meta.start_date, meta.end_date) == ("2024-01-03", "2024-01-05")
+    assert (meta.requested_start_date, meta.requested_end_date) == ("2024-01-01", "2024-01-05")
+    # Realised bounds are the truth about the bars; the request is provenance.
+    assert not meta.covers("2024-01-01", "2024-01-05")
+    assert meta.is_authoritative_for("2024-01-01", "2024-01-05")
+
+
+def test_row_to_meta_legacy_row_without_requested_columns() -> None:
+    """A pre-migration row (no ``requested_*`` keys) falls back to the realised
+    pair, preserving the lookup reach it had before the split.
+    """
+    row = {
+        "symbol": "AAA",
+        "asset_class": "stocks",
+        "frequency": "1d",
+        "provider": "yahoo",
+        "fetch_ts": datetime(2024, 1, 5, 12, 0, tzinfo=timezone.utc),
+        "start_date": "2024-01-01",
+        "end_date": "2024-01-05",
+        "row_count": 5,
+        "sha256": "0" * 64,
+        "parquet_path": "/tmp/x.parquet",
+        "schema_version": 1,
+    }
+    meta = _row_to_meta(row)
+    assert meta.requested_start_date is None
+    assert meta.requested_end_date is None
+    assert (meta.requested_start, meta.requested_end) == ("2024-01-01", "2024-01-05")
+    assert meta.is_authoritative_for("2024-01-01", "2024-01-05")
+
+
+def test_row_to_meta_null_requested_columns_stay_none() -> None:
+    """Explicit SQL NULLs (post-migration legacy row) behave like absent keys."""
+    row = {
+        "symbol": "AAA",
+        "asset_class": "stocks",
+        "frequency": "1d",
+        "provider": "yahoo",
+        "fetch_ts": datetime(2024, 1, 5, 12, 0, tzinfo=timezone.utc),
+        "start_date": "2024-01-01",
+        "end_date": "2024-01-05",
+        "requested_start_date": None,
+        "requested_end_date": None,
+        "row_count": 5,
+        "sha256": "0" * 64,
+        "parquet_path": "/tmp/x.parquet",
+        "schema_version": 1,
+    }
+    meta = _row_to_meta(row)
+    assert meta.requested_start_date is None
+    assert meta.requested_end_date is None
+    # The claim being verified is the fallback, not just the None-ness: were
+    # _row_to_meta to propagate None into the properties instead of standing
+    # the realised pair in, a legacy row's lookup reach would silently shrink.
+    assert (meta.requested_start, meta.requested_end) == ("2024-01-01", "2024-01-05")
+    assert meta.is_authoritative_for("2024-01-01", "2024-01-05")

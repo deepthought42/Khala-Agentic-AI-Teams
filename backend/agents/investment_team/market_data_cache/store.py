@@ -7,8 +7,11 @@ Owns four concerns:
   ``(asset_class, symbol, frequency, provider, fetch_date)``, immutable
   once written.
 * **Postgres index** ``investment_market_data_snapshots`` — looks up
-  the latest snapshot covering a requested ``[start, end]`` range with
-  ``fetch_ts <= as_of``.  Falls back to an in-process index when
+  the latest snapshot authoritative for a requested ``[start, end]``
+  range with ``fetch_ts <= as_of``.  A snapshot records the range its
+  bars actually span *and* the range the fetch asked for; the two
+  diverge whenever a provider serves a short series, and only the
+  former is a claim about data (see :class:`SnapshotMeta`).  Falls back to an in-process index when
   ``POSTGRES_HOST`` is unset; that path is enough for unit tests but
   loses cross-process reproducibility, which is the whole point of the
   cache, so production must run with Postgres.
@@ -92,6 +95,34 @@ class SnapshotMeta:
     ``parquet_path`` is the absolute path on disk; ``sha256`` is the
     canonical fingerprint of the bars, suitable for use as a derived-cache
     key.
+
+    Two date ranges, deliberately distinct:
+
+    * ``start_date`` / ``end_date`` — the **realised** bounds: the first and
+      last bar actually present in the parquet file.  :meth:`covers`
+      answers "do these bars really span the window?" from them.
+    * ``requested_start_date`` / ``requested_end_date`` — the window the
+      fetch *asked* the provider for.  ``None`` on rows written before the
+      distinction existed, in which case the realised pair stands in (see
+      :attr:`requested_start`).
+
+    The two differ whenever a provider returns a short series — a symbol
+    whose history begins after ``start``, or a provider that caps how far
+    back it serves.  Recording only the request (as this store once did)
+    made a truncated snapshot indistinguishable from a complete one, and
+    the lie was durable: the next lookup for the same window replayed the
+    short series as though it spanned the request.  They also differ, the
+    other way, when a provider rounds outward and returns *more* than was
+    asked for.
+
+    Invariants:
+        ``start_date <= end_date`` and ``requested_start <= requested_end``,
+        enforced in :meth:`__post_init__` so no caller can construct a
+        snapshot whose ranges :meth:`covers` and :meth:`is_authoritative_for`
+        would then answer from.  Neither pair constrains the other — a
+        provider may return less than it was asked for (truncation) or more
+        (outward rounding); both are represented faithfully rather than
+        collapsed.
     """
 
     symbol: str
@@ -105,6 +136,88 @@ class SnapshotMeta:
     sha256: str
     parquet_path: str
     schema_version: int = 1
+    requested_start_date: Optional[str] = None
+    requested_end_date: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Enforce the class invariants at construction.
+
+        Read-only: nothing is mutated, so the frozen dataclass needs no
+        ``object.__setattr__``.  Inverted bounds can only come from a writer
+        bug or a corrupt index row, and both :meth:`covers` and
+        :meth:`is_authoritative_for` would silently answer from them — so
+        fail at the boundary rather than propagate the corruption.
+
+        Postconditions:
+            Returns normally iff both invariants hold; raises
+            :class:`ValueError` naming the violated pair otherwise.
+        """
+        if self.start_date > self.end_date:
+            raise ValueError(f"realised bounds inverted: {self.start_date} > {self.end_date}")
+        if self.requested_start > self.requested_end:
+            raise ValueError(
+                f"requested bounds inverted: {self.requested_start} > {self.requested_end}"
+            )
+
+    @property
+    def requested_start(self) -> str:
+        """Requested window start, falling back to the realised start.
+
+        Postconditions:
+            Returns ``requested_start_date`` when recorded, else
+            ``start_date`` — so a legacy row (whose ``start_date`` *was* the
+            requested bound) keeps its original lookup semantics.
+        """
+        return self.requested_start_date or self.start_date
+
+    @property
+    def requested_end(self) -> str:
+        """Requested window end, falling back to the realised end.
+
+        Postconditions:
+            Returns ``requested_end_date`` when recorded, else ``end_date``.
+        """
+        return self.requested_end_date or self.end_date
+
+    def covers(self, start: str, end: str) -> bool:
+        """True when the snapshot's **bars** span ``[start, end]``.
+
+        This is the data-truth question, and the one a consumer reasoning
+        about temporal completeness must ask.  A snapshot written for a
+        wider request than the provider could serve answers ``False`` here
+        even though :meth:`is_authoritative_for` answers ``True``.
+
+        Preconditions:
+            ``start`` and ``end`` are ISO date strings (``YYYY-MM-DD``),
+            comparable lexicographically against the stored bounds.
+        Postconditions:
+            Returns ``True`` iff ``start_date <= start`` and
+            ``end_date >= end``.  Says nothing about gaps *inside* the
+            range — ``execution.data_quality.validate_market_data`` owns
+            that question.
+        """
+        return self.start_date <= start and self.end_date >= end
+
+    def is_authoritative_for(self, start: str, end: str) -> bool:
+        """True when this snapshot is the provider's complete answer for the window.
+
+        A date is answered either because the snapshot holds bars for it
+        (inside the realised range) or because the provider was asked about
+        it and returned nothing (inside the requested range).  The union of
+        the two is what a refetch could not improve on, so it — not the
+        realised range alone — is the cache-hit predicate.  Matching on the
+        realised range alone would refetch forever for any symbol whose
+        history genuinely starts later than the windows callers ask for.
+
+        Preconditions:
+            ``start`` and ``end`` are ISO date strings (``YYYY-MM-DD``).
+        Postconditions:
+            Returns ``True`` iff ``[start, end]`` lies within
+            ``[min(start_date, requested_start), max(end_date, requested_end)]``.
+        """
+        return min(self.start_date, self.requested_start) <= start and (
+            max(self.end_date, self.requested_end) >= end
+        )
 
 
 FetchFn = Callable[[str, str, str, str], Tuple[List[OHLCVBar], str]]
@@ -186,6 +299,79 @@ def _reconcile_snapshot_hash(meta: SnapshotMeta, bars: Sequence[OHLCVBar]) -> Sn
     if recomputed == meta.sha256:
         return meta
     return replace(meta, sha256=recomputed)
+
+
+def _realised_bounds(bars: Sequence[OHLCVBar]) -> Tuple[str, str]:
+    """Return the ``(first, last)`` calendar date actually present in ``bars``.
+
+    Dates are truncated to ``YYYY-MM-DD`` so an intraday snapshot (whose
+    ``bar.date`` carries a full ISO timestamp) yields bounds comparable
+    against the date-granular requested window and storable in the ``DATE``
+    columns of ``investment_market_data_snapshots`` — keeping the Postgres
+    and in-memory index branches byte-comparable on the same values.
+
+    Bars are not assumed sorted: ``fetch_fn`` is provider-supplied and this
+    store only guarantees chronological order at hash time.
+
+    Preconditions:
+        ``bars`` is non-empty and every bar's ``date`` is an ISO-8601 date
+        or datetime string.
+    Postconditions:
+        Returns ``(lo, hi)`` with ``lo <= hi``, both ``YYYY-MM-DD``.
+    """
+    assert bars, "_realised_bounds requires at least one bar"
+    days = [b.date[:10] for b in bars]
+    return min(days), max(days)
+
+
+def _reconcile_snapshot_bounds(meta: SnapshotMeta, bars: Sequence[OHLCVBar]) -> SnapshotMeta:
+    """Return ``meta`` with realised bounds repaired to match ``bars``.
+
+    A snapshot written before this store distinguished requested from
+    realised coverage recorded the *request* in ``start_date`` /
+    ``end_date``, so a truncated series reads back claiming a range it never
+    had.  Recomputing the bounds from the bars on the read path makes those
+    rows self-healing — the same read-repair strategy
+    :func:`_reconcile_snapshot_hash` applies to a stale fingerprint — without
+    a backfill migration or a write on every cache hit.  The original
+    (requested) range is preserved in ``requested_start_date`` /
+    ``requested_end_date`` so the lookup predicate keeps its old reach.
+
+    Postconditions:
+        Returns ``meta`` unchanged (same object) when the recorded bounds
+        already match the bars — the common case, so there is no churn.
+        Otherwise returns a copy whose ``start_date``/``end_date`` are the
+        bars' realised bounds and whose ``requested_*`` pair retains the
+        previously recorded (requested) range.  ``bars`` empty returns
+        ``meta`` unchanged: an empty parquet carries no bounds to trust.
+    """
+    if not bars:
+        return meta
+    lo, hi = _realised_bounds(bars)
+    if lo == meta.start_date and hi == meta.end_date:
+        return meta
+    return replace(
+        meta,
+        start_date=lo,
+        end_date=hi,
+        requested_start_date=meta.requested_start,
+        requested_end_date=meta.requested_end,
+    )
+
+
+def _reconcile_snapshot(meta: SnapshotMeta, bars: Sequence[OHLCVBar]) -> SnapshotMeta:
+    """Read-repair a snapshot's metadata against the bars actually read back.
+
+    Composes the two independent repairs — fingerprint
+    (:func:`_reconcile_snapshot_hash`) and realised coverage
+    (:func:`_reconcile_snapshot_bounds`) — so every read path describes the
+    bars the caller is handed rather than what the writer believed.
+
+    Postconditions:
+        Returns ``meta`` unchanged (same object) when neither repair
+        applies.
+    """
+    return _reconcile_snapshot_hash(_reconcile_snapshot_bounds(meta, bars), bars)
 
 
 def _hash_bars(bars: Sequence[OHLCVBar]) -> str:
@@ -361,12 +547,22 @@ def _row_to_meta(row: Mapping[str, object]) -> SnapshotMeta:
     if isinstance(fetch_ts, datetime) and fetch_ts.tzinfo is None:
         fetch_ts = fetch_ts.replace(tzinfo=timezone.utc)
 
-    start_d = row["start_date"]
-    end_d = row["end_date"]
-    if isinstance(start_d, date):
-        start_d = start_d.isoformat()
-    if isinstance(end_d, date):
-        end_d = end_d.isoformat()
+    def _as_iso(value: object) -> Optional[str]:
+        """Normalize a DATE column to ``YYYY-MM-DD``; ``None`` stays ``None``.
+
+        psycopg hands back :class:`datetime.date` for a ``DATE`` column but a
+        plain string when the row came from a stub or an older driver, and
+        ``NULL`` for the ``requested_*`` columns on rows written before they
+        existed.
+        """
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)
+
+    start_d = _as_iso(row["start_date"])
+    end_d = _as_iso(row["end_date"])
     return SnapshotMeta(
         symbol=str(row["symbol"]),
         asset_class=str(row["asset_class"]),
@@ -379,6 +575,8 @@ def _row_to_meta(row: Mapping[str, object]) -> SnapshotMeta:
         sha256=str(row["sha256"]),
         parquet_path=str(row["parquet_path"]),
         schema_version=int(row.get("schema_version", 1)),
+        requested_start_date=_as_iso(row.get("requested_start_date")),
+        requested_end_date=_as_iso(row.get("requested_end_date")),
     )
 
 
@@ -452,20 +650,45 @@ class MarketDataCache(PostgresHelperMixin):
         end: str,
         as_of_dt: datetime,
     ) -> Optional[SnapshotMeta]:
+        """Return the newest snapshot authoritative for ``[start, end]``, or None.
+
+        The predicate is :meth:`SnapshotMeta.is_authoritative_for` — the union
+        of the realised and requested ranges — expressed in SQL with
+        ``LEAST``/``GREATEST`` so the Postgres and in-memory index branches
+        agree bar-for-bar.  ``COALESCE`` folds a legacy row (whose
+        ``requested_*`` columns are ``NULL`` and whose ``start_date`` /
+        ``end_date`` hold the requested window) onto the same predicate it
+        matched before the columns existed, so no refetch wave follows the
+        migration.
+
+        Preconditions:
+            ``start``/``end`` are ISO date strings; ``as_of_dt`` is
+            timezone-aware.
+        Postconditions:
+            Returns the highest-``fetch_ts`` snapshot with ``fetch_ts <=
+            as_of_dt`` that is authoritative for the window, or ``None``.
+            A snapshot returned here may still fail :meth:`SnapshotMeta.covers`
+            — that is the truncation case, and the caller is told rather than
+            sent back to the provider for data that does not exist.
+        """
         if is_postgres_enabled():
             try:
                 row = self._fetch_one(
                     """
                     SELECT symbol, asset_class, frequency, provider, fetch_ts,
-                           start_date, end_date, row_count, sha256,
+                           start_date, end_date,
+                           requested_start_date, requested_end_date,
+                           row_count, sha256,
                            schema_version, parquet_path
                       FROM investment_market_data_snapshots
                      WHERE symbol = %s
                        AND asset_class = %s
                        AND frequency = %s
                        AND fetch_ts <= %s
-                       AND start_date <= %s
-                       AND end_date >= %s
+                       AND LEAST(start_date,
+                                 COALESCE(requested_start_date, start_date)) <= %s
+                       AND GREATEST(end_date,
+                                    COALESCE(requested_end_date, end_date)) >= %s
                      ORDER BY fetch_ts DESC
                      LIMIT 1
                     """,
@@ -488,8 +711,7 @@ class MarketDataCache(PostgresHelperMixin):
                 and m.asset_class == asset_class
                 and m.frequency == frequency
                 and m.fetch_ts <= as_of_dt
-                and m.start_date <= start
-                and m.end_date >= end
+                and m.is_authoritative_for(start, end)
             ]
         if not candidates:
             return None
@@ -502,9 +724,11 @@ class MarketDataCache(PostgresHelperMixin):
                     """
                     INSERT INTO investment_market_data_snapshots
                         (symbol, asset_class, frequency, provider, fetch_ts,
-                         start_date, end_date, row_count, sha256,
+                         start_date, end_date,
+                         requested_start_date, requested_end_date,
+                         row_count, sha256,
                          schema_version, parquet_path)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         meta.symbol,
@@ -514,6 +738,8 @@ class MarketDataCache(PostgresHelperMixin):
                         meta.fetch_ts,
                         meta.start_date,
                         meta.end_date,
+                        meta.requested_start_date,
+                        meta.requested_end_date,
                         meta.row_count,
                         meta.sha256,
                         meta.schema_version,
@@ -563,6 +789,47 @@ class MarketDataCache(PostgresHelperMixin):
         start: str,
         end: str,
     ) -> SnapshotMeta:
+        """Persist ``bars`` as a parquet snapshot and index it.
+
+        ``start``/``end`` are the window the fetch *requested*; the recorded
+        coverage is derived from the bars themselves.  Passing the request
+        through as the coverage — as this store once did — silently records a
+        truncated series as spanning the full window, and the lie is durable:
+        every later lookup for that window replays the short series as
+        complete, and nothing re-examines the bounds.
+
+        Preconditions:
+            ``bars`` is non-empty (empty fetches must not produce a
+            snapshot); ``start <= end`` are ISO date strings.
+        Postconditions:
+            A parquet file exists at the returned ``parquet_path`` and the
+            snapshot is indexed.  ``start_date``/``end_date`` are the bars'
+            realised bounds and ``requested_start_date``/
+            ``requested_end_date`` the requested window, so
+            :meth:`SnapshotMeta.covers` is exact for the returned meta.
+        """
+        assert bars, "_write_snapshot requires at least one bar"
+        requested_start, requested_end = start[:10], end[:10]
+        realised_start, realised_end = _realised_bounds(bars)
+        if realised_start > requested_start or realised_end < requested_end:
+            # Not an error: a symbol whose history begins mid-window, or a
+            # provider that caps how far back it serves. Worth a warning
+            # because it is the condition that used to vanish into a
+            # full-coverage claim, and the snapshot now durably records the
+            # shortfall instead.
+            logger.warning(
+                "market_data_cache: %s/%s/%s from %s requested %s..%s but realised %s..%s "
+                "(%d bars); recording the realised range",
+                asset_class,
+                symbol,
+                frequency,
+                provider,
+                requested_start,
+                requested_end,
+                realised_start,
+                realised_end,
+                len(bars),
+            )
         fetch_ts = _now_utc()
         fetch_date = fetch_ts.date().isoformat()
         out_path = self._snapshot_path(
@@ -591,11 +858,13 @@ class MarketDataCache(PostgresHelperMixin):
             frequency=frequency,
             provider=provider,
             fetch_ts=fetch_ts,
-            start_date=start,
-            end_date=end,
+            start_date=realised_start,
+            end_date=realised_end,
             row_count=len(bars),
             sha256=_hash_bars(bars),
             parquet_path=str(out_path),
+            requested_start_date=requested_start,
+            requested_end_date=requested_end,
         )
         self._record_snapshot(meta)
         return meta
@@ -621,6 +890,21 @@ class MarketDataCache(PostgresHelperMixin):
         invoking ``fetch_fn``.  On miss invokes ``fetch_fn`` once, writes
         a new snapshot, and indexes it.  Empty fetches do not produce a
         snapshot — ``meta`` is None and the bar list is empty.
+
+        The returned bars are trimmed to ``[start, end]``, so their span
+        cannot distinguish a snapshot that genuinely covers the window from
+        one that only claims to.  ``meta`` can: its ``start_date``/
+        ``end_date`` are the bars actually obtained, and
+        :meth:`SnapshotMeta.covers` compares them against the request.
+
+        Preconditions:
+            ``start <= end`` are ISO date strings; ``fetch_fn`` honours the
+            :data:`FetchFn` contract.
+        Postconditions:
+            Returns ``([], None)`` when no snapshot exists and the provider
+            chain is exhausted.  Otherwise ``meta`` is not None and describes
+            the returned bars — including, when the provider served less than
+            was asked for, a range narrower than ``[start, end]``.
         """
         as_of_dt = _parse_as_of(as_of)
         existing = self._find_covering_snapshot(
@@ -632,12 +916,25 @@ class MarketDataCache(PostgresHelperMixin):
             as_of_dt=as_of_dt,
         )
         if existing is not None:
-            cached = self._read_snapshot(existing)
-            if cached is not None:
-                # A legacy snapshot's stored sha256 is over the raw volume, but
-                # _read_snapshot repaired it to 0.0; reconcile so the returned
-                # meta describes the bars the caller actually gets.
-                existing = _reconcile_snapshot_hash(existing, cached)
+            # A legacy snapshot's stored sha256 is over the raw volume and its
+            # bounds are the requested window, but the read repairs the volume
+            # to 0.0 and the bars say what the range really is; the reconciled
+            # read returns a meta describing the bars the caller actually gets.
+            read = self.read_snapshot_reconciled(existing)
+            if read is not None:
+                existing, cached = read
+                if not existing.covers(start, end):
+                    logger.warning(
+                        "market_data_cache: replaying %s/%s/%s for %s..%s from a snapshot "
+                        "covering only %s..%s — the provider served a short series",
+                        asset_class,
+                        symbol,
+                        frequency,
+                        start,
+                        end,
+                        existing.start_date,
+                        existing.end_date,
+                    )
                 trimmed = [b for b in cached if start <= b.date <= end]
                 return trimmed, existing
 
@@ -724,7 +1021,12 @@ class MarketDataCache(PostgresHelperMixin):
     ) -> Optional[SnapshotMeta]:
         """Persist bars that the caller already fetched (e.g. via a stream).
 
-        Returns the new ``SnapshotMeta`` or None when ``bars`` is empty.
+        ``start``/``end`` are the requested window; as on the ``get_or_fetch``
+        miss path, the snapshot's recorded coverage comes from the bars.
+
+        Postconditions:
+            Returns ``None`` when ``bars`` is empty (no snapshot written),
+            else a ``SnapshotMeta`` whose realised bounds match ``bars``.
         """
         if not bars:
             return None
@@ -748,6 +1050,17 @@ class MarketDataCache(PostgresHelperMixin):
         end: str,
         as_of: Optional[str] = None,
     ) -> Optional[SnapshotMeta]:
+        """Metadata-only lookup: is a snapshot authoritative for this window?
+
+        Postconditions:
+            Returns ``None`` on a miss.  The returned meta is the *indexed*
+            one — unlike the meta :meth:`get_or_fetch` hands back, its bounds
+            have not been read-repaired against the parquet, because that
+            would cost a file read.  A caller that goes on to
+            :meth:`read_snapshot` should pass the bars through
+            :func:`_reconcile_snapshot` before trusting the bounds of a row
+            written before requested and realised coverage were split.
+        """
         return self._find_covering_snapshot(
             symbol=symbol,
             asset_class=asset_class,
@@ -758,7 +1071,40 @@ class MarketDataCache(PostgresHelperMixin):
         )
 
     def read_snapshot(self, meta: SnapshotMeta) -> Optional[List[OHLCVBar]]:
+        """Read a snapshot's bars, without reconciling ``meta`` against them.
+
+        Postconditions:
+            Returns ``None`` when the parquet is missing or unreadable (the
+            caller should treat that as a miss and refetch).  The bars are
+            read-repaired (OHLC invariants, non-finite volume) but ``meta``
+            is not — prefer :meth:`read_snapshot_reconciled` unless you
+            genuinely only want the bars.
+        """
         return self._read_snapshot(meta)
+
+    def read_snapshot_reconciled(
+        self, meta: SnapshotMeta
+    ) -> Optional[Tuple[SnapshotMeta, List[OHLCVBar]]]:
+        """Read a snapshot and return its metadata repaired against those bars.
+
+        The reconciliation is the whole point: ``_read_snapshot`` repairs OHLC
+        invariants and non-finite volume on read, and a row written before
+        requested and realised coverage were split records the request as its
+        coverage — so an unreconciled ``meta`` can describe neither the bars'
+        fingerprint nor their real span.  Pairing the two in one public call
+        makes it impossible to read a snapshot and forget to reconcile it, and
+        keeps the reconciliation helpers private to this module.
+
+        Postconditions:
+            Returns ``None`` exactly when :meth:`read_snapshot` does.
+            Otherwise returns ``(meta, bars)`` where ``meta.sha256`` is the
+            canonical fingerprint of ``bars`` and ``meta``'s realised bounds
+            are their true span, so :meth:`SnapshotMeta.covers` is exact.
+        """
+        bars = self._read_snapshot(meta)
+        if bars is None:
+            return None
+        return _reconcile_snapshot(meta, bars), bars
 
     # ------------------------------------------------------------------
     # Derived ADV cache

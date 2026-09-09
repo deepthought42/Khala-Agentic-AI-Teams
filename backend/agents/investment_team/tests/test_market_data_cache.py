@@ -890,3 +890,552 @@ def test_get_or_fetch_reconciles_legacy_snapshot_hash(cache: MarketDataCache) ->
     assert meta is not None
     assert meta.sha256 != "stale-raw-nan-hash"
     assert meta.sha256 == _hash_bars(bars)
+
+
+# ---------------------------------------------------------------------------
+# Truncated fetches: recorded coverage is what was obtained, not what was asked
+#
+# The store used to pass the requested ``start``/``end`` straight through as a
+# snapshot's coverage. A provider that served a short series — a symbol whose
+# history begins mid-window, or a provider that caps how far back it goes —
+# was therefore recorded as covering the full request, and every later lookup
+# replayed the short series as though it were complete.
+#
+# The fix splits the two ranges. ``start_date``/``end_date`` are the bars'
+# realised bounds, so ``covers()`` is exact; ``requested_*`` retains the window
+# the provider was asked about, so the cache-hit predicate still spans the
+# dates the provider authoritatively had nothing for. Matching on the realised
+# range alone would instead refetch forever for any symbol whose history
+# genuinely starts later than the windows callers ask for.
+# ---------------------------------------------------------------------------
+
+
+def _truncating_fetch(bars: List[OHLCVBar], calls: dict):
+    """Build a ``fetch_fn`` serving ``bars`` regardless of the window asked for.
+
+    Ignoring ``start``/``end`` is the point: it stands in for a provider whose
+    answer does not span the request. Invocations are counted in ``calls["n"]``
+    so a test can assert whether the provider was dispatched at all.
+    """
+
+    def fetch(symbol, ac, start, end):
+        calls["n"] = calls.get("n", 0) + 1
+        return list(bars), "yahoo"
+
+    return fetch
+
+
+def test_truncated_fetch_records_realised_bounds_not_requested(
+    cache: MarketDataCache,
+) -> None:
+    """Requested Jan 1–10, provider serves Jan 6–10 only.
+
+    The snapshot must record Jan 6–10 as its coverage and Jan 1–10 as the
+    window that was asked for.
+    """
+    short = _bars(5, start_day=6)  # 2024-01-06 .. 2024-01-10
+    calls: dict = {}
+
+    out, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(short, calls),
+    )
+    assert calls["n"] == 1
+    assert len(out) == 5
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-10",
+    )
+    assert meta.row_count == 5
+    # The caller can now tell "claims to cover" from "really covers".
+    assert not meta.covers("2024-01-01", "2024-01-10")
+    assert meta.covers("2024-01-06", "2024-01-10")
+
+
+def test_truncated_snapshot_replays_with_honest_coverage(cache: MarketDataCache) -> None:
+    """The durable half of the bug: a later read of the poisoned snapshot.
+
+    The replay still happens — refetching cannot conjure history the provider
+    does not have — but the meta handed back reports the range the bars really
+    span, so the short series is no longer indistinguishable from a complete
+    one.
+    """
+    short = _bars(5, start_day=6)
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(short, calls),
+    )
+    assert calls["n"] == 1
+
+    def assert_no_call(symbol, ac, start, end):  # pragma: no cover
+        raise AssertionError("a re-request of the same window must not refetch")
+
+    out, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=assert_no_call,
+    )
+    assert len(out) == 5
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-10")
+    assert not meta.covers("2024-01-01", "2024-01-10")
+
+    # ...and the same holds for a metadata-only lookup, which streaming replay
+    # uses to decide whether a symbol can be served from cache at all.
+    looked_up = cache.lookup_snapshot(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+    )
+    assert looked_up is not None
+    assert not looked_up.covers("2024-01-01", "2024-01-10")
+
+
+def test_truncated_snapshot_does_not_cause_futile_refetch(cache: MarketDataCache) -> None:
+    """A symbol whose history genuinely starts later must not refetch forever.
+
+    Three requests for the same window hit the provider exactly once. Matching
+    the cache on the realised range alone would have dispatched three times for
+    data that does not exist.
+    """
+    short = _bars(5, start_day=6)
+    calls: dict = {}
+    fetch = _truncating_fetch(short, calls)
+    for _ in range(3):
+        cache.get_or_fetch(
+            symbol="AAA",
+            asset_class="stocks",
+            frequency="1d",
+            start="2024-01-01",
+            end="2024-01-10",
+            fetch_fn=fetch,
+        )
+    assert calls["n"] == 1
+
+
+def test_truncated_snapshot_answers_subwindow_inside_the_gap(cache: MarketDataCache) -> None:
+    """A window the provider was asked about and had nothing for is answered.
+
+    Jan 1–5 falls entirely in the missing head of the Jan 6–10 series. The
+    provider already reported it empty for the wider request, so the cache
+    serves the (empty) answer instead of re-dispatching — and the meta says
+    plainly that it does not cover the window.
+    """
+    short = _bars(5, start_day=6)
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(short, calls),
+    )
+
+    def assert_no_call(symbol, ac, start, end):  # pragma: no cover
+        raise AssertionError("a probed sub-window must not refetch")
+
+    out, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-05",
+        fetch_fn=assert_no_call,
+    )
+    assert out == []
+    assert meta is not None
+    assert not meta.covers("2024-01-01", "2024-01-05")
+
+
+def test_wider_request_supersedes_a_truncated_snapshot(cache: MarketDataCache) -> None:
+    """A request reaching outside the probed window still misses and refetches.
+
+    The provider was never asked about 2023-12-28, so the snapshot is not
+    authoritative for it — the point-in-time record does not silently answer
+    for dates it never covered.
+    """
+    short = _bars(5, start_day=6)
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(short, calls),
+    )
+    assert calls["n"] == 1
+
+    wide_calls: dict = {}
+    out, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2023-12-28",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(_bars(10, start_day=1), wide_calls),
+    )
+    assert wide_calls["n"] == 1
+    assert len(out) == 10
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-01", "2024-01-10")
+
+
+def test_full_coverage_path_records_the_full_range_and_replays(cache: MarketDataCache) -> None:
+    """The unchanged case: a complete fetch still records the whole window."""
+    full = _bars(5)  # 2024-01-01 .. 2024-01-05
+    calls: dict = {}
+    _, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-05",
+        fetch_fn=_truncating_fetch(full, calls),
+    )
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-01", "2024-01-05")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-05",
+    )
+    assert meta.covers("2024-01-01", "2024-01-05")
+
+    def assert_no_call(symbol, ac, start, end):  # pragma: no cover
+        raise AssertionError("fetch_fn must not be called on cache hit")
+
+    out, hit = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-05",
+        fetch_fn=assert_no_call,
+    )
+    assert calls["n"] == 1
+    assert len(out) == 5
+    assert hit is not None and hit.covers("2024-01-01", "2024-01-05")
+
+
+def test_provider_returning_more_than_requested_records_the_wider_span(
+    cache: MarketDataCache,
+) -> None:
+    """Outward rounding: the realised range may exceed the requested one.
+
+    A provider that snaps to week boundaries returns Jan 1–10 for a Jan 3–8
+    request. The snapshot records what it holds, so a later request for the
+    full Jan 1–10 is genuinely covered and hits.
+    """
+    calls: dict = {}
+    _, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-03",
+        end="2024-01-08",
+        fetch_fn=_truncating_fetch(_bars(10), calls),
+    )
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-01", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-03",
+        "2024-01-08",
+    )
+    assert meta.covers("2024-01-01", "2024-01-10")
+
+    def assert_no_call(symbol, ac, start, end):  # pragma: no cover
+        raise AssertionError("the wider realised range must satisfy the request")
+
+    out, _ = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=assert_no_call,
+    )
+    assert len(out) == 10
+
+
+def test_record_bars_snapshot_records_realised_bounds(cache: MarketDataCache) -> None:
+    """The streaming ingest path splits the two ranges the same way."""
+    meta = cache.record_bars_snapshot(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        provider="yahoo",
+        bars=_bars(3, start_day=8),  # 2024-01-08 .. 2024-01-10
+        start="2024-01-01",
+        end="2024-01-10",
+    )
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-08", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-10",
+    )
+    assert not meta.covers("2024-01-01", "2024-01-10")
+
+
+def test_unsorted_bars_still_yield_correct_realised_bounds(cache: MarketDataCache) -> None:
+    """``fetch_fn`` is provider-supplied; bar order is not guaranteed."""
+    shuffled = list(reversed(_bars(4, start_day=6)))
+    calls: dict = {}
+    _, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-09",
+        fetch_fn=_truncating_fetch(shuffled, calls),
+    )
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-09")
+
+
+def test_intraday_bar_timestamps_reduce_to_calendar_bounds(cache: MarketDataCache) -> None:
+    """Intraday ``bar.date`` carries a full ISO timestamp.
+
+    Bounds are truncated to ``YYYY-MM-DD`` so they stay comparable against the
+    date-granular requested window and storable in the ``DATE`` index columns —
+    the in-memory and Postgres branches then agree on the same values.
+    """
+    intraday = [
+        OHLCVBar(
+            date=f"2024-01-02T{9 + i:02d}:30:00",
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.5,
+            volume=1_000.0,
+        )
+        for i in range(3)
+    ]
+    calls: dict = {}
+    _, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1h",
+        start="2024-01-02",
+        end="2024-01-02",
+        fetch_fn=_truncating_fetch(intraday, calls),
+    )
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-02", "2024-01-02")
+    assert meta.covers("2024-01-02", "2024-01-02")
+
+
+# ---------------------------------------------------------------------------
+# Read-repair: a legacy snapshot whose recorded bounds are the requested window
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_snapshot_bounds_are_repaired_from_the_bars_on_read(
+    cache: MarketDataCache,
+) -> None:
+    """Rows written before the split claim the requested window as coverage.
+
+    Rewriting the index entry to look like such a row and reading it back
+    proves the repair: no backfill migration, no write on every hit — the bars
+    themselves are the authority, exactly as they already are for ``sha256``.
+    """
+    short = _bars(5, start_day=6)
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(short, calls),
+    )
+    # Rewind the index entry to its pre-split shape: requested window in
+    # start_date/end_date, nothing in the requested_* columns.
+    legacy = SnapshotMeta(
+        **{
+            **cache._memory_index[0].__dict__,
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-10",
+            "requested_start_date": None,
+            "requested_end_date": None,
+        }
+    )
+    cache._memory_index[:] = [legacy]
+    assert legacy.covers("2024-01-01", "2024-01-10")  # the old lie
+
+    def assert_no_call(symbol, ac, start, end):  # pragma: no cover
+        raise AssertionError("fetch_fn must not be called on cache hit")
+
+    out, meta = cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=assert_no_call,
+    )
+    assert len(out) == 5
+    assert meta is not None
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-10",
+    )
+    assert not meta.covers("2024-01-01", "2024-01-10")
+    # Repaired on the returned meta only — the index is not rewritten, so the
+    # hit path stays read-only.
+    assert cache._memory_index[0] is legacy
+
+
+def test_reconcile_snapshot_bounds_is_a_no_op_when_already_accurate() -> None:
+    """No churn on the common path: an accurate meta is returned unchanged."""
+    from investment_team.market_data_cache.store import _reconcile_snapshot_bounds
+
+    bars = _bars(5)
+    meta = SnapshotMeta(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        provider="yahoo",
+        fetch_ts=datetime(2024, 1, 6, tzinfo=timezone.utc),
+        start_date="2024-01-01",
+        end_date="2024-01-05",
+        row_count=5,
+        sha256="0" * 64,
+        parquet_path="/tmp/x.parquet",
+        requested_start_date="2024-01-01",
+        requested_end_date="2024-01-05",
+    )
+    assert _reconcile_snapshot_bounds(meta, bars) is meta
+    # An empty read carries no bounds to trust, so it cannot repair anything.
+    assert _reconcile_snapshot_bounds(meta, []) is meta
+
+
+# ---------------------------------------------------------------------------
+# SnapshotMeta invariant enforcement
+#
+# The class documents ``start_date <= end_date`` and
+# ``requested_start <= requested_end``. Both ``covers()`` and
+# ``is_authoritative_for()`` answer from those bounds, so an inverted pair —
+# from a writer bug or a corrupt index row — would silently produce wrong
+# coverage answers. ``__post_init__`` fails at the boundary instead.
+# ---------------------------------------------------------------------------
+
+
+def _meta_kwargs(**overrides) -> dict:
+    base = dict(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        provider="yahoo",
+        fetch_ts=datetime(2024, 1, 6, tzinfo=timezone.utc),
+        start_date="2024-01-01",
+        end_date="2024-01-05",
+        row_count=5,
+        sha256="0" * 64,
+        parquet_path="/tmp/x.parquet",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_snapshot_meta_rejects_inverted_realised_bounds() -> None:
+    with pytest.raises(ValueError, match="realised bounds inverted"):
+        SnapshotMeta(**_meta_kwargs(start_date="2024-01-05", end_date="2024-01-01"))
+
+
+def test_snapshot_meta_rejects_inverted_requested_bounds() -> None:
+    with pytest.raises(ValueError, match="requested bounds inverted"):
+        SnapshotMeta(
+            **_meta_kwargs(
+                requested_start_date="2024-01-10",
+                requested_end_date="2024-01-02",
+            )
+        )
+
+
+def test_snapshot_meta_accepts_degenerate_single_day_range() -> None:
+    """A one-bar snapshot has ``start_date == end_date`` — valid, not inverted."""
+    meta = SnapshotMeta(**_meta_kwargs(start_date="2024-01-03", end_date="2024-01-03"))
+    assert meta.covers("2024-01-03", "2024-01-03")
+
+
+def test_snapshot_meta_validates_legacy_fallback_pair() -> None:
+    """With ``requested_*`` unset the realised pair stands in and is checked once.
+
+    A legacy row therefore cannot slip an inverted requested range past the
+    invariant by leaving the columns NULL.
+    """
+    meta = SnapshotMeta(**_meta_kwargs())
+    assert (meta.requested_start, meta.requested_end) == ("2024-01-01", "2024-01-05")
+
+
+# ---------------------------------------------------------------------------
+# read_snapshot_reconciled — the public read+reconcile pairing
+# ---------------------------------------------------------------------------
+
+
+def test_read_snapshot_reconciled_repairs_bounds_and_hash(cache: MarketDataCache) -> None:
+    """Reading through the public pairing yields a meta describing the bars.
+
+    Exercised on a snapshot rewound to its pre-split shape, so both repairs
+    (realised bounds and canonical sha256) have something to do.
+    """
+    calls: dict = {}
+    cache.get_or_fetch(
+        symbol="AAA",
+        asset_class="stocks",
+        frequency="1d",
+        start="2024-01-01",
+        end="2024-01-10",
+        fetch_fn=_truncating_fetch(_bars(5, start_day=6), calls),
+    )
+    written = cache._memory_index[0]
+    legacy = SnapshotMeta(
+        **{
+            **written.__dict__,
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-10",
+            "requested_start_date": None,
+            "requested_end_date": None,
+            "sha256": "f" * 64,
+        }
+    )
+
+    read = cache.read_snapshot_reconciled(legacy)
+    assert read is not None
+    meta, bars = read
+    assert len(bars) == 5
+    assert (meta.start_date, meta.end_date) == ("2024-01-06", "2024-01-10")
+    assert (meta.requested_start_date, meta.requested_end_date) == (
+        "2024-01-01",
+        "2024-01-10",
+    )
+    assert meta.sha256 == written.sha256
+    assert not meta.covers("2024-01-01", "2024-01-10")
+
+
+def test_read_snapshot_reconciled_returns_none_when_parquet_missing(
+    cache: MarketDataCache, tmp_path: Path
+) -> None:
+    """Same miss semantics as ``read_snapshot``: a vanished file is a refetch."""
+    meta = SnapshotMeta(**_meta_kwargs(parquet_path=str(tmp_path / "gone.parquet")))
+    assert cache.read_snapshot(meta) is None
+    assert cache.read_snapshot_reconciled(meta) is None
